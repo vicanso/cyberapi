@@ -2,6 +2,7 @@ use serde::Deserialize;
 use tauri::Manager;
 use tauri::{command, Window};
 
+use crate::database;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CommandError {
     message: String,
@@ -26,6 +27,7 @@ pub fn close_splashscreen(window: Window) {
     }
     // 展示主视图
     window.get_window("main").unwrap().show().unwrap();
+    println!("{:?}", database::init_conn());
 }
 
 #[derive(Deserialize)]
