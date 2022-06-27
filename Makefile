@@ -1,6 +1,6 @@
 .PHONY: default
 
-clippy:
+lint:
 	cd src-tauri && cargo clippy
 fmt:
-	cd src-tauri && cargo fmt --all -- --check
+	cd src-tauri && cargo fmt --all --

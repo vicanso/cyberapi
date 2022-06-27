@@ -1,8 +1,9 @@
+use crate::database;
 use serde::Deserialize;
 use tauri::Manager;
 use tauri::{command, Window};
+use std::{collections::HashMap};
 
-use crate::database;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CommandError {
     message: String,
@@ -27,12 +28,32 @@ pub fn close_splashscreen(window: Window) {
     }
     // 展示主视图
     window.get_window("main").unwrap().show().unwrap();
-    println!("{:?}", database::init_conn());
+
+    println!("{:?}", database::get_conn());
+    println!("{:?}", database::get_conn());
 }
 
 #[derive(Deserialize)]
 pub struct APISetting {
+    id: String,
     name: String,
+    path: String,
+    http: Option<HTTPSetting>,
+    // body: 
+}
+
+#[derive(Deserialize)]
+pub struct HTTPSetting {
+    method: String,
+    url: String,
+    query: HashMap<String, Vec<String>>,
+    header: HashMap<String, Vec<String>>,
+    body: Option<HTTPBody>,
+}
+#[derive(Deserialize)]
+pub struct HTTPBody {
+    dataType: String,
+    data: String,
 }
 
 // 保存API配置
