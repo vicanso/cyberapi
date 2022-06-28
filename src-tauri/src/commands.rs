@@ -1,14 +1,18 @@
-use crate::database;
-use serde::Deserialize;
+use crate::schemas::{APISetting, api_setting_add};
+
 use tauri::Manager;
 use tauri::{command, Window};
-use std::{collections::HashMap};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CommandError {
     message: String,
     category: String,
 }
+#[derive(strum_macros::Display)]
+enum CommandErrorCategory {
+   Database,
+}
+
 
 impl Default for CommandError {
     fn default() -> CommandError {
@@ -28,32 +32,17 @@ pub fn close_splashscreen(window: Window) {
     }
     // 展示主视图
     window.get_window("main").unwrap().show().unwrap();
-
-    println!("{:?}", database::get_conn());
-    println!("{:?}", database::get_conn());
 }
 
-#[derive(Deserialize)]
-pub struct APISetting {
-    id: String,
-    name: String,
-    path: String,
-    http: Option<HTTPSetting>,
-    // body: 
-}
-
-#[derive(Deserialize)]
-pub struct HTTPSetting {
-    method: String,
-    url: String,
-    query: HashMap<String, Vec<String>>,
-    header: HashMap<String, Vec<String>>,
-    body: Option<HTTPBody>,
-}
-#[derive(Deserialize)]
-pub struct HTTPBody {
-    dataType: String,
-    data: String,
+#[command(async)]
+pub fn add_api_setting(id: String) -> Result<(), CommandError> {
+    match api_setting_add(id) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(CommandError{
+            category: CommandErrorCategory::Database.into(),
+            message: error.to_string(),
+        })
+    }
 }
 
 // 保存API配置

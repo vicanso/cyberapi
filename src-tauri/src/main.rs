@@ -4,7 +4,8 @@
 )]
 
 mod commands;
-mod database;
+// mod database;
+mod schemas;
 mod util;
 
 fn main() {
