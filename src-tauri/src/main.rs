@@ -19,6 +19,8 @@ fn main() {
         .menu(tauri::Menu::os_default(&context.package_info().name))
         .invoke_handler(tauri::generate_handler![
             commands::close_splashscreen,
+            commands::add_api_setting,
+            commands::list_api_setting,
             commands::save_api,
         ])
         .run(context)

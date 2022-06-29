@@ -1,27 +1,39 @@
+import { v4 as uuidv4 } from 'uuid';
+
 import { run } from "./invoke";
 
-interface HTTPSetting {
-  method?: string;
-  url?: string;
-  query?: Record<string, string[]>;
-  header?: Record<string, string[]>;
-  body?: {
-    dataType: string;
-    data?: string;
-  };
-  // TODO AUTH
-}
+
 interface APISetting {
   id: string;
   // 名称
-  name?: string;
-  // 路径
-  path?: string;
-  // HTTP配置
-  http?: HTTPSetting;
+  name: string;
+  // 目录ID
+  path: string;
+   // 类型(http, graphQL)
+    category: string;
+   // 配置信息
+    setting: string;
+   // 创建时间
+    createdAt: string;
+   // 更新时间
+    updatedAt: string;
 }
 
-export async function saveAPISetting(setting: APISetting) {
+
+export async function createAPISetting(): Promise<string> {
+  const id = uuidv4();
+  await run("add_api_setting", {
+    id, 
+  });
+  return id; 
+}
+
+export async function listAPISetting(): Promise<APISetting[]> {
+  const resp = await run<APISetting[]>("list_api_setting"); 
+  return resp;
+}
+
+export async function updateAPISetting(setting: APISetting) {
   try {
     const resp = await run("save_api", {
       setting,

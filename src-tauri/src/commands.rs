@@ -1,4 +1,4 @@
-use crate::schemas::{APISetting, api_setting_add};
+use crate::schemas::{self, APISetting};
 
 use tauri::Manager;
 use tauri::{command, Window};
@@ -10,9 +10,10 @@ pub struct CommandError {
 }
 #[derive(strum_macros::Display)]
 enum CommandErrorCategory {
-   Database,
+    Database,
 }
 
+pub type CommandResult<T> = Result<T, CommandError>;
 
 impl Default for CommandError {
     fn default() -> CommandError {
@@ -34,20 +35,34 @@ pub fn close_splashscreen(window: Window) {
     window.get_window("main").unwrap().show().unwrap();
 }
 
+fn convert_sql_error(error: rusqlite::Error) -> CommandError {
+    CommandError {
+        category: CommandErrorCategory::Database.to_string(),
+        message: error.to_string(),
+    }
+}
+
+// 新增API配置
 #[command(async)]
-pub fn add_api_setting(id: String) -> Result<(), CommandError> {
-    match api_setting_add(id) {
+pub fn add_api_setting(id: String) -> CommandResult<()> {
+    match schemas::add_api_setting(id) {
         Ok(_) => Ok(()),
-        Err(error) => Err(CommandError{
-            category: CommandErrorCategory::Database.into(),
-            message: error.to_string(),
-        })
+        Err(error) => Err(convert_sql_error(error)),
+    }
+}
+
+// 获取所有API配置
+#[command(async)]
+pub fn list_api_setting() -> CommandResult<Vec<APISetting>> {
+    match schemas::list_api_setting() {
+        Ok(result) => Ok(result),
+        Err(error) => Err(convert_sql_error(error)),
     }
 }
 
 // 保存API配置
 #[command(async)]
-pub fn save_api(setting: APISetting) -> Result<String, CommandError> {
+pub fn save_api(setting: APISetting) -> CommandResult<String> {
     println!("received person struct with name: {}", setting.name);
     // future::ready(Ok("done".to_string()))
     Err(CommandError {

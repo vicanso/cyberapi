@@ -1,15 +1,26 @@
 <script setup lang="ts">
 import {
-  saveAPISetting
+  createAPISetting,
+  listAPISetting 
 } from "../commands/api";
 import { ref } from 'vue'
 
 defineProps<{ msg: string }>()
 
 const count = ref(0)
-saveAPISetting({
-  name: "test",
-});
+
+createAPISetting()
+  .then(console.dir)
+  .catch(console.error);
+
+listAPISetting()
+  .then(console.dir)
+  .catch(console.error);
+
+// saveAPISetting({
+//   name: "test",
+// });
+
 </script>
 
 <template>
