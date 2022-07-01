@@ -1,0 +1,25 @@
+body {
+  margin: 0;
+  font-size: 14px;
+  font-family: v-sans, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+}
+
+.clearfix:after {
+  visibility: hidden;
+  display: block;
+  font-size: 0;
+  content: " ";
+  clear: both;
+  height: 0;
+}
+
+.widthFull {
+  width: 100% !important;
+}
+
+.tac {
+  text-align: center;
+}

@@ -12,7 +12,11 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^1.0.1",
+    "dayjs": "^1.11.3",
     "debug": "^4.3.4",
+    "localforage": "^1.10.0",
+    "naive-ui": "^2.30.8",
+    "pinia": "^2.0.14",
     "uuid": "^8.3.2",
     "vue": "^3.2.25"
   },

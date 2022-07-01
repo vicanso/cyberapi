@@ -20,6 +20,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::close_splashscreen,
             commands::add_api_setting,
+            commands::update_api_setting,
             commands::list_api_setting,
             commands::save_api,
         ])

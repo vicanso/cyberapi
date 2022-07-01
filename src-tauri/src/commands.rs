@@ -45,11 +45,25 @@ fn convert_sql_error(error: rusqlite::Error) -> CommandError {
 // 新增API配置
 #[command(async)]
 pub fn add_api_setting(id: String) -> CommandResult<()> {
-    match schemas::add_api_setting(id) {
+    match schemas::add_or_update_api_setting(APISetting {
+        id: id,
+        ..Default::default()
+    }) {
         Ok(_) => Ok(()),
         Err(error) => Err(convert_sql_error(error)),
     }
 }
+
+// 更新API配置
+#[command(async)]
+pub fn update_api_setting(setting: APISetting) -> CommandResult<()> {
+    match schemas::add_or_update_api_setting(setting) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(convert_sql_error(error)),
+    }
+}
+
+
 
 // 获取所有API配置
 #[command(async)]
