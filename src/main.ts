@@ -4,6 +4,7 @@ import { createPinia } from "pinia";
 import Debug from "debug";
 import Root from "./Root";
 import { isWebMode } from "./helpers/util";
+import { changeI18nLocale } from "./i18n";
 
 // web mode enable debug:*
 if (isWebMode()) {
@@ -12,4 +13,6 @@ if (isWebMode()) {
 
 const naive = create();
 const app = createApp(Root);
+// TODO 初始化
+changeI18nLocale("zh");
 app.use(naive).use(createPinia()).mount("#app");

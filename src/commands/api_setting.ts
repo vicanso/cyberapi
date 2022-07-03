@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import localforage from "localforage";
+import dayjs from "dayjs";
 
 import { isWebMode } from "../helpers/util";
 import {
@@ -19,7 +20,7 @@ export interface APISetting {
   // 名称
   name: string;
   // 目录ID
-  path: string;
+  folder: string;
   // 类型(http, graphQL)
   category: string;
   // 配置信息
@@ -57,24 +58,27 @@ async function fakeUpdateAPISetting(setting: APISetting) {
   await apiStore.setItem("fake", result);
 }
 
-export async function createAPISetting(): Promise<string> {
+export function newDefaultAPISetting(): APISetting {
   const id = uuidv4();
+  return {
+    id,
+    name: "",
+    folder: "",
+    category: "",
+    setting: "",
+    createdAt: dayjs().format(),
+    updatedAt: dayjs().format(),
+  };
+}
+
+export async function createAPISetting(setting: APISetting): Promise<void> {
   if (isWebMode()) {
-    await fakeAddAPISetting({
-      id,
-      name: "",
-      path: "",
-      category: "",
-      setting: "",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
+    await fakeAddAPISetting(setting);
   } else {
     await run(cmdAddAPISetting, {
-      id,
+      setting,
     });
   }
-  return id;
 }
 
 export async function listAPISetting(): Promise<APISetting[]> {

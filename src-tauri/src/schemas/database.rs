@@ -1,6 +1,6 @@
 // use tauri::{Env};
 use once_cell::sync::OnceCell;
-use rusqlite::Connection;
+use rusqlite::{params_from_iter, Connection};
 use std::{error, fmt, fs, io, path::Path, sync::Mutex, sync::MutexGuard};
 
 use crate::util;
@@ -54,4 +54,52 @@ fn init_conn() -> &'static Mutex<Connection> {
 pub fn get_conn() -> MutexGuard<'static, Connection> {
     let result = init_conn();
     result.lock().unwrap()
+}
+
+pub fn add_or_update_record(
+    table: &str,
+    keys: Vec<String>,
+    values: Vec<String>,
+) -> Result<usize, rusqlite::Error> {
+    let conn = get_conn();
+
+    let p = params_from_iter(values);
+
+    let mut params_values = Vec::new();
+    for n in 0..keys.len() {
+        params_values.push(format!("?{}", n + 1));
+    }
+    let sql = format!(
+        "INSERT OR REPLACE INTO {} ({}) VALUES ({})",
+        table,
+        keys.join(", "),
+        params_values.join(", "),
+    );
+    conn.execute(&sql, p)
+}
+
+pub trait NewFromRow<T> {
+    fn from_row(data: &rusqlite::Row) -> Result<T, rusqlite::Error>;
+}
+
+pub fn list_records<T: NewFromRow<T>>(
+    table: &str,
+    keys: Vec<String>,
+) -> Result<Vec<T>, rusqlite::Error> {
+    let conn = get_conn();
+
+    let sql = format!("SELECT {} FROM {}", keys.join(", "), table);
+    let mut statement = conn.prepare(&sql)?;
+    let mut rows = statement.query([])?;
+
+    let mut result = Vec::new();
+    let mut done = false;
+    while !done {
+        let item = rows.next()?;
+        match item {
+            Some(data) => result.push(T::from_row(data)?),
+            None => done = true,
+        }
+    }
+    Ok(result)
 }

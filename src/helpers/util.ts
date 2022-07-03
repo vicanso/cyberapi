@@ -9,7 +9,7 @@ function formatError(err: Error | unknown): string {
   if (err instanceof Error) {
     message = err.message;
   } else {
-    message = (err as Error).message;
+    message = err as string;
   }
   return message;
 }

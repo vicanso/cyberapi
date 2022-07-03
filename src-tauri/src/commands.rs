@@ -1,4 +1,4 @@
-use crate::schemas::{self, APISetting};
+use crate::schemas::{self, APISetting, APIFolder};
 
 use tauri::Manager;
 use tauri::{command, Window};
@@ -44,11 +44,8 @@ fn convert_sql_error(error: rusqlite::Error) -> CommandError {
 
 // 新增API配置
 #[command(async)]
-pub fn add_api_setting(id: String) -> CommandResult<()> {
-    match schemas::add_or_update_api_setting(APISetting {
-        id: id,
-        ..Default::default()
-    }) {
+pub fn add_api_setting(setting: APISetting) -> CommandResult<()> {
+    match schemas::add_or_update_api_setting(setting) {
         Ok(_) => Ok(()),
         Err(error) => Err(convert_sql_error(error)),
     }
@@ -63,8 +60,6 @@ pub fn update_api_setting(setting: APISetting) -> CommandResult<()> {
     }
 }
 
-
-
 // 获取所有API配置
 #[command(async)]
 pub fn list_api_setting() -> CommandResult<Vec<APISetting>> {
@@ -74,14 +69,29 @@ pub fn list_api_setting() -> CommandResult<Vec<APISetting>> {
     }
 }
 
-// 保存API配置
+// 新增API目录
 #[command(async)]
-pub fn save_api(setting: APISetting) -> CommandResult<String> {
-    println!("received person struct with name: {}", setting.name);
-    // future::ready(Ok("done".to_string()))
-    Err(CommandError {
-        message: "error".to_string(),
-        ..Default::default()
-    })
-    // future::ready(Err(eprintln!("error")))
+pub fn add_api_folder(folder: APIFolder) -> CommandResult<()> {
+    match schemas::add_or_update_api_folder(folder) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(convert_sql_error(error)),
+    }
+}
+
+// 更新API目录
+#[command(async)]
+pub fn update_api_folder(folder: APIFolder) -> CommandResult<()> {
+    match schemas::add_or_update_api_folder(folder) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(convert_sql_error(error)),
+    }
+}
+
+// 获取所有API目录
+#[command(async)]
+pub fn list_api_folder() -> CommandResult<Vec<APIFolder>> {
+    match schemas::list_api_folder() {
+        Ok(result) => Ok(result),
+        Err(error) => Err(convert_sql_error(error)),
+    }
 }

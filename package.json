@@ -11,6 +11,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@linaria/core": "^3.0.0-beta.22",
     "@tauri-apps/api": "^1.0.1",
     "dayjs": "^1.11.3",
     "debug": "^4.3.4",
@@ -18,7 +19,8 @@
     "naive-ui": "^2.30.8",
     "pinia": "^2.0.14",
     "uuid": "^8.3.2",
-    "vue": "^3.2.25"
+    "vue": "^3.2.25",
+    "vue-i18n": "^9.1.10"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^1.0.0",

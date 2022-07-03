@@ -1,6 +1,11 @@
 import { defineStore } from "pinia";
 
-import { APISetting, listAPISetting } from "../commands/api_setting";
+import {
+  APISetting,
+  listAPISetting,
+  newDefaultAPISetting,
+  createAPISetting,
+} from "../commands/api_setting";
 
 export const useAPISettingsStore = defineStore("apiSettings", {
   state: () => {
@@ -11,6 +16,19 @@ export const useAPISettingsStore = defineStore("apiSettings", {
     };
   },
   actions: {
+    async add(folder: string = "") {
+      if (this.processing) {
+        return;
+      }
+      const setting = newDefaultAPISetting();
+      this.processing = true;
+      setting.folder = folder;
+      try {
+        await createAPISetting(setting);
+      } finally {
+        this.processing = false;
+      }
+    },
     async list(): Promise<void> {
       if (this.processing) {
         return;
