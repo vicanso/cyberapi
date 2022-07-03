@@ -34,7 +34,6 @@ export const useCommonStore = defineStore("common", {
           // 获取失败则忽略
         }
       }
-      console.dir(">>>>>>>");
       this.setting.theme = theme;
     },
   },

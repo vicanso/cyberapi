@@ -1,5 +1,4 @@
 import { v4 as uuidv4 } from "uuid";
-import localforage from "localforage";
 import dayjs from "dayjs";
 
 import { isWebMode } from "../helpers/util";
@@ -9,10 +8,9 @@ import {
   cmdListAPISetting,
   cmdUpdateAPISetting,
 } from "./invoke";
+import { fakeList, fakeAdd, fakeUpdate } from "./fake";
 
-var apiStore = localforage.createInstance({
-  name: "apiSettings",
-});
+const store = "apiSettings";
 
 export interface APISetting {
   [key: string]: unknown;
@@ -31,33 +29,6 @@ export interface APISetting {
   updatedAt: string;
 }
 
-async function fakeListAPISetting(): Promise<APISetting[]> {
-  const result = await apiStore.getItem<APISetting[]>("fake");
-  if (result != null) {
-    return result;
-  }
-  return [];
-}
-async function fakeAddAPISetting(setting: APISetting) {
-  const result = await fakeListAPISetting();
-  result.push(setting);
-  await apiStore.setItem("fake", result);
-}
-
-async function fakeUpdateAPISetting(setting: APISetting) {
-  const result = await fakeListAPISetting();
-  let found = -1;
-  result.forEach((item, index) => {
-    if (item.id == setting.id) {
-      found = index;
-    }
-  });
-  if (found !== -1) {
-    result[found] = setting;
-  }
-  await apiStore.setItem("fake", result);
-}
-
 export function newDefaultAPISetting(): APISetting {
   const id = uuidv4();
   return {
@@ -73,24 +44,24 @@ export function newDefaultAPISetting(): APISetting {
 
 export async function createAPISetting(setting: APISetting): Promise<void> {
   if (isWebMode()) {
-    await fakeAddAPISetting(setting);
-  } else {
-    await run(cmdAddAPISetting, {
-      setting,
-    });
+    await fakeAdd<APISetting>(store, setting);
+    return;
   }
+  await run(cmdAddAPISetting, {
+    setting,
+  });
 }
 
 export async function listAPISetting(): Promise<APISetting[]> {
   if (isWebMode()) {
-    return await fakeListAPISetting();
+    return await fakeList<APISetting>(store);
   }
   return await run<APISetting[]>(cmdListAPISetting);
 }
 
 export async function updateAPISetting(setting: APISetting) {
   if (isWebMode()) {
-    return await fakeUpdateAPISetting(setting);
+    return await fakeUpdate(store, setting);
   }
   await run(cmdUpdateAPISetting, {
     setting,

@@ -14,7 +14,7 @@ import { useCommonStore } from "./stores/common";
 import App from "./App";
 
 export default defineComponent({
-  name: "Root",
+  name: "RootView",
   setup() {
     // console.dir(i18n.global.t);``
     const commonStore = useCommonStore();

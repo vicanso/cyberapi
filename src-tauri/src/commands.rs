@@ -1,4 +1,4 @@
-use crate::schemas::{self, APISetting, APIFolder};
+use crate::schemas::{self, APIFolder, APISetting};
 
 use tauri::Manager;
 use tauri::{command, Window};

@@ -1,6 +1,6 @@
-use std::vec;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::vec;
 
 use super::database::{add_or_update_record, get_conn, list_records, NewFromRow};
 
@@ -9,6 +9,8 @@ use super::database::{add_or_update_record, get_conn, list_records, NewFromRow};
 pub struct APIFolder {
     // id
     pub id: String,
+    // 父级目录
+    pub parent: String,
     // 目录名称
     pub name: String,
     // 创建时间
@@ -21,6 +23,7 @@ impl APIFolder {
     fn keys() -> Vec<String> {
         return vec![
             "id".to_string(),
+            "parent".to_string(),
             "name".to_string(),
             "created_at".to_string(),
             "updated_at".to_string(),
@@ -35,27 +38,23 @@ impl APIFolder {
         if updated_at.is_empty() {
             updated_at = Utc::now().to_rfc3339();
         }
-        return vec![
-            self.id.clone(),
-            self.name.clone(),
-            created_at,
-            updated_at,
-        ];
+        return vec![self.id.clone(), self.parent.clone(), self.name.clone(), created_at, updated_at];
     }
 }
 
 impl NewFromRow<APIFolder> for APIFolder {
     fn from_row(data: &rusqlite::Row) -> Result<APIFolder, rusqlite::Error> {
-        Ok(APIFolder{
+        Ok(APIFolder {
             id: data.get(0)?,
-            name: data.get(1)?,
-            created_at: data.get(2)?,
-            updated_at: data.get(3)?,
+            parent: data.get(1)?,
+            name: data.get(2)?,
+            created_at: data.get(3)?,
+            updated_at: data.get(4)?,
         })
     }
 }
 
-static TABLE_NAME:&str = "api_folder";
+static TABLE_NAME: &str = "api_folder";
 
 fn create_api_folders_if_not_exist() -> Result<usize, rusqlite::Error> {
     let conn = get_conn();
@@ -65,7 +64,9 @@ fn create_api_folders_if_not_exist() -> Result<usize, rusqlite::Error> {
             name TEXT DEFAULT '',
             created_at TEXT DEFAULT '',
             updated_at TEXT DEFAULT ''
-        )", TABLE_NAME);
+        )",
+        TABLE_NAME
+    );
     conn.execute(&sql, [])
 }
 

@@ -1,28 +1,45 @@
 import { css } from "@linaria/core";
 import { storeToRefs } from "pinia";
 import { defineComponent, onBeforeMount } from "vue";
-import { useMessage, NDropdown, NButton, NGi, NGrid, NInput } from "naive-ui";
+import {
+  useMessage,
+  NDropdown,
+  NButton,
+  NGi,
+  NGrid,
+  NInput,
+  useDialog,
+  NForm,
+  NFormItem,
+  NTree,
+  TreeOption,
+  NIcon,
+  TreeDropInfo,
+} from "naive-ui";
+import { FolderOutline } from "@vicons/ionicons5";
 
-import { useAPISettingsStore } from "../stores/api_setting";
+import { useAPISettingsStore, SettingType } from "../stores/api_setting";
 import { showError } from "../helpers/util";
-import { i18nAppSetting } from "../i18n";
+import { i18nAppSetting, i18nCommon } from "../i18n";
 
 const searchBarClass = css`
   padding: 10px;
 `;
 
-enum CreateType {
-  HTTP = "http",
-  Folder = "folder",
-}
+const apiSettingClass = css`
+  .n-tree-node-switcher {
+    display: none;
+  }
+`;
 
 export default defineComponent({
   name: "APISettings",
   setup() {
     const apiSettingsStore = useAPISettingsStore();
 
-    const { apiSettings, processing } = storeToRefs(apiSettingsStore);
+    const { apiSettingTrees, listProcessing } = storeToRefs(apiSettingsStore);
     const message = useMessage();
+    const dialog = useDialog();
 
     onBeforeMount(async () => {
       try {
@@ -32,55 +49,129 @@ export default defineComponent({
       }
     });
 
-    const addHandler = async (key: string, folder: string) => {
+    // 添加api接口
+    const addAPI = async (key: string, folder: string) => {
       try {
-        switch (key) {
-          case CreateType.HTTP:
-            await apiSettingsStore.add(folder);
-            await apiSettingsStore.list();
-            break;
-        }
+        await apiSettingsStore.add(folder);
+        await apiSettingsStore.list();
       } catch (err) {
         showError(message, err);
       }
     };
+    // 创建api目录
+    const addFolder = async () => {
+      let name = "";
+      const dom = (
+        <NForm>
+          <NFormItem label={i18nCommon("name")} path="name">
+            <NInput
+              clearable
+              placeholder={i18nCommon("namePlaceholder")}
+              onInput={(value: string) => {
+                name = value;
+              }}
+            />
+          </NFormItem>
+        </NForm>
+      );
+      // 弹窗确认是否创建
+      const d = dialog.info({
+        title: i18nAppSetting("newFolder"),
+        content: () => dom,
+        positiveText: i18nCommon("confirm"),
+        onPositiveClick: (e) => {
+          if (!name) {
+            showError(message, new Error(i18nCommon("nameRequireError")));
+            return Promise.reject();
+          }
+          d.loading = true;
+          return new Promise(async (resolve, reject) => {
+            try {
+              await apiSettingsStore.addFolder(name);
+              resolve(null);
+            } catch (err) {
+              reject();
+            }
+          });
+        },
+      });
+    };
+
+    const isFolder = (id: string) => {
+      return !apiSettingsStore.apiSettingMap.has(id);
+    };
+
+    const handleDrop = async ({
+      node,
+      dragNode,
+      dropPosition,
+    }: TreeDropInfo) => {
+      const isDragToFolder = isFolder(node.key as string);
+      switch (dropPosition) {
+        case "inside":
+          // 如果inside非fold，则不处理
+          if (!isDragToFolder) {
+            return;
+          }
+          break;
+        default:
+          break;
+      }
+    };
+
     return {
-      addHandler,
+      addAPI,
+      addFolder,
+      isFolder,
+      handleDrop,
       text: {
-        add: i18nAppSetting("add"),
+        add: i18nCommon("add"),
         placeholder: i18nAppSetting("filterPlaceholder"),
       },
-      apiSettings,
-      processing,
+      apiSettingTrees,
+      listProcessing,
       options: [
         {
           label: i18nAppSetting("newHTTPRequest"),
-          key: CreateType.HTTP,
+          key: SettingType.HTTP,
         },
         {
           label: i18nAppSetting("newFolder"),
-          key: CreateType.Folder,
+          key: SettingType.Folder,
         },
       ],
     };
   },
   render() {
-    const { text, options, apiSettings, processing, addHandler } = this;
+    const { text, options, apiSettingTrees, listProcessing } = this;
 
-    let settings = <p>...</p>;
-    if (!processing) {
-      const list = apiSettings.map((item) => {
-        let name = item.name;
-        if (!name) {
-          name = i18nAppSetting("defaultName");
+    let settings = <p>{i18nCommon("loading")}</p>;
+    if (!listProcessing) {
+      const data: TreeOption[] = apiSettingTrees.map((item) => {
+        if (!item.label) {
+          item.label = i18nAppSetting("defaultName");
         }
-        return <li key={item.id}>{name}</li>;
+        return item as TreeOption;
       });
-      if (list.length) {
-        settings = <ul>{list}</ul>;
-      } else {
-        settings = <p>please add first</p>;
-      }
+      settings = (
+        <NTree
+          class={apiSettingClass}
+          block-line
+          draggable
+          renderPrefix={(option) => {
+            if (this.isFolder(option.option.key as string)) {
+              return (
+                <NIcon>
+                  <FolderOutline />
+                </NIcon>
+              );
+            }
+          }}
+          renderSwitcherIcon={() => {}}
+          onDrop={this.handleDrop}
+          data={data}
+        />
+      );
     }
 
     return (
@@ -101,7 +192,14 @@ export default defineComponent({
               trigger="click"
               options={options}
               onSelect={(key: string) => {
-                addHandler(key, "");
+                switch (key) {
+                  case SettingType.HTTP:
+                    this.addAPI(key, "");
+                    break;
+                  case SettingType.Folder:
+                    this.addFolder();
+                    break;
+                }
               }}
             >
               <NButton class="widthFull">{text.add}</NButton>
