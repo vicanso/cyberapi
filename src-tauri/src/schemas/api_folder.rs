@@ -7,10 +7,10 @@ use super::database::{add_or_update_record, get_conn, list_records, NewFromRow};
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct APIFolder {
-    // id
+    // id(如果为_表示根目录，不展示)
     pub id: String,
-    // 父级目录
-    pub parent: String,
+    // 子目录ID或API ID，以,分割
+    pub children: String,
     // 目录名称
     pub name: String,
     // 创建时间
@@ -23,7 +23,7 @@ impl APIFolder {
     fn keys() -> Vec<String> {
         return vec![
             "id".to_string(),
-            "parent".to_string(),
+            "children".to_string(),
             "name".to_string(),
             "created_at".to_string(),
             "updated_at".to_string(),
@@ -38,7 +38,7 @@ impl APIFolder {
         if updated_at.is_empty() {
             updated_at = Utc::now().to_rfc3339();
         }
-        return vec![self.id.clone(), self.parent.clone(), self.name.clone(), created_at, updated_at];
+        return vec![self.id.clone(), self.children.clone(), self.name.clone(), created_at, updated_at];
     }
 }
 
@@ -46,7 +46,7 @@ impl NewFromRow<APIFolder> for APIFolder {
     fn from_row(data: &rusqlite::Row) -> Result<APIFolder, rusqlite::Error> {
         Ok(APIFolder {
             id: data.get(0)?,
-            parent: data.get(1)?,
+            children: data.get(1)?,
             name: data.get(2)?,
             created_at: data.get(3)?,
             updated_at: data.get(4)?,
@@ -61,6 +61,7 @@ fn create_api_folders_if_not_exist() -> Result<usize, rusqlite::Error> {
     let sql = format!(
         "CREATE TABLE IF NOT EXISTS  {} (
             id TEXT PRIMARY KEY NOT NULL check (id != ''),
+            children TEXT DEFAULT '',
             name TEXT DEFAULT '',
             created_at TEXT DEFAULT '',
             updated_at TEXT DEFAULT ''

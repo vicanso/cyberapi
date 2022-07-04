@@ -13,6 +13,7 @@ export const useCommonStore = defineStore("common", {
     return {
       setting: {
         theme: "",
+        isDark: false,
       },
     };
   },
@@ -34,6 +35,7 @@ export const useCommonStore = defineStore("common", {
           // 获取失败则忽略
         }
       }
+      this.setting.isDark = theme == "dark";
       this.setting.theme = theme;
     },
   },

@@ -1,9 +1,13 @@
 import { defineStore } from "pinia";
+import localforage from "localforage";
+import { compact, uniq } from "lodash-es";
+
 import {
   APIFolder,
   createAPIFolder,
   listAPIFolder,
   newDefaultAPIFolder,
+  updateAPIFolder,
 } from "../commands/api_folder";
 
 import {
@@ -26,10 +30,13 @@ export enum SettingType {
   Folder = "folder",
 }
 
+const rootPathID = "_";
+
 export const useAPISettingsStore = defineStore("apiSettings", {
   state: () => {
     return {
       apiSettingMap: new Map<string, APISetting>(),
+      apiFolderMap: new Map<string, APIFolder>(),
       apiSettingTrees: [] as APISettingTree[],
       addFolderProcessing: false,
       addProcessing: false,
@@ -38,7 +45,38 @@ export const useAPISettingsStore = defineStore("apiSettings", {
     };
   },
   actions: {
-    async addFolder(name: string) {
+    async newRootFolder(): Promise<APIFolder> {
+      const folder = newDefaultAPIFolder();
+      folder.id = rootPathID;
+      await createAPIFolder(folder);
+      this.apiFolderMap.set(folder.id, folder);
+      return folder;
+    },
+    async addToFolder(id: string, folder: string) {
+      const { apiFolderMap } = this;
+      let item = apiFolderMap.get(folder);
+      if (folder == rootPathID && !item) {
+        item = await this.newRootFolder();
+      }
+      if (!item) {
+        return;
+      }
+      // 如果原来此id已经添加至其它的folder，先清除
+      apiFolderMap.forEach(async (item) => {
+        // 清除此id
+        if (item.children.includes(id)) {
+          const children = compact(item.children.split(","));
+          item.children = children.join(",");
+          await updateAPIFolder(item);
+        }
+      });
+
+      const children = compact(item.children.split(","));
+      children.push(id);
+      item.children = uniq(children).join(",");
+      await updateAPIFolder(item);
+    },
+    async addFolder(name: string, parent = rootPathID) {
       if (this.addFolderProcessing) {
         return;
       }
@@ -47,19 +85,24 @@ export const useAPISettingsStore = defineStore("apiSettings", {
       this.addFolderProcessing = true;
       try {
         await createAPIFolder(folder);
+        await this.addToFolder(folder.id, parent);
       } finally {
         this.addFolderProcessing = false;
       }
     },
-    async add(folder = "") {
+    async add(folder: string) {
       if (this.addProcessing) {
         return;
+      }
+      if (!folder) {
+        folder = rootPathID;
       }
       const setting = newDefaultAPISetting();
       this.addProcessing = true;
       setting.folder = folder;
       try {
         await createAPISetting(setting);
+        await this.addToFolder(setting.id, folder);
       } finally {
         this.addProcessing = false;
       }
@@ -73,46 +116,57 @@ export const useAPISettingsStore = defineStore("apiSettings", {
         const apiSettings = await listAPISetting();
         const apiFolders = await listAPIFolder();
         const treeMap = new Map<string, APISettingTree>();
-        const parentMap = new Map<string, string>();
-        apiFolders.forEach((item) => {
-          treeMap.set(item.id, {
-            key: item.id,
-            label: item.name,
-            category: SettingType.Folder,
-            children: [],
-          });
-          if (item.parent) {
-            parentMap.set(item.id, item.parent);
-          }
-        });
         const apiSettingMap = new Map<string, APISetting>();
         apiSettings.forEach((item) => {
+          apiSettingMap.set(item.id, item);
           treeMap.set(item.id, {
-            key: item.id,
             label: item.name,
+            key: item.id,
             category: SettingType.HTTP,
             children: [],
           });
-          apiSettingMap.set(item.id, item);
-          if (item.folder) {
-            parentMap.set(item.id, item.folder);
-          }
         });
-        const treeList: APISettingTree[] = [];
-        treeMap.forEach((value, key) => {
-          const tree = treeMap.get(key);
-          if (tree) {
-            const parentID = parentMap.get(key);
-            // 如果有父元素，直接添加至children中
-            if (parentID) {
-              treeMap.get(parentID)?.children.push(tree);
+        const apiFolderMap = new Map<string, APIFolder>();
+        const folderMap = new Map<string, APIFolder>();
+        apiFolders.forEach((item) => {
+          apiFolderMap.set(item.id, item);
+          if (item.id == rootPathID) {
+            return;
+          }
+          folderMap.set(item.id, item);
+          treeMap.set(item.id, {
+            label: item.name,
+            key: item.id,
+            category: SettingType.Folder,
+            children: [],
+          });
+        });
+        const removeIDList: string[] = [];
+        folderMap.forEach((item) => {
+          const tree = treeMap.get(item.id);
+          if (!tree) {
+            return;
+          }
+          const children = item.children.split(",");
+          children.forEach((id) => {
+            removeIDList.push(id);
+            const child = treeMap.get(id);
+            if (!child) {
               return;
             }
-            treeList.push(tree);
-          }
+            tree.children.push(child);
+          });
         });
-        this.apiSettingTrees = treeList;
+        const apiSettingTrees: APISettingTree[] = [];
+        treeMap.forEach((item) => {
+          if (removeIDList.includes(item.key)) {
+            return;
+          }
+          apiSettingTrees.push(item);
+        });
+        this.apiSettingTrees = apiSettingTrees;
         this.apiSettingMap = apiSettingMap;
+        this.apiFolderMap = apiFolderMap;
       } finally {
         this.listProcessing = false;
       }

@@ -29,7 +29,7 @@ export async function fakeList<T>(storeName: string): Promise<T[]> {
 }
 export async function fakeAdd<T>(storeName: string, data: T) {
   const result = await fakeList<T>(storeName);
-  result.push(data);
+  result.push(Object.assign({}, data));
   const store = getStore(storeName);
   await store.setItem("fake", result);
 }
@@ -43,7 +43,7 @@ export async function fakeUpdate<T extends WithID>(storeName: string, data: T) {
     }
   });
   if (found !== -1) {
-    result[found] = data;
+    result[found] = Object.assign({}, data);
   }
   const store = getStore(storeName);
   await store.setItem("fake", result);

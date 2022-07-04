@@ -1,5 +1,5 @@
-import { v4 as uuidv4 } from "uuid";
 import dayjs from "dayjs";
+import shortid from "shortid";
 
 import { isWebMode } from "../helpers/util";
 import {
@@ -17,8 +17,6 @@ export interface APISetting {
   id: string;
   // 名称
   name: string;
-  // 目录ID
-  folder: string;
   // 类型(http, graphQL)
   category: string;
   // 配置信息
@@ -30,11 +28,10 @@ export interface APISetting {
 }
 
 export function newDefaultAPISetting(): APISetting {
-  const id = uuidv4();
+  const id = shortid();
   return {
     id,
     name: "",
-    folder: "",
     category: "",
     setting: "",
     createdAt: dayjs().format(),

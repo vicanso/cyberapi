@@ -1,6 +1,5 @@
-import { v4 as uuidv4 } from "uuid";
-import localforage from "localforage";
 import dayjs from "dayjs";
+import shortid from "shortid";
 
 import { isWebMode } from "../helpers/util";
 import {
@@ -16,7 +15,7 @@ const store = "apiFolders";
 export interface APIFolder {
   [key: string]: unknown;
   id: string;
-  parent: string;
+  children: string;
   // 名称
   name: string;
   // 创建时间
@@ -26,10 +25,10 @@ export interface APIFolder {
 }
 
 export function newDefaultAPIFolder(): APIFolder {
-  const id = uuidv4();
+  const id = shortid();
   return {
     id,
-    parent: "",
+    children: "",
     name: "",
     createdAt: dayjs().format(),
     updatedAt: dayjs().format(),

@@ -1,4 +1,5 @@
 import { defineComponent, onBeforeMount, ref } from "vue";
+import { css } from "@linaria/core";
 import {
   darkTheme,
   NConfigProvider,
@@ -12,17 +13,22 @@ import { storeToRefs } from "pinia";
 import { closeSplashscreen } from "./commands/window";
 import { useCommonStore } from "./stores/common";
 import App from "./App";
+import { useAPISettingsStore } from "./stores/api_setting";
+import ExLoading from "./components/ExLoading";
+
+const loadingClass = css`
+  margin-top: 50px;
+`;
 
 export default defineComponent({
   name: "RootView",
   setup() {
-    // console.dir(i18n.global.t);``
     const commonStore = useCommonStore();
+    const apiSettingsStore = useAPISettingsStore();
     const { setting } = storeToRefs(commonStore);
     const processing = ref(true);
     onBeforeMount(async () => {
       await commonStore.getSetting();
-      // TODO 根据配置获取
       processing.value = false;
       closeSplashscreen();
     });
@@ -35,9 +41,9 @@ export default defineComponent({
   render() {
     const { processing, setting } = this;
     if (processing) {
-      return "<p>...</p>";
+      return <ExLoading class={loadingClass} />;
     }
-    const isDark = setting.theme === "dark";
+    const { isDark } = setting;
     return (
       <NConfigProvider theme={isDark ? darkTheme : null}>
         <NLoadingBarProvider>

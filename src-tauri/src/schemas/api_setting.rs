@@ -11,8 +11,6 @@ pub struct APISetting {
     pub id: String,
     // 配置名称
     pub name: String,
-    // 目录ID
-    pub folder: String,
     // 类型(http, graphQL)
     pub category: String,
     // 配置信息
@@ -28,7 +26,6 @@ impl APISetting {
         return vec![
             "id".to_string(),
             "name".to_string(),
-            "folder".to_string(),
             "category".to_string(),
             "setting".to_string(),
             "created_at".to_string(),
@@ -47,7 +44,6 @@ impl APISetting {
         return vec![
             self.id.clone(),
             self.name.clone(),
-            self.folder.clone(),
             self.category.clone(),
             self.setting.clone(),
             created_at,
@@ -60,11 +56,10 @@ impl NewFromRow<APISetting> for APISetting {
         Ok(APISetting {
             id: data.get(0)?,
             name: data.get(1)?,
-            folder: data.get(2)?,
-            category: data.get(3)?,
-            setting: data.get(4)?,
-            created_at: data.get(5)?,
-            updated_at: data.get(6)?,
+            category: data.get(2)?,
+            setting: data.get(3)?,
+            created_at: data.get(4)?,
+            updated_at: data.get(5)?,
         })
     }
 }

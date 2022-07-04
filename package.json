@@ -17,15 +17,17 @@
     "dayjs": "^1.11.3",
     "debug": "^4.3.4",
     "localforage": "^1.10.0",
+    "lodash-es": "^4.17.21",
     "naive-ui": "^2.30.8",
     "pinia": "^2.0.14",
-    "uuid": "^8.3.2",
+    "shortid": "^2.2.16",
     "vue": "^3.2.25",
     "vue-i18n": "^9.1.10"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^1.0.0",
     "@types/debug": "^4.1.7",
+    "@types/shortid": "^0.0.29",
     "@types/uuid": "^8.3.4",
     "@typescript-eslint/eslint-plugin": "^5.29.0",
     "@vitejs/plugin-vue": "^2.3.3",

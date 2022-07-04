@@ -21,6 +21,7 @@ import { FolderOutline } from "@vicons/ionicons5";
 import { useAPISettingsStore, SettingType } from "../stores/api_setting";
 import { showError } from "../helpers/util";
 import { i18nAppSetting, i18nCommon } from "../i18n";
+import ExLoading from "./ExLoading";
 
 const searchBarClass = css`
   padding: 10px;
@@ -30,6 +31,10 @@ const apiSettingClass = css`
   .n-tree-node-switcher {
     display: none;
   }
+`;
+
+const loadingClass = css`
+  margin-top: 50px;
 `;
 
 export default defineComponent({
@@ -79,19 +84,20 @@ export default defineComponent({
         title: i18nAppSetting("newFolder"),
         content: () => dom,
         positiveText: i18nCommon("confirm"),
-        onPositiveClick: (e) => {
+        onPositiveClick: () => {
           if (!name) {
             showError(message, new Error(i18nCommon("nameRequireError")));
             return Promise.reject();
           }
           d.loading = true;
-          return new Promise(async (resolve, reject) => {
-            try {
-              await apiSettingsStore.addFolder(name);
-              resolve(null);
-            } catch (err) {
-              reject();
-            }
+          return new Promise((resolve, reject) => {
+            apiSettingsStore
+              .addFolder(name)
+              .then(() => {
+                return apiSettingsStore.list();
+              })
+              .then(resolve)
+              .catch(reject);
           });
         },
       });
@@ -113,6 +119,8 @@ export default defineComponent({
           if (!isDragToFolder) {
             return;
           }
+          console.dir(node);
+          console.dir(dragNode);
           break;
         default:
           break;
@@ -145,7 +153,7 @@ export default defineComponent({
   render() {
     const { text, options, apiSettingTrees, listProcessing } = this;
 
-    let settings = <p>{i18nCommon("loading")}</p>;
+    let settings = <ExLoading class={loadingClass} />;
     if (!listProcessing) {
       const data: TreeOption[] = apiSettingTrees.map((item) => {
         if (!item.label) {
