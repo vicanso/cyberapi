@@ -9,6 +9,7 @@ export const cmdUpdateAPISetting = "update_api_setting";
 export const cmdAddAPIFolder = "add_api_folder";
 export const cmdListAPIFolder = "list_api_folder";
 export const cmdUpdateAPIFolder = "update_api_folder";
+export const cmdDoHTTPRequest = "do_http_request";
 
 const debug = Debug("invoke");
 export function run<T>(cmd: string, args?: InvokeArgs): Promise<T> {

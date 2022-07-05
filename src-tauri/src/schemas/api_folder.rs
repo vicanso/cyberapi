@@ -38,7 +38,13 @@ impl APIFolder {
         if updated_at.is_empty() {
             updated_at = Utc::now().to_rfc3339();
         }
-        return vec![self.id.clone(), self.children.clone(), self.name.clone(), created_at, updated_at];
+        return vec![
+            self.id.clone(),
+            self.children.clone(),
+            self.name.clone(),
+            created_at,
+            updated_at,
+        ];
     }
 }
 

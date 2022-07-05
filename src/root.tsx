@@ -15,6 +15,7 @@ import { useCommonStore } from "./stores/common";
 import App from "./App";
 import { useAPISettingsStore } from "./stores/api_setting";
 import ExLoading from "./components/ExLoading";
+import { doHTTPRequest } from "./commands/http_request";
 
 const loadingClass = css`
   margin-top: 50px;
@@ -24,13 +25,18 @@ export default defineComponent({
   name: "RootView",
   setup() {
     const commonStore = useCommonStore();
-    const apiSettingsStore = useAPISettingsStore();
     const { setting } = storeToRefs(commonStore);
     const processing = ref(true);
     onBeforeMount(async () => {
       await commonStore.getSetting();
       processing.value = false;
       closeSplashscreen();
+      doHTTPRequest({
+        method: "GET",
+        uri: "http://store.gf.com.cn/rest/user/session",
+        body: "",
+        headers: new Map<string, string[]>(),
+      }).then(console.dir).catch(console.error);
     });
 
     return {

@@ -25,6 +25,7 @@ fn main() {
             commands::add_api_folder,
             commands::update_api_folder,
             commands::list_api_folder,
+            commands::do_http_request,
         ])
         .run(context)
         .expect("error while running tauri application");

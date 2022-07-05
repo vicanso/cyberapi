@@ -72,7 +72,6 @@ fn create_api_settings_if_not_exist() -> Result<usize, rusqlite::Error> {
         "CREATE TABLE IF NOT EXISTS  {} (
         id TEXT PRIMARY KEY NOT NULL check (id != ''),
         name TEXT DEFAULT '',
-        folder TEXT DEFAULT '',
         category TEXT DEFAULT '',
         setting TEXT DEFAULT '',
         created_at TEXT DEFAULT '',
