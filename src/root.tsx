@@ -33,7 +33,7 @@ export default defineComponent({
       closeSplashscreen();
       doHTTPRequest({
         method: "GET",
-        uri: "http://store.gf.com.cn/rest/user/session",
+        uri: "https://store.gf.com.cn/rest/user/session",
         body: "",
         headers: new Map<string, string[]>(),
       }).then(console.dir).catch(console.error);

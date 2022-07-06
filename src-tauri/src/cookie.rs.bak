@@ -1,0 +1,33 @@
+use cookie_store::CookieStore;
+use std::fs::File;
+use std::{fs::OpenOptions, io::BufReader, io::BufWriter, path::Path};
+
+use crate::error::CyberAPIError;
+use crate::util::get_app_dir;
+
+const COOKIE_FILE: &str = "cookies.json";
+
+pub fn get_cookie_store() -> Result<CookieStore, CyberAPIError> {
+    let filename = Path::new(get_app_dir()).join(COOKIE_FILE);
+
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .open(filename)
+        .map(BufReader::new)?;
+    let store = cookie_store::CookieStore::load_json(file)?;
+    Ok(store)
+}
+
+pub fn save_cookie_store(store: CookieStore) -> Result<(), CyberAPIError> {
+    let filename = Path::new(get_app_dir()).join(COOKIE_FILE);
+
+    let mut writer = File::create(filename)
+        .map(BufWriter::new)?;
+
+    println!("{:?}", store);
+    store.save_json(&mut writer)?;
+
+    Ok(())
+}

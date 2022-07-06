@@ -1,71 +1,18 @@
+use crate::error::CyberAPIError;
 use crate::schemas::{self, APIFolder, APISetting};
-
+use cookie::Cookie;
 use hyper::{
     header::{HeaderName, HeaderValue},
-    Body, Client, Method, Request, Uri, body::Bytes,
+    Body, Client, Method, Request, Uri,
 };
+use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tauri::Manager;
 use tauri::{command, Window};
-use base64;
+use url::Url;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct CommandError {
-    message: String,
-    category: String,
-}
-impl From<rusqlite::Error> for CommandError {
-    fn from(error: rusqlite::Error) -> Self {
-        CommandError {
-            message: error.to_string(),
-            category: "database".to_string(),
-        }
-    }
-}
-impl From<hyper::http::Error> for CommandError {
-    fn from(error: hyper::http::Error) -> Self {
-        CommandError {
-            message: error.to_string(),
-            category: "http".to_string(),
-        }
-    }
-}
-impl From<hyper::Error> for CommandError {
-    fn from(error: hyper::Error) -> Self {
-        CommandError {
-            message: error.to_string(),
-            category: "http".to_string(),
-        }
-    }
-}
-impl From<tauri::http::InvalidUri> for CommandError {
-    fn from(error: tauri::http::InvalidUri) -> Self {
-        CommandError {
-            message: error.to_string(),
-            category: "invalidUri".to_string(),
-        }
-    }
-}
-impl From<hyper::header::InvalidHeaderValue> for CommandError {
-    fn from(error: hyper::header::InvalidHeaderValue) -> Self {
-        CommandError {
-            message: error.to_string(),
-            category: "invalidHeader".to_string(),
-        }
-    }
-}
-
-impl From<hyper::header::InvalidHeaderName> for CommandError {
-    fn from(error: hyper::header::InvalidHeaderName) -> Self {
-        CommandError {
-            message: error.to_string(),
-            category: "invalidHeaderName".to_string(),
-        }
-    }
-}
-
-pub type CommandResult<T> = Result<T, CommandError>;
+pub type CommandResult<T> = Result<T, CyberAPIError>;
 
 // 关闭启动视窗切换至主视窗
 #[command]
@@ -155,6 +102,8 @@ pub async fn do_http_request(http_request: HTTPRequest) -> CommandResult<HTTPRes
     };
     *req.uri_mut() = http_request.uri.parse::<Uri>()?;
 
+    let current_url = Url::parse(http_request.uri.as_str())?;
+
     let header = req.headers_mut();
 
     for (key, values) in http_request.headers {
@@ -165,18 +114,50 @@ pub async fn do_http_request(http_request: HTTPRequest) -> CommandResult<HTTPRes
             );
         }
     }
-    // TODO 添加cookie
+    // let mut cookies = cookie::get_cookie_store()?;
 
-    let resp = Client::new().request(req).await?;
+    let resp = if current_url.scheme() == "https" {
+        let https = HttpsConnector::new();
+        Client::builder()
+            .build::<_, hyper::Body>(https)
+            .request(req)
+            .await?
+    } else {
+        Client::new().request(req).await?
+    };
+
     let status = resp.status().as_u16();
-    let headers = HashMap::new();
+    let mut headers = HashMap::new();
+    let mut cookie_updated = false;
     for (name, value) in resp.headers() {
+        let key = name.to_string();
+
+        let value = value.to_str()?.to_string();
+        if key.to_lowercase() == "set-cookie" {
+            // cookies.parse(value.as_str(), &current_url)?;
+            cookie_updated = true;
+            println!("{:?}", Cookie::parse(value.clone()));
+        }
+        let values: Option<&Vec<String>> = headers.get(&key);
+        match values {
+            Some(values) => {
+                let mut values = values.to_vec();
+                values.push(value);
+                headers.insert(key, values);
+            }
+            None => {
+                headers.insert(key, vec![value]);
+            }
+        }
+    }
+    if cookie_updated {
+        // cookie::save_cookie_store(cookies)?;
     }
     let buf = hyper::body::to_bytes(resp).await?;
-   
-    Ok(HTTPResponse{
-        status: status,
-        headers: headers,
-        body:  base64::encode(buf),
+
+    Ok(HTTPResponse {
+        status,
+        headers,
+        body: base64::encode(buf),
     })
 }

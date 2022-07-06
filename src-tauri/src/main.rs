@@ -5,6 +5,7 @@
 
 mod commands;
 // mod database;
+mod error;
 mod schemas;
 mod util;
 
