@@ -11,6 +11,8 @@ export const cmdListAPIFolder = "list_api_folder";
 export const cmdUpdateAPIFolder = "update_api_folder";
 export const cmdDoHTTPRequest = "do_http_request";
 
+export const cmdListCookie = "list_cookie";
+
 const debug = Debug("invoke");
 export function run<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   if (isWebMode()) {

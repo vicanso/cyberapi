@@ -13,9 +13,9 @@ import { storeToRefs } from "pinia";
 import { closeSplashscreen } from "./commands/window";
 import { useCommonStore } from "./stores/common";
 import App from "./App";
-import { useAPISettingsStore } from "./stores/api_setting";
 import ExLoading from "./components/ExLoading";
 import { doHTTPRequest } from "./commands/http_request";
+import { listCookie } from "./commands/cookies";
 
 const loadingClass = css`
   margin-top: 50px;
@@ -35,8 +35,10 @@ export default defineComponent({
         method: "GET",
         uri: "https://store.gf.com.cn/rest/user/session",
         body: "",
-        headers: new Map<string, string[]>(),
-      }).then(console.dir).catch(console.error);
+      })
+        .then(console.dir)
+        .catch(console.error);
+      listCookie().then(console.dir).catch(console.error);
     });
 
     return {
