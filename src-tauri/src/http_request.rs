@@ -6,7 +6,7 @@ use hyper::{
 };
 use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, vec};
 use url::Url;
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -66,18 +66,21 @@ pub async fn request(http_request: HTTPRequest) -> Result<HTTPResponse, CyberAPI
         }
     }
 
-    // 设置Cookie
-    let mut cookie_store = cookies::get_cookie_store()?;
-    let cookie_header = cookie_store
-        .get_request_values(&current_url)
-        .map(|(name, value)| format!("{}={}", name, value))
-        .collect::<Vec<_>>()
-        .join("; ");
-    if !cookie_header.is_empty() {
-        header.insert(
-            "Cookie".parse::<HeaderName>()?,
-            HeaderValue::from_str(cookie_header.as_str())?,
-        );
+    {
+        // cookie store未实现send，避免与下面的await冲突
+        // 设置Cookie
+        let cookie_store = cookies::get_cookie_store();
+        let cookie_header = cookie_store
+            .get_request_values(&current_url)
+            .map(|(name, value)| format!("{}={}", name, value))
+            .collect::<Vec<_>>()
+            .join("; ");
+        if !cookie_header.is_empty() {
+            header.insert(
+                "Cookie".parse::<HeaderName>()?,
+                HeaderValue::from_str(cookie_header.as_str())?,
+            );
+        }
     }
 
     // http 与 https使用不同的connector
@@ -93,20 +96,16 @@ pub async fn request(http_request: HTTPRequest) -> Result<HTTPResponse, CyberAPI
 
     let status = resp.status().as_u16();
     let mut headers = HashMap::new();
-    let mut cookie_updated = false;
+    // let mut cookie_updated = false;
+    let mut set_cookies = Vec::new();
     // 对响应的header处理
     // 对于set-cookie记录至cookie store
     for (name, value) in resp.headers() {
         let key = name.to_string();
 
-        let mut value = value.to_str()?.to_string();
+        let value = value.to_str()?.to_string();
         if key.to_lowercase() == "set-cookie" {
-            // 对于session有效期的cookie单独处理
-            if !value.contains("Expires=") {
-                value.push_str(cookies::get_session_cookie_expires().as_str());
-            }
-            cookie_store.parse(value.as_str(), &current_url)?;
-            cookie_updated = true;
+            set_cookies.push(value.clone());
         }
         // 响应的Header value处理
         let values: Option<&Vec<String>> = headers.get(&key);
@@ -122,8 +121,8 @@ pub async fn request(http_request: HTTPRequest) -> Result<HTTPResponse, CyberAPI
         }
     }
     // 如果有更新cookie，则写入
-    if cookie_updated {
-        cookies::save_cookie_store(cookie_store)?;
+    if !set_cookies.is_empty() {
+        cookies::save_cookie_store(set_cookies, &current_url)?;
     }
     let buf = hyper::body::to_bytes(resp).await?;
 

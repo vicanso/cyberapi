@@ -98,3 +98,12 @@ impl From<cookie_store::CookieError> for CyberAPIError {
         }
     }
 }
+
+impl From<serde_json::Error> for CyberAPIError {
+    fn from(error: serde_json::Error) -> Self {
+        CyberAPIError {
+            message: error.to_string(),
+            category: "serdeJson".to_string(),
+        }
+    }
+}

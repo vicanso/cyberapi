@@ -5,8 +5,8 @@ use std::{fs, path::Path, sync::Mutex, sync::MutexGuard};
 
 use crate::util;
 
+static DB_CONN: OnceCell<Mutex<Connection>> = OnceCell::new();
 fn init_conn() -> &'static Mutex<Connection> {
-    static DB_CONN: OnceCell<Mutex<Connection>> = OnceCell::new();
     // 初始化数据库
     DB_CONN.get_or_init(|| {
         let dir = Path::new(util::get_app_dir());

@@ -69,6 +69,6 @@ pub async fn do_http_request(
 
 // 获取所有cookie
 #[command(async)]
-pub fn list_cookie() -> CommandResult<Vec<cookies::Cookie>> {
+pub fn list_cookie() -> CommandResult<Vec<String>> {
     cookies::list_cookie()
 }
