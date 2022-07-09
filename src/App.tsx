@@ -2,7 +2,7 @@ import { defineComponent } from "vue";
 import { css } from "@linaria/core";
 
 import "./main.css";
-import APISettings from "./components/APISettings";
+import APISettingTrees from "./components/APISettingTrees";
 
 const appSettingClass = css`
   width: 300px;
@@ -13,7 +13,7 @@ export default defineComponent({
   render() {
     return (
       <div class={appSettingClass}>
-        <APISettings />{" "}
+        <APISettingTrees />
       </div>
     );
   },

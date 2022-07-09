@@ -12,5 +12,8 @@ export default {
     nameRequireError: "名称不能为空",
     namePlaceholder: "请输入名称",
     loading: "加载中...",
+    delete: "删除",
+    duplicate: "复制",
+    settings: "设置",
   },
 };

@@ -1,3 +1,4 @@
+// API应用配置列表
 import { css } from "@linaria/core";
 import { storeToRefs } from "pinia";
 import { defineComponent, onBeforeMount } from "vue";
@@ -18,18 +19,28 @@ import {
 } from "naive-ui";
 import { FolderOutline } from "@vicons/ionicons5";
 
-import { useAPISettingsStore, SettingType } from "../stores/api_setting";
-import { showError } from "../helpers/util";
-import { i18nAppSetting, i18nCommon } from "../i18n";
-import ExLoading from "./ExLoading";
+import { useAPISettingsStore, SettingType } from "../../stores/api_setting";
+import { showError } from "../../helpers/util";
+import { i18nAppSetting, i18nCommon } from "../../i18n";
+import ExLoading from "../ExLoading";
+import SuffixDropdown from "./suffix_dropdown";
 
 const searchBarClass = css`
   padding: 10px;
 `;
 
 const apiSettingClass = css`
+  .n-tree-node {
+    height: 35px;
+  }
   .n-tree-node-switcher {
     display: none;
+  }
+  .n-button {
+    display: none;
+  }
+  .n-tree-node:hover .n-button {
+    display: inline-flex;
   }
 `;
 
@@ -38,7 +49,7 @@ const loadingClass = css`
 `;
 
 export default defineComponent({
-  name: "APISettings",
+  name: "APISettingTrees",
   setup() {
     const apiSettingsStore = useAPISettingsStore();
 
@@ -175,7 +186,17 @@ export default defineComponent({
               );
             }
           }}
-          renderSwitcherIcon={() => {}}
+          renderSuffix={(option) => {
+            return (
+              <SuffixDropdown
+                id={option.option.key as string}
+                onSelect={(category) => {
+                  console.dir(category);
+                }}
+              />
+            );
+          }}
+          renderSwitcherIcon={() => null}
           onDrop={this.handleDrop}
           data={data}
         />

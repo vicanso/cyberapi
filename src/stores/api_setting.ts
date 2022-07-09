@@ -1,5 +1,4 @@
 import { defineStore } from "pinia";
-import localforage from "localforage";
 import { compact, uniq } from "lodash-es";
 
 import {

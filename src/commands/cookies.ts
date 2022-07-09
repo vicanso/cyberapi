@@ -12,7 +12,10 @@ export interface Cookie {
 
 export async function listCookie(): Promise<Cookie[]> {
   const arr = await run<string[]>(cmdListCookie, {});
-  const cookies:Cookie[] = [];
+  if (!arr || !arr.length) {
+    return [];
+  }
+  const cookies: Cookie[] = [];
   arr.forEach((data) => {
     const item = JSON.parse(data);
     const cookie = get(item, "raw_cookie");
