@@ -1,5 +1,5 @@
 import dayjs from "dayjs";
-import shortid from "shortid";
+import { ulid } from "ulid";
 
 import { isWebMode } from "../helpers/util";
 import {
@@ -28,7 +28,7 @@ export interface APISetting {
 }
 
 export function newDefaultAPISetting(): APISetting {
-  const id = shortid();
+  const id = ulid();
   return {
     id,
     name: "",

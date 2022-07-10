@@ -13,7 +13,6 @@ import {
   NForm,
   NFormItem,
   NTree,
-  TreeOption,
   NIcon,
   TreeDropInfo,
 } from "naive-ui";
@@ -130,8 +129,11 @@ export default defineComponent({
           if (!isDragToFolder) {
             return;
           }
-          console.dir(node);
-          console.dir(dragNode);
+          await apiSettingsStore.addToFolder(
+            dragNode.key as string,
+            node.key as string
+          );
+          await apiSettingsStore.list();
           break;
         default:
           break;
@@ -166,15 +168,10 @@ export default defineComponent({
 
     let settings = <ExLoading class={loadingClass} />;
     if (!listProcessing) {
-      const data: TreeOption[] = apiSettingTrees.map((item) => {
-        if (!item.label) {
-          item.label = i18nAppSetting("defaultName");
-        }
-        return item as TreeOption;
-      });
       settings = (
         <NTree
           class={apiSettingClass}
+          expand-on-click={true}
           block-line
           draggable
           renderPrefix={(option) => {
@@ -196,9 +193,8 @@ export default defineComponent({
               />
             );
           }}
-          renderSwitcherIcon={() => null}
           onDrop={this.handleDrop}
-          data={data}
+          data={apiSettingTrees}
         />
       );
     }

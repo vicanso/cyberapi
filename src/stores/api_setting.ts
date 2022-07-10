@@ -16,6 +16,7 @@ import {
   createAPISetting,
   updateAPISetting,
 } from "../commands/api_setting";
+import { i18nAppSetting } from "../i18n";
 
 export interface APISettingTree {
   label: string;
@@ -111,6 +112,7 @@ export const useAPISettingsStore = defineStore("apiSettings", {
         return;
       }
       this.listProcessing = true;
+      const defaultLabelName = i18nAppSetting("defaultName");
       try {
         const apiSettings = await listAPISetting();
         const apiFolders = await listAPIFolder();
@@ -119,7 +121,7 @@ export const useAPISettingsStore = defineStore("apiSettings", {
         apiSettings.forEach((item) => {
           apiSettingMap.set(item.id, item);
           treeMap.set(item.id, {
-            label: item.name,
+            label: item.name || defaultLabelName,
             key: item.id,
             category: SettingType.HTTP,
             children: [],
@@ -134,7 +136,7 @@ export const useAPISettingsStore = defineStore("apiSettings", {
           }
           folderMap.set(item.id, item);
           treeMap.set(item.id, {
-            label: item.name,
+            label: item.name || defaultLabelName,
             key: item.id,
             category: SettingType.Folder,
             children: [],
