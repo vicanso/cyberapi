@@ -16,6 +16,7 @@ const store = "apiFolders";
 export interface APIFolder {
   [key: string]: unknown;
   id: string;
+  collection: string;
   children: string;
   // 名称
   name: string;
@@ -29,6 +30,7 @@ export function newDefaultAPIFolder(): APIFolder {
   const id = ulid();
   return {
     id,
+    collection: "",
     children: "",
     name: "",
     createdAt: dayjs().format(),

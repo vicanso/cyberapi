@@ -1,5 +1,5 @@
 use crate::error::CyberAPIError;
-use crate::schemas::{self, APIFolder, APISetting};
+use crate::schemas::{self, APICollection, APIFolder, APISetting};
 use crate::{cookies, http_request};
 use tauri::Manager;
 use tauri::{command, Window};
@@ -35,6 +35,27 @@ pub fn update_api_setting(setting: APISetting) -> CommandResult<()> {
 #[command(async)]
 pub fn list_api_setting() -> CommandResult<Vec<APISetting>> {
     let result = schemas::list_api_setting()?;
+    Ok(result)
+}
+
+// 新增collection
+#[command(async)]
+pub fn add_api_collection(collection: APICollection) -> CommandResult<()> {
+    schemas::add_or_update_api_collection(collection)?;
+    Ok(())
+}
+
+// 更新collection
+#[command(async)]
+pub fn update_api_collection(collection: APICollection) -> CommandResult<()> {
+    schemas::add_or_update_api_collection(collection)?;
+    Ok(())
+}
+
+// 获取所有collection
+#[command(async)]
+pub fn list_api_collection() -> CommandResult<Vec<APICollection>> {
+    let result = schemas::list_api_collection()?;
     Ok(result)
 }
 

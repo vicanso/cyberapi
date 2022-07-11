@@ -15,6 +15,7 @@ const store = "apiSettings";
 export interface APISetting {
   [key: string]: unknown;
   id: string;
+  collection: string;
   // 名称
   name: string;
   // 类型(http, graphQL)
@@ -31,6 +32,7 @@ export function newDefaultAPISetting(): APISetting {
   const id = ulid();
   return {
     id,
+    collection: "",
     name: "",
     category: "",
     setting: "",
@@ -58,7 +60,8 @@ export async function listAPISetting(): Promise<APISetting[]> {
 
 export async function updateAPISetting(setting: APISetting) {
   if (isWebMode()) {
-    return await fakeUpdate(store, setting);
+    await fakeUpdate(store, setting);
+    return;
   }
   await run(cmdUpdateAPISetting, {
     setting,

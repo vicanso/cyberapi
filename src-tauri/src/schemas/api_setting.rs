@@ -9,6 +9,8 @@ use super::database::{add_or_update_record, get_conn, list_records, NewFromRow};
 pub struct APISetting {
     // id
     pub id: String,
+    // collection ID
+    pub collection: String,
     // 配置名称
     pub name: String,
     // 类型(http, graphQL)
@@ -23,14 +25,15 @@ pub struct APISetting {
 
 impl APISetting {
     fn keys() -> Vec<String> {
-        return vec![
+        vec![
             "id".to_string(),
+            "collection".to_string(),
             "name".to_string(),
             "category".to_string(),
             "setting".to_string(),
             "created_at".to_string(),
             "updated_at".to_string(),
-        ];
+        ]
     }
     fn values(&self) -> Vec<String> {
         let mut created_at = self.created_at.clone();
@@ -41,25 +44,27 @@ impl APISetting {
         if updated_at.is_empty() {
             updated_at = Utc::now().to_rfc3339();
         }
-        return vec![
+        vec![
             self.id.clone(),
+            self.collection.clone(),
             self.name.clone(),
             self.category.clone(),
             self.setting.clone(),
             created_at,
             updated_at,
-        ];
+        ]
     }
 }
 impl NewFromRow<APISetting> for APISetting {
     fn from_row(data: &rusqlite::Row) -> Result<APISetting, rusqlite::Error> {
         Ok(APISetting {
             id: data.get(0)?,
-            name: data.get(1)?,
-            category: data.get(2)?,
-            setting: data.get(3)?,
-            created_at: data.get(4)?,
-            updated_at: data.get(5)?,
+            collection: data.get(1)?,
+            name: data.get(2)?,
+            category: data.get(3)?,
+            setting: data.get(4)?,
+            created_at: data.get(5)?,
+            updated_at: data.get(6)?,
         })
     }
 }
@@ -71,6 +76,7 @@ fn create_api_settings_if_not_exist() -> Result<usize, rusqlite::Error> {
     let sql = format!(
         "CREATE TABLE IF NOT EXISTS  {} (
         id TEXT PRIMARY KEY NOT NULL check (id != ''),
+        collection TEXT NOT NULL check (collection != ''),
         name TEXT DEFAULT '',
         category TEXT DEFAULT '',
         setting TEXT DEFAULT '',
