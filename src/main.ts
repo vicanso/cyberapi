@@ -3,6 +3,7 @@ import { create } from "naive-ui";
 import { createPinia } from "pinia";
 import Debug from "debug";
 import Root from "./Root";
+import router from "./router";
 import { isWebMode } from "./helpers/util";
 import { changeI18nLocale } from "./i18n";
 
@@ -15,4 +16,4 @@ const naive = create();
 const app = createApp(Root);
 // TODO 初始化
 changeI18nLocale("zh");
-app.use(naive).use(createPinia()).mount("#app");
+app.use(router).use(naive).use(createPinia()).mount("#app");

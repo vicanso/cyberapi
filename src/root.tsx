@@ -14,8 +14,6 @@ import { closeSplashscreen } from "./commands/window";
 import { useCommonStore } from "./stores/common";
 import App from "./App";
 import ExLoading from "./components/ExLoading";
-import { doHTTPRequest } from "./commands/http_request";
-import { listCookie } from "./commands/cookies";
 
 const loadingClass = css`
   margin-top: 50px;
@@ -31,14 +29,6 @@ export default defineComponent({
       await commonStore.getSetting();
       processing.value = false;
       closeSplashscreen();
-      doHTTPRequest({
-        method: "GET",
-        uri: "https://store.gf.com.cn/rest/user/session",
-        body: "",
-      })
-        .then(console.dir)
-        .catch(console.error);
-      listCookie().then(console.dir).catch(console.error);
     });
 
     return {
@@ -54,6 +44,7 @@ export default defineComponent({
     const { isDark } = setting;
     return (
       <NConfigProvider theme={isDark ? darkTheme : null}>
+        <NGlobalStyle />
         <NLoadingBarProvider>
           <NMessageProvider>
             <NNotificationProvider>
@@ -63,7 +54,6 @@ export default defineComponent({
             </NNotificationProvider>
           </NMessageProvider>
         </NLoadingBarProvider>
-        <NGlobalStyle />
       </NConfigProvider>
     );
   },

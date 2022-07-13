@@ -17,6 +17,8 @@ export interface APICollection {
   id: string;
   // 名称
   name: string;
+  // 描述
+  description: string;
   // 创建时间
   createdAt: string;
   // 更新时间
@@ -28,6 +30,7 @@ export function newDefaultAPICollection(): APICollection {
   return {
     id,
     name: "",
+    description: "",
     createdAt: dayjs().format(),
     updatedAt: dayjs().format(),
   };

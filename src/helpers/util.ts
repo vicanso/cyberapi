@@ -11,6 +11,7 @@ function formatError(err: Error | unknown): string {
   } else {
     message = err as string;
   }
+  console.dir(message);
   return message;
 }
 

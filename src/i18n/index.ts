@@ -34,3 +34,4 @@ export function newI18nGet(prefix: string) {
 
 export const i18nAppSetting = newI18nGet("apiSettings");
 export const i18nCommon = newI18nGet("common");
+export const i18nDashboard = newI18nGet("dashboard");

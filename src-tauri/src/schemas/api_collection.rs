@@ -10,6 +10,8 @@ pub struct APICollection {
     pub id: String,
     // collection 名称
     pub name: String,
+    // 描述
+    pub description: String,
     // 创建时间
     pub created_at: String,
     // 更新时间
@@ -21,6 +23,7 @@ impl APICollection {
         vec![
             "id".to_string(),
             "name".to_string(),
+            "description".to_string(),
             "created_at".to_string(),
             "updated_at".to_string(),
         ]
@@ -34,7 +37,7 @@ impl APICollection {
         if updated_at.is_empty() {
             updated_at = Utc::now().to_rfc3339();
         }
-        vec![self.id.clone(), self.name.clone(), created_at, updated_at]
+        vec![self.id.clone(), self.name.clone(), self.description.clone(), created_at, updated_at]
     }
 }
 
@@ -43,8 +46,9 @@ impl NewFromRow<APICollection> for APICollection {
         Ok(APICollection {
             id: data.get(0)?,
             name: data.get(1)?,
-            created_at: data.get(2)?,
-            updated_at: data.get(3)?,
+            description: data.get(2)?,
+            created_at: data.get(3)?,
+            updated_at: data.get(4)?,
         })
     }
 }
@@ -57,6 +61,7 @@ fn create_api_collections_if_not_exist() -> Result<usize, rusqlite::Error> {
         "CREATE TABLE IF NOT EXISTS  {} (
             id TEXT PRIMARY KEY NOT NULL check (id != ''),
             name TEXT DEFAULT '',
+            description TEXT DEFAULT '',
             created_at TEXT DEFAULT '',
             updated_at TEXT DEFAULT ''
         )",

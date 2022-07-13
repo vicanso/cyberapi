@@ -45,7 +45,7 @@ export default defineComponent({
       required: true,
     },
   },
-  setup(props) {
+  setup() {
     const visiable = ref(false);
     return {
       options: [
