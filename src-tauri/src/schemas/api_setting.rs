@@ -1,4 +1,5 @@
 use chrono::Utc;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::vec;
 
@@ -96,4 +97,11 @@ pub fn add_or_update_api_setting(setting: APISetting) -> Result<usize, rusqlite:
 pub fn list_api_setting() -> Result<Vec<APISetting>, rusqlite::Error> {
     create_api_settings_if_not_exist()?;
     list_records::<APISetting>(TABLE_NAME, APISetting::keys())
+}
+
+pub fn delete_api_setting_by_collection(collection: String) -> Result<usize, rusqlite::Error> {
+    // 有可能未有table，先创建
+    create_api_settings_if_not_exist()?;
+    let sql = format!("DELETE FROM {} WHERE collection = ?1", TABLE_NAME);
+    get_conn().execute(&sql, params![collection])
 }

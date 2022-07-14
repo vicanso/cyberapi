@@ -5,6 +5,7 @@ import {
   createAPICollection,
   updateAPICollection,
   listAPICollection,
+  deleteAPICollection,
 } from "../commands/api_collection";
 
 export const useAPICollectionsStore = defineStore("apiCollections", {
@@ -64,7 +65,18 @@ export const useAPICollectionsStore = defineStore("apiCollections", {
       if (this.removing) {
         return;
       }
-      console.dir(id);
+      this.removing = true;
+      try {
+        await deleteAPICollection(id);
+        const arr = this.apiCollections.slice(0);
+        const index = arr.findIndex((item) => item.id === id);
+        if (index !== -1) {
+          arr.splice(index, 1);
+        }
+        this.apiCollections = arr;
+      } finally {
+        this.removing = false;
+      }
     },
   },
 });

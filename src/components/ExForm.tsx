@@ -48,7 +48,9 @@ export default defineComponent({
     const data: ExUpdateData = {};
     const rules: FormRules = {};
     props.formItems.forEach((item) => {
-      data[item.key] = item.defaultValue;
+      if (item.defaultValue) {
+        data[item.key] = item.defaultValue;
+      }
       if (item.rule) {
         rules[item.key] = item.rule;
       }

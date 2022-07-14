@@ -32,5 +32,11 @@ export default {
     updateCollection: "更新API分组",
     deleteCollection: "删除API分组",
     deleteCollectionContent: "确认要删除API分组吗？删除后无法恢复！",
+    deleteCollectionDone: "已成功删除该API分组",
+    sortLastModified: "更新时间",
+    sortNameAsc: "名称升序",
+    sortNameDesc: "名称降序",
+    sortOlderFirst: "旧的在前",
+    sortNewestFirst: "新的在前",
   },
 };

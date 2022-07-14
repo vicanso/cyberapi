@@ -59,6 +59,14 @@ pub fn list_api_collection() -> CommandResult<Vec<APICollection>> {
     Ok(result)
 }
 
+#[command(async)]
+pub fn delete_api_collection(id: String) -> CommandResult<()> {
+    schemas::delete_api_setting_by_collection(id.clone())?;
+    schemas::delete_api_folder_by_collection(id.clone())?;
+    schemas::delete_api_collection(id)?;
+    Ok(())
+}
+
 // 新增API目录
 #[command(async)]
 pub fn add_api_folder(folder: APIFolder) -> CommandResult<()> {

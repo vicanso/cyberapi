@@ -11,7 +11,7 @@ import {
   useDialog,
   useMessage,
 } from "naive-ui";
-import { defineComponent, onBeforeMount } from "vue";
+import { defineComponent, onBeforeMount, ref } from "vue";
 import { css } from "@linaria/core";
 import {
   CreateOutline,
@@ -46,6 +46,61 @@ enum HandleKey {
   Delete = "delete",
 }
 
+enum SortType {
+  LastModified = "lastModified",
+  NameAsc = "nameAsc",
+  NameDesc = "nameDesc",
+  OldestFirst = "olderFirst",
+  NewestFirst = "newestFirst",
+}
+
+const getFormItems = (): ExFormItem[] => {
+  return [
+    {
+      key: "name",
+      label: i18nCommon("name"),
+      placeholer: i18nCommon("namePlaceholder"),
+      rule: {
+        required: true,
+        message: i18nCommon("nameRequireError"),
+        trigger: "blur",
+      },
+    },
+    {
+      key: "description",
+      label: i18nCommon("description"),
+      placeholer: i18nCommon("descriptionPlaceholder"),
+      inputType: "textarea",
+    },
+  ];
+};
+
+// 过滤与排序
+function filterAndSort(apiCollections: APICollection[], keyword: string): APICollection[] {
+  const collections = apiCollections.filter((item) => {
+    if (!keyword) {
+      return true;
+    }
+    return (
+      item.name.includes(keyword) || item.description.includes(keyword)
+    );
+  });
+  collections.sort((col1, col2) => {
+    let value1 = "";
+    let value2 = "";
+    value1 = col1.name;
+    value2 = col2.name;
+    if (value1 > value2) {
+      return 1;
+    }
+    if (value1 < value2) {
+      return -1;
+    }
+    return 0;
+  });
+  return collections;
+}
+
 export default defineComponent({
   name: "DashBoard",
   setup() {
@@ -54,26 +109,7 @@ export default defineComponent({
     const store = useAPICollectionsStore();
     const { apiCollections, fetching } = storeToRefs(store);
 
-    const getFormItems = (): ExFormItem[] => {
-      return [
-        {
-          key: "name",
-          label: i18nCommon("name"),
-          placeholer: i18nCommon("namePlaceholder"),
-          rule: {
-            required: true,
-            message: i18nCommon("nameRequireError"),
-            trigger: "blur",
-          },
-        },
-        {
-          key: "description",
-          label: i18nCommon("description"),
-          placeholer: i18nCommon("descriptionPlaceholder"),
-          inputType: "textarea",
-        },
-      ];
-    };
+    const keyword = ref("");
 
     const createCollection = () => {
       ExDialog({
@@ -127,12 +163,20 @@ export default defineComponent({
           break;
         case HandleKey.Delete:
           {
-            dialog.warning({
+            const d = dialog.warning({
               title: i18nDashboard("deleteCollection"),
               content: i18nDashboard("deleteCollectionContent"),
               positiveText: i18nCommon("confirm"),
-              onPositiveClick: () => {
-                message.success("Sure");
+              onPositiveClick: async () => {
+                d.loading = true;
+                try {
+                  await store.remove(collection.id);
+                  message.success(i18nDashboard("deleteCollectionDone"));
+                } catch (err) {
+                  showError(message, err);
+                } finally {
+                  d.loading = false;
+                }
               },
             });
           }
@@ -141,6 +185,7 @@ export default defineComponent({
     };
 
     return {
+      keyword,
       createCollection,
       fetching,
       apiCollections,
@@ -160,6 +205,7 @@ export default defineComponent({
       fetching,
       apiCollections,
       handleCollection,
+      keyword,
     } = this;
     const slots = {
       suffix: () => (
@@ -180,6 +226,9 @@ export default defineComponent({
               <NInput
                 clearable
                 v-slots={slots}
+                onUpdateValue={(value) => {
+                  this.keyword = value;
+                }}
                 placeholder={i18nCommon("keywordFilterPlaceholder")}
               />
             </NGi>
@@ -229,7 +278,8 @@ export default defineComponent({
           ),
         },
       ];
-      const arr = apiCollections.map((item) => {
+      const collections = filterAndSort(apiCollections, keyword);
+      const arr = collections.map((item) => {
         const slots = {
           "header-extra": () => (
             <NDropdown

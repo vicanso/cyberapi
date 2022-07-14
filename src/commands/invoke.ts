@@ -13,6 +13,7 @@ export const cmdUpdateAPIFolder = "update_api_folder";
 export const cmdAddAPICollection = "add_api_collection";
 export const cmdUpdateAPICollection = "update_api_collection";
 export const cmdListAPICollection = "list_api_collection";
+export const cmdDeleteAPICollection = "delete_api_collection";
 
 export const cmdDoHTTPRequest = "do_http_request";
 

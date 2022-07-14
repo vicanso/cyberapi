@@ -2,12 +2,13 @@ import dayjs from "dayjs";
 import { ulid } from "ulid";
 
 import { isWebMode } from "../helpers/util";
-import { fakeAdd, fakeList, fakeUpdate } from "./fake";
+import { fakeAdd, fakeDeleteAPICollection, fakeList, fakeUpdate } from "./fake";
 import {
   run,
   cmdAddAPICollection,
   cmdListAPICollection,
   cmdUpdateAPICollection,
+  cmdDeleteAPICollection,
 } from "./invoke";
 
 const store = "apiCollections";
@@ -62,5 +63,14 @@ export async function updateAPICollection(collection: APICollection) {
   }
   await run(cmdUpdateAPICollection, {
     collection,
+  });
+}
+
+export async function deleteAPICollection(id: string) {
+  if (isWebMode()) {
+    await fakeDeleteAPICollection(store, id);
+  }
+  await run(cmdDeleteAPICollection, {
+    id,
   });
 }

@@ -28,7 +28,8 @@ export default defineComponent({
     onBeforeMount(async () => {
       await commonStore.getSetting();
       processing.value = false;
-      closeSplashscreen();
+      // 延时1秒关闭，便于程序初始化
+      setTimeout(closeSplashscreen, 1000);
     });
 
     return {

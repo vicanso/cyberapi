@@ -31,6 +31,7 @@ fn main() {
             commands::add_api_collection,
             commands::update_api_collection,
             commands::list_api_collection,
+            commands::delete_api_collection,
             commands::do_http_request,
             commands::list_cookie,
         ])

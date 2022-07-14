@@ -1,4 +1,5 @@
 use chrono::Utc;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::vec;
 
@@ -92,4 +93,11 @@ pub fn add_or_update_api_folder(folder: APIFolder) -> Result<usize, rusqlite::Er
 pub fn list_api_folder() -> Result<Vec<APIFolder>, rusqlite::Error> {
     create_api_folders_if_not_exist()?;
     list_records::<APIFolder>(TABLE_NAME, APIFolder::keys())
+}
+
+pub fn delete_api_folder_by_collection(collection: String) -> Result<usize, rusqlite::Error> {
+    // 有可能未有table，先创建
+    create_api_folders_if_not_exist()?;
+    let sql = format!("DELETE FROM {} WHERE collection = ?1", TABLE_NAME);
+    get_conn().execute(&sql, params![collection])
 }

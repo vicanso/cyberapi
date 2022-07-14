@@ -48,3 +48,22 @@ export async function fakeUpdate<T extends WithID>(storeName: string, data: T) {
   const store = getStore(storeName);
   await store.setItem("fake", result);
 }
+
+export async function fakeDeleteAPICollection<T extends WithID>(
+  storeName: string,
+  id: string
+) {
+  // 暂时简单删除collection
+  const result = await fakeList<T>(storeName);
+  let found = -1;
+  result.forEach((item, index) => {
+    if (item.id == id) {
+      found = index;
+    }
+  });
+  if (found !== -1) {
+    result.splice(found, 1);
+  }
+  const store = getStore(storeName);
+  await store.setItem("fake", result);
+}

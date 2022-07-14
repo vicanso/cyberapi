@@ -1,4 +1,5 @@
 use chrono::Utc;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use super::database::{add_or_update_record, get_conn, list_records, NewFromRow};
@@ -6,9 +7,9 @@ use super::database::{add_or_update_record, get_conn, list_records, NewFromRow};
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct APICollection {
-    // collection id
+    // id
     pub id: String,
-    // collection 名称
+    // 名称
     pub name: String,
     // 描述
     pub description: String,
@@ -37,7 +38,13 @@ impl APICollection {
         if updated_at.is_empty() {
             updated_at = Utc::now().to_rfc3339();
         }
-        vec![self.id.clone(), self.name.clone(), self.description.clone(), created_at, updated_at]
+        vec![
+            self.id.clone(),
+            self.name.clone(),
+            self.description.clone(),
+            created_at,
+            updated_at,
+        ]
     }
 }
 
@@ -78,4 +85,10 @@ pub fn add_or_update_api_collection(collection: APICollection) -> Result<usize, 
 pub fn list_api_collection() -> Result<Vec<APICollection>, rusqlite::Error> {
     create_api_collections_if_not_exist()?;
     list_records::<APICollection>(TABLE_NAME, APICollection::keys())
+}
+
+pub fn delete_api_collection(id: String) -> Result<usize, rusqlite::Error> {
+    // 能删除的时候肯定已有table
+    let sql = format!("DELETE FROM {} WHERE id = ?1", TABLE_NAME);
+    get_conn().execute(&sql, params![id])
 }
