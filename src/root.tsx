@@ -11,22 +11,18 @@ import {
 } from "naive-ui";
 import { storeToRefs } from "pinia";
 import { closeSplashscreen } from "./commands/window";
-import { useCommonStore } from "./stores/common";
+import { useSettingStore } from "./stores/setting";
 import App from "./App";
 import ExLoading from "./components/ExLoading";
-
-const loadingClass = css`
-  margin-top: 50px;
-`;
 
 export default defineComponent({
   name: "RootView",
   setup() {
-    const commonStore = useCommonStore();
-    const { setting } = storeToRefs(commonStore);
+    const settingStore = useSettingStore();
+    const { isDark } = storeToRefs(settingStore);
     const processing = ref(true);
     onBeforeMount(async () => {
-      await commonStore.getSetting();
+      await settingStore.fetch();
       processing.value = false;
       // 延时1秒关闭，便于程序初始化
       setTimeout(closeSplashscreen, 1000);
@@ -34,15 +30,14 @@ export default defineComponent({
 
     return {
       processing,
-      setting,
+      isDark,
     };
   },
   render() {
-    const { processing, setting } = this;
+    const { processing, isDark } = this;
     if (processing) {
-      return <ExLoading class={loadingClass} />;
+      return <ExLoading />;
     }
-    const { isDark } = setting;
     return (
       <NConfigProvider theme={isDark ? darkTheme : null}>
         <NGlobalStyle />

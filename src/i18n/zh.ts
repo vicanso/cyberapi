@@ -39,4 +39,5 @@ export default {
     sortOlderFirst: "旧的在前",
     sortNewestFirst: "新的在前",
   },
+  header: {},
 };

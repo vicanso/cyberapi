@@ -1,10 +1,28 @@
-import { createRouter, createWebHashHistory } from "vue-router";
+import {
+  createRouter,
+  createWebHashHistory,
+  LocationQueryRaw,
+} from "vue-router";
 import { routes } from "./routes";
 
 const router = createRouter({
   history: createWebHashHistory(),
   routes,
 });
+
+export function goTo(
+  name: string,
+  params?: {
+    replace?: boolean;
+    query?: LocationQueryRaw;
+  }
+): void {
+  router.push({
+    name,
+    replace: params?.replace,
+    query: params?.query,
+  });
+}
 
 type loadingEvent = () => void;
 

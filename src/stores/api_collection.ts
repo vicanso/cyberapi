@@ -1,3 +1,4 @@
+import dayjs from "dayjs";
 import { defineStore } from "pinia";
 
 import {
@@ -33,6 +34,12 @@ export const useAPICollectionsStore = defineStore("apiCollections", {
         this.adding = false;
       }
     },
+    async get(id: string): Promise<APICollection | undefined> {
+      if (!this.apiCollections.length) {
+        await this.fetch();
+      }
+      return this.apiCollections.find((item) => item.id === id);
+    },
     async fetch(): Promise<void> {
       if (this.fetching) {
         return;
@@ -49,6 +56,7 @@ export const useAPICollectionsStore = defineStore("apiCollections", {
         return;
       }
       this.updating = true;
+      data.updatedAt = dayjs().format();
       try {
         await updateAPICollection(data);
         const arr = this.apiCollections.slice(0);

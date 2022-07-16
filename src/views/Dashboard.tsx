@@ -8,10 +8,12 @@ import {
   NH3,
   NIcon,
   NInput,
+  NText,
   useDialog,
   useMessage,
 } from "naive-ui";
 import { defineComponent, onBeforeMount, ref } from "vue";
+import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
 import {
   CreateOutline,
@@ -29,16 +31,21 @@ import {
   APICollection,
   newDefaultAPICollection,
 } from "../commands/api_collection";
-import { showError } from "../helpers/util";
-import { storeToRefs } from "pinia";
+import { formatSimpleDate, showError } from "../helpers/util";
 import ExLoading from "../components/ExLoading";
 import { ExFormItem } from "../components/ExForm";
+import { goTo } from "../router";
+import { names } from "../router/routes";
+import { useHeaderStore } from "../stores/header";
 
 const dashboardClass = css`
   padding: ${2 * padding}px;
 `;
 const collecitonDescriptionClass = css`
   height: 60px;
+`;
+const collectionContentClass = css`
+  cursor: pointer;
 `;
 
 enum HandleKey {
@@ -76,20 +83,43 @@ const getFormItems = (): ExFormItem[] => {
 };
 
 // 过滤与排序
-function filterAndSort(apiCollections: APICollection[], keyword: string): APICollection[] {
+function filterAndSort(
+  apiCollections: APICollection[],
+  keyword: string,
+  sortOrder: string
+): APICollection[] {
   const collections = apiCollections.filter((item) => {
     if (!keyword) {
       return true;
     }
-    return (
-      item.name.includes(keyword) || item.description.includes(keyword)
-    );
+    return item.name.includes(keyword) || item.description.includes(keyword);
   });
   collections.sort((col1, col2) => {
     let value1 = "";
     let value2 = "";
-    value1 = col1.name;
-    value2 = col2.name;
+    switch (sortOrder) {
+      case SortType.NameAsc:
+        value1 = col1.name;
+        value2 = col2.name;
+        break;
+      case SortType.NameDesc:
+        value2 = col1.name;
+        value1 = col2.name;
+        break;
+      case SortType.OldestFirst:
+        value1 = col1.createdAt;
+        value2 = col2.createdAt;
+        break;
+      case SortType.NewestFirst:
+        value2 = col1.createdAt;
+        value1 = col2.createdAt;
+        break;
+      default:
+        value2 = col1.updatedAt;
+        value1 = col2.updatedAt;
+        break;
+    }
+
     if (value1 > value2) {
       return 1;
     }
@@ -102,14 +132,16 @@ function filterAndSort(apiCollections: APICollection[], keyword: string): APICol
 }
 
 export default defineComponent({
-  name: "DashBoard",
+  name: "DashboardView",
   setup() {
     const message = useMessage();
     const dialog = useDialog();
     const store = useAPICollectionsStore();
     const { apiCollections, fetching } = storeToRefs(store);
+    useHeaderStore().clear();
 
     const keyword = ref("");
+    const sortOrder = ref(SortType.LastModified);
 
     const createCollection = () => {
       ExDialog({
@@ -185,6 +217,7 @@ export default defineComponent({
     };
 
     return {
+      sortOrder,
       keyword,
       createCollection,
       fetching,
@@ -192,14 +225,31 @@ export default defineComponent({
       handleCollection,
       sortOptions: [
         {
-          label: "lastModified",
-          key: "lastModified",
+          label: i18nDashboard("sortLastModified"),
+          key: SortType.LastModified,
+        },
+        {
+          label: i18nDashboard("sortNameAsc"),
+          key: SortType.NameAsc,
+        },
+        {
+          label: i18nDashboard("sortNameDesc"),
+          key: SortType.NameDesc,
+        },
+        {
+          label: i18nDashboard("sortOlderFirst"),
+          key: SortType.OldestFirst,
+        },
+        {
+          label: i18nDashboard("sortNewestFirst"),
+          key: SortType.NewestFirst,
         },
       ],
     };
   },
   render() {
     const {
+      sortOrder,
       sortOptions,
       createCollection,
       fetching,
@@ -233,7 +283,14 @@ export default defineComponent({
               />
             </NGi>
             <NGi span={3}>
-              <NDropdown class={"widthFull"} options={sortOptions}>
+              <NDropdown
+                class={"widthFull"}
+                value={sortOrder}
+                options={sortOptions}
+                onSelect={(value) => {
+                  this.sortOrder = value;
+                }}
+              >
                 <NButton class={"widthFull"}>
                   <NIcon>
                     <SwapVerticalOutline />
@@ -278,8 +335,8 @@ export default defineComponent({
           ),
         },
       ];
-      const collections = filterAndSort(apiCollections, keyword);
-      const arr = collections.map((item) => {
+      const items = filterAndSort(apiCollections, keyword, sortOrder);
+      const arr = items.map((item) => {
         const slots = {
           "header-extra": () => (
             <NDropdown
@@ -298,10 +355,24 @@ export default defineComponent({
           ),
         };
         return (
-          <NGi>
+          <NGi key={item.id}>
             <NCard title={item.name} v-slots={slots} hoverable>
-              <div class={collecitonDescriptionClass}>
-                <NEllipsis lineClamp={3}>{item.description}</NEllipsis>
+              <div
+                class={collectionContentClass}
+                onClick={() => {
+                  goTo(names.collection, {
+                    query: {
+                      id: item.id,
+                    },
+                  });
+                }}
+              >
+                <div class={collecitonDescriptionClass}>
+                  <NEllipsis lineClamp={3}>{item.description}</NEllipsis>
+                </div>
+                <div class="tar">
+                  <NText>{formatSimpleDate(item.updatedAt)}</NText>
+                </div>
               </div>
             </NCard>
           </NGi>

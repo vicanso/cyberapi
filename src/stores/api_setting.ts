@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import dayjs from "dayjs";
 import { compact, uniq } from "lodash-es";
 
 import {
@@ -172,13 +173,14 @@ export const useAPISettingsStore = defineStore("apiSettings", {
         this.listProcessing = false;
       }
     },
-    async update(setting: APISetting) {
+    async update(data: APISetting) {
       if (this.updateProcessing) {
         return;
       }
       this.updateProcessing = true;
+      data.updatedAt = dayjs().format();
       try {
-        await updateAPISetting(setting);
+        await updateAPISetting(data);
       } finally {
         this.updateProcessing = false;
       }

@@ -1,7 +1,9 @@
-import { defineComponent } from "vue";
+import { defineComponent, PropType, StyleValue } from "vue";
 import { css } from "@linaria/core";
 
 import { i18nCommon } from "../i18n";
+import { useSettingStore } from "../stores/setting";
+import { NText } from "naive-ui";
 
 const loadingClass = css`
   text-align: center;
@@ -9,17 +11,26 @@ const loadingClass = css`
   line-height: 30px;
 `;
 
+const loadingTextClass = css`
+  margin-left: 5px;
+`;
+
 export default defineComponent({
   name: "ExLoading",
   props: {
-    isDark: {
-      type: Boolean,
-      default: () => false,
+    style: {
+      type: Object as PropType<StyleValue>,
+      default: () => {
+        return {
+          padding: "30px 0",
+        };
+      },
     },
   },
-  setup(props) {
+  setup() {
+    const settingStore = useSettingStore();
     let color = "#000";
-    if (props.isDark) {
+    if (settingStore.isDark) {
       color = "#fff";
     }
     return {
@@ -28,8 +39,9 @@ export default defineComponent({
   },
   render() {
     const { color } = this;
+    const { style } = this.$props;
     return (
-      <div class={loadingClass}>
+      <div class={loadingClass} style={style}>
         <svg
           width="20"
           height="20"
@@ -80,7 +92,7 @@ export default defineComponent({
             </rect>
           </g>
         </svg>
-        {i18nCommon("loading")}
+        <NText class={loadingTextClass}>{i18nCommon("loading")}</NText>
       </div>
     );
   },
