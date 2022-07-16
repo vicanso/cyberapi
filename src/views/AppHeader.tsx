@@ -1,13 +1,24 @@
-import { NBreadcrumb, NBreadcrumbItem, NDivider } from "naive-ui";
+import {
+  NBreadcrumb,
+  NBreadcrumbItem,
+  NDivider,
+  NGrid,
+  NGi,
+  NButton,
+  NIcon,
+  NModal,
+} from "naive-ui";
 import { css } from "@linaria/core";
-import { defineComponent } from "vue";
+import { defineComponent, ref } from "vue";
 import { storeToRefs } from "pinia";
+import { SettingsOutline } from "@vicons/ionicons5";
 
 import { mainHeaderHeight } from "../constants/style";
 import { i18nCommon } from "../i18n";
 import { names } from "../router/routes";
 import { goTo } from "../router";
 import { useHeaderStore } from "../stores/header";
+import AppSetting from "./AppSetting";
 
 const headerClass = css`
   height: ${mainHeaderHeight}px;
@@ -26,19 +37,29 @@ const logoClass = css`
 const breadcrumbClass = css`
   padding-top: ${(mainHeaderHeight - 25) / 2}px;
 `;
+const functionsClass = css`
+  text-align: right;
+  margin-right: 30px;
+  .n-button {
+    margin-top: 8px;
+  }
+`;
 
 export default defineComponent({
   name: "AppHeaderView",
   setup() {
     const headerStore = useHeaderStore();
 
+    const showSetting = ref(false);
+
     const { breadcrumbs } = storeToRefs(headerStore);
     return {
       breadcrumbs,
+      showSetting,
     };
   },
   render() {
-    const { breadcrumbs, $route } = this;
+    const { breadcrumbs, $route, showSetting } = this;
     const arr = [
       {
         route: names.home,
@@ -61,14 +82,51 @@ export default defineComponent({
         </NBreadcrumbItem>
       );
     });
+
+    const modal = (
+      <NModal
+        show={showSetting}
+        closeOnEsc
+        onEsc={() => {
+          this.showSetting = false;
+        }}
+        onMaskClick={() => {
+          this.showSetting = false;
+        }}
+      >
+        <AppSetting />
+      </NModal>
+    );
+
     return (
-      <header class={headerClass}>
-        <div class={logoClass}>
-          {i18nCommon("app")}
-          <NDivider vertical />
-        </div>
-        <NBreadcrumb class={breadcrumbClass}>{items}</NBreadcrumb>
-      </header>
+      <div>
+        {modal}
+        <header class={headerClass}>
+          <NGrid>
+            <NGi span={12}>
+              <div class={logoClass}>
+                {i18nCommon("app")}
+                <NDivider vertical />
+              </div>
+              <NBreadcrumb class={breadcrumbClass}>{items}</NBreadcrumb>
+            </NGi>
+            <NGi span={12}>
+              <div class={functionsClass}>
+                <NButton
+                  quaternary
+                  onClick={() => {
+                    this.showSetting = true;
+                  }}
+                >
+                  <NIcon class="font20 bold">
+                    <SettingsOutline />
+                  </NIcon>
+                </NButton>
+              </div>
+            </NGi>
+          </NGrid>
+        </header>
+      </div>
     );
   },
 });

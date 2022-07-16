@@ -1,5 +1,5 @@
 export default {
-  apiSettings: {
+  apiSetting: {
     add: "Add",
     filterPlaceholder: "Keyword filter",
     newHTTPRequest: "Create HTTP Request",

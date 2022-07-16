@@ -1,5 +1,5 @@
 export default {
-  apiSettings: {
+  apiSetting: {
     filterPlaceholder: "关键字过滤",
     newHTTPRequest: "新建HTTP请求",
     newFolder: "新建目录",
@@ -39,5 +39,17 @@ export default {
     sortOlderFirst: "旧的在前",
     sortNewestFirst: "新的在前",
   },
-  header: {},
+  setting: {
+    title: "应用设置",
+    themeTitle: "请选择应用的配色主题",
+    darkTheme: "深色主题",
+    lightTheme: "浅色主题",
+    systemTheme: "系统主题",
+    infoTitle: "应用信息",
+    appVersion: "版本",
+    platform: "平台",
+    arch: "架构",
+    os: "系统",
+    osVersion: "系统版本",
+  },
 };

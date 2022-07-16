@@ -26,3 +26,9 @@ body {
 .tar {
   text-align: right;
 }
+.font20 {
+  font-size: 20px;
+}
+.bold {
+  font-weight: 900;
+}

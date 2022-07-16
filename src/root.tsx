@@ -1,5 +1,4 @@
 import { defineComponent, onBeforeMount, ref } from "vue";
-import { css } from "@linaria/core";
 import {
   darkTheme,
   NConfigProvider,
@@ -14,18 +13,27 @@ import { closeSplashscreen } from "./commands/window";
 import { useSettingStore } from "./stores/setting";
 import App from "./App";
 import ExLoading from "./components/ExLoading";
+import { useAppStore } from "./stores/app";
 
 export default defineComponent({
   name: "RootView",
   setup() {
     const settingStore = useSettingStore();
+    const appStore = useAppStore();
     const { isDark } = storeToRefs(settingStore);
     const processing = ref(true);
     onBeforeMount(async () => {
-      await settingStore.fetch();
-      processing.value = false;
-      // 延时1秒关闭，便于程序初始化
-      setTimeout(closeSplashscreen, 1000);
+      try {
+        await appStore.fetch();
+        await settingStore.fetch();
+      } catch (err) {
+        // TODO 初始化基本不会出错，是否有其它方法提示
+        console.error(err);
+      } finally {
+        processing.value = false;
+        // 延时1秒关闭，便于程序初始化
+        setTimeout(closeSplashscreen, 1000);
+      }
     });
 
     return {

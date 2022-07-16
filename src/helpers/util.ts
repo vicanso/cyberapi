@@ -40,3 +40,7 @@ export function formatSimpleDate(str: string): string {
   }
   return date.format("YYYY-MM-DD");
 }
+
+export function getBodyWidth(): number {
+  return window?.document?.body?.clientWidth || 800;
+}

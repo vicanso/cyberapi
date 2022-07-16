@@ -17,7 +17,7 @@ import {
   createAPISetting,
   updateAPISetting,
 } from "../commands/api_setting";
-import { i18nAppSetting } from "../i18n";
+import { i18nApiSetting } from "../i18n";
 
 export interface APISettingTree {
   label: string;
@@ -113,7 +113,7 @@ export const useAPISettingsStore = defineStore("apiSettings", {
         return;
       }
       this.listProcessing = true;
-      const defaultLabelName = i18nAppSetting("defaultName");
+      const defaultLabelName = i18nApiSetting("defaultName");
       try {
         const apiSettings = await listAPISetting();
         const apiFolders = await listAPIFolder();

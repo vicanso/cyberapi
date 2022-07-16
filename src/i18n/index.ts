@@ -32,6 +32,7 @@ export function newI18nGet(prefix: string) {
   };
 }
 
-export const i18nAppSetting = newI18nGet("apiSettings");
+export const i18nApiSetting = newI18nGet("apiSetting");
 export const i18nCommon = newI18nGet("common");
 export const i18nDashboard = newI18nGet("dashboard");
+export const i18nSetting = newI18nGet("setting");
