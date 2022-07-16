@@ -37,6 +37,7 @@ import { ExFormItem } from "../components/ExForm";
 import { goTo } from "../router";
 import { names } from "../router/routes";
 import { useHeaderStore } from "../stores/header";
+import { useSettingStore } from "../stores/setting";
 
 const dashboardClass = css`
   padding: ${2 * padding}px;
@@ -92,7 +93,10 @@ function filterAndSort(
     if (!keyword) {
       return true;
     }
-    return item.name.includes(keyword) || item.description.includes(keyword);
+    const name = item.name.toLowerCase();
+    const description = item.description.toLowerCase();
+    const k = keyword.toLowerCase();
+    return name.includes(k) || description.includes(k);
   });
   collections.sort((col1, col2) => {
     let value1 = "";
@@ -137,11 +141,14 @@ export default defineComponent({
     const message = useMessage();
     const dialog = useDialog();
     const store = useAPICollectionsStore();
+    const settingStore = useSettingStore();
     const { apiCollections, fetching } = storeToRefs(store);
     useHeaderStore().clear();
 
     const keyword = ref("");
-    const sortOrder = ref(SortType.LastModified);
+    const sortOrder = ref(
+      settingStore.collectionSortType || SortType.LastModified
+    );
 
     const createCollection = () => {
       ExDialog({
@@ -216,8 +223,19 @@ export default defineComponent({
       }
     };
 
+    const changeSortType = async (value: string) => {
+      sortOrder.value = value;
+      try {
+        await settingStore.updateCollectionSortType(value);
+      } catch (err) {
+        // 此出错不展示
+        console.error(err);
+      }
+    };
+
     return {
       sortOrder,
+      changeSortType,
       keyword,
       createCollection,
       fetching,
@@ -287,9 +305,7 @@ export default defineComponent({
                 class={"widthFull"}
                 value={sortOrder}
                 options={sortOptions}
-                onSelect={(value) => {
-                  this.sortOrder = value;
-                }}
+                onSelect={this.changeSortType}
               >
                 <NButton class={"widthFull"}>
                   <NIcon>

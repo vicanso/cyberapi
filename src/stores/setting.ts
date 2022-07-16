@@ -10,6 +10,7 @@ const settingStore = localforage.createInstance({
 
 interface AppSetting {
   theme: string;
+  collectionSortType: string;
 }
 
 const appSettingKey = "app";
@@ -37,6 +38,7 @@ export const useSettingStore = defineStore("common", {
       theme: "",
       isDark: false,
       systemTheme: "",
+      collectionSortType: "",
     };
   },
   actions: {
@@ -58,6 +60,7 @@ export const useSettingStore = defineStore("common", {
         }
         this.isDark = isDarkTheme(theme);
         this.theme = theme;
+        this.collectionSortType = setting.collectionSortType;
       } catch (err) {
         // 获取失败则忽略
       } finally {
@@ -71,6 +74,12 @@ export const useSettingStore = defineStore("common", {
       this.theme = theme;
       // 如果theme 为空表示使用系统主题
       this.isDark = isDarkTheme(theme || this.systemTheme);
+    },
+    async updateCollectionSortType(sortType: string) {
+      const setting = await getAppSetting();
+      setting.collectionSortType = sortType;
+      await updateAppSetting(setting);
+      this.collectionSortType = sortType;
     },
   },
 });

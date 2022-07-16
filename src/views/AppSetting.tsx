@@ -24,8 +24,6 @@ export default defineComponent({
     const appStore = useAppStore();
     const message = useMessage();
     const { theme } = storeToRefs(settingStore);
-    // const { version, tauriVersion, platform, arch, os, osVersion } =
-    //   storeToRefs(appStore);
     const updateTheme = async (value: string) => {
       try {
         await settingStore.updateTheme(value);
