@@ -13,7 +13,14 @@ export const useHeaderStore = defineStore("header", {
   },
   actions: {
     add(breadcrumb: Breadcrumb) {
-      const arr = this.breadcrumbs.slice(0);
+      const { breadcrumbs } = this;
+      if (
+        breadcrumbs.length &&
+        breadcrumbs[breadcrumbs.length - 1].route === breadcrumb.route
+      ) {
+        return;
+      }
+      const arr = breadcrumbs.slice(0);
       arr.push(breadcrumb);
       this.breadcrumbs = arr;
     },

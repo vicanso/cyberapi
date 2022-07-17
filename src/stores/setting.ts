@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { appWindow } from "@tauri-apps/api/window";
 import localforage from "localforage";
 
-import { isWebMode } from "../helpers/util";
+import { isWebMode, getBodyWidth } from "../helpers/util";
 
 const settingStore = localforage.createInstance({
   name: "setting",
@@ -11,6 +11,7 @@ const settingStore = localforage.createInstance({
 interface AppSetting {
   theme: string;
   collectionSortType: string;
+  collectionColumnWidths: number[];
 }
 
 const appSettingKey = "app";
@@ -39,6 +40,8 @@ export const useSettingStore = defineStore("common", {
       isDark: false,
       systemTheme: "",
       collectionSortType: "",
+      // collection页面的分栏宽度
+      collectionColumnWidths: [] as number[],
     };
   },
   actions: {
@@ -51,6 +54,9 @@ export const useSettingStore = defineStore("common", {
         // 优先使用用户设置
         const setting = await getAppSetting();
         let theme = setting.theme || "";
+        if (setting.collectionColumnWidths?.length) {
+          this.collectionColumnWidths = setting.collectionColumnWidths;
+        }
         if (!isWebMode()) {
           const result = await appWindow.theme();
           this.systemTheme = (result as string) || "";
@@ -61,6 +67,14 @@ export const useSettingStore = defineStore("common", {
         this.isDark = isDarkTheme(theme);
         this.theme = theme;
         this.collectionSortType = setting.collectionSortType;
+
+        // 设置默认值
+        if (!this.collectionColumnWidths.length) {
+          // 左侧，中间，右侧自动填充
+          const bodyWidth = getBodyWidth();
+          const first = 280;
+          this.collectionColumnWidths = [first, (bodyWidth - first) >> 1];
+        }
       } catch (err) {
         // 获取失败则忽略
       } finally {
