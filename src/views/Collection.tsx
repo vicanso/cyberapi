@@ -1,5 +1,5 @@
-import { NDivider, useMessage } from "naive-ui";
-import { defineComponent, onBeforeMount, ref, StyleValue } from "vue";
+import { useMessage } from "naive-ui";
+import { defineComponent, onBeforeMount, ref } from "vue";
 import { useRoute } from "vue-router";
 import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
@@ -19,11 +19,6 @@ const contentClass = css`
   right: 0;
   top: ${mainHeaderHeight + 2}px;
   bottom: 0;
-`;
-
-const dividerClass = css`
-  margin: 0 !important;
-  height: 100% !important;
 `;
 
 export default defineComponent({
@@ -56,14 +51,36 @@ export default defineComponent({
         processing.value = false;
       }
     });
+
+    const updateCollectionColumnWidths = async (
+      value: number,
+      index: number
+    ) => {
+      const widths = settingStore.collectionColumnWidths.slice(0);
+      widths[index - 1] += value;
+      if (widths.length > index) {
+        widths[index] -= value;
+      }
+      try {
+        await settingStore.updateCollectionColumnWidths(widths);
+      } catch (err) {
+        showError(message, err);
+      }
+    };
     return {
       collection,
       collectionColumnWidths,
       processing,
+      updateCollectionColumnWidths,
     };
   },
   render() {
-    const { processing, collection, collectionColumnWidths } = this;
+    const {
+      processing,
+      collection,
+      collectionColumnWidths,
+      updateCollectionColumnWidths,
+    } = this;
     if (processing) {
       return <ExLoading />;
     }
@@ -76,7 +93,14 @@ export default defineComponent({
     }
     const columns = widths.map((width, index) => {
       const column = (
-        <ExColumn left={currentWidth} width={width} showDivider={index !== 0}>
+        <ExColumn
+          left={currentWidth}
+          width={width}
+          showDivider={index !== 0}
+          onResize={(value) => {
+            updateCollectionColumnWidths(value, index);
+          }}
+        >
           {index}
         </ExColumn>
       );

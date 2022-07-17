@@ -95,5 +95,11 @@ export const useSettingStore = defineStore("common", {
       await updateAppSetting(setting);
       this.collectionSortType = sortType;
     },
+    async updateCollectionColumnWidths(widths: number[]) {
+      const setting = await getAppSetting();
+      setting.collectionColumnWidths = widths;
+      await updateAppSetting(setting);
+      this.collectionColumnWidths = widths;
+    },
   },
 });
