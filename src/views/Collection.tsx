@@ -12,6 +12,7 @@ import { APICollection } from "../commands/api_collection";
 import { useSettingStore } from "../stores/setting";
 import { mainHeaderHeight } from "../constants/style";
 import ExColumn from "../components/ExColumn";
+import APISettingTrees from "../components/APISettingTrees";
 
 const contentClass = css`
   position: fixed;
@@ -92,6 +93,10 @@ export default defineComponent({
       widths.push(0);
     }
     const columns = widths.map((width, index) => {
+      let element = <div />;
+      if (index === 0) {
+        element = <APISettingTrees />;
+      }
       const column = (
         <ExColumn
           left={currentWidth}
@@ -101,7 +106,7 @@ export default defineComponent({
             updateCollectionColumnWidths(value, index);
           }}
         >
-          {index}
+          {element}
         </ExColumn>
       );
       currentWidth += width;

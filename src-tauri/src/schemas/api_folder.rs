@@ -1,9 +1,9 @@
 use chrono::Utc;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use std::vec;
+use std::{collections::HashMap, vec};
 
-use super::database::{add_or_update_record, get_conn, list_records, NewFromRow};
+use super::database::{add_or_update_record, delete_by_ids, get_conn, list_records, NewFromRow};
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +20,11 @@ pub struct APIFolder {
     pub created_at: String,
     // 更新时间
     pub updated_at: String,
+}
+
+pub struct APIFolderChildren {
+    pub folders: Vec<String>,
+    pub settings: Vec<String>,
 }
 
 impl APIFolder {
@@ -100,4 +105,49 @@ pub fn delete_api_folder_by_collection(collection: String) -> Result<usize, rusq
     create_api_folders_if_not_exist()?;
     let sql = format!("DELETE FROM {} WHERE collection = ?1", TABLE_NAME);
     get_conn().execute(&sql, params![collection])
+}
+
+pub fn delete_api_folders(ids: Vec<String>) -> Result<usize, rusqlite::Error> {
+    delete_by_ids(TABLE_NAME, ids)
+}
+
+// 获取该目录的所有子元素（包括子元素以及子目录、子目录的子元素）
+pub fn list_api_folder_all_children(id: String) -> Result<APIFolderChildren, rusqlite::Error> {
+    // 使用偷懒的方式，直接查询所有api folder再过滤
+    let mut folder_children = HashMap::new();
+    let mut folders = Vec::new();
+    let mut settings = Vec::new();
+    let mut children = "".to_string();
+
+    // 记录所有folder与它的子目录
+    for ele in list_api_folder()? {
+        if ele.id == id {
+            children = ele.children.clone();
+        }
+        folder_children.insert(ele.id, ele.children.clone());
+    }
+    while !children.is_empty() {
+        let arr = children.split(',');
+        let mut current_children = Vec::new();
+
+        for ele in arr {
+            let id = ele.trim();
+            // 是folder
+            match folder_children.get(id) {
+                // 目录
+                Some(str) => {
+                    folders.push(id.to_string());
+                    // 记录子元素
+                    current_children.push(str.as_str());
+                }
+                None => {
+                    // api settings
+                    settings.push(id.to_string())
+                }
+            }
+        }
+        // 记录新的children
+        children = current_children.join(",")
+    }
+    Ok(APIFolderChildren { folders, settings })
 }

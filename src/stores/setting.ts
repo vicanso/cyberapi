@@ -72,7 +72,7 @@ export const useSettingStore = defineStore("common", {
         if (!this.collectionColumnWidths.length) {
           // 左侧，中间，右侧自动填充
           const bodyWidth = getBodyWidth();
-          const first = 280;
+          const first = 300;
           this.collectionColumnWidths = [first, (bodyWidth - first) >> 1];
         }
       } catch (err) {

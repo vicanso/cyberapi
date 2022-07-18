@@ -3,7 +3,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::vec;
 
-use super::database::{add_or_update_record, get_conn, list_records, NewFromRow};
+use super::database::{add_or_update_record, delete_by_ids, get_conn, list_records, NewFromRow};
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -104,4 +104,8 @@ pub fn delete_api_setting_by_collection(collection: String) -> Result<usize, rus
     create_api_settings_if_not_exist()?;
     let sql = format!("DELETE FROM {} WHERE collection = ?1", TABLE_NAME);
     get_conn().execute(&sql, params![collection])
+}
+
+pub fn delete_api_settings(ids: Vec<String>) -> Result<usize, rusqlite::Error> {
+    delete_by_ids(TABLE_NAME, ids)
 }

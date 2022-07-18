@@ -66,17 +66,20 @@ export default defineComponent({
         return;
       }
 
+      originPageX = e.pageX;
+      isDragging = true;
+      document.addEventListener("mousemove", onMousemove);
+      document.addEventListener("mouseup", onMouseup);
+
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore
       target = e.currentTarget.cloneNode(true);
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore
+      target.children[0].style.width = "2px";
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore
       e.currentTarget.parentNode.insertBefore(target, e.currentTarget);
-
-      originPageX = e.pageX;
-      isDragging = true;
-      document.addEventListener("mousemove", onMousemove);
-      document.addEventListener("mouseup", onMouseup);
     };
 
     return {
@@ -92,6 +95,7 @@ export default defineComponent({
       bottom: "0px",
       left: `${left}px`,
       width: `${width}px`,
+      overflow: "hidden",
     };
     if (!width) {
       delete style.width;

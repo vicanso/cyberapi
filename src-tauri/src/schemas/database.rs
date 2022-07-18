@@ -69,3 +69,11 @@ pub fn list_records<T: NewFromRow<T>>(
     }
     Ok(result)
 }
+
+pub fn delete_by_ids(table: &str, ids: Vec<String>) -> Result<usize, rusqlite::Error> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let sql = format!("DELETE FROM {} WHERE id IN ({})", table, ids.join(", "));
+    get_conn().execute(&sql, [])
+}
