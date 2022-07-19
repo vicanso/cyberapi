@@ -35,6 +35,7 @@ fn main() {
             commands::delete_api_collection,
             commands::do_http_request,
             commands::list_cookie,
+            commands::delete_cookie,
         ])
         .run(context)
         .expect("error while running tauri application");

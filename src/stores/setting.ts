@@ -12,6 +12,10 @@ interface AppSetting {
   theme: string;
   collectionSortType: string;
   collectionColumnWidths: number[];
+  size: {
+    width: number;
+    height: number;
+  };
 }
 
 const appSettingKey = "app";
@@ -42,6 +46,11 @@ export const useSettingStore = defineStore("common", {
       collectionSortType: "",
       // collection页面的分栏宽度
       collectionColumnWidths: [] as number[],
+      // 展示尺寸
+      size: {
+        width: 0,
+        height: 0,
+      },
     };
   },
   actions: {
@@ -68,12 +77,21 @@ export const useSettingStore = defineStore("common", {
         this.theme = theme;
         this.collectionSortType = setting.collectionSortType;
 
+        let sum = 0;
+        this.collectionColumnWidths.forEach((item) => {
+          sum += item;
+        });
+        const bodyWidth = getBodyWidth();
+
+        // 如果为空或者最后侧宽度太少
         // 设置默认值
-        if (!this.collectionColumnWidths.length) {
+        if (!this.collectionColumnWidths.length || sum > bodyWidth - 200) {
           // 左侧，中间，右侧自动填充
-          const bodyWidth = getBodyWidth();
           const first = 300;
           this.collectionColumnWidths = [first, (bodyWidth - first) >> 1];
+        }
+        if (setting.size) {
+          this.size = setting.size;
         }
       } catch (err) {
         // 获取失败则忽略
@@ -100,6 +118,18 @@ export const useSettingStore = defineStore("common", {
       setting.collectionColumnWidths = widths;
       await updateAppSetting(setting);
       this.collectionColumnWidths = widths;
+    },
+    async updateSize(width: number, height: number) {
+      const setting = await getAppSetting();
+      setting.size = {
+        width,
+        height,
+      };
+      await updateAppSetting(setting);
+      this.size = {
+        width,
+        height,
+      };
     },
   },
 });

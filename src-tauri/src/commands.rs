@@ -111,3 +111,10 @@ pub async fn do_http_request(
 pub fn list_cookie() -> CommandResult<Vec<String>> {
     cookies::list_cookie()
 }
+
+// 删除cookie
+#[command(async)]
+pub fn delete_cookie(c: cookies::Cookie) -> CommandResult<()> {
+    cookies::delete_cookie_from_store(c)?;
+    Ok(())
+}

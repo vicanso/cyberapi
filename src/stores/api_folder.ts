@@ -1,8 +1,8 @@
 import dayjs from "dayjs";
-import { ulid } from "ulid";
 import { defineStore } from "pinia";
 import {
   createAPIFolder,
+  deleteAPIFolder,
   listAPIFolder,
   updateAPIFolder,
 } from "../commands/api_folder";
@@ -65,6 +65,13 @@ export const useAPIFoldersStore = defineStore("apiFolders", {
     async remove(id: string): Promise<void> {
       if (this.removing) {
         return;
+      }
+      this.removing = true;
+      try {
+        await deleteAPIFolder(id);
+        // TODO 删除数据
+      } finally {
+        this.removing = false;
       }
     },
   },

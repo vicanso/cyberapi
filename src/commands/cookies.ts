@@ -1,5 +1,5 @@
 import { get, values } from "lodash-es";
-import { cmdListCookie, run } from "./invoke";
+import { cmdDeleteCookie, cmdListCookie, run } from "./invoke";
 
 export interface Cookie {
   [key: string]: unknown;
@@ -41,4 +41,10 @@ export async function listCookie(): Promise<Cookie[]> {
     });
   });
   return cookies;
+}
+
+export async function deleteCookie(c:Cookie) {
+  await run(cmdDeleteCookie, {
+    c,
+  });
 }

@@ -9,6 +9,7 @@ export const cmdUpdateAPISetting = "update_api_setting";
 export const cmdAddAPIFolder = "add_api_folder";
 export const cmdListAPIFolder = "list_api_folder";
 export const cmdUpdateAPIFolder = "update_api_folder";
+export const cmdDeleteAPIFolder = "delete_api_folder";
 
 export const cmdAddAPICollection = "add_api_collection";
 export const cmdUpdateAPICollection = "update_api_collection";
@@ -18,6 +19,7 @@ export const cmdDeleteAPICollection = "delete_api_collection";
 export const cmdDoHTTPRequest = "do_http_request";
 
 export const cmdListCookie = "list_cookie";
+export const cmdDeleteCookie = "delete_cookie";
 
 const debug = Debug("invoke");
 export function run<T>(cmd: string, args?: InvokeArgs): Promise<T> {

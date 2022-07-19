@@ -39,7 +39,7 @@ const breadcrumbClass = css`
 `;
 const functionsClass = css`
   text-align: right;
-  margin-right: 30px;
+  margin-right: 10px;
   .n-button {
     margin-top: 8px;
   }

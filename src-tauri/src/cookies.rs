@@ -1,6 +1,6 @@
 use cookie_store::CookieStore;
 use once_cell::sync::OnceCell;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs::File, fs::OpenOptions, io::BufReader, io::BufWriter, path::Path, sync::Mutex,
     sync::MutexGuard,
@@ -29,7 +29,7 @@ fn init_store() -> &'static Mutex<CookieStore> {
 
 const COOKIE_FILE: &str = "cookies.json";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Cookie {
     name: String,
     value: String,
@@ -41,6 +41,19 @@ pub struct Cookie {
 pub fn get_cookie_store() -> MutexGuard<'static, CookieStore> {
     let result = init_store();
     result.lock().unwrap()
+}
+
+pub fn delete_cookie_from_store(c: Cookie) -> Result<(), CyberAPIError> {
+    let name = c.name;
+    if name.is_empty() {
+        return Ok(());
+    }
+    let mut store = get_cookie_store();
+    let domain = c.domain.as_str();
+    let path = c.path.as_str();
+
+    store.remove(domain, path, name.as_str());
+    Ok(())
 }
 
 pub fn save_cookie_store(set_cookies: Vec<String>, current_url: &Url) -> Result<(), CyberAPIError> {

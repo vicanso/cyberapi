@@ -138,7 +138,9 @@ pub fn list_api_folder_all_children(id: String) -> Result<APIFolderChildren, rus
                 Some(str) => {
                     folders.push(id.to_string());
                     // 记录子元素
-                    current_children.push(str.as_str());
+                    if !str.is_empty() {
+                        current_children.push(str.as_str());
+                    }
                 }
                 None => {
                     // api settings

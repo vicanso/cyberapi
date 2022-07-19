@@ -7,8 +7,9 @@ import {
   cmdAddAPIFolder,
   cmdListAPIFolder,
   cmdUpdateAPIFolder,
+  cmdDeleteAPIFolder,
 } from "./invoke";
-import { fakeList, fakeAdd, fakeUpdate } from "./fake";
+import { fakeList, fakeAdd, fakeUpdate, fakeDeleteItems } from "./fake";
 
 const store = "apiFolders";
 
@@ -60,5 +61,48 @@ export async function updateAPIFolder(folder: APIFolder) {
   }
   await run(cmdUpdateAPIFolder, {
     folder,
+  });
+}
+
+export async function deleteAPIFolder(id: string) {
+  if (isWebMode()) {
+    // 查询folders
+    const folders = await listAPIFolder();
+    const folderDict: Map<string, APIFolder> = new Map();
+    folders.forEach((item) => {
+      folderDict.set(item.id, item);
+    });
+    if (!folderDict.has(id)) {
+      return;
+    }
+    // const found = folders.find(item => item.id === id);
+    // if (!found) {
+    //   return;
+    // }
+    const folderIds = [id];
+    const settingIds: string[] = [];
+    let children = folderDict.get(id)?.children;
+    while (children) {
+      const subChildren: string[] = [];
+      const arr = children.split(",");
+      arr.forEach((id) => {
+        const folder = folderDict.get(id);
+        if (folder) {
+          folderIds.push(id);
+          if (folder.children) {
+            subChildren.push(folder.children);
+          }
+        } else {
+          settingIds.push(id);
+        }
+      });
+      children = subChildren.join(",");
+    }
+    await fakeDeleteItems("apiSettings", settingIds);
+    await fakeDeleteItems(store, folderIds);
+    return;
+  }
+  await run(cmdDeleteAPIFolder, {
+    id,
   });
 }

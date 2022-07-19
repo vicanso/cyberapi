@@ -67,3 +67,18 @@ export async function fakeDeleteAPICollection<T extends WithID>(
   const store = getStore(storeName);
   await store.setItem("fake", result);
 }
+
+export async function fakeDeleteItems<T extends WithID>(
+  storeName: string,
+  ids: string[]
+) {
+  const result = await fakeList<T>(storeName);
+  const arr = [];
+  result.forEach((item) => {
+    if (!ids.includes(item.id)) {
+      arr.push(item);
+    }
+  });
+  const store = getStore(storeName);
+  await store.setItem("fake", result);
+}

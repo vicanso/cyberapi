@@ -9,7 +9,8 @@ import {
   NNotificationProvider,
 } from "naive-ui";
 import { storeToRefs } from "pinia";
-import { closeSplashscreen } from "./commands/window";
+
+import { closeSplashscreen, setWindowSize } from "./commands/window";
 import { useSettingStore } from "./stores/setting";
 import App from "./App";
 import ExLoading from "./components/ExLoading";
@@ -22,10 +23,13 @@ export default defineComponent({
     const appStore = useAppStore();
     const { isDark } = storeToRefs(settingStore);
     const processing = ref(true);
+
     onBeforeMount(async () => {
       try {
         await appStore.fetch();
         await settingStore.fetch();
+        const { width, height } = settingStore.size;
+        await setWindowSize(width, height);
       } catch (err) {
         // TODO 初始化基本不会出错，是否有其它方法提示
         console.error(err);

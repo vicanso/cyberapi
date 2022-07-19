@@ -51,5 +51,10 @@ export default {
     arch: "架构",
     os: "系统",
     osVersion: "系统版本",
+    windowSize: "应用窗口设置",
+    windowWidth: "窗口宽度",
+    windowWidthPlaceholder: "输入窗口宽度，如果设置为小于0，则表示最大化",
+    windowHeight: "窗口高度",
+    windowHeightPlaceholder: "输入窗口高度，如果设置为小于0，则表示最大化",
   },
 };
