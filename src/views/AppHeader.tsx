@@ -6,19 +6,18 @@ import {
   NGi,
   NButton,
   NIcon,
-  NModal,
 } from "naive-ui";
 import { css } from "@linaria/core";
 import { defineComponent, ref } from "vue";
 import { storeToRefs } from "pinia";
-import { SettingsOutline } from "@vicons/ionicons5";
+import { BowlingBallOutline, SettingsOutline } from "@vicons/ionicons5";
 
 import { mainHeaderHeight } from "../constants/style";
 import { i18nCommon } from "../i18n";
 import { names } from "../router/routes";
 import { goTo } from "../router";
 import { useHeaderStore } from "../stores/header";
-import AppSetting from "./AppSetting";
+import { useDialogStore } from "../stores/dialog";
 
 const headerClass = css`
   height: ${mainHeaderHeight}px;
@@ -42,6 +41,7 @@ const functionsClass = css`
   margin-right: 10px;
   .n-button {
     margin-top: 8px;
+    margin-left: 5px;
   }
 `;
 
@@ -49,17 +49,23 @@ export default defineComponent({
   name: "AppHeaderView",
   setup() {
     const headerStore = useHeaderStore();
-
-    const showSetting = ref(false);
+    const dialogStore = useDialogStore();
 
     const { breadcrumbs } = storeToRefs(headerStore);
+    const showSettingDialog = () => {
+      dialogStore.toggleSettingDialog(true);
+    };
+    const showCookieDialog = () => {
+      dialogStore.toggleCookieDialog(true);
+    };
     return {
       breadcrumbs,
-      showSetting,
+      showCookieDialog,
+      showSettingDialog,
     };
   },
   render() {
-    const { breadcrumbs, $route, showSetting } = this;
+    const { breadcrumbs, $route, showSettingDialog, showCookieDialog } = this;
     const arr = [
       {
         route: names.home,
@@ -83,24 +89,8 @@ export default defineComponent({
       );
     });
 
-    const modal = (
-      <NModal
-        show={showSetting}
-        closeOnEsc
-        onEsc={() => {
-          this.showSetting = false;
-        }}
-        onMaskClick={() => {
-          this.showSetting = false;
-        }}
-      >
-        <AppSetting />
-      </NModal>
-    );
-
     return (
       <div>
-        {modal}
         <header class={headerClass}>
           <NGrid>
             <NGi span={12}>
@@ -115,7 +105,17 @@ export default defineComponent({
                 <NButton
                   quaternary
                   onClick={() => {
-                    this.showSetting = true;
+                    showCookieDialog();
+                  }}
+                >
+                  <NIcon class="font20 bold">
+                    <BowlingBallOutline />
+                  </NIcon>
+                </NButton>
+                <NButton
+                  quaternary
+                  onClick={() => {
+                    showSettingDialog();
                   }}
                 >
                   <NIcon class="font20 bold">

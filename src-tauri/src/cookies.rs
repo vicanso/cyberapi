@@ -38,9 +38,43 @@ pub struct Cookie {
     expires: String,
 }
 
+impl Cookie {
+    fn to_set_cookie_string(&self) -> String {
+        let mut arr = Vec::new();
+        arr.push(format!("{}={}", self.name, self.value));
+
+        if !self.path.is_empty() {
+            arr.push(format!("Path={}", self.path));
+        }
+        if !self.domain.is_empty() {
+            arr.push(format!("Domain={}", self.domain));
+        }
+        if !self.expires.is_empty() {
+            arr.push(format!("Expires={}", self.expires));
+        }
+
+        arr.join(";")
+    }
+    fn get_url(&self) -> String {
+        let mut path = self.path.clone();
+        if path.is_empty() {
+            path = "/".to_string()
+        }
+
+        format!("http://{}{}", self.domain, path)
+    }
+}
+
 pub fn get_cookie_store() -> MutexGuard<'static, CookieStore> {
     let result = init_store();
     result.lock().unwrap()
+}
+
+fn save_store(store: MutexGuard<CookieStore>) -> Result<(), CyberAPIError> {
+    let filename = Path::new(get_app_dir()).join(COOKIE_FILE);
+    let mut writer = File::create(filename).map(BufWriter::new)?;
+    store.save_json(&mut writer)?;
+    Ok(())
 }
 
 pub fn delete_cookie_from_store(c: Cookie) -> Result<(), CyberAPIError> {
@@ -53,19 +87,18 @@ pub fn delete_cookie_from_store(c: Cookie) -> Result<(), CyberAPIError> {
     let path = c.path.as_str();
 
     store.remove(domain, path, name.as_str());
+    save_store(store)?;
+
     Ok(())
 }
 
 pub fn save_cookie_store(set_cookies: Vec<String>, current_url: &Url) -> Result<(), CyberAPIError> {
-    let filename = Path::new(get_app_dir()).join(COOKIE_FILE);
-    let mut writer = File::create(filename).map(BufWriter::new)?;
-
     let mut store = get_cookie_store();
     for ele in set_cookies {
         store.parse(ele.as_str(), current_url)?;
     }
 
-    store.save_json(&mut writer)?;
+    save_store(store)?;
 
     Ok(())
 }
@@ -81,4 +114,21 @@ pub fn list_cookie() -> Result<Vec<String>, CyberAPIError> {
         }
     }
     Ok(result)
+}
+
+pub fn add_cookie(c: Cookie) -> Result<(), CyberAPIError> {
+    let mut store = get_cookie_store();
+
+    let url = c.get_url();
+    let request_url = Url::parse(&url)?;
+    let cookie_str = c.to_set_cookie_string();
+
+    println!("{}", cookie_str);
+
+    store.parse(&cookie_str, &request_url)?;
+
+    println!("{:?}", store);
+    save_store(store)?;
+
+    Ok(())
 }

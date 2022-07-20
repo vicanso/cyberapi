@@ -1,5 +1,6 @@
 import { get, values } from "lodash-es";
-import { cmdDeleteCookie, cmdListCookie, run } from "./invoke";
+import { isWebMode } from "../helpers/util";
+import { cmdAddCookie, cmdDeleteCookie, cmdListCookie, run } from "./invoke";
 
 export interface Cookie {
   [key: string]: unknown;
@@ -11,6 +12,24 @@ export interface Cookie {
 }
 
 export async function listCookie(): Promise<Cookie[]> {
+  if (isWebMode()) {
+    return [
+      {
+        name: "cybertect",
+        value: "CBBVJIUT8Q9EEFDKF9H0",
+        path: "/",
+        domain: "",
+        expires: "Wed, 31 Jan 2024 16:00:00 GMT",
+      },
+      {
+        name: "cybertect.sig",
+        value: "iIoKqqpgXc-Ao-ilTf4XdaNyblsdKauy0fVqISbikoU",
+        path: "/",
+        domain: "",
+        expires: "Wed, 31 Jan 2024 16:00:00 GMT",
+      }
+    ]
+  }
   const arr = await run<string[]>(cmdListCookie, {});
   if (!arr || !arr.length) {
     return [];
@@ -43,8 +62,14 @@ export async function listCookie(): Promise<Cookie[]> {
   return cookies;
 }
 
-export async function deleteCookie(c:Cookie) {
+export async function deleteCookie(c: Cookie) {
   await run(cmdDeleteCookie, {
+    c,
+  });
+}
+
+export async function addCookie(c: Cookie) {
+  await run(cmdAddCookie, {
     c,
   });
 }

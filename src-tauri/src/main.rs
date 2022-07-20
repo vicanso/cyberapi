@@ -4,7 +4,6 @@
 )]
 
 mod commands;
-// mod database;
 mod cookies;
 mod error;
 mod http_request;
@@ -36,6 +35,7 @@ fn main() {
             commands::do_http_request,
             commands::list_cookie,
             commands::delete_cookie,
+            commands::add_cookie,
         ])
         .run(context)
         .expect("error while running tauri application");

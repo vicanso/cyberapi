@@ -2,6 +2,8 @@ import { defineStore } from "pinia";
 import { appWindow } from "@tauri-apps/api/window";
 import localforage from "localforage";
 
+import { setWindowSize } from "../commands/window";
+
 import { isWebMode, getBodyWidth } from "../helpers/util";
 
 const settingStore = localforage.createInstance({
@@ -12,10 +14,16 @@ interface AppSetting {
   theme: string;
   collectionSortType: string;
   collectionColumnWidths: number[];
+  resizeType: string;
   size: {
     width: number;
     height: number;
   };
+}
+
+export enum ResizeType {
+  Max = "max",
+  Custom = "custom",
 }
 
 const appSettingKey = "app";
@@ -46,6 +54,7 @@ export const useSettingStore = defineStore("common", {
       collectionSortType: "",
       // collection页面的分栏宽度
       collectionColumnWidths: [] as number[],
+      resizeType: "",
       // 展示尺寸
       size: {
         width: 0,
@@ -93,6 +102,7 @@ export const useSettingStore = defineStore("common", {
         if (setting.size) {
           this.size = setting.size;
         }
+        this.resizeType = setting.resizeType || ResizeType.Custom;
       } catch (err) {
         // 获取失败则忽略
       } finally {
@@ -130,6 +140,20 @@ export const useSettingStore = defineStore("common", {
         width,
         height,
       };
+    },
+    async updateResizeType(resizeType: string) {
+      const setting = await getAppSetting();
+      setting.resizeType = resizeType;
+      await updateAppSetting(setting);
+      this.resizeType = resizeType;
+    },
+    async resize() {
+      const { width, height } = this.size;
+      if (this.resizeType === ResizeType.Max) {
+        await setWindowSize(-1, -1);
+      } else if (width > 0 && height > 0) {
+        await setWindowSize(width, height);
+      }
     },
   },
 });

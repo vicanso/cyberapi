@@ -118,3 +118,10 @@ pub fn delete_cookie(c: cookies::Cookie) -> CommandResult<()> {
     cookies::delete_cookie_from_store(c)?;
     Ok(())
 }
+
+// 添加cookie
+#[command(async)]
+pub fn add_cookie(c: cookies::Cookie) -> CommandResult<()> {
+    cookies::add_cookie(c)?;
+    Ok(())
+}

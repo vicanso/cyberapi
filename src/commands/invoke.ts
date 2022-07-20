@@ -20,6 +20,7 @@ export const cmdDoHTTPRequest = "do_http_request";
 
 export const cmdListCookie = "list_cookie";
 export const cmdDeleteCookie = "delete_cookie";
+export const cmdAddCookie = "add_cookie";
 
 const debug = Debug("invoke");
 export function run<T>(cmd: string, args?: InvokeArgs): Promise<T> {

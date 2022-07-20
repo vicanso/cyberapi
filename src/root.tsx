@@ -10,7 +10,7 @@ import {
 } from "naive-ui";
 import { storeToRefs } from "pinia";
 
-import { closeSplashscreen, setWindowSize } from "./commands/window";
+import { closeSplashscreen } from "./commands/window";
 import { useSettingStore } from "./stores/setting";
 import App from "./App";
 import ExLoading from "./components/ExLoading";
@@ -28,8 +28,7 @@ export default defineComponent({
       try {
         await appStore.fetch();
         await settingStore.fetch();
-        const { width, height } = settingStore.size;
-        await setWindowSize(width, height);
+        settingStore.resize();
       } catch (err) {
         // TODO 初始化基本不会出错，是否有其它方法提示
         console.error(err);
