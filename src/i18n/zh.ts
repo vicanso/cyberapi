@@ -60,4 +60,13 @@ export default {
     windowHeight: "窗口高度",
     windowHeightPlaceholder: "输入窗口高度",
   },
+  cookie: {
+    title: "Cookie设置",
+    name: "名称",
+    value: "值",
+    path: "路径",
+    domain: "域名",
+    expires: "有效期",
+    op: "操作",
+  },
 };

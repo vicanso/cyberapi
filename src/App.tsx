@@ -13,6 +13,7 @@ import AppHeader from "./views/AppHeader";
 import { useDialogStore } from "./stores/dialog";
 import { storeToRefs } from "pinia";
 import AppSetting from "./views/AppSetting";
+import CookieSetting from "./views/CookieSetting";
 
 export default defineComponent({
   name: "App",
@@ -38,6 +39,7 @@ export default defineComponent({
     const { showSetting, showCookie, closeDialog } = this;
     const settingModal = (
       <NModal
+        autoFocus={false}
         show={showSetting}
         closeOnEsc
         onEsc={() => {
@@ -52,6 +54,7 @@ export default defineComponent({
     );
     const cookieModal = (
       <NModal
+        autoFocus={false}
         show={showCookie}
         closeOnEsc
         onEsc={() => {
@@ -61,7 +64,7 @@ export default defineComponent({
           closeDialog();
         }}
       >
-        <p>abc</p>
+        <CookieSetting />
       </NModal>
     );
     return (

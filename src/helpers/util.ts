@@ -44,3 +44,12 @@ export function formatSimpleDate(str: string): string {
 export function getBodyWidth(): number {
   return window?.document?.body?.clientWidth || 800;
 }
+
+export function getNormalDialogStyle() {
+  const bodyWidth = getBodyWidth();
+  const modalWidth = bodyWidth >= 1000 ? bodyWidth * 0.7 : bodyWidth - 200;
+  const modalStyle = {
+    width: `${modalWidth}px`,
+  };
+  return modalStyle;
+}

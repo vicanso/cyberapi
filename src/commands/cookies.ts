@@ -13,12 +13,12 @@ export interface Cookie {
 
 export async function listCookie(): Promise<Cookie[]> {
   if (isWebMode()) {
-    return [
+    return Promise.resolve([
       {
         name: "cybertect",
         value: "CBBVJIUT8Q9EEFDKF9H0",
         path: "/",
-        domain: "",
+        domain: "cybertect.npmtrend.com",
         expires: "Wed, 31 Jan 2024 16:00:00 GMT",
       },
       {
@@ -27,8 +27,8 @@ export async function listCookie(): Promise<Cookie[]> {
         path: "/",
         domain: "",
         expires: "Wed, 31 Jan 2024 16:00:00 GMT",
-      }
-    ]
+      },
+    ]);
   }
   const arr = await run<string[]>(cmdListCookie, {});
   if (!arr || !arr.length) {
@@ -63,12 +63,18 @@ export async function listCookie(): Promise<Cookie[]> {
 }
 
 export async function deleteCookie(c: Cookie) {
+  if (isWebMode()) {
+    return;
+  }
   await run(cmdDeleteCookie, {
     c,
   });
 }
 
 export async function addCookie(c: Cookie) {
+  if (isWebMode()) {
+    return;
+  }
   await run(cmdAddCookie, {
     c,
   });

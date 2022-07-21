@@ -15,7 +15,7 @@ import {
   useMessage,
 } from "naive-ui";
 
-import { getBodyWidth, showError } from "../helpers/util";
+import { getNormalDialogStyle, showError } from "../helpers/util";
 import { i18nSetting } from "../i18n";
 import { useSettingStore, ResizeType } from "../stores/setting";
 import { storeToRefs } from "pinia";
@@ -101,11 +101,7 @@ export default defineComponent({
     };
   },
   render() {
-    const bodyWidth = getBodyWidth();
-    const modalWidth = bodyWidth >= 1000 ? bodyWidth * 0.7 : bodyWidth - 200;
-    const modalStyle = {
-      width: `${modalWidth}px`,
-    };
+    const modalStyle = getNormalDialogStyle();
     const { theme, size, resizeType, updateSize, updateResizeType } = this;
     const descriptionItems = this.infos.map((item) => {
       return (

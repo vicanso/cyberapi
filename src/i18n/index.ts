@@ -36,3 +36,4 @@ export const i18nApiSetting = newI18nGet("apiSetting");
 export const i18nCommon = newI18nGet("common");
 export const i18nDashboard = newI18nGet("dashboard");
 export const i18nSetting = newI18nGet("setting");
+export const i18nCookie = newI18nGet("cookie");
