@@ -10,6 +10,7 @@ export default {
     dashboard: "面板",
     add: "添加",
     confirm: "确定",
+    back: "返回",
 
     name: "名称",
     nameRequireError: "名称不能为空",
@@ -68,5 +69,8 @@ export default {
     domain: "域名",
     expires: "有效期",
     op: "操作",
+    deleteCookie: "删除Cookie",
+    deleteCookieContent: "确认要删除Cookie吗？",
+    modifyBeforeSubmit: "请先修改Cookie再提交",
   },
 };

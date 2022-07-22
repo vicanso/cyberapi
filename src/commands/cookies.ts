@@ -54,9 +54,9 @@ export async function listCookie(): Promise<Cookie[]> {
     cookies.push({
       name,
       value,
-      path,
-      domain,
-      expires,
+      path: path || "",
+      domain: domain || "",
+      expires: expires || "",
     });
   });
   return cookies;
@@ -71,7 +71,7 @@ export async function deleteCookie(c: Cookie) {
   });
 }
 
-export async function addCookie(c: Cookie) {
+export async function addOrUpdate(c: Cookie) {
   if (isWebMode()) {
     return;
   }

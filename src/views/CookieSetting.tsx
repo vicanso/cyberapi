@@ -1,5 +1,5 @@
 import { storeToRefs } from "pinia";
-import { defineComponent, onBeforeMount } from "vue";
+import { defineComponent, onBeforeMount, ref } from "vue";
 import {
   NCard,
   useMessage,
@@ -8,19 +8,34 @@ import {
   NButton,
   NIcon,
   NSpace,
+  useDialog,
 } from "naive-ui";
 
 import { useCookieStore } from "../stores/cookie";
 import { showError, getNormalDialogStyle } from "../helpers/util";
-import { i18nCookie } from "../i18n";
+import { i18nCookie, i18nCommon } from "../i18n";
 import { CreateOutline, TrashOutline } from "@vicons/ionicons5";
+import { Cookie } from "../commands/cookies";
+import ExCookieEditor from "../components/ExCookieEditor";
+
+enum Mode {
+  Edit = "edit",
+  List = "list",
+}
 
 export default defineComponent({
   name: "CookieSetting",
   setup() {
     const message = useMessage();
+    const dialog = useDialog();
     const cookieStore = useCookieStore();
     const { cookies } = storeToRefs(cookieStore);
+    const mode = ref(Mode.List);
+    const updatedCookie = ref({} as Cookie);
+    const updateValues = ref({
+      value: "",
+      expires: "",
+    });
     onBeforeMount(async () => {
       try {
         await cookieStore.fetch();
@@ -28,13 +43,43 @@ export default defineComponent({
         showError(message, err);
       }
     });
+    const removeCookie = async (index: number) => {
+      const cookie = cookieStore.cookies[index];
+      const d = dialog.warning({
+        title: i18nCookie("deleteCookie"),
+        content: i18nCookie("deleteCookieContent"),
+        positiveText: i18nCommon("confirm"),
+        onPositiveClick: async () => {
+          d.loading = true;
+          try {
+            await cookieStore.remove(cookie);
+          } catch (err) {
+            showError(message, err);
+          } finally {
+            d.loading = false;
+          }
+        },
+      });
+    };
+    const editCookie = (index: number) => {
+      const cookie = cookieStore.cookies[index];
+      updatedCookie.value = cookie;
+      mode.value = Mode.Edit;
+      updateValues.value.value = cookie.value;
+      updateValues.value.expires = cookie.expires;
+    };
 
     return {
+      mode,
       cookies,
+      removeCookie,
+      editCookie,
+      updatedCookie,
+      updateValues,
     };
   },
   render() {
-    const { cookies } = this;
+    const { cookies, removeCookie, editCookie, mode, updatedCookie } = this;
     const modalStyle = getNormalDialogStyle();
 
     const columns: DataTableColumns = [
@@ -61,16 +106,23 @@ export default defineComponent({
       {
         title: i18nCookie("op"),
         key: "op",
-        render: (row) => {
-          console.dir(row);
+        render: (row, index) => {
           return (
             <NSpace>
-              <NButton>
+              <NButton
+                onClick={() => {
+                  editCookie(index);
+                }}
+              >
                 <NIcon>
                   <CreateOutline />
                 </NIcon>
               </NButton>
-              <NButton>
+              <NButton
+                onClick={() => {
+                  removeCookie(index);
+                }}
+              >
                 <NIcon>
                   <TrashOutline />
                 </NIcon>
@@ -83,7 +135,15 @@ export default defineComponent({
 
     return (
       <NCard title={i18nCookie("title")} style={modalStyle}>
-        <NDataTable data={cookies} columns={columns} />
+        {mode === Mode.List && <NDataTable data={cookies} columns={columns} />}
+        {mode === Mode.Edit && (
+          <ExCookieEditor
+            cookie={updatedCookie}
+            onBack={() => {
+              this.mode = Mode.List;
+            }}
+          />
+        )}
       </NCard>
     );
   },

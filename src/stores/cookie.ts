@@ -4,8 +4,14 @@ import {
   listCookie,
   Cookie,
   deleteCookie,
-  addCookie,
+  addOrUpdate,
 } from "../commands/cookies";
+
+function isSameCookie(c1:Cookie, c2:Cookie) {
+  return c1.name === c2.name &&
+  c1.domain === c2.domain &&
+  c1.path === c2.path
+}
 
 export const useCookieStore = defineStore("cookie", {
   state: () => {
@@ -35,27 +41,33 @@ export const useCookieStore = defineStore("cookie", {
       this.removing = true;
       try {
         await deleteCookie(c);
-        const cookies = this.cookies.filter((item) => {
-          return (
-            item.name === c.name &&
-            item.domain === c.domain &&
-            item.path === c.path
-          );
+        const cookies = this.cookies.slice(0).filter((item) => {
+          return !isSameCookie(item, c);
         });
         this.cookies = cookies;
       } finally {
         this.removing = false;
       }
     },
-    async add(c: Cookie) {
+    async addOrUpdate(c: Cookie) {
       if (this.adding) {
         return;
       }
       this.adding = true;
       try {
-        await addCookie(c);
+        await addOrUpdate(c);
         const arr = this.cookies.slice(0);
-        arr.push(c);
+        let found = -1;
+        arr.forEach((item, index) => {
+          if(isSameCookie(item, c)) {
+            found = index;
+          }
+        })
+        if (found === -1) {
+          arr.push(c);
+        } else {
+          arr[found] = c
+        }
         this.cookies = arr;
       } finally {
         this.adding = false;
