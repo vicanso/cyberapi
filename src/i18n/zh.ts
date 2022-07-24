@@ -64,13 +64,17 @@ export default {
   cookie: {
     title: "Cookie设置",
     name: "名称",
+    namePlaceholder: "请输入cookie的名称",
     value: "值",
+    valuePlaceholder: "请输入cookie的值",
     path: "路径",
+    pathPlaceholder: "请输入cookie的路径",
     domain: "域名",
+    domainPlaceholder: "请输入cookie的域名",
     expires: "有效期",
+    expiresPlaceholder: "请选择cookie有效期",
     op: "操作",
     deleteCookie: "删除Cookie",
     deleteCookieContent: "确认要删除Cookie吗？",
-    modifyBeforeSubmit: "请先修改Cookie再提交",
   },
 };

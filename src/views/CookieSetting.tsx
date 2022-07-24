@@ -10,6 +10,7 @@ import {
   NSpace,
   useDialog,
 } from "naive-ui";
+import { css } from "@linaria/core";
 
 import { useCookieStore } from "../stores/cookie";
 import { showError, getNormalDialogStyle } from "../helpers/util";
@@ -17,11 +18,18 @@ import { i18nCookie, i18nCommon } from "../i18n";
 import { CreateOutline, TrashOutline } from "@vicons/ionicons5";
 import { Cookie } from "../commands/cookies";
 import ExCookieEditor from "../components/ExCookieEditor";
+import { margin } from "../constants/style";
+import { update } from "lodash-es";
 
 enum Mode {
   Edit = "edit",
   List = "list",
 }
+
+const addBtnClass = css`
+  margin-top: ${margin}px;
+  width: 100%;
+`;
 
 export default defineComponent({
   name: "CookieSetting",
@@ -32,10 +40,6 @@ export default defineComponent({
     const { cookies } = storeToRefs(cookieStore);
     const mode = ref(Mode.List);
     const updatedCookie = ref({} as Cookie);
-    const updateValues = ref({
-      value: "",
-      expires: "",
-    });
     onBeforeMount(async () => {
       try {
         await cookieStore.fetch();
@@ -65,8 +69,10 @@ export default defineComponent({
       const cookie = cookieStore.cookies[index];
       updatedCookie.value = cookie;
       mode.value = Mode.Edit;
-      updateValues.value.value = cookie.value;
-      updateValues.value.expires = cookie.expires;
+    };
+    const addCookie = () => {
+      updatedCookie.value = {} as Cookie;
+      mode.value = Mode.Edit;
     };
 
     return {
@@ -74,8 +80,8 @@ export default defineComponent({
       cookies,
       removeCookie,
       editCookie,
+      addCookie,
       updatedCookie,
-      updateValues,
     };
   },
   render() {
@@ -135,7 +141,19 @@ export default defineComponent({
 
     return (
       <NCard title={i18nCookie("title")} style={modalStyle}>
-        {mode === Mode.List && <NDataTable data={cookies} columns={columns} />}
+        {mode === Mode.List && (
+          <div>
+            <NDataTable data={cookies} columns={columns} />
+            <NButton
+              class={addBtnClass}
+              onClick={() => {
+                this.addCookie();
+              }}
+            >
+              {i18nCommon("add")}
+            </NButton>
+          </div>
+        )}
         {mode === Mode.Edit && (
           <ExCookieEditor
             cookie={updatedCookie}

@@ -23,12 +23,19 @@ export const cmdDeleteCookie = "delete_cookie";
 export const cmdAddCookie = "add_cookie";
 
 const debug = Debug("invoke");
-export function run<T>(cmd: string, args?: InvokeArgs): Promise<T> {
+export async function run<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   if (isWebMode()) {
     debug("invoke, cmd:%s, args:%o", cmd, args);
     // eslint-disable-next-line
     // @ts-ignore: mock
     return Promise.resolve(null);
   }
-  return invoke<T>(cmd, args);
+  try {
+    return await invoke<T>(cmd, args);
+  } catch (err) {
+    // eslint-disable-next-line
+    // @ts-ignore: mock
+    const message = `[${err.category}]${err.message}`;
+    throw new Error(message);
+  }
 }

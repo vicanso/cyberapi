@@ -10,13 +10,15 @@ import {
   NDatePicker,
   useMessage,
   NButton,
+  FormInst,
 } from "naive-ui";
 import dayjs from "dayjs";
 
 import { i18nCookie, i18nCommon } from "../i18n";
 import { Cookie } from "../commands/cookies";
 import { useCookieStore } from "../stores/cookie";
-import { showError } from "../helpers/util";
+import { newRequireRules, showError } from "../helpers/util";
+import { reject } from "lodash-es";
 
 export default defineComponent({
   name: "ExCookieEditor",
@@ -35,20 +37,39 @@ export default defineComponent({
   setup(props) {
     const message = useMessage();
     const cookieStore = useCookieStore();
+    const formRef = ref<FormInst | null>(null);
+
     const updateValues = ref({
-      value: "",
-      expires: "",
+      name: props.cookie.name,
+      path: props.cookie.path,
+      domain: props.cookie.domain,
+      value: props.cookie.value,
+      expires: props.cookie.expires,
     });
     const cookie = Object.assign({}, props.cookie);
     const update = async () => {
-      const { value, expires } = updateValues.value;
-      if (value === cookie.value && expires === cookie.expires) {
-        message.warning(i18nCookie("modifyBeforeSubmit"));
-        return;
-      }
+      const { value, expires, name, path, domain } = updateValues.value;
       try {
+        await new Promise((resolve, reject) => {
+          if (!formRef.value) {
+            return reject(new Error("form ref is null"));
+          }
+          formRef.value.validate((errors) => {
+            if (!errors) {
+              resolve(null);
+              return;
+            }
+            reject(errors[0][0]);
+          });
+        });
         cookie.value = value;
         cookie.expires = expires;
+        // 新增
+        if (!cookie.name) {
+          cookie.name = name;
+          cookie.path = path || "/";
+          cookie.domain = domain || "";
+        }
         await cookieStore.addOrUpdate(cookie);
         if (props.onBack) {
           props.onBack();
@@ -60,6 +81,7 @@ export default defineComponent({
     return {
       updateValues,
       update,
+      formRef,
     };
   },
   render() {
@@ -68,28 +90,64 @@ export default defineComponent({
     if (cookie.expires) {
       defaultExpires = dayjs(cookie.expires).unix() * 1000;
     }
+    const isAdd = !cookie.name;
+    const rules = newRequireRules([
+      "name",
+      "value",
+      "path",
+      "domain",
+      "expires",
+    ]);
     return (
-      <NForm>
+      <NForm ref="formRef" rules={rules} model={this.updateValues}>
         <NGrid xGap={15}>
           <NGi span={8}>
-            <NFormItem label={i18nCookie("name")}>
-              <NP>{cookie.name}</NP>
+            <NFormItem label={i18nCookie("name")} path="name">
+              {!isAdd && <NP>{cookie.name}</NP>}
+              {isAdd && (
+                <NInput
+                  placeholder={i18nCookie("namePlaceholder")}
+                  clearable
+                  onUpdateValue={(value) => {
+                    this.updateValues.name = value;
+                  }}
+                />
+              )}
             </NFormItem>
           </NGi>
           <NGi span={8}>
-            <NFormItem label={i18nCookie("path")}>
-              <NP>{cookie.path}</NP>
+            <NFormItem label={i18nCookie("path")} path="path">
+              {!isAdd && <NP>{cookie.path}</NP>}
+              {isAdd && (
+                <NInput
+                  placeholder={i18nCookie("pathPlaceholder")}
+                  clearable
+                  onUpdateValue={(value) => {
+                    this.updateValues.path = value;
+                  }}
+                />
+              )}
             </NFormItem>
           </NGi>
           <NGi span={8}>
             <NFormItem label={i18nCookie("domain")}>
-              <NP>{cookie.domain}</NP>
+              {!isAdd && <NP>{cookie.domain}</NP>}
+              {isAdd && (
+                <NInput
+                  placeholder={i18nCookie("domainPlaceholder")}
+                  clearable
+                  onUpdateValue={(value) => {
+                    this.updateValues.domain = value;
+                  }}
+                />
+              )}
             </NFormItem>
           </NGi>
           <NGi span={8}>
-            <NFormItem label={i18nCookie("value")}>
+            <NFormItem label={i18nCookie("value")} path="value">
               <NInput
                 defaultValue={cookie.value}
+                placeholder={i18nCookie("valuePlaceholder")}
                 clearable
                 onUpdateValue={(value) => {
                   this.updateValues.value = value;
@@ -98,10 +156,11 @@ export default defineComponent({
             </NFormItem>
           </NGi>
           <NGi span={16}>
-            <NFormItem label={i18nCookie("expires")}>
+            <NFormItem label={i18nCookie("expires")} path="expires">
               <NDatePicker
                 class="widthFull"
                 type="datetime"
+                placeholder={i18nCookie("expiresPlaceholder")}
                 defaultValue={defaultExpires}
                 onUpdateValue={(value) => {
                   this.updateValues.expires = dayjs(value).toString();

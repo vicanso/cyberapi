@@ -7,10 +7,8 @@ import {
   addOrUpdate,
 } from "../commands/cookies";
 
-function isSameCookie(c1:Cookie, c2:Cookie) {
-  return c1.name === c2.name &&
-  c1.domain === c2.domain &&
-  c1.path === c2.path
+function isSameCookie(c1: Cookie, c2: Cookie) {
+  return c1.name === c2.name && c1.domain === c2.domain && c1.path === c2.path;
 }
 
 export const useCookieStore = defineStore("cookie", {
@@ -59,14 +57,14 @@ export const useCookieStore = defineStore("cookie", {
         const arr = this.cookies.slice(0);
         let found = -1;
         arr.forEach((item, index) => {
-          if(isSameCookie(item, c)) {
+          if (isSameCookie(item, c)) {
             found = index;
           }
-        })
+        });
         if (found === -1) {
           arr.push(c);
         } else {
-          arr[found] = c
+          arr[found] = c;
         }
         this.cookies = arr;
       } finally {

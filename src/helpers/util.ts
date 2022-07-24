@@ -1,5 +1,6 @@
-import { MessageApi } from "naive-ui";
+import { FormRules, MessageApi } from "naive-ui";
 import dayjs from "dayjs";
+import { get, has } from "lodash-es";
 
 export function isWebMode() {
   return !window.__TAURI_IPC__;
@@ -9,6 +10,8 @@ function formatError(err: Error | unknown): string {
   let message = "";
   if (err instanceof Error) {
     message = err.message;
+  } else if (has(err, "message")) {
+    message = get(err, "message");
   } else {
     message = err as string;
   }
@@ -52,4 +55,15 @@ export function getNormalDialogStyle() {
     width: `${modalWidth}px`,
   };
   return modalStyle;
+}
+
+export function newRequireRules(keys: string[]) {
+  const rules: FormRules = {};
+  keys.map((key) => {
+    rules[key] = {
+      required: true,
+      trigger: "blur",
+    };
+  });
+  return rules;
 }
