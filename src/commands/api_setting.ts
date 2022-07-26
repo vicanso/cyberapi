@@ -8,7 +8,7 @@ import {
   cmdListAPISetting,
   cmdUpdateAPISetting,
 } from "./invoke";
-import { fakeList, fakeAdd, fakeUpdate } from "./fake";
+import { fakeList, fakeAdd, fakeUpdate, fakeUpdateStore } from "./fake";
 
 const store = "apiSettings";
 
@@ -66,4 +66,14 @@ export async function updateAPISetting(setting: APISetting) {
   await run(cmdUpdateAPISetting, {
     setting,
   });
+}
+
+export async function deleteAPISettings(ids: string[]) {
+  if (isWebMode()) {
+    const arr = await fakeList<APISetting>(store);
+    const result = arr.filter((item) => {
+      return !ids.includes(item.id);
+    });
+    await fakeUpdateStore(store, result);
+  }
 }

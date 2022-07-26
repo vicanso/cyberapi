@@ -75,10 +75,6 @@ export async function deleteAPIFolder(id: string) {
     if (!folderDict.has(id)) {
       return;
     }
-    // const found = folders.find(item => item.id === id);
-    // if (!found) {
-    //   return;
-    // }
     const folderIds = [id];
     const settingIds: string[] = [];
     let children = folderDict.get(id)?.children;

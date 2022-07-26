@@ -38,6 +38,13 @@ pub fn list_api_setting() -> CommandResult<Vec<APISetting>> {
     Ok(result)
 }
 
+// 删除API配置
+#[command(async)]
+pub fn delete_api_settings(ids: Vec<String>) -> CommandResult<()> {
+    schemas::delete_api_settings(ids)?;
+    Ok(())
+}
+
 // 新增collection
 #[command(async)]
 pub fn add_api_collection(collection: APICollection) -> CommandResult<()> {

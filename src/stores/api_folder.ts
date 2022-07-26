@@ -69,7 +69,6 @@ export const useAPIFoldersStore = defineStore("apiFolders", {
       this.removing = true;
       try {
         await deleteAPIFolder(id);
-        // TODO 删除数据
       } finally {
         this.removing = false;
       }

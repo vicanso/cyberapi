@@ -1,5 +1,5 @@
 export default {
-  apiSetting: {
+  collection: {
     filterPlaceholder: "关键字过滤",
     newHTTPRequest: "新建HTTP请求",
     newFolder: "新建目录",

@@ -20,7 +20,7 @@ import { FolderOutline } from "@vicons/ionicons5";
 
 import { useAPISettingsStore, SettingType } from "../../stores/api_setting";
 import { showError } from "../../helpers/util";
-import { i18nApiSetting, i18nCommon } from "../../i18n";
+import { i18nCollection, i18nCommon } from "../../i18n";
 import ExLoading from "../ExLoading";
 import SuffixDropdown from "./suffix_dropdown";
 
@@ -91,7 +91,7 @@ export default defineComponent({
       );
       // 弹窗确认是否创建
       const d = dialog.info({
-        title: i18nApiSetting("newFolder"),
+        title: i18nCollection("newFolder"),
         content: () => dom,
         positiveText: i18nCommon("confirm"),
         onPositiveClick: () => {
@@ -147,17 +147,17 @@ export default defineComponent({
       handleDrop,
       text: {
         add: i18nCommon("add"),
-        placeholder: i18nApiSetting("filterPlaceholder"),
+        placeholder: i18nCollection("filterPlaceholder"),
       },
       apiSettingTrees,
       listProcessing,
       options: [
         {
-          label: i18nApiSetting("newHTTPRequest"),
+          label: i18nCollection("newHTTPRequest"),
           key: SettingType.HTTP,
         },
         {
-          label: i18nApiSetting("newFolder"),
+          label: i18nCollection("newFolder"),
           key: SettingType.Folder,
         },
       ],

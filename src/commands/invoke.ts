@@ -5,6 +5,7 @@ import { isWebMode } from "../helpers/util";
 export const cmdAddAPISetting = "add_api_setting";
 export const cmdListAPISetting = "list_api_setting";
 export const cmdUpdateAPISetting = "update_api_setting";
+export const cmdDeleteAPISettings = "delete_api_settings";
 
 export const cmdAddAPIFolder = "add_api_folder";
 export const cmdListAPIFolder = "list_api_folder";

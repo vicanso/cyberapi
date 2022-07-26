@@ -24,6 +24,7 @@ fn main() {
             commands::add_api_setting,
             commands::update_api_setting,
             commands::list_api_setting,
+            commands::delete_api_settings,
             commands::add_api_folder,
             commands::update_api_folder,
             commands::list_api_folder,

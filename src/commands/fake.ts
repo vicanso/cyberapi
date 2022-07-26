@@ -30,8 +30,7 @@ export async function fakeList<T>(storeName: string): Promise<T[]> {
 export async function fakeAdd<T>(storeName: string, data: T) {
   const result = await fakeList<T>(storeName);
   result.push(Object.assign({}, data));
-  const store = getStore(storeName);
-  await store.setItem("fake", result);
+  await fakeUpdateStore(storeName, result);
 }
 
 export async function fakeUpdate<T extends WithID>(storeName: string, data: T) {
@@ -45,8 +44,7 @@ export async function fakeUpdate<T extends WithID>(storeName: string, data: T) {
   if (found !== -1) {
     result[found] = Object.assign({}, data);
   }
-  const store = getStore(storeName);
-  await store.setItem("fake", result);
+  await fakeUpdateStore(storeName, result);
 }
 
 export async function fakeDeleteAPICollection<T extends WithID>(
@@ -64,8 +62,7 @@ export async function fakeDeleteAPICollection<T extends WithID>(
   if (found !== -1) {
     result.splice(found, 1);
   }
-  const store = getStore(storeName);
-  await store.setItem("fake", result);
+  await fakeUpdateStore(storeName, result);
 }
 
 export async function fakeDeleteItems<T extends WithID>(
@@ -79,6 +76,10 @@ export async function fakeDeleteItems<T extends WithID>(
       arr.push(item);
     }
   });
+  await fakeUpdateStore(storeName, result);
+}
+
+export async function fakeUpdateStore(storeName: string, data: unknown) {
   const store = getStore(storeName);
-  await store.setItem("fake", result);
+  await store.setItem("fake", data);
 }

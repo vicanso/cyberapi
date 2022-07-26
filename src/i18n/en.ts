@@ -1,5 +1,5 @@
 export default {
-  apiSetting: {
+  collection: {
     add: "Add",
     filterPlaceholder: "Keyword filter",
     newHTTPRequest: "Create HTTP Request",

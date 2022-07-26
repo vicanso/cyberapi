@@ -8,11 +8,11 @@ import { showError } from "../helpers/util";
 import { useAPICollectionsStore } from "../stores/api_collection";
 import ExLoading from "../components/ExLoading";
 import { useHeaderStore } from "../stores/header";
-import { APICollection } from "../commands/api_collection";
 import { useSettingStore } from "../stores/setting";
 import { mainHeaderHeight } from "../constants/style";
 import ExColumn from "../components/ExColumn";
 import APISettingTrees from "../components/APISettingTrees";
+import { useAPIFoldersStore } from "../stores/api_folder";
 
 const contentClass = css`
   position: fixed;
@@ -26,11 +26,13 @@ export default defineComponent({
   name: "CollectionView",
   setup() {
     const route = useRoute();
+    const collectionID = route.query.id as string;
     const message = useMessage();
     const headerStore = useHeaderStore();
     const settingStore = useSettingStore();
-    const collection = ref({} as APICollection);
+    const folderStore = useAPIFoldersStore();
     const { collectionColumnWidths } = storeToRefs(settingStore);
+    const { apiFolders } = storeToRefs(folderStore);
 
     const processing = ref(false);
 
@@ -38,14 +40,14 @@ export default defineComponent({
       processing.value = true;
       try {
         const collectionStore = useAPICollectionsStore();
-        const result = await collectionStore.get(route.query.id as string);
+        const result = await collectionStore.get(collectionID);
         if (result) {
           headerStore.add({
             name: result.name,
             route: route.name as string,
           });
-          collection.value = result;
         }
+        await folderStore.fetch();
       } catch (err) {
         showError(message, err);
       } finally {
@@ -69,22 +71,23 @@ export default defineComponent({
       }
     };
     return {
-      collection,
       collectionColumnWidths,
       processing,
+      apiFolders,
       updateCollectionColumnWidths,
     };
   },
   render() {
     const {
       processing,
-      collection,
+      apiFolders,
       collectionColumnWidths,
       updateCollectionColumnWidths,
     } = this;
     if (processing) {
       return <ExLoading />;
     }
+    console.dir(apiFolders);
 
     let currentWidth = 0;
     const widths = collectionColumnWidths.slice(0);
@@ -113,7 +116,6 @@ export default defineComponent({
       return column;
     });
 
-    console.dir(collection);
     return <div class={contentClass}>{columns}</div>;
   },
 });
