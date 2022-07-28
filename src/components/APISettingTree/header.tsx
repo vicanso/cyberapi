@@ -11,12 +11,13 @@ import {
 import { useRoute } from "vue-router";
 
 import { i18nCollection, i18nCommon } from "../../i18n";
-import { SettingType } from "../../stores/api_setting";
+import { SettingType, useAPISettingStore } from "../../stores/api_setting";
 import { ExFormItem } from "../ExForm";
-import ExDialog from "../../components/ExDialog";
+import ExDialog from "../ExDialog";
 import { newDefaultAPIFolder } from "../../commands/api_folder";
-import { useAPIFoldersStore } from "../../stores/api_folder";
+import { useAPIFolderStore } from "../../stores/api_folder";
 import { showError } from "../../helpers/util";
+import { newDefaultAPISetting } from "../../commands/api_setting";
 
 const getFolderFormItems = (): ExFormItem[] => {
   return [
@@ -33,8 +34,23 @@ const getFolderFormItems = (): ExFormItem[] => {
   ];
 };
 
+const getSettingFormItems = (): ExFormItem[] => {
+  return [
+    {
+      key: "name",
+      label: i18nCommon("name"),
+      placeholer: i18nCommon("namePlaceholder"),
+      rule: {
+        required: true,
+        message: i18nCommon("nameRequireError"),
+        trigger: "blur",
+      },
+    },
+  ];
+};
+
 export default defineComponent({
-  name: "APISettingTreesHeader",
+  name: "APISettingTreeHeader",
   props: {
     onFilter: {
       type: Function as PropType<(value: string) => void>,
@@ -42,7 +58,8 @@ export default defineComponent({
     },
   },
   setup() {
-    const folderStore = useAPIFoldersStore();
+    const folderStore = useAPIFolderStore();
+    const settingStore = useAPISettingStore();
     const dialog = useDialog();
     const message = useMessage();
     const route = useRoute();
@@ -64,7 +81,26 @@ export default defineComponent({
         },
       });
     };
+    const addHTTPSetting = () => {
+      ExDialog({
+        dialog,
+        title: i18nCollection("newHTTPRequest"),
+        formItems: getSettingFormItems(),
+        onConfirm: async (data) => {
+          const setting = newDefaultAPISetting();
+          setting.category = SettingType.HTTP;
+          setting.collection = collection;
+          setting.name = data.name as string;
+          try {
+            await settingStore.add(setting);
+          } catch (err) {
+            showError(message, err);
+          }
+        },
+      });
+    };
     return {
+      addHTTPSetting,
       addFolder,
       text: {
         add: i18nCommon("add"),
@@ -103,7 +139,7 @@ export default defineComponent({
             onSelect={(key: string) => {
               switch (key) {
                 case SettingType.HTTP:
-                  // this.addAPI(key, "");
+                  this.addHTTPSetting();
                   break;
                 case SettingType.Folder:
                   this.addFolder();

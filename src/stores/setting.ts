@@ -71,19 +71,19 @@ export const useSettingStore = defineStore("common", {
       try {
         // 优先使用用户设置
         const setting = await getAppSetting();
-        let theme = setting.theme || "";
+        let currentTheme = setting.theme || "";
+        this.theme = currentTheme;
         if (setting.collectionColumnWidths?.length) {
           this.collectionColumnWidths = setting.collectionColumnWidths;
         }
         if (!isWebMode()) {
           const result = await appWindow.theme();
           this.systemTheme = (result as string) || "";
-          if (!theme) {
-            theme = this.systemTheme;
+          if (!currentTheme) {
+            currentTheme = this.systemTheme;
           }
         }
-        this.isDark = isDarkTheme(theme);
-        this.theme = theme;
+        this.isDark = isDarkTheme(currentTheme);
         this.collectionSortType = setting.collectionSortType;
 
         let sum = 0;

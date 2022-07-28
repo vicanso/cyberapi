@@ -2,14 +2,15 @@
 import { css } from "@linaria/core";
 import { defineComponent, ref } from "vue";
 
-import APISettingTreesHeader from "./header";
+import APISettingTreeHeader from "./header";
+import APISettingTreeItems from "./items";
 
 const treesClass = css`
   padding: 10px;
 `;
 
 export default defineComponent({
-  name: "APISettingTrees",
+  name: "APISettingTree",
   setup() {
     const keyword = ref("");
     return {
@@ -19,11 +20,12 @@ export default defineComponent({
   render() {
     return (
       <div class={treesClass}>
-        <APISettingTreesHeader
+        <APISettingTreeHeader
           onFilter={(value: string) => {
             this.keyword = value;
           }}
         />
+        <APISettingTreeItems />
       </div>
     );
   },

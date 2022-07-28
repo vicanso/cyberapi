@@ -26,7 +26,7 @@ import {
 import { i18nCommon, i18nDashboard } from "../i18n";
 import { padding } from "../constants/style";
 import ExDialog from "../components/ExDialog";
-import { useAPICollectionsStore } from "../stores/api_collection";
+import { useAPICollectionStore } from "../stores/api_collection";
 import {
   APICollection,
   newDefaultAPICollection,
@@ -140,7 +140,7 @@ export default defineComponent({
   setup() {
     const message = useMessage();
     const dialog = useDialog();
-    const store = useAPICollectionsStore();
+    const store = useAPICollectionStore();
     const settingStore = useSettingStore();
     const { apiCollections, fetching } = storeToRefs(store);
     useHeaderStore().clear();

@@ -13,7 +13,7 @@ export enum SettingType {
   Folder = "folder",
 }
 
-export const useAPISettingsStore = defineStore("apiSettings", {
+export const useAPISettingStore = defineStore("apiSettings", {
   state: () => {
     return {
       apiSettings: [] as APISetting[],
@@ -37,7 +37,7 @@ export const useAPISettingsStore = defineStore("apiSettings", {
         this.adding = false;
       }
     },
-    async list(): Promise<void> {
+    async fetch(): Promise<void> {
       if (this.fetching) {
         return;
       }

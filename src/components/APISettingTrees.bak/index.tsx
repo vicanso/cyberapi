@@ -18,7 +18,7 @@ import {
 } from "naive-ui";
 import { FolderOutline } from "@vicons/ionicons5";
 
-import { useAPISettingsStore, SettingType } from "../../stores/api_setting";
+import { useAPISettingStore, SettingType } from "../../stores/api_setting";
 import { showError } from "../../helpers/util";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import ExLoading from "../ExLoading";
@@ -50,7 +50,7 @@ const loadingClass = css`
 export default defineComponent({
   name: "APISettingTrees",
   setup() {
-    const apiSettingsStore = useAPISettingsStore();
+    const apiSettingsStore = useAPISettingStore();
 
     const { apiSettingTrees, listProcessing } = storeToRefs(apiSettingsStore);
     const message = useMessage();

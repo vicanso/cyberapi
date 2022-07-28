@@ -9,7 +9,7 @@ import {
   deleteAPICollection,
 } from "../commands/api_collection";
 
-export const useAPICollectionsStore = defineStore("apiCollections", {
+export const useAPICollectionStore = defineStore("apiCollections", {
   state: () => {
     return {
       apiCollections: [] as APICollection[],

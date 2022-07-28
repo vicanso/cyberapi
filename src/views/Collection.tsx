@@ -5,14 +5,13 @@ import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
 
 import { showError } from "../helpers/util";
-import { useAPICollectionsStore } from "../stores/api_collection";
+import { useAPICollectionStore } from "../stores/api_collection";
 import ExLoading from "../components/ExLoading";
 import { useHeaderStore } from "../stores/header";
 import { useSettingStore } from "../stores/setting";
 import { mainHeaderHeight } from "../constants/style";
 import ExColumn from "../components/ExColumn";
-import APISettingTrees from "../components/APISettingTrees";
-import { useAPIFoldersStore } from "../stores/api_folder";
+import APISettingTree from "../components/APISettingTree";
 
 const contentClass = css`
   position: fixed;
@@ -30,16 +29,14 @@ export default defineComponent({
     const message = useMessage();
     const headerStore = useHeaderStore();
     const settingStore = useSettingStore();
-    const folderStore = useAPIFoldersStore();
     const { collectionColumnWidths } = storeToRefs(settingStore);
-    const { apiFolders } = storeToRefs(folderStore);
 
     const processing = ref(false);
 
     onBeforeMount(async () => {
       processing.value = true;
       try {
-        const collectionStore = useAPICollectionsStore();
+        const collectionStore = useAPICollectionStore();
         const result = await collectionStore.get(collectionID);
         if (result) {
           headerStore.add({
@@ -47,7 +44,6 @@ export default defineComponent({
             route: route.name as string,
           });
         }
-        await folderStore.fetch();
       } catch (err) {
         showError(message, err);
       } finally {
@@ -73,21 +69,15 @@ export default defineComponent({
     return {
       collectionColumnWidths,
       processing,
-      apiFolders,
       updateCollectionColumnWidths,
     };
   },
   render() {
-    const {
-      processing,
-      apiFolders,
-      collectionColumnWidths,
-      updateCollectionColumnWidths,
-    } = this;
+    const { processing, collectionColumnWidths, updateCollectionColumnWidths } =
+      this;
     if (processing) {
       return <ExLoading />;
     }
-    console.dir(apiFolders);
 
     let currentWidth = 0;
     const widths = collectionColumnWidths.slice(0);
@@ -98,7 +88,7 @@ export default defineComponent({
     const columns = widths.map((width, index) => {
       let element = <div />;
       if (index === 0) {
-        element = <APISettingTrees />;
+        element = <APISettingTree />;
       }
       const column = (
         <ExColumn
