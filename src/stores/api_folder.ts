@@ -73,24 +73,35 @@ export const useAPIFolderStore = defineStore("apiFolders", {
       }
       this.updating = true;
       try {
-        if (prevParentIndex !== -1) {
-          const prevParent = arr[prevParentIndex];
-          const children = prevParent.children
-            .split(",")
-            .filter((item) => item !== child);
-          prevParent.children = children.join(",");
-          // 先清除原有记录
-          await updateAPIFolder(prevParent);
-        }
-        // 添加至新的folder
         const currentParent = arr[currentParentIndex];
         const children = currentParent.children?.split(",");
-        if (params.index === -1) {
-          children.push(child);
+        // 同一目录，只调整顺序
+        if (prevParentIndex === currentParentIndex) {
+          // 往前移
+          const index = params.index;
+          const currentIndex = children.indexOf(child);
+          children.splice(currentIndex, 1);
+          children.splice(index, 0, child);
+          currentParent.children = children.join(",");
         } else {
-          children.splice(params.index, 0, child);
+          // TODO 如果是folder应该如何处理
+          if (prevParentIndex !== -1) {
+            const prevParent = arr[prevParentIndex];
+            const children = prevParent.children
+              .split(",")
+              .filter((item) => item !== child);
+            prevParent.children = children.join(",");
+            // 先清除原有记录
+            await updateAPIFolder(prevParent);
+          }
+          // 添加至新的folder
+          if (params.index === -1) {
+            children.push(child);
+          } else {
+            children.splice(params.index, 0, child);
+          }
+          currentParent.children = children.join(",");
         }
-        currentParent.children = children.join(",");
         await updateAPIFolder(currentParent);
         this.apiFolders = arr;
       } finally {

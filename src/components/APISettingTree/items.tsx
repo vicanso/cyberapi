@@ -183,12 +183,32 @@ export default defineComponent({
       }
     };
 
-    const handleMove = (moveID: string, targetID: string) => {
+    const handleMove = async (moveID: string, targetID: string) => {
       if (moveID === targetID) {
         return;
       }
-      console.dir(moveID);
-      console.dir(targetID);
+      let insertIndex = 0;
+      let targetFolderId = "";
+      folderStore.apiFolders.forEach((item) => {
+        if (item.id === targetID) {
+          targetFolderId = item.id;
+        }
+        if (item.children.includes(targetID)) {
+          targetFolderId = item.id;
+          const arr = item.children.split(",");
+          // TODO 还需调整往前还是往后插入
+          insertIndex = arr.indexOf(targetID);
+        }
+      });
+      try {
+        await folderStore.addChild({
+          id: targetFolderId,
+          child: moveID,
+          index: insertIndex,
+        });
+      } catch (err) {
+        showError(message, err);
+      }
     };
 
     let target: EventTarget;
