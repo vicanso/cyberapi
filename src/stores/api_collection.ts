@@ -1,4 +1,6 @@
 import dayjs from "dayjs";
+import localforage from "localforage";
+import { uniq } from "lodash-es";
 import { defineStore } from "pinia";
 
 import {
@@ -9,10 +11,34 @@ import {
   deleteAPICollection,
 } from "../commands/api_collection";
 
+const expandedSettingStore = localforage.createInstance({
+  name: "expandedSettingStore",
+});
+
+async function toggleFolderExpanded(
+  collection: string,
+  folder: string,
+  expanded: boolean
+) {
+  let items = await expandedSettingStore.getItem<string[]>(collection);
+  if (!items) {
+    items = [];
+  }
+  if (expanded) {
+    items.push(folder);
+  } else {
+    items = items.filter((item) => item !== folder);
+  }
+  items = uniq(items);
+  await expandedSettingStore.setItem(collection, items);
+  return items;
+}
+
 export const useAPICollectionStore = defineStore("apiCollections", {
   state: () => {
     return {
       apiCollections: [] as APICollection[],
+      expandedFolders: [] as string[],
       fetching: false,
       adding: false,
       updating: false,
@@ -20,6 +46,22 @@ export const useAPICollectionStore = defineStore("apiCollections", {
     };
   },
   actions: {
+    async fetchExpandedFolders(collection: string) {
+      const items = await expandedSettingStore.getItem<string[]>(collection);
+      if (items) {
+        this.expandedFolders = items;
+      }
+    },
+    async openFolder(collection: string, folder: string) {
+      // localforage操作较快，因此不记录处理中
+      const items = await toggleFolderExpanded(collection, folder, true);
+      this.expandedFolders = items;
+    },
+    async closeFolder(collection: string, folder: string) {
+      // localforage操作较快，因此不记录处理中
+      const items = await toggleFolderExpanded(collection, folder, false);
+      this.expandedFolders = items;
+    },
     async add(data: APICollection): Promise<void> {
       if (this.adding) {
         return;

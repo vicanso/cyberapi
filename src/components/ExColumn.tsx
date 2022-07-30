@@ -2,6 +2,13 @@ import { defineComponent, PropType, StyleValue } from "vue";
 import { css } from "@linaria/core";
 import { NDivider } from "naive-ui";
 
+import {
+  cloneNode,
+  insertNodeAt,
+  setNodeStyle,
+  removeNode,
+} from "../helpers/html";
+
 const dividerClass = css`
   margin: 0 !important;
   height: 100% !important;
@@ -34,7 +41,7 @@ export default defineComponent({
   },
   setup(props) {
     let isDragging = false;
-    let originPageX = 0;
+    let originClientX = 0;
     let target: EventTarget;
     let moveLeft = 0;
     const onMousemove = (e: MouseEvent) => {
@@ -42,10 +49,10 @@ export default defineComponent({
         return;
       }
       e.preventDefault();
-      moveLeft = e.pageX - originPageX;
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore
-      target.style.left = `${moveLeft}px`;
+      moveLeft = e.clientX - originClientX;
+      setNodeStyle(target, {
+        left: `${e.clientX}px`,
+      });
     };
     const onMouseup = () => {
       if (props.onResize) {
@@ -56,9 +63,7 @@ export default defineComponent({
       document.removeEventListener("mousemove", onMousemove);
       document.removeEventListener("mouseup", onMouseup);
       if (target) {
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-        // @ts-ignore
-        target.parentElement.removeChild(target);
+        removeNode(target);
       }
     };
     const onMousedown = (e: MouseEvent) => {
@@ -66,20 +71,21 @@ export default defineComponent({
         return;
       }
 
-      originPageX = e.pageX;
+      originClientX = e.clientX;
       isDragging = true;
       document.addEventListener("mousemove", onMousemove);
       document.addEventListener("mouseup", onMouseup);
 
+      target = cloneNode(e.currentTarget);
+
+      setNodeStyle(target, {
+        left: `${originClientX}px`,
+        width: "2px",
+        zIndex: "9",
+      });
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore
-      target = e.currentTarget.cloneNode(true);
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore
-      target.children[0].style.width = "2px";
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore
-      e.currentTarget.parentNode.insertBefore(target, e.currentTarget);
+      insertNodeAt(e.currentTarget.parentNode.parentNode, target, 0);
     };
 
     return {

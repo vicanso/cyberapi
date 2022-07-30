@@ -1,4 +1,3 @@
-import { storeToRefs } from "pinia";
 import { defineComponent, PropType, ref } from "vue";
 import {
   NForm,
@@ -18,7 +17,6 @@ import { i18nCookie, i18nCommon } from "../i18n";
 import { Cookie } from "../commands/cookies";
 import { useCookieStore } from "../stores/cookie";
 import { newRequireRules, showError } from "../helpers/util";
-import { reject } from "lodash-es";
 
 export default defineComponent({
   name: "ExCookieEditor",

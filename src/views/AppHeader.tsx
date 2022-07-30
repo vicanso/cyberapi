@@ -8,7 +8,7 @@ import {
   NIcon,
 } from "naive-ui";
 import { css } from "@linaria/core";
-import { defineComponent, ref } from "vue";
+import { defineComponent } from "vue";
 import { storeToRefs } from "pinia";
 import { BowlingBallOutline, SettingsOutline } from "@vicons/ionicons5";
 

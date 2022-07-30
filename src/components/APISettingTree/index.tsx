@@ -9,6 +9,15 @@ const treesClass = css`
   padding: 10px;
 `;
 
+const itemsClass = css`
+  position: absolute;
+  top: 50px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow-y: auto;
+`;
+
 export default defineComponent({
   name: "APISettingTree",
   setup() {
@@ -25,7 +34,9 @@ export default defineComponent({
             this.keyword = value;
           }}
         />
-        <APISettingTreeItems />
+        <div class={itemsClass}>
+          <APISettingTreeItems keyword={this.keyword} />
+        </div>
       </div>
     );
   },

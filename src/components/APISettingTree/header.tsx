@@ -127,8 +127,8 @@ export default defineComponent({
             type="text"
             clearable
             placeholder={text.placeholder}
-            onChange={(value: string) => {
-              this.$props.onFilter(value);
+            onInput={(value: string) => {
+              this.$props.onFilter(value.toLowerCase());
             }}
           />
         </NGi>

@@ -85,7 +85,16 @@ export default defineComponent({
   render() {
     const { formValue, rules, submit, submitting } = this;
     const { formItems } = this.$props;
-    const items = formItems.map((item) => {
+    const lastIndex = formItems.length - 1;
+    const items = formItems.map((item, index) => {
+      const onKeyup =
+        index === lastIndex
+          ? (e: KeyboardEvent) => {
+              if (e.key.toLocaleLowerCase() === "enter") {
+                submit();
+              }
+            }
+          : undefined;
       return (
         <NFormItem label={item.label} path={item.key} key={item.key}>
           <NInput
@@ -93,6 +102,7 @@ export default defineComponent({
             type={item.inputType || "text"}
             defaultValue={item.defaultValue}
             placeholder={item.placeholer}
+            onKeyup={onKeyup}
             onInput={(value) => {
               formValue[item.key] = value;
             }}

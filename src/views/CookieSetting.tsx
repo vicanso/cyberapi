@@ -19,7 +19,6 @@ import { CreateOutline, TrashOutline } from "@vicons/ionicons5";
 import { Cookie } from "../commands/cookies";
 import ExCookieEditor from "../components/ExCookieEditor";
 import { margin } from "../constants/style";
-import { update } from "lodash-es";
 
 enum Mode {
   Edit = "edit",
