@@ -16,25 +16,61 @@ import {
 import { useSettingStore } from "../../stores/setting";
 import { useAPICollectionStore } from "../../stores/api_collection";
 import { useRoute } from "vue-router";
+import {
+  addNodeClass,
+  cloneNode,
+  getNodeDataValue,
+  getNodeOffset,
+  getNodeOffsetHeightWidth,
+  getNodeScrollTop,
+  insertNodeAt,
+  removeNode,
+  removeNodeClass,
+  setNodeStyle,
+} from "../../helpers/html";
 
-const itemsClass = css`
-  margin: 5px 0;
-  padding: 0;
-  list-style: none;
+const itemsWrapperClass = css`
+  position: absolute;
+  top: 50px;
+  left: 5px;
+  right: 5px;
+  bottom: 5px;
+  overflow-y: auto;
+  &.dragging {
+    li:hover {
+      background-color: rgba(255, 255, 255, 0) !important;
+    }
+    .dragItem {
+      &:hover {
+        background-color: rgba(255, 255, 255, 0.3) !important;
+      }
+      &.light:hover {
+        background-color: rgba(0, 0, 0, 0.3) !important;
+      }
+    }
+  }
+
+  ul {
+    margin: 0;
+    padding: 0;
+  }
   li {
+    list-style: none;
     padding: 8px 10px;
     line-height: 25px;
     height: 25px;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-    &:hover,
-    &.selected {
+    &.insertBefore {
+      padding-top: 7px;
+      border-top: 1px dashed;
+    }
+    &:hover {
       cursor: pointer;
       background-color: rgba(255, 255, 255, 0.1);
     }
-    &.light:hover,
-    &.selected.light {
+    &.light:hover {
       background-color: rgba(0, 0, 0, 0.1);
     }
   }
@@ -46,6 +82,7 @@ const itemsClass = css`
     font-weight: 900;
   }
 `;
+
 interface TreeItem {
   id: string;
   name: string;
@@ -120,6 +157,7 @@ export default defineComponent({
     const message = useMessage();
     const processing = ref(false);
     const route = useRoute();
+    const wrapper = ref(null);
     const collection = route.query.id as string;
 
     const collectionStore = useAPICollectionStore();
@@ -145,6 +183,92 @@ export default defineComponent({
       }
     };
 
+    const handleMove = (moveID: string, targetID: string) => {
+      if (moveID === targetID) {
+        return;
+      }
+      console.dir(moveID);
+      console.dir(targetID);
+    };
+
+    let target: EventTarget;
+    let moveTarget: EventTarget;
+    let originClientY = 0;
+    let originOffset = 0;
+    let targetHeight = 0;
+    let currentInsertIndex = -1;
+    let isDragging = false;
+    const draggingClass = "dragging";
+    let listItems = [] as HTMLCollection[];
+    const handleMousemove = (e: MouseEvent) => {
+      // 每移动两个点再处理
+      if (isDragging && e.clientY % 2 !== 0) {
+        e.preventDefault();
+        return;
+      }
+      const offset = e.clientY - originClientY;
+      if (!isDragging && Math.abs(offset) > 3) {
+        isDragging = true;
+        addNodeClass(wrapper.value, draggingClass);
+        moveTarget = cloneNode(target);
+        setNodeStyle(moveTarget, {
+          position: "absolute",
+          width: "100%",
+        });
+        addNodeClass(moveTarget, "dragItem");
+
+        insertNodeAt(wrapper.value, moveTarget, 0);
+      }
+      if (isDragging) {
+        const top = offset + originOffset + getNodeScrollTop(wrapper.value);
+        const index = Math.round(top / targetHeight);
+        if (currentInsertIndex !== index) {
+          if (currentInsertIndex !== -1) {
+            removeNodeClass(listItems[currentInsertIndex], "insertBefore");
+          }
+          if (listItems.length > index) {
+            addNodeClass(listItems[index], "insertBefore");
+            currentInsertIndex = index;
+          }
+        }
+        setNodeStyle(moveTarget, {
+          top: `${top}px`,
+        });
+        e.preventDefault();
+      }
+    };
+
+    const handleMouseup = () => {
+      document.removeEventListener("mousemove", handleMousemove);
+      document.removeEventListener("mouseup", handleMouseup);
+      isDragging = false;
+      const moveID = getNodeDataValue(moveTarget, "id");
+      const targetID = getNodeDataValue(listItems[currentInsertIndex], "id");
+      removeNode(moveTarget);
+      removeNodeClass(listItems[currentInsertIndex], "insertBefore");
+      removeNodeClass(wrapper.value, draggingClass);
+
+      handleMove(moveID, targetID);
+    };
+    const handleMousedown = (e: MouseEvent) => {
+      if (!e.currentTarget) {
+        return;
+      }
+      // TODO 此处导致无法复制，后续研究
+      e.preventDefault();
+      currentInsertIndex = -1;
+      target = e.currentTarget;
+      originOffset =
+        getNodeOffset(target).top - getNodeOffset(wrapper.value).top;
+      targetHeight = getNodeOffsetHeightWidth(target).height;
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore
+      listItems = wrapper.value.children[0].children;
+      originClientY = e.clientY;
+      document.addEventListener("mousemove", handleMousemove);
+      document.addEventListener("mouseup", handleMouseup);
+    };
+
     onBeforeMount(async () => {
       processing.value = true;
       try {
@@ -165,6 +289,8 @@ export default defineComponent({
       apiSettings,
       processing,
       handleClick,
+      handleMousedown,
+      wrapper,
     };
   },
   render() {
@@ -209,11 +335,14 @@ export default defineComponent({
         itemList.push(
           <li
             key={item.id}
+            data-id={item.id}
+            data-category={item.settingType}
             class={cls}
             style={style}
             onClick={() => {
               this.handleClick(item);
             }}
+            onMousedown={this.handleMousedown}
           >
             {icon}
             {item.name}
@@ -227,6 +356,10 @@ export default defineComponent({
       });
     };
     appendToList(treeItems, 0);
-    return <ul class={itemsClass}>{itemList}</ul>;
+    return (
+      <div class={itemsWrapperClass} ref="wrapper">
+        <ul>{itemList}</ul>
+      </div>
+    );
   },
 });
