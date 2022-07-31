@@ -3,10 +3,10 @@ import { css } from "@linaria/core";
 import { NDivider } from "naive-ui";
 
 import {
-  cloneNode,
-  insertNodeAt,
-  setNodeStyle,
-  removeNode,
+  nodeClone,
+  nodeInsertAt,
+  nodeSetStyle,
+  nodeRemove,
 } from "../helpers/html";
 
 const dividerClass = css`
@@ -50,7 +50,7 @@ export default defineComponent({
       }
       e.preventDefault();
       moveLeft = e.clientX - originClientX;
-      setNodeStyle(target, {
+      nodeSetStyle(target, {
         left: `${e.clientX}px`,
       });
     };
@@ -63,7 +63,7 @@ export default defineComponent({
       document.removeEventListener("mousemove", onMousemove);
       document.removeEventListener("mouseup", onMouseup);
       if (target) {
-        removeNode(target);
+        nodeRemove(target);
       }
     };
     const onMousedown = (e: MouseEvent) => {
@@ -76,16 +76,16 @@ export default defineComponent({
       document.addEventListener("mousemove", onMousemove);
       document.addEventListener("mouseup", onMouseup);
 
-      target = cloneNode(e.currentTarget);
+      target = nodeClone(e.currentTarget);
 
-      setNodeStyle(target, {
+      nodeSetStyle(target, {
         left: `${originClientX}px`,
         width: "2px",
         zIndex: "9",
       });
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore
-      insertNodeAt(e.currentTarget.parentNode.parentNode, target, 0);
+      nodeInsertAt(e.currentTarget.parentNode.parentNode, target, 0);
     };
 
     return {

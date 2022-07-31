@@ -7,6 +7,7 @@ import {
   NInput,
   useDialog,
   useMessage,
+  NIcon,
 } from "naive-ui";
 import { useRoute } from "vue-router";
 
@@ -18,6 +19,7 @@ import { newDefaultAPIFolder } from "../../commands/api_folder";
 import { useAPIFolderStore } from "../../stores/api_folder";
 import { showError } from "../../helpers/util";
 import { newDefaultAPISetting } from "../../commands/api_setting";
+import { AnalyticsOutline, FolderOpenOutline } from "@vicons/ionicons5";
 
 const getFolderFormItems = (): ExFormItem[] => {
   return [
@@ -106,20 +108,30 @@ export default defineComponent({
         add: i18nCommon("add"),
         placeholder: i18nCollection("filterPlaceholder"),
       },
-      options: [
-        {
-          label: i18nCollection("newHTTPRequest"),
-          key: SettingType.HTTP,
-        },
-        {
-          label: i18nCollection("newFolder"),
-          key: SettingType.Folder,
-        },
-      ],
     };
   },
   render() {
-    const { text, options } = this;
+    const options = [
+      {
+        label: i18nCollection("newHTTPRequest"),
+        key: SettingType.HTTP,
+        icon: () => (
+          <NIcon>
+            <AnalyticsOutline />
+          </NIcon>
+        ),
+      },
+      {
+        label: i18nCollection("newFolder"),
+        key: SettingType.Folder,
+        icon: () => (
+          <NIcon>
+            <FolderOpenOutline />
+          </NIcon>
+        ),
+      },
+    ];
+    const { text } = this;
     return (
       <NGrid xGap={12}>
         <NGi span={16}>

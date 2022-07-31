@@ -1,33 +1,37 @@
 import { defineComponent, ref, onBeforeMount } from "vue";
 import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
-import { NIcon, useMessage } from "naive-ui";
+import { NDropdown, NIcon, useMessage } from "naive-ui";
 import { sortBy, uniq } from "lodash-es";
+import {
+  AnalyticsOutline,
+  ChevronDownOutline,
+  FolderOpenOutline,
+  FolderOutline,
+  TrashOutline,
+} from "@vicons/ionicons5";
+import { useRoute } from "vue-router";
 
 import { useAPIFolderStore } from "../../stores/api_folder";
 import { showError } from "../../helpers/util";
 import { useAPISettingStore, SettingType } from "../../stores/api_setting";
 import { APIFolder } from "../../commands/api_folder";
 import { APISetting } from "../../commands/api_setting";
-import {
-  AnalyticsOutline,
-  FolderOpenOutline,
-  FolderOutline,
-} from "@vicons/ionicons5";
+
 import { useSettingStore } from "../../stores/setting";
 import { useAPICollectionStore } from "../../stores/api_collection";
-import { useRoute } from "vue-router";
 import {
-  addNodeClass,
-  cloneNode,
-  getNodeDataValue,
-  getNodeOffset,
-  getNodeOffsetHeightWidth,
-  getNodeScrollTop,
-  insertNodeAt,
-  removeNode,
-  removeNodeClass,
-  setNodeStyle,
+  nodeAddClass,
+  nodeClone,
+  nodeGetDataValue,
+  nodeGetOffset,
+  nodeGetOffsetHeightWidth,
+  nodGetScrollTop,
+  nodeInsertAt,
+  nodeRemove,
+  nodeRemoveClass,
+  nodeSetStyle,
+  nodeHasClass,
 } from "../../helpers/html";
 import ExLoading from "../ExLoading";
 
@@ -71,9 +75,16 @@ const itemsWrapperClass = css`
     &:hover {
       cursor: pointer;
       background-color: rgba(255, 255, 255, 0.1);
+      span {
+        display: inline;
+      }
     }
     &.light:hover {
       background-color: rgba(0, 0, 0, 0.1);
+    }
+    span {
+      float: right;
+      display: none;
     }
   }
   .n-icon {
@@ -289,29 +300,29 @@ export default defineComponent({
       const offset = e.clientY - originClientY;
       if (!isDragging && Math.abs(offset) > 3) {
         isDragging = true;
-        addNodeClass(wrapper.value, draggingClass);
-        moveTarget = cloneNode(target);
-        setNodeStyle(moveTarget, {
+        nodeAddClass(wrapper.value, draggingClass);
+        moveTarget = nodeClone(target);
+        nodeSetStyle(moveTarget, {
           position: "absolute",
           width: "100%",
         });
-        addNodeClass(moveTarget, "dragItem");
+        nodeAddClass(moveTarget, "dragItem");
 
-        insertNodeAt(wrapper.value, moveTarget, 0);
+        nodeInsertAt(wrapper.value, moveTarget, 0);
       }
       if (isDragging) {
-        const top = offset + originOffset + getNodeScrollTop(wrapper.value);
+        const top = offset + originOffset + nodGetScrollTop(wrapper.value);
         const index = Math.round(top / targetHeight);
         if (currentInsertIndex !== index) {
           if (currentInsertIndex !== -1) {
-            removeNodeClass(listItems[currentInsertIndex], "insertBefore");
+            nodeRemoveClass(listItems[currentInsertIndex], "insertBefore");
           }
           if (listItems.length > index) {
-            addNodeClass(listItems[index], "insertBefore");
+            nodeAddClass(listItems[index], "insertBefore");
             currentInsertIndex = index;
           }
         }
-        setNodeStyle(moveTarget, {
+        nodeSetStyle(moveTarget, {
           top: `${top}px`,
         });
         e.preventDefault();
@@ -338,15 +349,24 @@ export default defineComponent({
       isDragging = false;
 
       const moveItemIndex = Number.parseInt(
-        getNodeDataValue(moveTarget, "index")
+        nodeGetDataValue(moveTarget, "index")
       );
       const targetItemIndex = Number.parseInt(
-        getNodeDataValue(listItems[currentInsertIndex], "index")
+        nodeGetDataValue(listItems[currentInsertIndex], "index")
       );
 
-      removeNode(moveTarget);
-      removeNodeClass(listItems[currentInsertIndex], "insertBefore");
-      removeNodeClass(wrapper.value, draggingClass);
+      nodeRemove(moveTarget);
+      nodeRemoveClass(listItems[currentInsertIndex], "insertBefore");
+      nodeRemoveClass(wrapper.value, draggingClass);
+
+      // 最后一个元素，而且移动至最后，则暂不处理
+      // TODO 后续优化
+      if (
+        targetItemIndex === currentTreeItems.length - 1 &&
+        overType === OverType.Bottom
+      ) {
+        return;
+      }
 
       handleMove(moveItemIndex, targetItemIndex, overType);
     };
@@ -359,8 +379,8 @@ export default defineComponent({
       currentInsertIndex = -1;
       target = e.currentTarget;
       originOffset =
-        getNodeOffset(target).top - getNodeOffset(wrapper.value).top;
-      targetHeight = getNodeOffsetHeightWidth(target).height;
+        nodeGetOffset(target).top - nodeGetOffset(wrapper.value).top;
+      targetHeight = nodeGetOffsetHeightWidth(target).height;
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore
       listItems = wrapper.value.children[0].children;
@@ -397,6 +417,17 @@ export default defineComponent({
     };
   },
   render() {
+    const options = [
+      {
+        label: "删除",
+        key: "delete",
+        icon: () => (
+          <NIcon>
+            <TrashOutline />
+          </NIcon>
+        ),
+      },
+    ];
     const { keyword } = this.$props;
     const {
       apiFolders,
@@ -462,13 +493,24 @@ export default defineComponent({
             data-index={treeItemIndex}
             class={cls}
             style={style}
-            onClick={() => {
+            onClick={(e) => {
+              if (nodeHasClass(e.target, "preventDefault")) {
+                e.preventDefault();
+                return;
+              }
               this.handleClick(item);
             }}
             onMousedown={this.handleMousedown}
           >
             {icon}
             {item.name}
+            <NDropdown options={options} trigger="click">
+              <span class="preventDefault">
+                <NIcon class="preventDefault">
+                  <ChevronDownOutline class="preventDefault" />
+                </NIcon>
+              </span>
+            </NDropdown>
           </li>
         );
         treeItemIndex++;

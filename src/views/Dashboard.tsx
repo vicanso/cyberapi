@@ -38,6 +38,7 @@ import { goTo } from "../router";
 import { names } from "../router/routes";
 import { useHeaderStore } from "../stores/header";
 import { useSettingStore } from "../stores/setting";
+import { nodeHasClass } from "../helpers/html";
 
 const dashboardClass = css`
   padding: ${2 * padding}px;
@@ -362,9 +363,9 @@ export default defineComponent({
                 handleCollection(item, key);
               }}
             >
-              <NButton quaternary>
-                <NIcon>
-                  <ListOutline />
+              <NButton quaternary class="preventDefault">
+                <NIcon class="preventDefault">
+                  <ListOutline class="preventDefault" />
                 </NIcon>
               </NButton>
             </NDropdown>
@@ -372,25 +373,29 @@ export default defineComponent({
         };
         return (
           <NGi key={item.id}>
-            <NCard title={item.name} v-slots={slots} hoverable>
-              <div
-                class={collectionContentClass}
-                onClick={() => {
-                  goTo(names.collection, {
-                    query: {
-                      id: item.id,
-                    },
-                  });
-                }}
-              >
+            <div
+              class={collectionContentClass}
+              onClick={(e) => {
+                if (nodeHasClass(e.target, "preventDefault")) {
+                  e.preventDefault();
+                  return;
+                }
+                goTo(names.collection, {
+                  query: {
+                    id: item.id,
+                  },
+                });
+              }}
+            >
+              <NCard title={item.name} v-slots={slots} hoverable>
                 <div class={collecitonDescriptionClass}>
                   <NEllipsis lineClamp={3}>{item.description}</NEllipsis>
                 </div>
                 <div class="tar">
                   <NText>{formatSimpleDate(item.updatedAt)}</NText>
                 </div>
-              </div>
-            </NCard>
+              </NCard>
+            </div>
           </NGi>
         );
       });

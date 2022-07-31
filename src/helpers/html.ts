@@ -1,7 +1,7 @@
 import { forEach } from "lodash-es";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function removeNode(node) {
+function nodeRemove(node) {
   if (node && node.parentElement !== null) {
     node.parentElement.removeChild(node);
   }
@@ -9,7 +9,7 @@ function removeNode(node) {
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function insertNodeAt(fatherNode, node, position) {
+function nodeInsertAt(fatherNode, node, position) {
   const refNode =
     position === 0
       ? fatherNode.children[0]
@@ -19,7 +19,7 @@ function insertNodeAt(fatherNode, node, position) {
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function insertNodeBefore(node, beforeNode) {
+function nodeInsertBefore(node, beforeNode) {
   const parent = beforeNode.parentNode;
   let found = false;
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -37,19 +37,19 @@ function insertNodeBefore(node, beforeNode) {
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function cloneNode(node) {
-  return node.cloneNode(true);
+function nodeClone(node) {
+  return node.nodeClone(true);
 }
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function setNodeStyle(node, style) {
+function nodeSetStyle(node, style) {
   Object.assign(node.style, style);
 }
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function getNodeOffset(node) {
+function nodeGetOffset(node) {
   if (!node) {
     return {
       left: 0,
@@ -65,7 +65,7 @@ function getNodeOffset(node) {
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function getNodeScrollTop(node) {
+function nodGetScrollTop(node) {
   if (!node) {
     return 0;
   }
@@ -74,7 +74,7 @@ function getNodeScrollTop(node) {
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function addNodeClass(node, cls) {
+function nodeAddClass(node, cls) {
   if (!node || !cls) {
     return;
   }
@@ -83,7 +83,16 @@ function addNodeClass(node, cls) {
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function removeNodeClass(node, cls) {
+function nodeHasClass(node, cls) {
+  if (!node || !cls) {
+    return false;
+  }
+  return node.classList.contains(cls);
+}
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore
+function nodeRemoveClass(node, cls) {
   if (!node || !cls) {
     return;
   }
@@ -92,7 +101,7 @@ function removeNodeClass(node, cls) {
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function getNodeOffsetHeightWidth(node) {
+function nodeGetOffsetHeightWidth(node) {
   if (!node) {
     return {
       height: 0,
@@ -107,7 +116,7 @@ function getNodeOffsetHeightWidth(node) {
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function getNodeDataValue(node, key) {
+function nodeGetDataValue(node, key) {
   if (!node) {
     return "";
   }
@@ -115,15 +124,16 @@ function getNodeDataValue(node, key) {
 }
 
 export {
-  insertNodeAt,
-  removeNode,
-  cloneNode,
-  setNodeStyle,
-  insertNodeBefore,
-  getNodeOffset,
-  getNodeScrollTop,
-  addNodeClass,
-  removeNodeClass,
-  getNodeOffsetHeightWidth,
-  getNodeDataValue,
+  nodeInsertAt,
+  nodeRemove,
+  nodeClone,
+  nodeSetStyle,
+  nodeInsertBefore,
+  nodeGetOffset,
+  nodGetScrollTop,
+  nodeAddClass,
+  nodeRemoveClass,
+  nodeHasClass,
+  nodeGetOffsetHeightWidth,
+  nodeGetDataValue,
 };
