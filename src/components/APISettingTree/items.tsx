@@ -84,12 +84,20 @@ const itemsWrapperClass = css`
   }
 `;
 
+enum OverType {
+  Over = 0,
+  Top = 1,
+  Bottom = 2,
+}
+
 interface TreeItem {
   id: string;
   name: string;
   settingType: string;
   children: TreeItem[];
   expanded: boolean;
+  parent: string;
+  childIndex: number;
 }
 
 function convertToTreeItems(
@@ -105,6 +113,8 @@ function convertToTreeItems(
       settingType: "",
       children: [],
       expanded: false,
+      parent: "",
+      childIndex: -1,
     });
   });
   apiFolders.forEach((item) => {
@@ -114,6 +124,8 @@ function convertToTreeItems(
       settingType: SettingType.Folder,
       children: [],
       expanded: expandedFolders.includes(item.id),
+      parent: "",
+      childIndex: -1,
     });
   });
   // 记录已经设置为子元素的id
@@ -135,6 +147,8 @@ function convertToTreeItems(
       if (!subItem) {
         return;
       }
+      subItem.parent = treeItem.id;
+      subItem.childIndex = treeItem.children.length;
       treeItem.children.push(subItem);
       children.push(child);
     });
@@ -172,6 +186,12 @@ export default defineComponent({
     const { isDark } = storeToRefs(useSettingStore());
     const { apiSettings } = storeToRefs(settingStore);
 
+    let currentTreeItems = [] as TreeItem[];
+
+    const setTreeItems = (items: TreeItem[]) => {
+      currentTreeItems = items;
+    };
+
     const handleClick = async (item: TreeItem) => {
       try {
         // folder的处理
@@ -187,28 +207,42 @@ export default defineComponent({
       }
     };
 
-    const handleMove = async (moveID: string, targetID: string) => {
-      if (moveID === targetID) {
+    const handleMove = async (
+      moveIndex: number,
+      targetIndex: number,
+      overType: OverType
+    ) => {
+      // isOver move 与 target 是否重叠
+      const moveItem = currentTreeItems[moveIndex];
+      const targetItem = currentTreeItems[targetIndex];
+      // 如果元素不存在，则忽略不处理
+      if (!moveItem || !targetItem) {
         return;
       }
-      let insertIndex = 0;
-      let targetFolderId = "";
-      folderStore.apiFolders.forEach((item) => {
-        if (item.id === targetID) {
-          targetFolderId = item.id;
-        }
-        if (item.children.includes(targetID)) {
-          targetFolderId = item.id;
-          const arr = item.children.split(",");
-          // TODO 还需调整往前还是往后插入
-          insertIndex = arr.indexOf(targetID);
-        }
-      });
+      // 同一个元素不处理
+      if (moveItem.id === targetItem.id) {
+        return;
+      }
+      let parentID = targetItem.parent;
+      let childIndex = targetItem.childIndex;
+      // 如果target是目录，而且是over
+      // 则表示拖至此目录
+      if (
+        targetItem.settingType === SettingType.Folder &&
+        overType === OverType.Over
+      ) {
+        parentID = targetItem.id;
+        childIndex = 0;
+      }
+      // TODO 顶层的拖动
+      if (!parentID) {
+        return;
+      }
       try {
         await folderStore.addChild({
-          id: targetFolderId,
-          child: moveID,
-          index: insertIndex,
+          id: parentID,
+          child: moveItem.id,
+          index: childIndex,
         });
       } catch (err) {
         showError(message, err);
@@ -262,17 +296,37 @@ export default defineComponent({
       }
     };
 
-    const handleMouseup = () => {
+    const handleMouseup = (e: MouseEvent) => {
       document.removeEventListener("mousemove", handleMousemove);
       document.removeEventListener("mouseup", handleMouseup);
+      if (!isDragging) {
+        return;
+      }
+
+      let overType = OverType.Bottom;
+      const overOffset = 5;
+      const offset = Math.abs(e.clientY - originClientY) % targetHeight;
+      // 覆盖
+      if (offset <= overOffset || targetHeight - offset <= overOffset) {
+        overType = OverType.Over;
+      } else if (offset < targetHeight * 0.4) {
+        overType = OverType.Top;
+      }
+
       isDragging = false;
-      const moveID = getNodeDataValue(moveTarget, "id");
-      const targetID = getNodeDataValue(listItems[currentInsertIndex], "id");
+
+      const moveItemIndex = Number.parseInt(
+        getNodeDataValue(moveTarget, "index")
+      );
+      const targetItemIndex = Number.parseInt(
+        getNodeDataValue(listItems[currentInsertIndex], "index")
+      );
+
       removeNode(moveTarget);
       removeNodeClass(listItems[currentInsertIndex], "insertBefore");
       removeNodeClass(wrapper.value, draggingClass);
 
-      handleMove(moveID, targetID);
+      handleMove(moveItemIndex, targetItemIndex, overType);
     };
     const handleMousedown = (e: MouseEvent) => {
       if (!e.currentTarget) {
@@ -314,13 +368,20 @@ export default defineComponent({
       processing,
       handleClick,
       handleMousedown,
+      setTreeItems,
       wrapper,
     };
   },
   render() {
     const { keyword } = this.$props;
-    const { apiFolders, apiSettings, isDark, expandedFolders, processing } =
-      this;
+    const {
+      apiFolders,
+      apiSettings,
+      isDark,
+      expandedFolders,
+      processing,
+      setTreeItems,
+    } = this;
     if (processing) {
       return <ExLoading />;
     }
@@ -330,7 +391,10 @@ export default defineComponent({
       expandedFolders
     );
     const itemList = [] as JSX.Element[];
-    const appendToList = (items: TreeItem[], index: number) => {
+    // 当前展示的tree item
+    const currentTreeItems = [] as TreeItem[];
+    let treeItemIndex = 0;
+    const appendToList = (items: TreeItem[], level: number) => {
       if (!items || items.length === 0) {
         return;
       }
@@ -357,14 +421,14 @@ export default defineComponent({
         }
 
         const style = {
-          "padding-left": `${index * 20}px`,
+          "padding-left": `${level * 20}px`,
         };
         const cls = isDark ? "" : "light";
+        currentTreeItems.push(item);
         itemList.push(
           <li
-            key={item.id}
-            data-id={item.id}
-            data-category={item.settingType}
+            key={`${item.id}-${level}`}
+            data-index={treeItemIndex}
             class={cls}
             style={style}
             onClick={() => {
@@ -376,14 +440,16 @@ export default defineComponent({
             {item.name}
           </li>
         );
+        treeItemIndex++;
         // 未展开的则不需要展示子元素
         if (!item.expanded) {
           return;
         }
-        appendToList(item.children, index + 1);
+        appendToList(item.children, level + 1);
       });
     };
     appendToList(treeItems, 0);
+    setTreeItems(currentTreeItems);
     return (
       <div class={itemsWrapperClass} ref="wrapper">
         <ul>{itemList}</ul>
