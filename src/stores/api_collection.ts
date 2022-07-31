@@ -15,6 +15,10 @@ const expandedSettingStore = localforage.createInstance({
   name: "expandedSettingStore",
 });
 
+const topTreeItemStore = localforage.createInstance({
+  name: "topTreeItemStore",
+});
+
 async function toggleFolderExpanded(
   collection: string,
   folder: string,
@@ -39,6 +43,7 @@ export const useAPICollectionStore = defineStore("apiCollections", {
     return {
       apiCollections: [] as APICollection[],
       expandedFolders: [] as string[],
+      topTreeItems: [] as string[],
       fetching: false,
       adding: false,
       updating: false,
@@ -51,6 +56,16 @@ export const useAPICollectionStore = defineStore("apiCollections", {
       if (items) {
         this.expandedFolders = items;
       }
+    },
+    async fetchTopTreeItems(collection: string) {
+      const items = await topTreeItemStore.getItem<string[]>(collection);
+      if (items) {
+        this.topTreeItems = items;
+      }
+    },
+    async updateTopTreeItems(collection: string, idList: string[]) {
+      await topTreeItemStore.setItem(collection, idList);
+      this.topTreeItems = idList;
     },
     async openFolder(collection: string, folder: string) {
       // localforage操作较快，因此不记录处理中

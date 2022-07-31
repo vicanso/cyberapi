@@ -88,7 +88,7 @@ export const useAPIFolderStore = defineStore("apiFolders", {
         const currentParent = arr[currentParentIndex];
         const children = currentParent?.children?.split(",");
         // 同一目录，只调整顺序
-        if (prevParentIndex === currentParentIndex) {
+        if (currentParent && prevParentIndex === currentParentIndex) {
           const currentIndex = children.indexOf(child);
           children.splice(currentIndex, 1);
         } else if (prevParentIndex !== -1) {

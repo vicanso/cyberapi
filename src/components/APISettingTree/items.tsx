@@ -2,6 +2,7 @@ import { defineComponent, ref, onBeforeMount } from "vue";
 import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
 import { NIcon, useMessage } from "naive-ui";
+import { sortBy, uniq } from "lodash-es";
 
 import { useAPIFolderStore } from "../../stores/api_folder";
 import { showError } from "../../helpers/util";
@@ -103,7 +104,8 @@ interface TreeItem {
 function convertToTreeItems(
   apiFolders: APIFolder[],
   apiSettings: APISetting[],
-  expandedFolders: string[]
+  expandedFolders: string[],
+  topTreeItems: string[]
 ): TreeItem[] {
   const map = new Map<string, TreeItem>();
   apiSettings.forEach((item) => {
@@ -160,7 +162,9 @@ function convertToTreeItems(
     }
     result.push(item);
   });
-  return result;
+  return sortBy(result, (item) => {
+    return topTreeItems.indexOf(item.id);
+  });
 }
 
 export default defineComponent({
@@ -182,14 +186,16 @@ export default defineComponent({
     const folderStore = useAPIFolderStore();
     const settingStore = useAPISettingStore();
     const { apiFolders } = storeToRefs(folderStore);
-    const { expandedFolders } = storeToRefs(collectionStore);
+    const { expandedFolders, topTreeItems } = storeToRefs(collectionStore);
     const { isDark } = storeToRefs(useSettingStore());
     const { apiSettings } = storeToRefs(settingStore);
 
     let currentTreeItems = [] as TreeItem[];
+    let topTreeItemIDList = [] as string[];
 
-    const setTreeItems = (items: TreeItem[]) => {
+    const setTreeItems = (items: TreeItem[], topItems: string[]) => {
       currentTreeItems = items;
+      topTreeItemIDList = topItems;
     };
 
     const handleClick = async (item: TreeItem) => {
@@ -212,6 +218,7 @@ export default defineComponent({
       targetIndex: number,
       overType: OverType
     ) => {
+      // TODO 如果是最后一个元素的处理
       // isOver move 与 target 是否重叠
       const moveItem = currentTreeItems[moveIndex];
       const targetItem = currentTreeItems[targetIndex];
@@ -234,11 +241,26 @@ export default defineComponent({
         parentID = targetItem.id;
         childIndex = 0;
       }
-      // TODO 顶层的拖动
-      if (!parentID) {
-        return;
-      }
       try {
+        // 记录顶层顺序
+        if (!parentID) {
+          let targetIndex = topTreeItemIDList.indexOf(targetItem.id);
+          if (targetIndex < 0) {
+            targetIndex = 0;
+          }
+          const moveIndex = topTreeItemIDList.indexOf(moveItem.id);
+          //  如果是后移
+          if (moveIndex !== -1 && moveIndex < targetIndex) {
+            topTreeItemIDList.splice(moveIndex, 1);
+            targetIndex--;
+          }
+
+          topTreeItemIDList.splice(targetIndex, 0, moveItem.id);
+          await collectionStore.updateTopTreeItems(
+            collection,
+            uniq(topTreeItemIDList)
+          );
+        }
         await folderStore.addChild({
           id: parentID,
           child: moveItem.id,
@@ -351,6 +373,7 @@ export default defineComponent({
       processing.value = true;
       try {
         await collectionStore.fetchExpandedFolders(collection);
+        await collectionStore.fetchTopTreeItems(collection);
         await folderStore.fetch();
         await settingStore.fetch();
       } catch (err) {
@@ -361,6 +384,7 @@ export default defineComponent({
     });
 
     return {
+      topTreeItems,
       expandedFolders,
       isDark,
       apiFolders,
@@ -380,6 +404,7 @@ export default defineComponent({
       isDark,
       expandedFolders,
       processing,
+      topTreeItems,
       setTreeItems,
     } = this;
     if (processing) {
@@ -388,17 +413,23 @@ export default defineComponent({
     const treeItems = convertToTreeItems(
       apiFolders,
       apiSettings,
-      expandedFolders
+      expandedFolders,
+      topTreeItems
     );
     const itemList = [] as JSX.Element[];
     // 当前展示的tree item
     const currentTreeItems = [] as TreeItem[];
+    // 顶层元素
+    const topTreeItemIDList = [] as string[];
     let treeItemIndex = 0;
     const appendToList = (items: TreeItem[], level: number) => {
       if (!items || items.length === 0) {
         return;
       }
       items.forEach((item) => {
+        if (level === 0) {
+          topTreeItemIDList.push(item.id);
+        }
         // 暂时只过滤接口
         if (
           keyword &&
@@ -449,7 +480,7 @@ export default defineComponent({
       });
     };
     appendToList(treeItems, 0);
-    setTreeItems(currentTreeItems);
+    setTreeItems(currentTreeItems, topTreeItemIDList);
     return (
       <div class={itemsWrapperClass} ref="wrapper">
         <ul>{itemList}</ul>
