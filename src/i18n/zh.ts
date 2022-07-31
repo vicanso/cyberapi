@@ -4,6 +4,8 @@ export default {
     newHTTPRequest: "新建HTTP请求",
     newFolder: "新建目录",
     defaultName: "新的请求",
+    deleteSetting: "删除配置",
+    deleteSettingContent: "确认要删除该配置吗？",
   },
   common: {
     app: "CyberAPI",

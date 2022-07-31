@@ -1,14 +1,13 @@
+// API列表，实现拖动
 import { defineComponent, ref, onBeforeMount } from "vue";
 import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
-import { NDropdown, NIcon, useMessage } from "naive-ui";
+import { NIcon, useMessage } from "naive-ui";
 import { sortBy, uniq } from "lodash-es";
 import {
   AnalyticsOutline,
-  ChevronDownOutline,
   FolderOpenOutline,
   FolderOutline,
-  TrashOutline,
 } from "@vicons/ionicons5";
 import { useRoute } from "vue-router";
 
@@ -32,8 +31,10 @@ import {
   nodeRemoveClass,
   nodeSetStyle,
   nodeHasClass,
+  nodeGetTagName,
 } from "../../helpers/html";
 import ExLoading from "../ExLoading";
+import APISettingTreeItemDropdown from "./item_dropdown";
 
 const itemsWrapperClass = css`
   position: absolute;
@@ -75,14 +76,14 @@ const itemsWrapperClass = css`
     &:hover {
       cursor: pointer;
       background-color: rgba(255, 255, 255, 0.1);
-      span {
+      .itemDropitem {
         display: inline;
       }
     }
     &.light:hover {
       background-color: rgba(0, 0, 0, 0.1);
     }
-    span {
+    .itemDropitem {
       float: right;
       display: none;
     }
@@ -417,17 +418,6 @@ export default defineComponent({
     };
   },
   render() {
-    const options = [
-      {
-        label: "删除",
-        key: "delete",
-        icon: () => (
-          <NIcon>
-            <TrashOutline />
-          </NIcon>
-        ),
-      },
-    ];
     const { keyword } = this.$props;
     const {
       apiFolders,
@@ -494,7 +484,11 @@ export default defineComponent({
             class={cls}
             style={style}
             onClick={(e) => {
-              if (nodeHasClass(e.target, "preventDefault")) {
+              const { target } = e;
+              if (
+                nodeHasClass(target, "preventDefault") ||
+                nodeGetTagName(target) === "path"
+              ) {
                 e.preventDefault();
                 return;
               }
@@ -504,13 +498,10 @@ export default defineComponent({
           >
             {icon}
             {item.name}
-            <NDropdown options={options} trigger="click">
-              <span class="preventDefault">
-                <NIcon class="preventDefault">
-                  <ChevronDownOutline class="preventDefault" />
-                </NIcon>
-              </span>
-            </NDropdown>
+            <APISettingTreeItemDropdown
+              id={item.id}
+              apiSettingType={item.settingType}
+            />
           </li>
         );
         treeItemIndex++;

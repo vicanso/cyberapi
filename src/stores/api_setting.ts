@@ -20,6 +20,7 @@ export const useAPISettingStore = defineStore("apiSettings", {
       fetching: false,
       adding: false,
       updating: false,
+      removing: false,
     };
   },
   actions: {
@@ -69,6 +70,11 @@ export const useAPISettingStore = defineStore("apiSettings", {
         this.apiSettings = arr;
       } finally {
         this.updating = false;
+      }
+    },
+    async remove(id: string) {
+      if (this.removing) {
+        return;
       }
     },
   },

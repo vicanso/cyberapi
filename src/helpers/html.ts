@@ -123,6 +123,11 @@ function nodeGetDataValue(node, key) {
   return node.dataset[key] as string;
 }
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore
+function nodeGetTagName(node) {
+  return node.tagName;
+}
 export {
   nodeInsertAt,
   nodeRemove,
@@ -136,4 +141,5 @@ export {
   nodeHasClass,
   nodeGetOffsetHeightWidth,
   nodeGetDataValue,
+  nodeGetTagName,
 };
