@@ -28,6 +28,7 @@ import {
   removeNodeClass,
   setNodeStyle,
 } from "../../helpers/html";
+import ExLoading from "../ExLoading";
 
 const itemsWrapperClass = css`
   position: absolute;
@@ -121,18 +122,21 @@ function convertToTreeItems(
     if (!item.children) {
       return;
     }
-    const arr = item.children.split(",");
     const treeItem = map.get(item.id);
     if (!treeItem) {
       return;
     }
-    arr.forEach((id) => {
-      const subItem = map.get(id);
+    item.children.split(",").forEach((child) => {
+      if (child === treeItem.id) {
+        return;
+      }
+
+      const subItem = map.get(child);
       if (!subItem) {
         return;
       }
       treeItem.children.push(subItem);
-      children.push(id);
+      children.push(child);
     });
   });
   const result = [] as TreeItem[];
@@ -315,7 +319,11 @@ export default defineComponent({
   },
   render() {
     const { keyword } = this.$props;
-    const { apiFolders, apiSettings, isDark, expandedFolders } = this;
+    const { apiFolders, apiSettings, isDark, expandedFolders, processing } =
+      this;
+    if (processing) {
+      return <ExLoading />;
+    }
     const treeItems = convertToTreeItems(
       apiFolders,
       apiSettings,
