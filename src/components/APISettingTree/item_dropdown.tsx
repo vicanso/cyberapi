@@ -31,17 +31,27 @@ export default defineComponent({
       switch (key) {
         case deleteKey:
           {
+            let name = "";
+            if (apiSettingType === SettingType.Folder) {
+              name = folderStore.findByID(id)?.name || "";
+            } else {
+              name = settingStore.findByID(id)?.name || "";
+            }
+            const content = i18nCollection("deleteSettingContent").replace(
+              "%s",
+              name
+            );
             const d = dialog.warning({
               title: i18nCollection("deleteSetting"),
-              content: i18nCollection("deleteSettingContent"),
+              content: content,
               positiveText: i18nCommon("confirm"),
               onPositiveClick: async () => {
                 d.loading = true;
                 try {
-                  if (apiSettingType === SettingType.HTTP) {
-                    await settingStore.remove(id);
-                  } else {
+                  if (apiSettingType === SettingType.Folder) {
                     await folderStore.remove(id);
+                  } else {
+                    await settingStore.remove(id);
                   }
                 } catch (err) {
                   showError(message, err);
@@ -53,7 +63,6 @@ export default defineComponent({
         default:
           break;
       }
-      console.dir(key);
     };
     return {
       handleSelect,

@@ -5,7 +5,7 @@ export default {
     newFolder: "新建目录",
     defaultName: "新的请求",
     deleteSetting: "删除配置",
-    deleteSettingContent: "确认要删除该配置吗？",
+    deleteSettingContent: "确认要删除配置(%s)吗？",
   },
   common: {
     app: "CyberAPI",

@@ -20,6 +20,9 @@ export const useAPIFolderStore = defineStore("apiFolders", {
     };
   },
   actions: {
+    findByID(id: string) {
+      return this.apiFolders.find((item) => item.id === id);
+    },
     async add(data: APIFolder): Promise<void> {
       if (this.adding) {
         return;

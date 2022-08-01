@@ -111,26 +111,34 @@ interface TreeItem {
   expanded: boolean;
   parent: string;
   childIndex: number;
+  hidden: boolean;
 }
 
-function convertToTreeItems(
-  apiFolders: APIFolder[],
-  apiSettings: APISetting[],
-  expandedFolders: string[],
-  topTreeItems: string[]
-): TreeItem[] {
+function convertToTreeItems(params: {
+  apiFolders: APIFolder[];
+  apiSettings: APISetting[];
+  expandedFolders: string[];
+  topTreeItems: string[];
+  keyword: string;
+}): TreeItem[] {
+  const { apiFolders, apiSettings, expandedFolders, topTreeItems } = params;
   const map = new Map<string, TreeItem>();
+
+  const keyword = params.keyword.toLowerCase();
+
   apiSettings.forEach((item) => {
     map.set(item.id, {
       id: item.id,
       name: item.name,
-      settingType: "",
+      settingType: SettingType.HTTP,
       children: [],
       expanded: false,
       parent: "",
       childIndex: -1,
+      hidden: false,
     });
   });
+
   apiFolders.forEach((item) => {
     map.set(item.id, {
       id: item.id,
@@ -140,8 +148,10 @@ function convertToTreeItems(
       expanded: expandedFolders.includes(item.id),
       parent: "",
       childIndex: -1,
+      hidden: false,
     });
   });
+
   // 记录已经设置为子元素的id
   const children = [] as string[];
   apiFolders.forEach((item) => {
@@ -174,6 +184,23 @@ function convertToTreeItems(
     }
     result.push(item);
   });
+  if (keyword) {
+    const shouldBeHide = (item: TreeItem) => {
+      let hidden = true;
+      item.children.forEach((item) => {
+        shouldBeHide(item);
+        // 子元素有一个非hidden，则父元素非hidden
+        if (!item.hidden) {
+          hidden = false;
+        }
+      });
+      if (item.name.toLowerCase().includes(keyword)) {
+        hidden = false;
+      }
+      item.hidden = hidden;
+    };
+    result.forEach(shouldBeHide);
+  }
   return sortBy(result, (item) => {
     return topTreeItems.indexOf(item.id);
   });
@@ -431,12 +458,13 @@ export default defineComponent({
     if (processing) {
       return <ExLoading />;
     }
-    const treeItems = convertToTreeItems(
+    const treeItems = convertToTreeItems({
       apiFolders,
       apiSettings,
       expandedFolders,
-      topTreeItems
-    );
+      topTreeItems,
+      keyword,
+    });
     const itemList = [] as JSX.Element[];
     // 当前展示的tree item
     const currentTreeItems = [] as TreeItem[];
@@ -448,16 +476,11 @@ export default defineComponent({
         return;
       }
       items.forEach((item) => {
+        if (item.hidden) {
+          return;
+        }
         if (level === 0) {
           topTreeItemIDList.push(item.id);
-        }
-        // 暂时只过滤接口
-        if (
-          keyword &&
-          item.settingType !== SettingType.Folder &&
-          !item.name.toLocaleLowerCase().includes(keyword)
-        ) {
-          return;
         }
         let icon = (
           <NIcon>
