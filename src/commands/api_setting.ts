@@ -7,6 +7,7 @@ import {
   cmdAddAPISetting,
   cmdListAPISetting,
   cmdUpdateAPISetting,
+  cmdDeleteAPISettings,
 } from "./invoke";
 import { fakeList, fakeAdd, fakeUpdate, fakeUpdateStore } from "./fake";
 
@@ -76,4 +77,7 @@ export async function deleteAPISettings(ids: string[]) {
     });
     await fakeUpdateStore(store, result);
   }
+  await run(cmdDeleteAPISettings, {
+    ids,
+  });
 }

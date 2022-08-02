@@ -6,6 +6,7 @@ import {
   listAPISetting,
   createAPISetting,
   updateAPISetting,
+  deleteAPISettings,
 } from "../commands/api_setting";
 
 export enum SettingType {
@@ -78,6 +79,13 @@ export const useAPISettingStore = defineStore("apiSettings", {
     async remove(id: string) {
       if (this.removing) {
         return;
+      }
+      this.removing = true;
+      try {
+        await deleteAPISettings([id]);
+        this.apiSettings = this.apiSettings.filter((item) => item.id !== id);
+      } finally {
+        this.removing = false;
       }
     },
   },

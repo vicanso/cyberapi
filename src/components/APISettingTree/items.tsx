@@ -21,7 +21,6 @@ import { useSettingStore } from "../../stores/setting";
 import { useAPICollectionStore } from "../../stores/api_collection";
 import {
   nodeAddClass,
-  nodeClone,
   nodeGetDataValue,
   nodeGetOffset,
   nodeGetOffsetHeightWidth,
@@ -329,7 +328,11 @@ export default defineComponent({
       if (!isDragging && Math.abs(offset) > 3) {
         isDragging = true;
         nodeAddClass(wrapper.value, draggingClass);
-        moveTarget = nodeClone(target);
+
+        // 提交公共方法至html无法复制(TODO确认原因)
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        moveTarget = target.cloneNode(true);
         nodeSetStyle(moveTarget, {
           position: "absolute",
           width: "100%",

@@ -145,6 +145,7 @@ export const useAPIFolderStore = defineStore("apiFolders", {
       this.removing = true;
       try {
         await deleteAPIFolder(id);
+        this.apiFolders = this.apiFolders.filter((item) => item.id !== id);
       } finally {
         this.removing = false;
       }

@@ -37,12 +37,6 @@ function nodeInsertBefore(node, beforeNode) {
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-function nodeClone(node) {
-  return node.nodeClone(true);
-}
-
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore
 function nodeSetStyle(node, style) {
   Object.assign(node.style, style);
 }
@@ -131,7 +125,6 @@ function nodeGetTagName(node) {
 export {
   nodeInsertAt,
   nodeRemove,
-  nodeClone,
   nodeSetStyle,
   nodeInsertBefore,
   nodeGetOffset,

@@ -2,12 +2,7 @@ import { defineComponent, PropType, StyleValue } from "vue";
 import { css } from "@linaria/core";
 import { NDivider } from "naive-ui";
 
-import {
-  nodeClone,
-  nodeInsertAt,
-  nodeSetStyle,
-  nodeRemove,
-} from "../helpers/html";
+import { nodeInsertAt, nodeSetStyle, nodeRemove } from "../helpers/html";
 
 const dividerClass = css`
   margin: 0 !important;
@@ -76,7 +71,10 @@ export default defineComponent({
       document.addEventListener("mousemove", onMousemove);
       document.addEventListener("mouseup", onMouseup);
 
-      target = nodeClone(e.currentTarget);
+      // 提交公共方法至html无法复制(TODO确认原因)
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore
+      target = e.currentTarget.cloneNode(true);
 
       nodeSetStyle(target, {
         left: `${originClientX}px`,

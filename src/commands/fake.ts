@@ -70,13 +70,13 @@ export async function fakeDeleteItems<T extends WithID>(
   ids: string[]
 ) {
   const result = await fakeList<T>(storeName);
-  const arr = [];
+  const arr = [] as unknown[];
   result.forEach((item) => {
     if (!ids.includes(item.id)) {
       arr.push(item);
     }
   });
-  await fakeUpdateStore(storeName, result);
+  await fakeUpdateStore(storeName, arr);
 }
 
 export async function fakeUpdateStore(storeName: string, data: unknown) {
