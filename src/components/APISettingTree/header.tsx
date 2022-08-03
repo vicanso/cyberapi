@@ -1,5 +1,6 @@
 // API栏目的顶部功能栏
-import { defineComponent, PropType } from "vue";
+import { defineComponent, onBeforeUnmount, PropType } from "vue";
+import { css } from "@linaria/core";
 import {
   NDropdown,
   NButton,
@@ -21,6 +22,19 @@ import { useAPIFolderStore } from "../../stores/api_folder";
 import { showError } from "../../helpers/util";
 import { newDefaultAPISetting } from "../../commands/api_setting";
 import { AnalyticsOutline, FolderOpenOutline } from "@vicons/ionicons5";
+import {
+  hotKeyCreateHTTPSetting,
+  hotKeyMatchCreateHTTPSetting,
+} from "../../helpers/hot_key";
+
+const addDropdownClass = css`
+  .label {
+    min-width: 180px;
+  }
+  .hotKey {
+    float: right;
+  }
+`;
 
 const getFolderFormItems = (): ExFormItem[] => {
   return [
@@ -67,6 +81,16 @@ export default defineComponent({
     const message = useMessage();
     const route = useRoute();
     const collection = route.query.id as string;
+    const handleKeydown = (e: KeyboardEvent) => {
+      if (hotKeyMatchCreateHTTPSetting(e)) {
+        addHTTPSetting();
+        return;
+      }
+    };
+    document.addEventListener("keydown", handleKeydown);
+    onBeforeUnmount(() => {
+      document.removeEventListener("keydown", handleKeydown);
+    });
     const addFolder = () => {
       ExDialog({
         dialog,
@@ -114,7 +138,9 @@ export default defineComponent({
   render() {
     const options = [
       {
-        label: i18nCollection("newHTTPRequest"),
+        label: `${i18nCollection(
+          "newHTTPRequest"
+        )} | ${hotKeyCreateHTTPSetting()}`,
         key: SettingType.HTTP,
         icon: () => (
           <NIcon>
@@ -147,8 +173,23 @@ export default defineComponent({
         </NGi>
         <NGi span={8}>
           <NDropdown
+            class={addDropdownClass}
             trigger="click"
             options={options}
+            renderLabel={(option) => {
+              const arr = (option.label as string).split(" | ");
+              const hotkey =
+                arr.length === 2 ? (
+                  <span class="hotKey">{arr[1]}</span>
+                ) : undefined;
+
+              return (
+                <div class="label">
+                  {arr[0]}
+                  {hotkey}
+                </div>
+              );
+            }}
             onSelect={(key: string) => {
               switch (key) {
                 case SettingType.HTTP:

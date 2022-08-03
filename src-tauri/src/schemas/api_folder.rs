@@ -22,6 +22,8 @@ pub struct APIFolder {
     pub updated_at: String,
 }
 
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct APIFolderChildren {
     pub folders: Vec<String>,
     pub settings: Vec<String>,

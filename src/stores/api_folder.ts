@@ -8,6 +8,7 @@ import {
   updateAPIFolder,
 } from "../commands/api_folder";
 import { APIFolder } from "../commands/api_folder";
+import { useAPISettingStore } from "./api_setting";
 
 export const useAPIFolderStore = defineStore("apiFolders", {
   state: () => {
@@ -144,8 +145,17 @@ export const useAPIFolderStore = defineStore("apiFolders", {
       }
       this.removing = true;
       try {
-        await deleteAPIFolder(id);
-        this.apiFolders = this.apiFolders.filter((item) => item.id !== id);
+        const settingStore = useAPISettingStore();
+        const result = await deleteAPIFolder(id);
+
+        const folderIds = result.folders || [];
+        const settingIds = result.settings || [];
+        this.apiFolders = this.apiFolders.filter(
+          (item) => !folderIds.includes(item.id)
+        );
+        settingStore.apiSettings = settingStore.apiSettings.filter((item) => {
+          return !settingIds.includes(item.id);
+        });
       } finally {
         this.removing = false;
       }

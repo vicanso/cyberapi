@@ -123,7 +123,6 @@ pub fn add_cookie(c: Cookie) -> Result<(), CyberAPIError> {
     let request_url = Url::parse(&url)?;
     let cookie_str = c.to_set_cookie_string();
 
-
     store.parse(&cookie_str, &request_url)?;
 
     save_store(store)?;

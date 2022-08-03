@@ -97,12 +97,12 @@ pub fn list_api_folder() -> CommandResult<Vec<APIFolder>> {
 
 // 删除API目录对应的所有子目录
 #[command(async)]
-pub fn delete_api_folder(id: String) -> CommandResult<()> {
+pub fn delete_api_folder(id: String) -> CommandResult<schemas::APIFolderChildren> {
     let mut result = schemas::list_api_folder_all_children(id.clone())?;
     result.folders.push(id);
-    schemas::delete_api_folders(result.folders)?;
-    schemas::delete_api_settings(result.settings)?;
-    Ok(())
+    schemas::delete_api_folders(result.folders.clone())?;
+    schemas::delete_api_settings(result.settings.clone())?;
+    Ok(result)
 }
 
 // 执行HTTP请求

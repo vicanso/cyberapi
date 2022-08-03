@@ -490,7 +490,8 @@ export default defineComponent({
             <AnalyticsOutline />
           </NIcon>
         );
-        if (item.settingType === SettingType.Folder) {
+        const isFolder = item.settingType === SettingType.Folder;
+        if (isFolder) {
           icon = (
             <NIcon>
               {item.expanded ? <FolderOpenOutline /> : <FolderOutline />}

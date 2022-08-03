@@ -64,7 +64,14 @@ export async function updateAPIFolder(folder: APIFolder) {
   });
 }
 
-export async function deleteAPIFolder(id: string) {
+export async function deleteAPIFolder(id: string): Promise<{
+  folders: string[];
+  settings: string[];
+}> {
+  const result = {
+    folders: [] as string[],
+    settings: [] as string[],
+  };
   if (isWebMode()) {
     // 查询folders
     const folders = await listAPIFolder();
@@ -73,7 +80,7 @@ export async function deleteAPIFolder(id: string) {
       folderDict.set(item.id, item);
     });
     if (!folderDict.has(id)) {
-      return;
+      return Promise.resolve(result);
     }
     const folderIds = [id];
     const settingIds: string[] = [];
@@ -82,6 +89,12 @@ export async function deleteAPIFolder(id: string) {
       const subChildren: string[] = [];
       const arr = children.split(",");
       arr.forEach((id) => {
+        if (!id) {
+          return;
+        }
+        if (settingIds.includes(id) || folderIds.includes(id)) {
+          return;
+        }
         const folder = folderDict.get(id);
         if (folder) {
           folderIds.push(id);
@@ -96,9 +109,11 @@ export async function deleteAPIFolder(id: string) {
     }
     await fakeDeleteItems("apiSettings", settingIds);
     await fakeDeleteItems(store, folderIds);
-    return;
+    result.folders = folderIds;
+    result.settings = settingIds;
+    return result;
   }
-  await run(cmdDeleteAPIFolder, {
+  return await run(cmdDeleteAPIFolder, {
     id,
   });
 }

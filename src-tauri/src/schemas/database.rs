@@ -74,6 +74,16 @@ pub fn delete_by_ids(table: &str, ids: Vec<String>) -> Result<usize, rusqlite::E
     if ids.is_empty() {
         return Ok(0);
     }
-    let sql = format!("DELETE FROM {} WHERE id IN ({})", table, ids.join(", "));
+
+    let mut id_params = Vec::new();
+    for ele in ids {
+        id_params.push(format!("'{}'", ele));
+    }
+
+    let sql = format!(
+        "DELETE FROM {} WHERE id IN ({})",
+        table,
+        id_params.join(", ")
+    );
     get_conn().execute(&sql, [])
 }

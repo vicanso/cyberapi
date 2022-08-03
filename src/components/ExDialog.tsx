@@ -15,6 +15,8 @@ export default function newDialog(option: DialogOption) {
   const { dialog, formItems } = option;
   const d = dialog.info({
     title: option.title,
+    autoFocus: true,
+    closable: false,
     content: () => (
       <ExForm
         formItems={formItems}
