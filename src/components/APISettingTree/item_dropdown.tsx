@@ -1,13 +1,24 @@
 // API功能下拉选项框
-import { ChevronDownOutline, TrashOutline } from "@vicons/ionicons5";
+import {
+  ChevronDownOutline,
+  CreateOutline,
+  TrashOutline,
+} from "@vicons/ionicons5";
 import { NDropdown, NIcon, useDialog, useMessage } from "naive-ui";
+import { css } from "@linaria/core";
 import { defineComponent } from "vue";
 import { showError } from "../../helpers/util";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { useAPIFolderStore } from "../../stores/api_folder";
 import { SettingType, useAPISettingStore } from "../../stores/api_setting";
+import { HandleKey } from "../../constants/handle_key";
+import ExDialog from "../ExDialog";
 
-const deleteKey = "delete";
+const dropdonwClass = css`
+  .option {
+    margin: 0 10px 0 0;
+  }
+`;
 
 export default defineComponent({
   name: "APISettingTreeItemDropdown",
@@ -28,15 +39,18 @@ export default defineComponent({
     const folderStore = useAPIFolderStore();
     const handleSelect = (key: string) => {
       const { id, apiSettingType } = props;
+      let name = "";
+      let isFolder = false;
+      if (apiSettingType === SettingType.Folder) {
+        isFolder = true;
+        name = folderStore.findByID(id).name;
+      } else {
+        name = settingStore.findByID(id).name;
+      }
+
       switch (key) {
-        case deleteKey:
+        case HandleKey.Delete:
           {
-            let name = "";
-            if (apiSettingType === SettingType.Folder) {
-              name = folderStore.findByID(id)?.name || "";
-            } else {
-              name = settingStore.findByID(id)?.name || "";
-            }
             const content = i18nCollection("deleteSettingContent").replace(
               "%s",
               name
@@ -48,10 +62,42 @@ export default defineComponent({
               onPositiveClick: async () => {
                 d.loading = true;
                 try {
-                  if (apiSettingType === SettingType.Folder) {
+                  if (isFolder) {
                     await folderStore.remove(id);
                   } else {
                     await settingStore.remove(id);
+                  }
+                } catch (err) {
+                  showError(message, err);
+                }
+              },
+            });
+          }
+          break;
+        case HandleKey.Modify:
+          {
+            ExDialog({
+              dialog,
+              title: i18nCollection("modifySetting"),
+              formItems: [
+                {
+                  key: "name",
+                  label: i18nCommon("name"),
+                  defaultValue: name,
+                  placeholer: i18nCommon("namePlaceholder"),
+                  rule: {
+                    required: true,
+                    message: i18nCommon("nameRequireError"),
+                    trigger: "blur",
+                  },
+                },
+              ],
+              onConfirm: async (data) => {
+                try {
+                  if (isFolder) {
+                    await folderStore.updateByID(id, data);
+                  } else {
+                    await settingStore.updateByID(id, data);
                   }
                 } catch (err) {
                   showError(message, err);
@@ -71,8 +117,17 @@ export default defineComponent({
   render() {
     const options = [
       {
+        label: i18nCommon("modify"),
+        key: HandleKey.Modify,
+        icon: () => (
+          <NIcon>
+            <CreateOutline />
+          </NIcon>
+        ),
+      },
+      {
         label: i18nCommon("delete"),
-        key: "delete",
+        key: HandleKey.Delete,
         icon: () => (
           <NIcon>
             <TrashOutline />
@@ -81,7 +136,15 @@ export default defineComponent({
       },
     ];
     return (
-      <NDropdown options={options} trigger="click" onSelect={this.handleSelect}>
+      <NDropdown
+        class={dropdonwClass}
+        options={options}
+        trigger="click"
+        onSelect={this.handleSelect}
+        renderLabel={(option) => {
+          return <span class="option">{option.label}</span>;
+        }}
+      >
         <span class="preventDefault itemDropitem">
           <NIcon class="preventDefault">
             <ChevronDownOutline class="preventDefault" />

@@ -60,12 +60,15 @@
         "resizable": true,
         "title": "Cyber API",
         "width": 900,
+        "center": true,
         "visible": false
       },
       {
         "width": 400,
         "height": 200,
+        "resizable": false,
         "decorations": false,
+        "center": true,
         "url": "splashscreen.html",
         "label": "splashscreen"
       }

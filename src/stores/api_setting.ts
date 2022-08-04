@@ -25,8 +25,14 @@ export const useAPISettingStore = defineStore("apiSettings", {
     };
   },
   actions: {
-    findByID(id: string) {
-      return this.apiSettings.find((item) => item.id === id);
+    findByID(id: string): APISetting {
+      const index = this.apiSettings.findIndex((item) => item.id === id);
+      return this.apiSettings[index];
+    },
+    async updateByID(id: string, data: unknown) {
+      const index = this.apiSettings.findIndex((item) => item.id === id);
+      const item = Object.assign(this.apiSettings[index], data);
+      await this.update(item);
     },
     async add(data: APISetting) {
       if (this.adding) {

@@ -39,6 +39,7 @@ import { names } from "../router/routes";
 import { useHeaderStore } from "../stores/header";
 import { useSettingStore } from "../stores/setting";
 import { nodeHasClass } from "../helpers/html";
+import { HandleKey } from "../constants/handle_key";
 
 const dashboardClass = css`
   padding: ${2 * padding}px;
@@ -50,10 +51,12 @@ const collectionContentClass = css`
   cursor: pointer;
 `;
 
-enum HandleKey {
-  Modify = "modify",
-  Delete = "delete",
-}
+const sortOptionsClass = css`
+  width: 100%;
+  .option {
+    margin: 0 10px;
+  }
+`;
 
 enum SortType {
   LastModified = "lastModified",
@@ -242,40 +245,39 @@ export default defineComponent({
       fetching,
       apiCollections,
       handleCollection,
-      sortOptions: [
-        {
-          label: i18nDashboard("sortLastModified"),
-          key: SortType.LastModified,
-        },
-        {
-          label: i18nDashboard("sortNameAsc"),
-          key: SortType.NameAsc,
-        },
-        {
-          label: i18nDashboard("sortNameDesc"),
-          key: SortType.NameDesc,
-        },
-        {
-          label: i18nDashboard("sortOlderFirst"),
-          key: SortType.OldestFirst,
-        },
-        {
-          label: i18nDashboard("sortNewestFirst"),
-          key: SortType.NewestFirst,
-        },
-      ],
     };
   },
   render() {
     const {
       sortOrder,
-      sortOptions,
       createCollection,
       fetching,
       apiCollections,
       handleCollection,
       keyword,
     } = this;
+    const sortOptions = [
+      {
+        label: i18nDashboard("sortLastModified"),
+        key: SortType.LastModified,
+      },
+      {
+        label: i18nDashboard("sortNameAsc"),
+        key: SortType.NameAsc,
+      },
+      {
+        label: i18nDashboard("sortNameDesc"),
+        key: SortType.NameDesc,
+      },
+      {
+        label: i18nDashboard("sortOlderFirst"),
+        key: SortType.OldestFirst,
+      },
+      {
+        label: i18nDashboard("sortNewestFirst"),
+        key: SortType.NewestFirst,
+      },
+    ];
     const slots = {
       suffix: () => (
         <NIcon>
@@ -303,10 +305,13 @@ export default defineComponent({
             </NGi>
             <NGi span={3}>
               <NDropdown
-                class={"widthFull"}
+                class={sortOptionsClass}
                 value={sortOrder}
                 options={sortOptions}
                 onSelect={this.changeSortType}
+                renderLabel={(option) => {
+                  return <span class="option">{option.label}</span>;
+                }}
               >
                 <NButton class={"widthFull"}>
                   <NIcon>

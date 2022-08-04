@@ -21,8 +21,14 @@ export const useAPIFolderStore = defineStore("apiFolders", {
     };
   },
   actions: {
-    findByID(id: string) {
-      return this.apiFolders.find((item) => item.id === id);
+    findByID(id: string): APIFolder {
+      const index = this.apiFolders.findIndex((item) => item.id === id);
+      return this.apiFolders[index];
+    },
+    async updateByID(id: string, data: unknown) {
+      const index = this.apiFolders.findIndex((item) => item.id === id);
+      const item = Object.assign(this.apiFolders[index], data);
+      await this.update(item);
     },
     async add(data: APIFolder): Promise<void> {
       if (this.adding) {

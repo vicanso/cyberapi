@@ -23,6 +23,7 @@ import { showError } from "../../helpers/util";
 import { newDefaultAPISetting } from "../../commands/api_setting";
 import { AnalyticsOutline, FolderOpenOutline } from "@vicons/ionicons5";
 import {
+  hotKeyCreateFolder,
   hotKeyCreateHTTPSetting,
   hotKeyMatchCreateHTTPSetting,
 } from "../../helpers/hot_key";
@@ -149,7 +150,7 @@ export default defineComponent({
         ),
       },
       {
-        label: i18nCollection("newFolder"),
+        label: `${i18nCollection("newFolder")} | ${hotKeyCreateFolder()}`,
         key: SettingType.Folder,
         icon: () => (
           <NIcon>
