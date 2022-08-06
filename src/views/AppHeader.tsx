@@ -6,6 +6,8 @@ import {
   NGi,
   NButton,
   NIcon,
+  NTabs,
+  NTab,
 } from "naive-ui";
 import { css } from "@linaria/core";
 import { defineComponent } from "vue";

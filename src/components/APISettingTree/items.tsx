@@ -16,7 +16,6 @@ import { showError } from "../../helpers/util";
 import { useAPISettingStore, SettingType } from "../../stores/api_setting";
 import { APIFolder } from "../../commands/api_folder";
 import { APISetting } from "../../commands/api_setting";
-
 import { useSettingStore } from "../../stores/setting";
 import { useAPICollectionStore } from "../../stores/api_collection";
 import {
@@ -79,8 +78,16 @@ const itemsWrapperClass = css`
         display: inline;
       }
     }
+    &.selected {
+      background-color: rgba(255, 255, 255, 0.1);
+      color: #fff;
+    }
     &.light:hover {
-      background-color: rgba(0, 0, 0, 0.1);
+      background-color: rgba(30, 30, 30, 0.1);
+    }
+    &.light.selected {
+      background-color: rgba(30, 30, 30, 0.1);
+      color: #000;
     }
     .itemDropitem {
       float: right;
@@ -226,7 +233,7 @@ export default defineComponent({
     const { apiFolders } = storeToRefs(folderStore);
     const { expandedFolders, topTreeItems } = storeToRefs(collectionStore);
     const { isDark } = storeToRefs(useSettingStore());
-    const { apiSettings } = storeToRefs(settingStore);
+    const { apiSettings, selectedID } = storeToRefs(settingStore);
 
     let currentTreeItems = [] as TreeItem[];
     let topTreeItemIDList = [] as string[];
@@ -245,6 +252,8 @@ export default defineComponent({
             fn = collectionStore.closeFolder;
           }
           await fn(collection, item.id);
+        } else {
+          settingStore.select(item.id);
         }
       } catch (err) {
         showError(message, err);
@@ -390,15 +399,6 @@ export default defineComponent({
       nodeRemoveClass(listItems[currentInsertIndex], "insertBefore");
       nodeRemoveClass(wrapper.value, draggingClass);
 
-      // 最后一个元素，而且移动至最后，则暂不处理
-      // TODO 后续优化
-      if (
-        targetItemIndex === currentTreeItems.length - 1 &&
-        overType === OverType.Bottom
-      ) {
-        return;
-      }
-
       handleMove(moveItemIndex, targetItemIndex, overType);
     };
     const handleMousedown = (e: MouseEvent) => {
@@ -435,6 +435,7 @@ export default defineComponent({
     });
 
     return {
+      selectedID,
       topTreeItems,
       expandedFolders,
       isDark,
@@ -457,6 +458,7 @@ export default defineComponent({
       processing,
       topTreeItems,
       setTreeItems,
+      selectedID,
     } = this;
     if (processing) {
       return <ExLoading />;
@@ -502,7 +504,10 @@ export default defineComponent({
         const style = {
           "padding-left": `${level * 20}px`,
         };
-        const cls = isDark ? "" : "light";
+        let cls = isDark ? "" : "light";
+        if (item.id === selectedID) {
+          cls += " selected";
+        }
         currentTreeItems.push(item);
         itemList.push(
           <li

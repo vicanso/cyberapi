@@ -1,32 +1,22 @@
 // API栏目的顶部功能栏
-import { defineComponent, onBeforeUnmount, PropType } from "vue";
+import { defineComponent, inject, onBeforeUnmount, PropType } from "vue";
 import { css } from "@linaria/core";
-import {
-  NDropdown,
-  NButton,
-  NGi,
-  NGrid,
-  NInput,
-  useDialog,
-  useMessage,
-  NIcon,
-} from "naive-ui";
-import { useRoute } from "vue-router";
+import { NDropdown, NButton, NGi, NGrid, NInput, NIcon } from "naive-ui";
 
 import { i18nCollection, i18nCommon } from "../../i18n";
-import { SettingType, useAPISettingStore } from "../../stores/api_setting";
-import { ExFormItem } from "../ExForm";
-import ExDialog from "../ExDialog";
-import { newDefaultAPIFolder } from "../../commands/api_folder";
-import { useAPIFolderStore } from "../../stores/api_folder";
-import { showError } from "../../helpers/util";
-import { newDefaultAPISetting } from "../../commands/api_setting";
+import { SettingType } from "../../stores/api_setting";
 import { AnalyticsOutline, FolderOpenOutline } from "@vicons/ionicons5";
 import {
   hotKeyCreateFolder,
   hotKeyCreateHTTPSetting,
   hotKeyMatchCreateHTTPSetting,
 } from "../../helpers/hot_key";
+import {
+  addFolderDefaultValue,
+  addFolderKey,
+  addHTTPSettingDefaultValue,
+  addHTTPSettingKey,
+} from "../../constants/provide";
 
 const addDropdownClass = css`
   .label {
@@ -37,36 +27,6 @@ const addDropdownClass = css`
   }
 `;
 
-const getFolderFormItems = (): ExFormItem[] => {
-  return [
-    {
-      key: "name",
-      label: i18nCommon("name"),
-      placeholer: i18nCommon("namePlaceholder"),
-      rule: {
-        required: true,
-        message: i18nCommon("nameRequireError"),
-        trigger: "blur",
-      },
-    },
-  ];
-};
-
-const getSettingFormItems = (): ExFormItem[] => {
-  return [
-    {
-      key: "name",
-      label: i18nCommon("name"),
-      placeholer: i18nCommon("namePlaceholder"),
-      rule: {
-        required: true,
-        message: i18nCommon("nameRequireError"),
-        trigger: "blur",
-      },
-    },
-  ];
-};
-
 export default defineComponent({
   name: "APISettingTreeHeader",
   props: {
@@ -76,15 +36,15 @@ export default defineComponent({
     },
   },
   setup() {
-    const folderStore = useAPIFolderStore();
-    const settingStore = useAPISettingStore();
-    const dialog = useDialog();
-    const message = useMessage();
-    const route = useRoute();
-    const collection = route.query.id as string;
+    const addHTTPSetting = inject(
+      addHTTPSettingKey,
+      addHTTPSettingDefaultValue
+    );
+    const addFolder = inject(addFolderKey, addFolderDefaultValue);
+
     const handleKeydown = (e: KeyboardEvent) => {
       if (hotKeyMatchCreateHTTPSetting(e)) {
-        addHTTPSetting();
+        addHTTPSetting("");
         return;
       }
     };
@@ -92,41 +52,7 @@ export default defineComponent({
     onBeforeUnmount(() => {
       document.removeEventListener("keydown", handleKeydown);
     });
-    const addFolder = () => {
-      ExDialog({
-        dialog,
-        title: i18nCollection("newFolder"),
-        formItems: getFolderFormItems(),
-        onConfirm: async (data) => {
-          const folder = newDefaultAPIFolder();
-          folder.collection = collection;
-          folder.name = data.name as string;
-          try {
-            await folderStore.add(folder);
-          } catch (err) {
-            showError(message, err);
-          }
-        },
-      });
-    };
-    const addHTTPSetting = () => {
-      ExDialog({
-        dialog,
-        title: i18nCollection("newHTTPRequest"),
-        formItems: getSettingFormItems(),
-        onConfirm: async (data) => {
-          const setting = newDefaultAPISetting();
-          setting.category = SettingType.HTTP;
-          setting.collection = collection;
-          setting.name = data.name as string;
-          try {
-            await settingStore.add(setting);
-          } catch (err) {
-            showError(message, err);
-          }
-        },
-      });
-    };
+
     return {
       addHTTPSetting,
       addFolder,
@@ -194,7 +120,7 @@ export default defineComponent({
             onSelect={(key: string) => {
               switch (key) {
                 case SettingType.HTTP:
-                  this.addHTTPSetting();
+                  this.addHTTPSetting("");
                   break;
                 case SettingType.Folder:
                   this.addFolder();

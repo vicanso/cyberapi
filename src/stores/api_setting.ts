@@ -17,6 +17,7 @@ export enum SettingType {
 export const useAPISettingStore = defineStore("apiSettings", {
   state: () => {
     return {
+      selectedID: "",
       apiSettings: [] as APISetting[],
       fetching: false,
       adding: false,
@@ -25,6 +26,9 @@ export const useAPISettingStore = defineStore("apiSettings", {
     };
   },
   actions: {
+    select(id: string) {
+      this.selectedID = id;
+    },
     findByID(id: string): APISetting {
       const index = this.apiSettings.findIndex((item) => item.id === id);
       return this.apiSettings[index];

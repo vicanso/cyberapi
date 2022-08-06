@@ -3,10 +3,11 @@ export default {
     filterPlaceholder: "关键字过滤",
     newHTTPRequest: "新建HTTP请求",
     newFolder: "新建目录",
-    defaultName: "新的请求",
     deleteSetting: "删除配置",
     deleteSettingContent: "确认要删除配置(%s)吗？",
     modifySetting: "修改配置",
+    shouldSelectAPISettingFirst: "请先选择接口请求",
+    send: "发送",
   },
   common: {
     app: "CyberAPI",

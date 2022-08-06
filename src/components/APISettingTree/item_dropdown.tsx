@@ -1,18 +1,23 @@
 // API功能下拉选项框
 import {
+  AddOutline,
   ChevronDownOutline,
   CreateOutline,
   TrashOutline,
 } from "@vicons/ionicons5";
 import { NDropdown, NIcon, useDialog, useMessage } from "naive-ui";
 import { css } from "@linaria/core";
-import { defineComponent } from "vue";
+import { defineComponent, inject } from "vue";
 import { showError } from "../../helpers/util";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { useAPIFolderStore } from "../../stores/api_folder";
 import { SettingType, useAPISettingStore } from "../../stores/api_setting";
 import { HandleKey } from "../../constants/handle_key";
 import ExDialog from "../ExDialog";
+import {
+  addHTTPSettingDefaultValue,
+  addHTTPSettingKey,
+} from "../../constants/provide";
 
 const dropdonwClass = css`
   .option {
@@ -37,6 +42,11 @@ export default defineComponent({
     const message = useMessage();
     const settingStore = useAPISettingStore();
     const folderStore = useAPIFolderStore();
+
+    const addHTTPSetting = inject(
+      addHTTPSettingKey,
+      addHTTPSettingDefaultValue
+    );
     const handleSelect = (key: string) => {
       const { id, apiSettingType } = props;
       let name = "";
@@ -106,6 +116,11 @@ export default defineComponent({
             });
           }
           break;
+        case HandleKey.Create:
+          {
+            addHTTPSetting(id);
+          }
+          break;
         default:
           break;
       }
@@ -115,6 +130,7 @@ export default defineComponent({
     };
   },
   render() {
+    const { apiSettingType } = this.$props;
     const options = [
       {
         label: i18nCommon("modify"),
@@ -135,6 +151,17 @@ export default defineComponent({
         ),
       },
     ];
+    if (apiSettingType === SettingType.Folder) {
+      options.unshift({
+        label: i18nCollection("newHTTPRequest"),
+        key: HandleKey.Create,
+        icon: () => (
+          <NIcon>
+            <AddOutline />
+          </NIcon>
+        ),
+      });
+    }
     return (
       <NDropdown
         class={dropdonwClass}

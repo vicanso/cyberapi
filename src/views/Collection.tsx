@@ -12,6 +12,7 @@ import { useSettingStore } from "../stores/setting";
 import { mainHeaderHeight } from "../constants/style";
 import ExColumn from "../components/ExColumn";
 import APISettingTree from "../components/APISettingTree";
+import APISettingParams from "../components/APISettingParams";
 
 const contentClass = css`
   position: fixed;
@@ -89,6 +90,8 @@ export default defineComponent({
       let element = <div />;
       if (index === 0) {
         element = <APISettingTree />;
+      } else if (index === 1) {
+        element = <APISettingParams />;
       }
       const column = (
         <ExColumn
