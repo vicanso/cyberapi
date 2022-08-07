@@ -1,9 +1,10 @@
-import { defineComponent } from "vue";
+import { defineComponent, PropType } from "vue";
 import { css } from "@linaria/core";
 
 import { NButton, NInput, NSelect } from "naive-ui";
 
 import { i18nCollection } from "../../i18n";
+import { HTTPRequest, HTTPMethod } from "../../commands/http_request";
 
 const methodWidth = 100;
 const submitWidth = 80;
@@ -31,31 +32,33 @@ const wrapperClass = css`
 export default defineComponent({
   name: "APISettingParamsURI",
   props: {
-    uri: {
-      type: String,
-      default: () => "",
-    },
-    method: {
-      type: String,
-      default: () => "GET",
+    params: {
+      type: Object as PropType<HTTPRequest>,
+      required: true,
     },
   },
   emits: ["update"],
   setup(props) {
     return {
-      currentURI: props.uri,
+      currentURI: props.params.uri,
     };
   },
   render() {
-    const { method, uri } = this.$props;
-    const options = "GET POST PUT PATCH DELETE OPTIONS HEAD"
-      .split(" ")
-      .map((item) => {
-        return {
-          label: item,
-          value: item,
-        };
-      });
+    const { method, uri } = this.$props.params;
+    const options = [
+      HTTPMethod.GET,
+      HTTPMethod.POST,
+      HTTPMethod.PUT,
+      HTTPMethod.PATCH,
+      HTTPMethod.DELETE,
+      HTTPMethod.OPTIONS,
+      HTTPMethod.HEAD,
+    ].map((item) => {
+      return {
+        label: item,
+        value: item,
+      };
+    });
 
     return (
       <div class={wrapperClass}>
@@ -65,7 +68,7 @@ export default defineComponent({
             options={options}
             bordered={false}
             placeholder={""}
-            defaultValue={method}
+            defaultValue={method || "GET"}
             onUpdateValue={(value) => {
               this.$emit("update", {
                 method: value,
@@ -78,7 +81,7 @@ export default defineComponent({
             type="primary"
             class="widthFull"
             onClick={() => {
-              console.dir(">>>>.");
+              console.dir("TODO");
             }}
           >
             {i18nCollection("send")}

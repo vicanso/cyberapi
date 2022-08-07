@@ -12,7 +12,7 @@ const i18n = createI18n({
 });
 export default i18n;
 
-export function changeI18nLocale(locale: string) {
+export function changeI18nLocale(locale: "zh" | "en") {
   i18n.global.locale = locale;
 }
 
