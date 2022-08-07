@@ -12,6 +12,8 @@ import APISettingParamsURI from "./uri";
 import APISettingParamsReqParams from "./req_params";
 
 const wrapperClass = css`
+  height: 100%;
+  position: relative;
   margin-left: 5px;
   .n-divider {
     margin: 0;

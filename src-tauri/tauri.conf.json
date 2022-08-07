@@ -59,7 +59,7 @@
         "height": 600,
         "resizable": true,
         "title": "Cyber API",
-        "width": 900,
+        "width": 1200,
         "center": true,
         "visible": false
       },

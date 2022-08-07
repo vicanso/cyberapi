@@ -39,14 +39,21 @@ const tabClass = css`
     display: none;
   }
   .format {
-    position: absolute;
-    right: 0;
+    position: fixed;
     bottom: 0;
     .n-icon {
       font-size: 16px;
       font-weight: 900;
       margin-right: 5px;
     }
+  }
+  .content {
+    position: absolute;
+    top: 90px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    overflow: auto;
   }
 `;
 
@@ -174,19 +181,22 @@ export default defineComponent({
         >
           {list}
         </NTabs>
-        <div ref="codeEditor" class={codeEditorClass}>
-          <NButton
-            class="format"
-            quaternary
-            onClick={() => {
-              this.handleFormat();
-            }}
-          >
-            <NIcon>
-              <CodeSlashOutline />
-            </NIcon>
-            {i18nCollection("format")}
-          </NButton>
+        <div class="content">
+          <div ref="codeEditor" class={codeEditorClass}></div>
+          {!codeEditorClass && (
+            <NButton
+              class="format"
+              quaternary
+              onClick={() => {
+                this.handleFormat();
+              }}
+            >
+              <NIcon>
+                <CodeSlashOutline />
+              </NIcon>
+              {i18nCollection("format")}
+            </NButton>
+          )}
         </div>
       </div>
     );
