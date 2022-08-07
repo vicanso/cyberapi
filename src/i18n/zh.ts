@@ -8,6 +8,7 @@ export default {
     modifySetting: "修改配置",
     shouldSelectAPISettingFirst: "请先选择接口请求",
     send: "发送",
+    format: "格式化",
   },
   common: {
     app: "CyberAPI",

@@ -2,6 +2,7 @@ import { defineComponent, watch, ref, onBeforeUnmount } from "vue";
 import { css } from "@linaria/core";
 import { NDivider, useMessage } from "naive-ui";
 import { storeToRefs } from "pinia";
+import { debounce } from "lodash-es";
 
 import { useAPISettingStore } from "../../stores/api_setting";
 import { HTTPRequest } from "../../commands/http_request";
@@ -54,25 +55,41 @@ export default defineComponent({
       Object.assign(reqParams.value, data);
       await update();
     };
+
+    const handleUpdateBody = async (id: string, data: string) => {
+      // 因为是延时执行，如果已经切换，则不更新
+      // 避免更新了其它接口的数据
+      if (id !== selectedID.value) {
+        return;
+      }
+      reqParams.value.body = data;
+      await update();
+    };
     return {
       selectedID,
       reqParams,
+      handleUpdateBody: debounce(handleUpdateBody, 1000),
       handleUpdateURI,
     };
   },
   render() {
-    const { reqParams, handleUpdateURI, selectedID } = this;
+    const { reqParams, selectedID } = this;
 
     return (
       <div class={wrapperClass} key={selectedID}>
         <APISettingParamsURI
           params={reqParams}
           onUpdate={(data) => {
-            handleUpdateURI(data);
+            this.handleUpdateURI(data);
           }}
         />
         <NDivider />
-        <APISettingParamsReqParams params={reqParams} />
+        <APISettingParamsReqParams
+          params={reqParams}
+          onUpdateBody={(value) => {
+            this.handleUpdateBody(selectedID, value);
+          }}
+        />
       </div>
     );
   },

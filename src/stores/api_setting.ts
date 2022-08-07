@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import dayjs from "dayjs";
+import localforage from "localforage";
 
 import {
   APISetting,
@@ -8,6 +9,11 @@ import {
   updateAPISetting,
   deleteAPISettings,
 } from "../commands/api_setting";
+
+const store = localforage.createInstance({
+  name: "apiSettings",
+});
+const selectedIDKey = "selectedID";
 
 export enum SettingType {
   HTTP = "http",
@@ -27,6 +33,8 @@ export const useAPISettingStore = defineStore("apiSettings", {
   },
   actions: {
     select(id: string) {
+      // 设置失败则忽略，仅输出日志
+      store.setItem(selectedIDKey, id).catch(console.error);
       this.selectedID = id;
     },
     findByID(id: string): APISetting {
@@ -58,7 +66,9 @@ export const useAPISettingStore = defineStore("apiSettings", {
       }
       this.fetching = true;
       try {
+        // 先获取所有api setting，再获取选中id
         this.apiSettings = await listAPISetting();
+        this.selectedID = (await store.getItem(selectedIDKey)) as string;
       } finally {
         this.fetching = false;
       }
