@@ -11,12 +11,21 @@ use url::Url;
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct HTTPRequestKVParam {
+    pub key: String,
+    pub value: String,
+    pub enabled: bool,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct HTTPRequest {
     pub method: String,
     pub uri: String,
     pub body: String,
-    pub headers: HashMap<String, Vec<String>>,
-    pub query: HashMap<String, Vec<String>>,
+    pub content_type: String,
+    pub headers: Vec<HTTPRequestKVParam>,
+    pub query: Vec<HTTPRequestKVParam>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -44,12 +53,11 @@ pub async fn request(http_request: HTTPRequest) -> Result<HTTPResponse, CyberAPI
 
     // 设置query
     let mut current_url = Url::parse(http_request.uri.as_str())?;
-    for (key, values) in http_request.query {
-        for value in values {
-            current_url
-                .query_pairs_mut()
-                .append_pair(key.as_str(), value.as_str());
+    for q in http_request.query {
+        if !q.enabled {
+            continue;
         }
+        current_url.query_pairs_mut().append_pair(&q.key, &q.value);
     }
 
     let request_uri = current_url.as_str().parse::<Uri>()?;
@@ -57,13 +65,14 @@ pub async fn request(http_request: HTTPRequest) -> Result<HTTPResponse, CyberAPI
 
     // 设置header
     let header = req.headers_mut();
-    for (key, values) in http_request.headers {
-        for value in values {
-            header.insert(
-                key.parse::<HeaderName>()?,
-                HeaderValue::from_str(value.as_str())?,
-            );
+    for h in http_request.headers {
+        if !h.enabled {
+            continue;
         }
+        header.insert(
+            h.key.parse::<HeaderName>()?,
+            HeaderValue::from_str(h.value.as_str())?,
+        );
     }
 
     {

@@ -10,13 +10,20 @@ export enum HTTPMethod {
   HEAD = "HEAD",
 }
 
+export interface HTTPRequestKVParam {
+  [key: string]: unknown;
+  key: string;
+  value: string;
+  enabled: boolean;
+}
 export interface HTTPRequest {
   [key: string]: unknown;
   method: string;
   uri: string;
-  body?: string;
-  headers?: Map<string, string[]>;
-  query?: Map<string, string[]>;
+  body: string;
+  contentType: string;
+  headers: HTTPRequestKVParam[];
+  query: HTTPRequestKVParam[];
 }
 
 export interface HTTPResponse {
@@ -28,10 +35,10 @@ export interface HTTPResponse {
 
 export async function doHTTPRequest(req: HTTPRequest): Promise<HTTPResponse> {
   if (!req.headers) {
-    req.headers = new Map<string, string[]>();
+    req.headers = [];
   }
   if (!req.query) {
-    req.query = new Map<string, string[]>();
+    req.query = [];
   }
   return await run<HTTPResponse>(cmdDoHTTPRequest, {
     // Map无法转换，因此做一次转换
@@ -39,8 +46,9 @@ export async function doHTTPRequest(req: HTTPRequest): Promise<HTTPResponse> {
       method: req.method,
       uri: req.uri,
       body: req.body || "",
-      headers: Object.fromEntries(req.headers),
-      query: Object.fromEntries(req.query),
+      contentType: req.contentType,
+      headers: req.headers,
+      query: req.query,
     },
   });
 }

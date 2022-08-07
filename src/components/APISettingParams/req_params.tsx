@@ -1,4 +1,4 @@
-import { NButton, NIcon, NTab, NTabs, useMessage } from "naive-ui";
+import { NButton, NDropdown, NIcon, NTab, NTabs, useMessage } from "naive-ui";
 import { css } from "@linaria/core";
 import {
   defineComponent,
@@ -18,7 +18,7 @@ import { indentWithTab } from "@codemirror/commands";
 import { HTTPMethod, HTTPRequest } from "../../commands/http_request";
 import { useSettingStore } from "../../stores/setting";
 import { i18nCollection } from "../../i18n";
-import { CodeSlashOutline } from "@vicons/ionicons5";
+import { CaretDownOutline, CodeSlashOutline } from "@vicons/ionicons5";
 import { showError } from "../../helpers/util";
 
 enum TabItem {
@@ -28,11 +28,23 @@ enum TabItem {
   Header = "Header",
 }
 
+enum ContentType {
+  JSON = "application/json",
+  Form = "application/x-www-form-urlencoded",
+  Multipart = "multipart/form-data",
+  XML = "application/xml",
+  Plain = "text/plain",
+}
+
 const tabClass = css`
   .n-tabs-tab__label {
     padding: 0 15px;
     .n-icon {
       margin-left: 5px;
+    }
+    .contentType {
+      width: 60px;
+      text-align: center;
     }
   }
   .hidden {
@@ -63,6 +75,10 @@ function shouldHaveBody(method: string) {
   );
 }
 
+function shouldShowEditor(contentType: string) {
+  return [ContentType.JSON, ContentType.XML, ContentType.Plain].includes(contentType);
+}
+
 export default defineComponent({
   name: "APISettingParamsReqParams",
   props: {
@@ -81,6 +97,8 @@ export default defineComponent({
     const message = useMessage();
     const codeEditor = ref<Element>();
     const activeTab = ref("");
+    const contentType = ref(props.params.contentType || ContentType.JSON);
+
     let editor: EditorView;
     const destroy = () => {
       if (editor) {
@@ -148,6 +166,7 @@ export default defineComponent({
     });
     onBeforeUnmount(destroy);
     return {
+      contentType,
       handleFormat,
       activeTab,
       codeEditor,
@@ -155,17 +174,69 @@ export default defineComponent({
   },
   render() {
     const { method } = this.$props.params;
-    const { activeTab } = this;
+    const { activeTab, contentType } = this;
     const tabs = [TabItem.Query, TabItem.Header, TabItem.Auth];
     if (shouldHaveBody(method)) {
       tabs.unshift(TabItem.Body);
     }
+    const contentTypeOptions = [
+      {
+        label: "JSON",
+        key: ContentType.JSON,
+      },
+      {
+        label: "Form",
+        key: ContentType.Form,
+      },
+      {
+        label: "Multipart",
+        key: ContentType.Multipart,
+      },
+      {
+        label: "XML",
+        key: ContentType.XML,
+      },
+      {
+        label: "Plain",
+        key: ContentType.Plain,
+      },
+    ];
     const list = tabs.map((item) => {
-      return <NTab name={item}>{item}</NTab>;
+      switch (item) {
+        case TabItem.Body:
+          {
+            const label = contentTypeOptions.find(
+              (opt) => opt.key === contentType
+            );
+            return (
+              <NTab name={item}>
+                <NDropdown
+                  options={contentTypeOptions}
+                  trigger="click"
+                  value={contentType}
+                  onSelect={(value) => {
+                    this.contentType = value;
+                  }}
+                >
+                  <div class="contentType">
+                    {label?.label}
+                    <NIcon>
+                      <CaretDownOutline />
+                    </NIcon>
+                  </div>
+                </NDropdown>
+              </NTab>
+            );
+          }
+          break;
+        default:
+          return <NTab name={item}>{item}</NTab>;
+          break;
+      }
     });
 
     let codeEditorClass = "";
-    if (activeTab !== TabItem.Body) {
+    if (activeTab !== TabItem.Body || !shouldShowEditor(contentType)) {
       codeEditorClass = "hidden";
     }
 
@@ -183,7 +254,7 @@ export default defineComponent({
         </NTabs>
         <div class="content">
           <div ref="codeEditor" class={codeEditorClass}></div>
-          {!codeEditorClass && (
+          {contentType === ContentType.JSON && (
             <NButton
               class="format"
               quaternary
