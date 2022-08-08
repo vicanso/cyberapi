@@ -1,4 +1,12 @@
-import { NButton, NDropdown, NIcon, NTab, NTabs, useMessage } from "naive-ui";
+import {
+  NButton,
+  NDropdown,
+  NIcon,
+  NTab,
+  NTabs,
+  useDialog,
+  useMessage,
+} from "naive-ui";
 import { css } from "@linaria/core";
 import {
   defineComponent,
@@ -17,9 +25,10 @@ import { indentWithTab } from "@codemirror/commands";
 
 import { HTTPMethod, HTTPRequest } from "../../commands/http_request";
 import { useSettingStore } from "../../stores/setting";
-import { i18nCollection } from "../../i18n";
+import { i18nCollection, i18nCommon } from "../../i18n";
 import { CaretDownOutline, CodeSlashOutline } from "@vicons/ionicons5";
 import { showError } from "../../helpers/util";
+import APISettingParamsKeyValue from "./key_value";
 
 enum TabItem {
   Body = "Body",
@@ -38,7 +47,6 @@ enum ContentType {
 
 const tabClass = css`
   .n-tabs-tab__label {
-    padding: 0 15px;
     .n-icon {
       margin-left: 5px;
     }
@@ -76,7 +84,9 @@ function shouldHaveBody(method: string) {
 }
 
 function shouldShowEditor(contentType: string) {
-  return [ContentType.JSON, ContentType.XML, ContentType.Plain].includes(contentType);
+  return [ContentType.JSON, ContentType.XML, ContentType.Plain].includes(
+    contentType as ContentType
+  );
 }
 
 export default defineComponent({
@@ -87,7 +97,9 @@ export default defineComponent({
       required: true,
     },
     onUpdateBody: {
-      type: Function as PropType<(value: string) => void>,
+      type: Function as PropType<
+        (params: { body: string; contentType: string }) => void
+      >,
       required: true,
     },
   },
@@ -95,6 +107,7 @@ export default defineComponent({
   setup(props) {
     const settingStore = useSettingStore();
     const message = useMessage();
+    const dialog = useDialog();
     const codeEditor = ref<Element>();
     const activeTab = ref("");
     const contentType = ref(props.params.contentType || ContentType.JSON);
@@ -107,7 +120,10 @@ export default defineComponent({
     };
     const handleEditorUpdate = (v: ViewUpdate) => {
       if (v.docChanged) {
-        props.onUpdateBody(editor.state.doc.toString().trim());
+        props.onUpdateBody({
+          body: editor.state.doc.toString().trim(),
+          contentType: contentType.value,
+        });
       }
     };
     const extensions = [
@@ -129,23 +145,53 @@ export default defineComponent({
         parent: codeEditor.value,
       });
     };
+
+    const replaceContent = (result: string) => {
+      const data = editor.state.doc.toString();
+      if (result !== data) {
+        const trans = editor.state.update({
+          changes: {
+            from: 0,
+            to: data.length,
+            insert: result,
+          },
+        });
+        editor.update([trans]);
+      }
+    };
+
     const handleFormat = () => {
       const data = editor.state.doc.toString();
       try {
         const result = JSON.stringify(JSON.parse(data), null, 2);
-        if (result !== data) {
-          const trans = editor.state.update({
-            changes: {
-              from: 0,
-              to: data.length,
-              insert: result,
-            },
-          });
-          editor.update([trans]);
-        }
+        replaceContent(result);
       } catch (err) {
         showError(message, err);
       }
+    };
+    const handleChangeContentType = (newContentType: string) => {
+      // 如果无数据，直接切换
+      const changeContentType = () => {
+        // 清空
+        replaceContent("");
+        props.onUpdateBody({
+          body: "",
+          contentType: newContentType,
+        });
+        contentType.value = newContentType;
+      };
+      if (!props.params.body) {
+        changeContentType();
+        return;
+      }
+      dialog.warning({
+        title: i18nCollection("changeContentType"),
+        content: i18nCollection("changeContentTypeContent"),
+        positiveText: i18nCommon("confirm"),
+        onPositiveClick: async () => {
+          changeContentType();
+        },
+      });
     };
     // method变化时要选定对应的tab
     watch(
@@ -167,6 +213,7 @@ export default defineComponent({
     onBeforeUnmount(destroy);
     return {
       contentType,
+      handleChangeContentType,
       handleFormat,
       activeTab,
       codeEditor,
@@ -208,6 +255,18 @@ export default defineComponent({
             const label = contentTypeOptions.find(
               (opt) => opt.key === contentType
             );
+            if (activeTab !== TabItem.Body) {
+              return (
+                <NTab name={item}>
+                  <div class="contentType">
+                    {label?.label}
+                    <NIcon>
+                      <CaretDownOutline />
+                    </NIcon>
+                  </div>
+                </NTab>
+              );
+            }
             return (
               <NTab name={item}>
                 <NDropdown
@@ -215,7 +274,7 @@ export default defineComponent({
                   trigger="click"
                   value={contentType}
                   onSelect={(value) => {
-                    this.contentType = value;
+                    this.handleChangeContentType(value);
                   }}
                 >
                   <div class="contentType">
@@ -239,10 +298,15 @@ export default defineComponent({
     if (activeTab !== TabItem.Body || !shouldShowEditor(contentType)) {
       codeEditorClass = "hidden";
     }
+    let showBodyKeyValue = false;
+    if (activeTab === TabItem.Body && !shouldShowEditor(contentType)) {
+      showBodyKeyValue = true;
+    }
 
     return (
       <div class={tabClass}>
         <NTabs
+          tabsPadding={15}
           key={method}
           type="line"
           defaultValue={tabs[0]}
@@ -253,6 +317,7 @@ export default defineComponent({
           {list}
         </NTabs>
         <div class="content">
+          {/* json, xml, text */}
           <div ref="codeEditor" class={codeEditorClass}></div>
           {contentType === ContentType.JSON && (
             <NButton
@@ -268,6 +333,8 @@ export default defineComponent({
               {i18nCollection("format")}
             </NButton>
           )}
+          {/* body form/multipart */}
+          {showBodyKeyValue && <APISettingParamsKeyValue params={[]} />}
         </div>
       </div>
     );

@@ -33,8 +33,8 @@ pub fn update_api_setting(setting: APISetting) -> CommandResult<()> {
 
 // 获取所有API配置
 #[command(async)]
-pub fn list_api_setting() -> CommandResult<Vec<APISetting>> {
-    let result = schemas::list_api_setting()?;
+pub fn list_api_setting(collection: String) -> CommandResult<Vec<APISetting>> {
+    let result = schemas::list_api_setting(collection)?;
     Ok(result)
 }
 

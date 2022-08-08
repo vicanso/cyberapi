@@ -60,14 +60,14 @@ export const useAPISettingStore = defineStore("apiSettings", {
         this.adding = false;
       }
     },
-    async fetch(): Promise<void> {
+    async fetch(collection: string): Promise<void> {
       if (this.fetching) {
         return;
       }
       this.fetching = true;
       try {
         // 先获取所有api setting，再获取选中id
-        this.apiSettings = await listAPISetting();
+        this.apiSettings = await listAPISetting(collection);
         this.selectedID = (await store.getItem(selectedIDKey)) as string;
       } finally {
         this.fetching = false;

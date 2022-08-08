@@ -3,7 +3,9 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::vec;
 
-use super::database::{add_or_update_record, delete_by_ids, get_conn, list_records, NewFromRow};
+use super::database::{
+    add_or_update_record, delete_by_ids, get_conn, list_condition_records, NewFromRow,
+};
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -94,9 +96,16 @@ pub fn add_or_update_api_setting(setting: APISetting) -> Result<usize, rusqlite:
     add_or_update_record(TABLE_NAME, APISetting::keys(), setting.values())
 }
 
-pub fn list_api_setting() -> Result<Vec<APISetting>, rusqlite::Error> {
+pub fn list_api_setting(collection: String) -> Result<Vec<APISetting>, rusqlite::Error> {
+    // 有可能未有table，先创建
     create_api_settings_if_not_exist()?;
-    list_records::<APISetting>(TABLE_NAME, APISetting::keys())
+    let sql = format!(
+        "SELECT {} FROM {} WHERE collection = {}",
+        APISetting::keys().join(", "),
+        TABLE_NAME,
+        collection
+    );
+    list_condition_records::<APISetting>(&sql)
 }
 
 pub fn delete_api_setting_by_collection(collection: String) -> Result<usize, rusqlite::Error> {

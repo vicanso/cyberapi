@@ -9,6 +9,9 @@ export default {
     shouldSelectAPISettingFirst: "请先选择接口请求",
     send: "发送",
     format: "格式化",
+    changeContentType: "更换数据类型",
+    changeContentTypeContent:
+      "更换数据类型后原有的数据会清除，请确认是否要更换？",
   },
   common: {
     app: "CyberAPI",

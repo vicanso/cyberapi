@@ -48,14 +48,10 @@ pub trait NewFromRow<T> {
     fn from_row(data: &rusqlite::Row) -> Result<T, rusqlite::Error>;
 }
 
-pub fn list_records<T: NewFromRow<T>>(
-    table: &str,
-    keys: Vec<String>,
-) -> Result<Vec<T>, rusqlite::Error> {
+pub fn list_condition_records<T: NewFromRow<T>>(sql: &str) -> Result<Vec<T>, rusqlite::Error> {
     let conn = get_conn();
 
-    let sql = format!("SELECT {} FROM {}", keys.join(", "), table);
-    let mut statement = conn.prepare(&sql)?;
+    let mut statement = conn.prepare(sql)?;
     let mut rows = statement.query([])?;
 
     let mut result = Vec::new();
@@ -68,6 +64,14 @@ pub fn list_records<T: NewFromRow<T>>(
         }
     }
     Ok(result)
+}
+
+pub fn list_records<T: NewFromRow<T>>(
+    table: &str,
+    keys: Vec<String>,
+) -> Result<Vec<T>, rusqlite::Error> {
+    let sql = format!("SELECT {} FROM {}", keys.join(", "), table);
+    list_condition_records(&sql)
 }
 
 pub fn delete_by_ids(table: &str, ids: Vec<String>) -> Result<usize, rusqlite::Error> {

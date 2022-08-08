@@ -426,7 +426,7 @@ export default defineComponent({
         await collectionStore.fetchExpandedFolders(collection);
         await collectionStore.fetchTopTreeItems(collection);
         await folderStore.fetch();
-        await settingStore.fetch();
+        await settingStore.fetch(collection);
       } catch (err) {
         showError(message, err);
       } finally {

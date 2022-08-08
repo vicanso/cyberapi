@@ -52,11 +52,15 @@ export async function createAPISetting(setting: APISetting): Promise<void> {
   });
 }
 
-export async function listAPISetting(): Promise<APISetting[]> {
+export async function listAPISetting(
+  collection: string
+): Promise<APISetting[]> {
   if (isWebMode()) {
     return await fakeList<APISetting>(store);
   }
-  return await run<APISetting[]>(cmdListAPISetting);
+  return await run<APISetting[]>(cmdListAPISetting, {
+    collection,
+  });
 }
 
 export async function updateAPISetting(setting: APISetting) {

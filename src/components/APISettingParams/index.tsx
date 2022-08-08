@@ -58,13 +58,21 @@ export default defineComponent({
       await update();
     };
 
-    const handleUpdateBody = async (id: string, data: string) => {
+    const handleUpdateBody = async (
+      id: string,
+      params: {
+        body: string;
+        contentType: string;
+      }
+    ) => {
       // 因为是延时执行，如果已经切换，则不更新
       // 避免更新了其它接口的数据
       if (id !== selectedID.value) {
         return;
       }
-      reqParams.value.body = data;
+      console.dir(params);
+      reqParams.value.contentType = params.contentType;
+      reqParams.value.body = params.body;
       await update();
     };
     return {
