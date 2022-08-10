@@ -14,16 +14,19 @@ import { useDialogStore } from "./stores/dialog";
 import { storeToRefs } from "pinia";
 import AppSetting from "./views/AppSetting";
 import CookieSetting from "./views/CookieSetting";
+import EnvironmentSetting from "./views/EnvironmentSetting";
 
 export default defineComponent({
   name: "App",
   setup() {
     const loadingBar = useLoadingBar();
     const dialogStore = useDialogStore();
-    const { showSetting, showCookie } = storeToRefs(dialogStore);
+    const { showSetting, showCookie, showEnvironment } =
+      storeToRefs(dialogStore);
     const closeDialog = () => {
       dialogStore.toggleSettingDialog(false);
       dialogStore.toggleCookieDialog(false);
+      dialogStore.toggleEnvironmentDialog(false);
     };
     setLoadingEvent(loadingBar.start, loadingBar.finish);
     onMounted(() => {
@@ -33,10 +36,11 @@ export default defineComponent({
       closeDialog,
       showSetting,
       showCookie,
+      showEnvironment,
     };
   },
   render() {
-    const { showSetting, showCookie, closeDialog } = this;
+    const { showSetting, showCookie, showEnvironment, closeDialog } = this;
     const settingModal = (
       <NModal
         autoFocus={false}
@@ -67,10 +71,26 @@ export default defineComponent({
         <CookieSetting />
       </NModal>
     );
+    const environmentModal = (
+      <NModal
+        autoFocus={false}
+        show={showEnvironment}
+        closeOnEsc
+        onEsc={() => {
+          closeDialog();
+        }}
+        onMaskClick={() => {
+          closeDialog();
+        }}
+      >
+        <EnvironmentSetting />
+      </NModal>
+    );
     return (
       <NLayout>
         {settingModal}
         {cookieModal}
+        {environmentModal}
         <NLayoutHeader bordered>
           <AppHeader />
         </NLayoutHeader>

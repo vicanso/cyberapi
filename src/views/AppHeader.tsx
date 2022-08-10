@@ -8,9 +8,14 @@ import {
   NIcon,
 } from "naive-ui";
 import { css } from "@linaria/core";
-import { defineComponent } from "vue";
+import { defineComponent, watch, ref } from "vue";
 import { storeToRefs } from "pinia";
-import { BowlingBallOutline, SettingsOutline } from "@vicons/ionicons5";
+import {
+  BowlingBallOutline,
+  CodeSlashOutline,
+  SettingsOutline,
+} from "@vicons/ionicons5";
+import { useRoute } from "vue-router";
 
 import { mainHeaderHeight } from "../constants/style";
 import { i18nCommon } from "../i18n";
@@ -43,6 +48,10 @@ const functionsClass = css`
     margin-top: 8px;
     margin-left: 5px;
   }
+  .n-icon {
+    font-size: 20px;
+    font-weight: 900;
+  }
 `;
 
 export default defineComponent({
@@ -50,6 +59,15 @@ export default defineComponent({
   setup() {
     const headerStore = useHeaderStore();
     const dialogStore = useDialogStore();
+    const route = useRoute();
+
+    const currentRoute = ref(route.name);
+    watch(
+      () => route.name,
+      (value) => {
+        currentRoute.value = value;
+      }
+    );
 
     const { breadcrumbs } = storeToRefs(headerStore);
     const showSettingDialog = () => {
@@ -58,14 +76,26 @@ export default defineComponent({
     const showCookieDialog = () => {
       dialogStore.toggleCookieDialog(true);
     };
+    const showEnvironmentDialog = () => {
+      dialogStore.toggleEnvironmentDialog(true);
+    };
     return {
+      currentRoute,
       breadcrumbs,
       showCookieDialog,
       showSettingDialog,
+      showEnvironmentDialog,
     };
   },
   render() {
-    const { breadcrumbs, $route, showSettingDialog, showCookieDialog } = this;
+    const {
+      breadcrumbs,
+      $route,
+      showSettingDialog,
+      showCookieDialog,
+      showEnvironmentDialog,
+      currentRoute,
+    } = this;
     const arr = [
       {
         route: names.home,
@@ -102,13 +132,25 @@ export default defineComponent({
             </NGi>
             <NGi span={12}>
               <div class={functionsClass}>
+                {currentRoute == names.collection && (
+                  <NButton
+                    quaternary
+                    onClick={() => {
+                      showEnvironmentDialog();
+                    }}
+                  >
+                    <NIcon>
+                      <CodeSlashOutline />
+                    </NIcon>
+                  </NButton>
+                )}
                 <NButton
                   quaternary
                   onClick={() => {
                     showCookieDialog();
                   }}
                 >
-                  <NIcon class="font20 bold">
+                  <NIcon>
                     <BowlingBallOutline />
                   </NIcon>
                 </NButton>
@@ -118,7 +160,7 @@ export default defineComponent({
                     showSettingDialog();
                   }}
                 >
-                  <NIcon class="font20 bold">
+                  <NIcon>
                     <SettingsOutline />
                   </NIcon>
                 </NButton>

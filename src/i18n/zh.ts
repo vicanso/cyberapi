@@ -87,4 +87,7 @@ export default {
     deleteCookie: "删除Cookie",
     deleteCookieContent: "确认要删除Cookie吗？",
   },
+  environment: {
+    title: "环境变量设置",
+  },
 };

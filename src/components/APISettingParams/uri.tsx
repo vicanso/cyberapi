@@ -1,13 +1,12 @@
 import { defineComponent, PropType } from "vue";
 import { css } from "@linaria/core";
 
-import { NButton, NInput, NSelect } from "naive-ui";
+import { NButton, NInput, NInputGroup, NSelect } from "naive-ui";
 
 import { i18nCollection } from "../../i18n";
 import { HTTPRequest, HTTPMethod } from "../../commands/http_request";
 
 const methodWidth = 100;
-const submitWidth = 80;
 const wrapperClass = css`
   padding: 7px 4px 5px 0;
   overflow: hidden;
@@ -17,11 +16,9 @@ const wrapperClass = css`
   }
   .url {
     margin-left: ${methodWidth}px;
-    margin-right: ${submitWidth + 5}px;
-  }
-  .submit {
-    float: right;
-    width: ${submitWidth}px;
+    .submit {
+      width: 80px;
+    }
   }
   .n-input,
   .n-base-selection-label {
@@ -76,33 +73,34 @@ export default defineComponent({
             }}
           />
         </div>
-        <div class="submit">
-          <NButton
-            type="primary"
-            class="widthFull"
-            onClick={() => {
-              console.dir("TODO");
-            }}
-          >
-            {i18nCollection("send")}
-          </NButton>
-        </div>
         <div class="url">
-          <NInput
-            defaultValue={uri}
-            placeholder={"http://test.com/users/v1/me"}
-            clearable
-            onBlur={() => {
-              if (this.currentURI !== uri) {
-                this.$emit("update", {
-                  uri: this.currentURI,
-                });
-              }
-            }}
-            onUpdateValue={(value) => {
-              this.currentURI = value;
-            }}
-          />
+          <NInputGroup>
+            {/* TODO 添加env的选择 */}
+            <NInput
+              defaultValue={uri}
+              placeholder={"http://test.com/users/v1/me"}
+              clearable
+              onBlur={() => {
+                if (this.currentURI !== uri) {
+                  this.$emit("update", {
+                    uri: this.currentURI,
+                  });
+                }
+              }}
+              onUpdateValue={(value) => {
+                this.currentURI = value;
+              }}
+            />
+            <NButton
+              type="primary"
+              class="submit"
+              onClick={() => {
+                console.dir("TODO");
+              }}
+            >
+              {i18nCollection("send")}
+            </NButton>
+          </NInputGroup>
         </div>
       </div>
     );

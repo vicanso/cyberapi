@@ -4,13 +4,12 @@ import { defineComponent, PropType, ref } from "vue";
 import { css } from "@linaria/core";
 import { CheckboxOutline, SquareOutline } from "@vicons/ionicons5";
 
-import ExDeleteCheck from "../ExDeleteCheck";
-import { HTTPRequestKVParam } from "../../commands/http_request";
-import { i18nCollection } from "../../i18n";
-import { padding } from "../../constants/style";
+import ExDeleteCheck from "./ExDeleteCheck";
+import { KVParam } from "../commands/interface";
+import { i18nCollection } from "../i18n";
+import { padding } from "../constants/style";
 
 const kvClass = css`
-  padding: ${padding}px;
   .item {
     margin-bottom: ${padding}px;
   }
@@ -30,10 +29,14 @@ const kvClass = css`
 `;
 
 export default defineComponent({
-  name: "APISettingParamsKeyValue",
+  name: "ExKeyValue",
   props: {
     params: {
-      type: Array as PropType<HTTPRequestKVParam[]>,
+      type: Array as PropType<KVParam[]>,
+      required: true,
+    },
+    onUpdateParams: {
+      type: Function as PropType<(params: KVParam[]) => void>,
       required: true,
     },
   },
@@ -50,23 +53,31 @@ export default defineComponent({
     const addParams = (
       item: {
         id: string;
-      } & HTTPRequestKVParam
+      } & KVParam
     ) => {
       kvList.value.push(item);
+    };
+    const handleUpdate = () => {
+      if (props.onUpdateParams) {
+        props.onUpdateParams(kvList.value);
+      }
     };
     const toggleEnabled = (index: number) => {
       if (index >= kvList.value.length) {
         return;
       }
-      const arr = kvList.value;
-      arr[index].enabled = !arr[index].enabled;
-      // TODO 更新数据
-      // key/value都不为空才更新
+      const item = kvList.value[index];
+      item.enabled = !item.enabled;
+      if (item.key && item.value) {
+        handleUpdate();
+      }
     };
     const deleteParams = (index: number) => {
       kvList.value.splice(index, 1);
+      handleUpdate();
     };
     return {
+      handleUpdate,
       kvList,
       toggleEnabled,
       deleteParams,
@@ -123,6 +134,11 @@ export default defineComponent({
                   placeholder={namePlaceholder}
                   onFocus={handleFocus}
                   clearable
+                  defaultValue={arr[index].key}
+                  onUpdateValue={(value) => {
+                    arr[index].key = value;
+                    this.handleUpdate();
+                  }}
                 ></NInput>
               </NGi>
               <NGi span={12}>
@@ -130,6 +146,11 @@ export default defineComponent({
                   placeholder={valuePlaceholder}
                   onFocus={handleFocus}
                   clearable
+                  defaultValue={arr[index].value}
+                  onUpdateValue={(value) => {
+                    arr[index].value = value;
+                    this.handleUpdate();
+                  }}
                 ></NInput>
               </NGi>
             </NGrid>

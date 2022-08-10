@@ -1,5 +1,7 @@
 import { run, cmdDoHTTPRequest } from "./invoke";
 
+import { KVParam } from "./interface";
+
 export enum HTTPMethod {
   GET = "GET",
   POST = "POST",
@@ -10,20 +12,14 @@ export enum HTTPMethod {
   HEAD = "HEAD",
 }
 
-export interface HTTPRequestKVParam {
-  [key: string]: unknown;
-  key: string;
-  value: string;
-  enabled: boolean;
-}
 export interface HTTPRequest {
   [key: string]: unknown;
   method: string;
   uri: string;
   body: string;
   contentType: string;
-  headers: HTTPRequestKVParam[];
-  query: HTTPRequestKVParam[];
+  headers: KVParam[];
+  query: KVParam[];
 }
 
 export interface HTTPResponse {

@@ -28,7 +28,7 @@ import { useSettingStore } from "../../stores/setting";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { CaretDownOutline, CodeSlashOutline } from "@vicons/ionicons5";
 import { showError } from "../../helpers/util";
-import APISettingParamsKeyValue from "./key_value";
+import ExKeyValue from "../ExKeyValue";
 
 enum TabItem {
   Body = "Body",
@@ -299,8 +299,15 @@ export default defineComponent({
       codeEditorClass = "hidden";
     }
     let showBodyKeyValue = false;
+    let keyValues = [];
     if (activeTab === TabItem.Body && !shouldShowEditor(contentType)) {
       showBodyKeyValue = true;
+      try {
+        keyValues = JSON.parse(this.params.body);
+      } catch (err) {
+        // 忽略parse出错
+        console.error(err);
+      }
     }
 
     return (
@@ -319,7 +326,7 @@ export default defineComponent({
         <div class="content">
           {/* json, xml, text */}
           <div ref="codeEditor" class={codeEditorClass}></div>
-          {contentType === ContentType.JSON && (
+          {activeTab === TabItem.Body && contentType === ContentType.JSON && (
             <NButton
               class="format"
               quaternary
@@ -334,7 +341,17 @@ export default defineComponent({
             </NButton>
           )}
           {/* body form/multipart */}
-          {showBodyKeyValue && <APISettingParamsKeyValue params={[]} />}
+          {showBodyKeyValue && (
+            <ExKeyValue
+              params={keyValues}
+              onUpdateParams={(params) => {
+                this.$props.onUpdateBody({
+                  body: JSON.stringify(params),
+                  contentType,
+                });
+              }}
+            />
+          )}
         </div>
       </div>
     );
