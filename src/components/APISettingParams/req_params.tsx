@@ -342,15 +342,16 @@ export default defineComponent({
           )}
           {/* body form/multipart */}
           {showBodyKeyValue && (
-            <ExKeyValue
-              params={keyValues}
-              onUpdateParams={(params) => {
-                this.$props.onUpdateBody({
-                  body: JSON.stringify(params),
-                  contentType,
-                });
-              }}
-            />
+            <p>abc</p>
+            // <ExKeyValue
+            //   params={keyValues}
+            //   onUpdateParams={(params) => {
+            //     this.$props.onUpdateBody({
+            //       body: JSON.stringify(params),
+            //       contentType,
+            //     });
+            //   }}
+            // />
           )}
         </div>
       </div>

@@ -23,6 +23,11 @@ export const cmdListCookie = "list_cookie";
 export const cmdDeleteCookie = "delete_cookie";
 export const cmdAddCookie = "add_cookie";
 
+export const cmdAddEnvironment = "add_environment";
+export const cmdUpdateEnvironment = "update_environment";
+export const cmdDeleteEnvironment = "delete_environment";
+export const cmdListEnvironment = "list_environment";
+
 const debug = Debug("invoke");
 export async function run<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   if (isWebMode()) {

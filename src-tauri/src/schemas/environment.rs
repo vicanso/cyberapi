@@ -1,9 +1,10 @@
 use chrono::Utc;
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::vec;
 
-use super::database::{add_or_update_record, delete_by_ids, get_conn, list_records, NewFromRow};
+use super::database::{
+    add_or_update_record, delete_by_ids, get_conn, list_condition_records, NewFromRow,
+};
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -50,7 +51,7 @@ impl Environment {
             self.collection.clone(),
             self.name.clone(),
             self.value.clone(),
-            self.enabled().clone(),
+            self.enabled.clone(),
             created_at,
             updated_at,
         ]
@@ -59,7 +60,7 @@ impl Environment {
 
 impl NewFromRow<Environment> for Environment {
     fn from_row(data: &rusqlite::Row) -> Result<Environment, rusqlite::Error> {
-        Ok(Environment{
+        Ok(Environment {
             id: data.get(0)?,
             collection: data.get(1)?,
             name: data.get(2)?,
@@ -84,7 +85,7 @@ fn create_environment_if_not_exist() -> Result<usize, rusqlite::Error> {
             enabled TEXT DEFAULT '',
             created_at TEXT DEFAULT '',
             updated_at TEXT DEFAULT ''
-        )", 
+        )",
         TABLE_NAME
     );
     conn.execute(&sql, [])
@@ -95,9 +96,9 @@ pub fn add_or_update_environment(env: Environment) -> Result<usize, rusqlite::Er
     add_or_update_record(TABLE_NAME, Environment::keys(), env.values())
 }
 
-pub fn list_environment(collection: String) -> Result<Vec<Environment>, resqlite::Error> {
+pub fn list_environment(collection: String) -> Result<Vec<Environment>, rusqlite::Error> {
     // 有可能未有table，先创建
-    create_api_settings_if_not_exist()?;
+    create_environment_if_not_exist()?;
     let sql = format!(
         "SELECT {} FROM {} WHERE collection = {}",
         Environment::keys().join(", "),

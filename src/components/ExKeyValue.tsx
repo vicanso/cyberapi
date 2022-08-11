@@ -3,6 +3,7 @@ import { NButton, NGi, NGrid, NIcon, NInput } from "naive-ui";
 import { defineComponent, PropType, ref } from "vue";
 import { css } from "@linaria/core";
 import { CheckboxOutline, SquareOutline } from "@vicons/ionicons5";
+import { debounce } from "lodash-es";
 
 import ExDeleteCheck from "./ExDeleteCheck";
 import { KVParam } from "../commands/interface";
@@ -28,6 +29,22 @@ const kvClass = css`
   }
 `;
 
+export enum HandleOptionCategory {
+  Update = "update",
+  Add = "add",
+  Delete = "delete",
+}
+export interface HandleOption {
+  category: string;
+  index: number;
+  param?: KVParam;
+}
+
+type KVItem = {
+  id: string;
+  isNew: boolean;
+} & KVParam;
+
 export default defineComponent({
   name: "ExKeyValue",
   props: {
@@ -35,8 +52,12 @@ export default defineComponent({
       type: Array as PropType<KVParam[]>,
       required: true,
     },
-    onUpdateParams: {
-      type: Function as PropType<(params: KVParam[]) => void>,
+    spans: {
+      type: Array as PropType<number[]>,
+      default: () => [12, 12],
+    },
+    onHandleParam: {
+      type: Function as PropType<(opt: HandleOption) => void>,
       required: true,
     },
   },
@@ -45,21 +66,18 @@ export default defineComponent({
       return Object.assign(
         {
           id: ulid(),
+          isNew: false,
         },
         item
       );
     });
-    const kvList = ref(arr);
-    const addParams = (
-      item: {
-        id: string;
-      } & KVParam
-    ) => {
+    const kvList = ref(arr as KVItem[]);
+    const addParams = (item: KVItem) => {
       kvList.value.push(item);
     };
-    const handleUpdate = () => {
-      if (props.onUpdateParams) {
-        props.onUpdateParams(kvList.value);
+    const handle = (opt: HandleOption) => {
+      if (props.onHandleParam) {
+        props.onHandleParam(opt);
       }
     };
     const toggleEnabled = (index: number) => {
@@ -69,29 +87,59 @@ export default defineComponent({
       const item = kvList.value[index];
       item.enabled = !item.enabled;
       if (item.key && item.value) {
-        handleUpdate();
+        handle({
+          category: HandleOptionCategory.Update,
+          param: item,
+          index,
+        });
       }
     };
+    const handleUpdate = (index: number) => {
+      if (index >= kvList.value.length) {
+        return;
+      }
+      const item = kvList.value[index];
+      let category = HandleOptionCategory.Update;
+      if (item.isNew) {
+        category = HandleOptionCategory.Add;
+        item.isNew = false;
+      }
+      handle({
+        category,
+        param: item,
+        index,
+      });
+    };
     const deleteParams = (index: number) => {
-      kvList.value.splice(index, 1);
-      handleUpdate();
+      const items = kvList.value.splice(index, 1);
+      //  如果是新元素未添加至数据库的，则忽略
+      if (items.length && items[0].isNew) {
+        return;
+      }
+
+      handle({
+        category: HandleOptionCategory.Delete,
+        index,
+      });
     };
     return {
-      handleUpdate,
       kvList,
+      handleUpdate,
       toggleEnabled,
       deleteParams,
       addParams,
     };
   },
   render() {
+    const { spans } = this.$props;
     const { kvList } = this;
     const arr = kvList.slice(0);
-    const lastItem = {
+    const lastItem: KVItem = {
       id: ulid(),
       key: "",
       value: "",
       enabled: true,
+      isNew: true,
     };
     arr.push(lastItem);
     const namePlaceholder = i18nCollection("namePlaceholder");
@@ -129,28 +177,28 @@ export default defineComponent({
           )}
           <div class="kv">
             <NGrid yGap={padding} xGap={padding}>
-              <NGi span={12}>
+              <NGi span={spans[0] || 12}>
                 <NInput
                   placeholder={namePlaceholder}
                   onFocus={handleFocus}
                   clearable
                   defaultValue={arr[index].key}
-                  onUpdateValue={(value) => {
+                  onUpdateValue={debounce((value) => {
                     arr[index].key = value;
-                    this.handleUpdate();
-                  }}
+                    this.handleUpdate(index);
+                  }, 500)}
                 ></NInput>
               </NGi>
-              <NGi span={12}>
+              <NGi span={spans[1] || 12}>
                 <NInput
                   placeholder={valuePlaceholder}
                   onFocus={handleFocus}
                   clearable
                   defaultValue={arr[index].value}
-                  onUpdateValue={(value) => {
+                  onUpdateValue={debounce((value) => {
                     arr[index].value = value;
-                    this.handleUpdate();
-                  }}
+                    this.handleUpdate(index);
+                  }, 500)}
                 ></NInput>
               </NGi>
             </NGrid>
