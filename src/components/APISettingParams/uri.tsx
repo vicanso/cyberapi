@@ -1,21 +1,38 @@
-import { defineComponent, PropType } from "vue";
+import { defineComponent, PropType, ref } from "vue";
 import { css } from "@linaria/core";
 
-import { NButton, NInput, NInputGroup, NSelect } from "naive-ui";
+import {
+  NButton,
+  NInput,
+  NInputGroup,
+  NSelect,
+  NIcon,
+  NDropdown,
+} from "naive-ui";
 
 import { i18nCollection } from "../../i18n";
 import { HTTPRequest, HTTPMethod } from "../../commands/http_request";
+import { useEnvironmentStore } from "../../stores/environment";
+import { storeToRefs } from "pinia";
+import { CodeSlashOutline } from "@vicons/ionicons5";
 
-const methodWidth = 100;
+const environmentSelectWidth = 40;
 const wrapperClass = css`
   padding: 7px 4px 5px 0;
   overflow: hidden;
-  .method {
-    width: ${methodWidth}px;
+  .environmentSelect {
+    width: ${environmentSelectWidth}px;
     float: left;
+    .n-icon {
+      font-size: 16px;
+      font-weight: 900;
+    }
   }
   .url {
-    margin-left: ${methodWidth}px;
+    margin-left: ${environmentSelectWidth}px;
+    .method {
+      width: 120px;
+    }
     .submit {
       width: 80px;
     }
@@ -26,6 +43,25 @@ const wrapperClass = css`
   }
 `;
 
+interface CuttingURIResult {
+  env: string;
+  uri: string;
+}
+
+function cuttingURI(uri: string): CuttingURIResult {
+  const reg = /\{\{(\S+)\}\}/;
+  const result = {
+    env: "",
+    uri: uri,
+  };
+  const arr = reg.exec(uri);
+  if (arr?.length === 2) {
+    result.env = arr[1];
+    result.uri = uri.substring(arr[0].length);
+  }
+  return result;
+}
+
 export default defineComponent({
   name: "APISettingParamsURI",
   props: {
@@ -33,15 +69,47 @@ export default defineComponent({
       type: Object as PropType<HTTPRequest>,
       required: true,
     },
+    onUpdateURI: {
+      type: Function as PropType<(value: Map<string, unknown>) => void>,
+      required: true,
+    },
   },
-  emits: ["update"],
   setup(props) {
+    const environmentStore = useEnvironmentStore();
+
+    const { environments } = storeToRefs(environmentStore);
+    const uriResult = cuttingURI(props.params.uri);
+
+    const currentURI = ref(uriResult.uri);
+    const env = ref(uriResult.env);
+    const method = ref(props.params.method);
+
+    const handleUpdate = () => {
+      let uri = currentURI.value;
+      if (env.value) {
+        uri = `{{${env.value}}}${uri}`;
+      }
+      const changed =
+        uri !== props.params.uri || method.value !== props.params.metod;
+
+      if (changed && props.onUpdateURI) {
+        props.onUpdateURI({
+          method: method.value,
+          uri,
+        });
+      }
+    };
+
     return {
-      currentURI: props.params.uri,
+      handleUpdate,
+      environments,
+      method,
+      env,
+      currentURI,
     };
   },
   render() {
-    const { method, uri } = this.$props.params;
+    const { environments, currentURI, env, method } = this;
     const options = [
       HTTPMethod.GET,
       HTTPMethod.POST,
@@ -56,36 +124,64 @@ export default defineComponent({
         value: item,
       };
     });
+    const envOptions = environments.map((item) => {
+      return {
+        label: item.name,
+        key: item.name,
+      };
+    });
 
     return (
       <div class={wrapperClass}>
-        <div class="method">
-          <NSelect
-            consistentMenuWidth={false}
-            options={options}
-            bordered={false}
-            placeholder={""}
-            defaultValue={method || "GET"}
-            onUpdateValue={(value) => {
-              this.$emit("update", {
-                method: value,
-              });
+        <div class="environmentSelect">
+          <NDropdown
+            trigger="click"
+            options={envOptions}
+            renderLabel={(option) => {
+              return (
+                <span
+                  style={{
+                    padding: "0 10px",
+                  }}
+                >
+                  {option.label}
+                </span>
+              );
             }}
-          />
+            value={env}
+            onSelect={(value) => {
+              this.env = value;
+              this.handleUpdate();
+            }}
+          >
+            <NButton quaternary>
+              <NIcon>
+                <CodeSlashOutline />
+              </NIcon>
+            </NButton>
+          </NDropdown>
         </div>
         <div class="url">
           <NInputGroup>
-            {/* TODO 添加env的选择 */}
+            <NSelect
+              class="method"
+              consistentMenuWidth={false}
+              options={options}
+              bordered={false}
+              placeholder={""}
+              defaultValue={method || "GET"}
+              onUpdateValue={(value) => {
+                this.method = value;
+                this.handleUpdate();
+              }}
+            />
+
             <NInput
-              defaultValue={uri}
+              defaultValue={currentURI}
               placeholder={"http://test.com/users/v1/me"}
               clearable
               onBlur={() => {
-                if (this.currentURI !== uri) {
-                  this.$emit("update", {
-                    uri: this.currentURI,
-                  });
-                }
+                this.handleUpdate();
               }}
               onUpdateValue={(value) => {
                 this.currentURI = value;

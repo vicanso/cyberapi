@@ -16,6 +16,7 @@ const kvClass = css`
   }
   .btns {
     float: right;
+    margin-left: 5px;
     .n-button {
       padding: 0 8px !important;
       margin-left: 2px;
@@ -25,7 +26,7 @@ const kvClass = css`
     }
   }
   .kv {
-    margin-right: 70px;
+    margin-right: 75px;
   }
 `;
 
@@ -38,6 +39,7 @@ export interface HandleOption {
   category: string;
   index: number;
   param?: KVParam;
+  params: KVParam[];
 }
 
 type KVItem = {
@@ -91,6 +93,7 @@ export default defineComponent({
           category: HandleOptionCategory.Update,
           param: item,
           index,
+          params: kvList.value,
         });
       }
     };
@@ -108,6 +111,7 @@ export default defineComponent({
         category,
         param: item,
         index,
+        params: kvList.value,
       });
     };
     const deleteParams = (index: number) => {
@@ -120,6 +124,7 @@ export default defineComponent({
       handle({
         category: HandleOptionCategory.Delete,
         index,
+        params: kvList.value,
       });
     };
     return {

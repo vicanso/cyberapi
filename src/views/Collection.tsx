@@ -13,6 +13,7 @@ import { mainHeaderHeight } from "../constants/style";
 import ExColumn from "../components/ExColumn";
 import APISettingTree from "../components/APISettingTree";
 import APISettingParams from "../components/APISettingParams";
+import { useEnvironmentStore } from "../stores/environment";
 
 const contentClass = css`
   position: fixed;
@@ -26,7 +27,7 @@ export default defineComponent({
   name: "CollectionView",
   setup() {
     const route = useRoute();
-    const collectionID = route.query.id as string;
+    const collection = route.query.id as string;
     const message = useMessage();
     const headerStore = useHeaderStore();
     const settingStore = useSettingStore();
@@ -37,8 +38,10 @@ export default defineComponent({
     onBeforeMount(async () => {
       processing.value = true;
       try {
+        const environmentStore = useEnvironmentStore();
+        await environmentStore.fetch(collection);
         const collectionStore = useAPICollectionStore();
-        const result = await collectionStore.get(collectionID);
+        const result = await collectionStore.get(collection);
         if (result) {
           headerStore.add({
             name: result.name,

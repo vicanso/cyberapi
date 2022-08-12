@@ -1,7 +1,6 @@
-import { NCard, useMessage } from "naive-ui";
-import { defineComponent, onBeforeMount, ref } from "vue";
+import { NCard, NP, useMessage } from "naive-ui";
+import { defineComponent, onBeforeMount } from "vue";
 import { css } from "@linaria/core";
-import { ulid } from "ulid";
 
 import ExKeyValue, {
   HandleOption,
@@ -20,8 +19,13 @@ import {
 } from "../commands/environment";
 import ExLoading from "../components/ExLoading";
 
-const dialogClass = css`
+const environmentClass = css`
   max-width: 800px;
+  .n-card__content {
+    min-height: 200px;
+    max-height: 400px;
+    overflow-y: auto;
+  }
 `;
 
 function convertKVParams(environments: Environment[]): KVParam[] {
@@ -137,7 +141,8 @@ export default defineComponent({
       return <ExLoading />;
     }
     return (
-      <NCard title={i18nEnvironment("title")} class={dialogClass}>
+      <NCard title={i18nEnvironment("title")} class={environmentClass}>
+        <NP>{i18nEnvironment("tips")}</NP>
         <ExKeyValue
           spans={[10, 14]}
           params={convertKVParams(environments)}

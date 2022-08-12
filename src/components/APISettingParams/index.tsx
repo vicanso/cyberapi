@@ -89,7 +89,8 @@ export default defineComponent({
       <div class={wrapperClass} key={selectedID}>
         <APISettingParamsURI
           params={reqParams}
-          onUpdate={(data) => {
+          onUpdateURI={(data) => {
+            console.dir(data);
             this.handleUpdateURI(data);
           }}
         />

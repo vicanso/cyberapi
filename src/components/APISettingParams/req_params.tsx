@@ -28,7 +28,9 @@ import { useSettingStore } from "../../stores/setting";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { CaretDownOutline, CodeSlashOutline } from "@vicons/ionicons5";
 import { showError } from "../../helpers/util";
-import ExKeyValue from "../ExKeyValue";
+import ExKeyValue, { HandleOption } from "../ExKeyValue";
+import { KVParam } from "../../commands/interface";
+import { padding } from "../../constants/style";
 
 enum TabItem {
   Body = "Body",
@@ -74,6 +76,9 @@ const tabClass = css`
     right: 0;
     bottom: 0;
     overflow: auto;
+  }
+  .keyValue {
+    margin: ${padding}px;
   }
 `;
 
@@ -193,6 +198,27 @@ export default defineComponent({
         },
       });
     };
+
+    const handleBodyParams = (opt: HandleOption) => {
+      const arr = [] as KVParam[];
+      opt.params.forEach((item) => {
+        const { key, value } = item;
+        if (!key && !value) {
+          return;
+        }
+        arr.push({
+          key,
+          value,
+          enabled: item.enabled,
+        });
+      });
+      if (props.onUpdateBody) {
+        props.onUpdateBody({
+          body: JSON.stringify(arr),
+          contentType: contentType.value,
+        });
+      }
+    };
     // method变化时要选定对应的tab
     watch(
       () => props.params.method,
@@ -213,6 +239,7 @@ export default defineComponent({
     onBeforeUnmount(destroy);
     return {
       contentType,
+      handleBodyParams,
       handleChangeContentType,
       handleFormat,
       activeTab,
@@ -304,6 +331,7 @@ export default defineComponent({
       showBodyKeyValue = true;
       try {
         keyValues = JSON.parse(this.params.body);
+        console.dir(keyValues);
       } catch (err) {
         // 忽略parse出错
         console.error(err);
@@ -342,16 +370,13 @@ export default defineComponent({
           )}
           {/* body form/multipart */}
           {showBodyKeyValue && (
-            <p>abc</p>
-            // <ExKeyValue
-            //   params={keyValues}
-            //   onUpdateParams={(params) => {
-            //     this.$props.onUpdateBody({
-            //       body: JSON.stringify(params),
-            //       contentType,
-            //     });
-            //   }}
-            // />
+            <ExKeyValue
+              class="keyValue"
+              params={keyValues}
+              onHandleParam={(opt) => {
+                this.handleBodyParams(opt);
+              }}
+            />
           )}
         </div>
       </div>
