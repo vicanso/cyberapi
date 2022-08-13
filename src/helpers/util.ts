@@ -22,9 +22,6 @@ export function showError(message: MessageApi, err: Error | unknown): void {
   message.error(formatError(err), {
     duration: 3000,
   });
-  if (isWebMode()) {
-    throw err;
-  }
 }
 
 // formatDate 格式化日期

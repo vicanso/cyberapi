@@ -9,6 +9,7 @@ import {
   updateAPISetting,
   deleteAPISettings,
 } from "../commands/api_setting";
+import { HTTPRequest } from "../commands/http_request";
 
 const store = localforage.createInstance({
   name: "apiSettings",
@@ -36,6 +37,10 @@ export const useAPISettingStore = defineStore("apiSettings", {
       // 设置失败则忽略，仅输出日志
       store.setItem(selectedIDKey, id).catch(console.error);
       this.selectedID = id;
+    },
+    getHTTPRequest(id: string) {
+      const setting = this.findByID(id);
+      return JSON.parse(setting.setting || "{}") as HTTPRequest;
     },
     findByID(id: string): APISetting {
       const index = this.apiSettings.findIndex((item) => item.id === id);

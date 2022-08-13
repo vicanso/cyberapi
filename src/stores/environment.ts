@@ -4,9 +4,12 @@ import {
   createEnvironment,
   deleteEnvironment,
   Environment,
+  EnvironmentStatus,
   listEnvironment,
   updateEnvironment,
 } from "../commands/environment";
+
+export const ENVRegexp = /\{\{(\S+)\}\}/;
 
 export const useEnvironmentStore = defineStore("environments", {
   state: () => {
@@ -19,6 +22,12 @@ export const useEnvironmentStore = defineStore("environments", {
     };
   },
   actions: {
+    getValue(name: string) {
+      const env = this.environments.find((item) => {
+        return item.enabled === EnvironmentStatus.Enabled && item.name === name;
+      });
+      return env?.value;
+    },
     async add(env: Environment) {
       if (this.adding) {
         return;

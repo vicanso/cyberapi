@@ -90,5 +90,6 @@ export default {
   environment: {
     title: "环境变量设置",
     tips: "使用当前各环境变量，方便不同环境的切换",
+    uriIsNil: "请求地址不能为空",
   },
 };

@@ -100,12 +100,11 @@ pub fn list_environment(collection: String) -> Result<Vec<Environment>, rusqlite
     // 有可能未有table，先创建
     create_environment_if_not_exist()?;
     let sql = format!(
-        "SELECT {} FROM {} WHERE collection = {}",
+        "SELECT {} FROM {} WHERE collection = ?1",
         Environment::keys().join(", "),
-        TABLE_NAME,
-        collection
+        TABLE_NAME
     );
-    list_condition_records::<Environment>(&sql)
+    list_condition_records::<Environment>(&sql, vec![collection])
 }
 
 pub fn delete_environment(ids: Vec<String>) -> Result<usize, rusqlite::Error> {

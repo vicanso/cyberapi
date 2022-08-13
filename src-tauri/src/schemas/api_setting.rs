@@ -100,12 +100,11 @@ pub fn list_api_setting(collection: String) -> Result<Vec<APISetting>, rusqlite:
     // 有可能未有table，先创建
     create_api_settings_if_not_exist()?;
     let sql = format!(
-        "SELECT {} FROM {} WHERE collection = {}",
+        "SELECT {} FROM {} WHERE collection = ?1",
         APISetting::keys().join(", "),
-        TABLE_NAME,
-        collection
+        TABLE_NAME
     );
-    list_condition_records::<APISetting>(&sql)
+    list_condition_records::<APISetting>(&sql, vec![collection])
 }
 
 pub fn delete_api_setting_by_collection(collection: String) -> Result<usize, rusqlite::Error> {

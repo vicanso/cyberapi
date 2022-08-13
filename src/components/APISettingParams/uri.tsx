@@ -13,7 +13,7 @@ import {
 
 import { i18nCollection } from "../../i18n";
 import { HTTPRequest, HTTPMethod } from "../../commands/http_request";
-import { useEnvironmentStore } from "../../stores/environment";
+import { useEnvironmentStore, ENVRegexp } from "../../stores/environment";
 import { storeToRefs } from "pinia";
 import { CodeSlashOutline } from "@vicons/ionicons5";
 import { EnvironmentStatus } from "../../commands/environment";
@@ -58,12 +58,11 @@ interface CuttingURIResult {
 }
 
 function cuttingURI(uri: string): CuttingURIResult {
-  const reg = /\{\{(\S+)\}\}/;
   const result = {
     env: "",
-    uri: uri,
+    uri,
   };
-  const arr = reg.exec(uri);
+  const arr = ENVRegexp.exec(uri);
   if (arr?.length === 2) {
     result.env = arr[1];
     result.uri = uri.substring(arr[0].length);
@@ -80,6 +79,10 @@ export default defineComponent({
     },
     onUpdateURI: {
       type: Function as PropType<(value: Map<string, unknown>) => void>,
+      required: true,
+    },
+    onSumbit: {
+      type: Function as PropType<() => void>,
       required: true,
     },
   },
@@ -208,7 +211,7 @@ export default defineComponent({
               type="primary"
               class="submit"
               onClick={() => {
-                console.dir("TODO");
+                this.$props.onSumbit();
               }}
             >
               {i18nCollection("send")}

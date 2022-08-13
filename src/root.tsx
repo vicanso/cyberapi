@@ -15,7 +15,6 @@ import { useSettingStore } from "./stores/setting";
 import App from "./App";
 import ExLoading from "./components/ExLoading";
 import { useAppStore } from "./stores/app";
-import { doHTTPRequest } from "./commands/http_request";
 
 export default defineComponent({
   name: "RootView",

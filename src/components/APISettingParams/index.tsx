@@ -5,11 +5,16 @@ import { storeToRefs } from "pinia";
 import { debounce } from "lodash-es";
 
 import { useAPISettingStore } from "../../stores/api_setting";
-import { HTTPRequest } from "../../commands/http_request";
+import {
+  doHTTPRequest,
+  getResponseBody,
+  HTTPRequest,
+} from "../../commands/http_request";
 import { showError } from "../../helpers/util";
-import { i18nCollection } from "../../i18n";
+import { i18nCollection, i18nEnvironment } from "../../i18n";
 import APISettingParamsURI from "./uri";
 import APISettingParamsReqParams from "./req_params";
+import { ENVRegexp, useEnvironmentStore } from "../../stores/environment";
 
 const wrapperClass = css`
   height: 100%;
@@ -25,15 +30,15 @@ export default defineComponent({
   setup() {
     const message = useMessage();
     const settingStore = useAPISettingStore();
+    const environmentStore = useEnvironmentStore();
     const { selectedID } = storeToRefs(settingStore);
     const reqParams = ref({} as HTTPRequest);
     const stop = watch(selectedID, (id) => {
       if (!id) {
         return;
       }
-      const data = settingStore.findByID(id);
       try {
-        reqParams.value = JSON.parse(data.setting || "{}") as HTTPRequest;
+        reqParams.value = settingStore.getHTTPRequest(id);
       } catch (err) {
         console.error(err);
       }
@@ -74,9 +79,31 @@ export default defineComponent({
       reqParams.value.body = params.body;
       await update();
     };
+
+    const handleSend = async () => {
+      try {
+        const req = settingStore.getHTTPRequest(selectedID.value);
+        if (!req.uri) {
+          throw new Error(i18nEnvironment("uriIsNil"));
+        }
+        const arr = ENVRegexp.exec(req.uri);
+        if (arr?.length === 2) {
+          const envValue = environmentStore.getValue(arr[1]);
+          if (envValue) {
+            req.uri = req.uri.replace(arr[0], envValue);
+          }
+        }
+        const res = await doHTTPRequest(req);
+        const body = getResponseBody(res);
+        console.dir(body);
+      } catch (err) {
+        showError(message, err);
+      }
+    };
     return {
       selectedID,
       reqParams,
+      handleSend,
       handleUpdateBody: debounce(handleUpdateBody, 1000),
       handleUpdateURI,
     };
@@ -90,6 +117,9 @@ export default defineComponent({
           params={reqParams}
           onUpdateURI={(data) => {
             this.handleUpdateURI(data);
+          }}
+          onSumbit={() => {
+            this.handleSend();
           }}
         />
         <NDivider />
