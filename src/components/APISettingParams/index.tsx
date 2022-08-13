@@ -70,7 +70,6 @@ export default defineComponent({
       if (id !== selectedID.value) {
         return;
       }
-      console.dir(params);
       reqParams.value.contentType = params.contentType;
       reqParams.value.body = params.body;
       await update();
@@ -90,7 +89,6 @@ export default defineComponent({
         <APISettingParamsURI
           params={reqParams}
           onUpdateURI={(data) => {
-            console.dir(data);
             this.handleUpdateURI(data);
           }}
         />

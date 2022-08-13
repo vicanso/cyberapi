@@ -26,6 +26,12 @@ body {
 .tar {
   text-align: right;
 }
+.font12 {
+  font-size: 12px;
+}
+.font16 {
+  font-size: 16px;
+}
 .font20 {
   font-size: 20px;
 }

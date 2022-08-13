@@ -8,6 +8,7 @@ import {
   NSelect,
   NIcon,
   NDropdown,
+  NGradientText,
 } from "naive-ui";
 
 import { i18nCollection } from "../../i18n";
@@ -15,8 +16,9 @@ import { HTTPRequest, HTTPMethod } from "../../commands/http_request";
 import { useEnvironmentStore } from "../../stores/environment";
 import { storeToRefs } from "pinia";
 import { CodeSlashOutline } from "@vicons/ionicons5";
+import { EnvironmentStatus } from "../../commands/environment";
 
-const environmentSelectWidth = 40;
+const environmentSelectWidth = 50;
 const wrapperClass = css`
   padding: 7px 4px 5px 0;
   overflow: hidden;
@@ -40,6 +42,13 @@ const wrapperClass = css`
   .n-input,
   .n-base-selection-label {
     background-color: transparent !important;
+  }
+`;
+
+const envLabelClass = css`
+  padding: 0 5px;
+  span {
+    margin-left: 10px;
   }
 `;
 
@@ -124,12 +133,19 @@ export default defineComponent({
         value: item,
       };
     });
-    const envOptions = environments.map((item) => {
-      return {
-        label: item.name,
-        key: item.name,
-      };
-    });
+    // 只过滤启用的
+    const envOptions = environments
+      .filter((item) => item.enabled === EnvironmentStatus.Enabled)
+      .map((item) => {
+        return {
+          label: `${item.name} | ${item.value}`,
+          key: item.name,
+        };
+      });
+    let envPrefix = "";
+    if (env) {
+      envPrefix = env.substring(0, 2).toUpperCase();
+    }
 
     return (
       <div class={wrapperClass}>
@@ -138,13 +154,12 @@ export default defineComponent({
             trigger="click"
             options={envOptions}
             renderLabel={(option) => {
+              const label = (option.label as string) || "";
+              const arr = label.split(" | ");
               return (
-                <span
-                  style={{
-                    padding: "0 10px",
-                  }}
-                >
-                  {option.label}
+                <span class={envLabelClass}>
+                  {arr[0]}
+                  <span class="font12">{arr[1]}</span>
                 </span>
               );
             }}
@@ -155,9 +170,12 @@ export default defineComponent({
             }}
           >
             <NButton quaternary>
-              <NIcon>
-                <CodeSlashOutline />
-              </NIcon>
+              {!envPrefix && (
+                <NIcon>
+                  <CodeSlashOutline />
+                </NIcon>
+              )}
+              {envPrefix && <NGradientText>{envPrefix}</NGradientText>}
             </NButton>
           </NDropdown>
         </div>
@@ -167,9 +185,8 @@ export default defineComponent({
               class="method"
               consistentMenuWidth={false}
               options={options}
-              bordered={false}
               placeholder={""}
-              defaultValue={method || "GET"}
+              defaultValue={method || HTTPMethod.GET}
               onUpdateValue={(value) => {
                 this.method = value;
                 this.handleUpdate();

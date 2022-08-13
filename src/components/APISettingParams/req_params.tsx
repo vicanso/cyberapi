@@ -331,7 +331,6 @@ export default defineComponent({
       showBodyKeyValue = true;
       try {
         keyValues = JSON.parse(this.params.body);
-        console.dir(keyValues);
       } catch (err) {
         // 忽略parse出错
         console.error(err);
