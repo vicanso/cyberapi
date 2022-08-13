@@ -55,6 +55,8 @@ export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
     if (value.includes(applicationJSON)) {
       category = ResponseBodyCategory.JSON;
       data = window.atob(data);
+      // format
+      data = JSON.stringify(JSON.parse(data), null, 2);
     } else if (value.includes("text")) {
       category = ResponseBodyCategory.Text;
       data = window.atob(data);

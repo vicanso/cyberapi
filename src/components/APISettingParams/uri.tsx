@@ -82,7 +82,7 @@ export default defineComponent({
       required: true,
     },
     onSumbit: {
-      type: Function as PropType<() => void>,
+      type: Function as PropType<() => Promise<void>>,
       required: true,
     },
   },
@@ -95,6 +95,7 @@ export default defineComponent({
     const currentURI = ref(uriResult.uri);
     const env = ref(uriResult.env);
     const method = ref(props.params.method);
+    const sending = ref(false);
 
     const handleUpdate = () => {
       let uri = currentURI.value;
@@ -113,6 +114,7 @@ export default defineComponent({
     };
 
     return {
+      sending,
       handleUpdate,
       environments,
       method,
@@ -210,8 +212,12 @@ export default defineComponent({
             <NButton
               type="primary"
               class="submit"
+              loading={this.sending}
               onClick={() => {
-                this.$props.onSumbit();
+                this.sending = true;
+                this.$props.onSumbit().finally(() => {
+                  this.sending = false;
+                });
               }}
             >
               {i18nCollection("send")}

@@ -1,20 +1,15 @@
-import { defineComponent, watch, ref, onBeforeUnmount } from "vue";
+import { defineComponent, watch, ref, onBeforeUnmount, PropType } from "vue";
 import { css } from "@linaria/core";
 import { NDivider, useMessage } from "naive-ui";
 import { storeToRefs } from "pinia";
 import { debounce } from "lodash-es";
 
 import { useAPISettingStore } from "../../stores/api_setting";
-import {
-  doHTTPRequest,
-  getResponseBody,
-  HTTPRequest,
-} from "../../commands/http_request";
+import { HTTPRequest } from "../../commands/http_request";
 import { showError } from "../../helpers/util";
-import { i18nCollection, i18nEnvironment } from "../../i18n";
+import { i18nCollection } from "../../i18n";
 import APISettingParamsURI from "./uri";
 import APISettingParamsReqParams from "./req_params";
-import { ENVRegexp, useEnvironmentStore } from "../../stores/environment";
 
 const wrapperClass = css`
   height: 100%;
@@ -27,10 +22,15 @@ const wrapperClass = css`
 
 export default defineComponent({
   name: "APISettingParams",
+  props: {
+    onSend: {
+      type: Function as PropType<(id: string) => Promise<void>>,
+      required: true,
+    },
+  },
   setup() {
     const message = useMessage();
     const settingStore = useAPISettingStore();
-    const environmentStore = useEnvironmentStore();
     const { selectedID } = storeToRefs(settingStore);
     const reqParams = ref({} as HTTPRequest);
     const stop = watch(selectedID, (id) => {
@@ -80,30 +80,9 @@ export default defineComponent({
       await update();
     };
 
-    const handleSend = async () => {
-      try {
-        const req = settingStore.getHTTPRequest(selectedID.value);
-        if (!req.uri) {
-          throw new Error(i18nEnvironment("uriIsNil"));
-        }
-        const arr = ENVRegexp.exec(req.uri);
-        if (arr?.length === 2) {
-          const envValue = environmentStore.getValue(arr[1]);
-          if (envValue) {
-            req.uri = req.uri.replace(arr[0], envValue);
-          }
-        }
-        const res = await doHTTPRequest(req);
-        const body = getResponseBody(res);
-        console.dir(body);
-      } catch (err) {
-        showError(message, err);
-      }
-    };
     return {
       selectedID,
       reqParams,
-      handleSend,
       handleUpdateBody: debounce(handleUpdateBody, 1000),
       handleUpdateURI,
     };
@@ -119,7 +98,7 @@ export default defineComponent({
             this.handleUpdateURI(data);
           }}
           onSumbit={() => {
-            this.handleSend();
+            return this.$props.onSend(selectedID);
           }}
         />
         <NDivider />

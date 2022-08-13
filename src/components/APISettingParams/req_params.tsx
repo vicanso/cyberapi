@@ -220,7 +220,7 @@ export default defineComponent({
       }
     };
     // method变化时要选定对应的tab
-    watch(
+    const stop = watch(
       () => props.params.method,
       (method) => {
         if (shouldHaveBody(method)) {
@@ -236,7 +236,10 @@ export default defineComponent({
         activeTab.value = TabItem.Body;
       }
     });
-    onBeforeUnmount(destroy);
+    onBeforeUnmount(() => {
+      stop();
+      destroy();
+    });
     return {
       contentType,
       handleBodyParams,
