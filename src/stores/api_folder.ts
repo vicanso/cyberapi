@@ -44,13 +44,13 @@ export const useAPIFolderStore = defineStore("apiFolders", {
         this.adding = false;
       }
     },
-    async fetch(): Promise<void> {
+    async fetch(collection: string): Promise<void> {
       if (this.fetching) {
         return;
       }
       this.fetching = true;
       try {
-        const arr = await listAPIFolder();
+        const arr = await listAPIFolder(collection);
         arr.forEach((item) => {
           item.children = uniq(item.children.split(",")).join(",");
         });

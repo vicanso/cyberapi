@@ -3,7 +3,9 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, vec};
 
-use super::database::{add_or_update_record, delete_by_ids, get_conn, list_records, NewFromRow};
+use super::database::{
+    add_or_update_record, delete_by_ids, find_by_id, get_conn, list_condition_records, NewFromRow,
+};
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -97,9 +99,14 @@ pub fn add_or_update_api_folder(folder: APIFolder) -> Result<usize, rusqlite::Er
     add_or_update_record(TABLE_NAME, APIFolder::keys(), folder.values())
 }
 
-pub fn list_api_folder() -> Result<Vec<APIFolder>, rusqlite::Error> {
+pub fn list_api_folder(collection: String) -> Result<Vec<APIFolder>, rusqlite::Error> {
     create_api_folders_if_not_exist()?;
-    list_records::<APIFolder>(TABLE_NAME, APIFolder::keys())
+    let sql = format!(
+        "SELECT {} FROM {} WHERE collection = ?1",
+        APIFolder::keys().join(", "),
+        TABLE_NAME
+    );
+    list_condition_records::<APIFolder>(&sql, vec![collection])
 }
 
 pub fn delete_api_folder_by_collection(collection: String) -> Result<usize, rusqlite::Error> {
@@ -121,8 +128,10 @@ pub fn list_api_folder_all_children(id: String) -> Result<APIFolderChildren, rus
     let mut settings = Vec::new();
     let mut children = "".to_string();
 
+    let current_folder = find_by_id::<APIFolder>(TABLE_NAME, id.clone(), APIFolder::keys())?;
+
     // 记录所有folder与它的子目录
-    for ele in list_api_folder()? {
+    for ele in list_api_folder(current_folder.collection)? {
         if ele.id == id {
             children = ele.children.clone();
         }

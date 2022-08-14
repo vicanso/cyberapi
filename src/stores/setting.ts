@@ -5,6 +5,7 @@ import localforage from "localforage";
 import { setWindowSize } from "../commands/window";
 
 import { isWebMode, getBodyWidth } from "../helpers/util";
+import { LocationQuery, RouteParams } from "vue-router";
 
 const settingStore = localforage.createInstance({
   name: "setting",
@@ -18,6 +19,11 @@ interface AppSetting {
   size: {
     width: number;
     height: number;
+  };
+  latestRoute: {
+    name: string;
+    params: RouteParams;
+    query: LocationQuery;
   };
 }
 
@@ -38,6 +44,21 @@ async function getAppSetting(): Promise<AppSetting> {
 
 function updateAppSetting(data: AppSetting): Promise<AppSetting> {
   return settingStore.setItem(appSettingKey, data);
+}
+
+export async function updateAppLatestRoute(route: {
+  name: string;
+  params: RouteParams;
+  query: LocationQuery;
+}) {
+  const setting = await getAppSetting();
+  setting.latestRoute = route;
+  await updateAppSetting(setting);
+}
+
+export async function getAppLatestRoute() {
+  const setting = await getAppSetting();
+  return setting.latestRoute;
 }
 
 function isDarkTheme(theme: string) {

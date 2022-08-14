@@ -48,11 +48,14 @@ export async function createAPIFolder(folder: APIFolder): Promise<void> {
   });
 }
 
-export async function listAPIFolder(): Promise<APIFolder[]> {
+export async function listAPIFolder(collection: string): Promise<APIFolder[]> {
   if (isWebMode()) {
-    return await fakeList<APIFolder>(store);
+    const folders = await fakeList<APIFolder>(store);
+    return folders.filter((item) => item.collection === collection);
   }
-  return await run<APIFolder[]>(cmdListAPIFolder);
+  return await run<APIFolder[]>(cmdListAPIFolder, {
+    collection,
+  });
 }
 
 export async function updateAPIFolder(folder: APIFolder) {
@@ -74,7 +77,7 @@ export async function deleteAPIFolder(id: string): Promise<{
   };
   if (isWebMode()) {
     // 查询folders
-    const folders = await listAPIFolder();
+    const folders = await listAPIFolder("");
     const folderDict: Map<string, APIFolder> = new Map();
     folders.forEach((item) => {
       folderDict.set(item.id, item);

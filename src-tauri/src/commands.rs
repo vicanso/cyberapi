@@ -90,8 +90,8 @@ pub fn update_api_folder(folder: APIFolder) -> CommandResult<()> {
 
 // 获取所有API目录
 #[command(async)]
-pub fn list_api_folder() -> CommandResult<Vec<APIFolder>> {
-    let result = schemas::list_api_folder()?;
+pub fn list_api_folder(collection: String) -> CommandResult<Vec<APIFolder>> {
+    let result = schemas::list_api_folder(collection)?;
     Ok(result)
 }
 

@@ -3,10 +3,14 @@ import {
   createWebHashHistory,
   LocationQueryRaw,
 } from "vue-router";
+
+import { updateAppLatestRoute } from "../stores/setting";
 import { routes } from "./routes";
 
+const history = createWebHashHistory();
+
 const router = createRouter({
-  history: createWebHashHistory(),
+  history,
   routes,
 });
 
@@ -52,5 +56,11 @@ router.afterEach(function (to, from) {
   if (!from || to.path !== from.path) {
     finishEvent();
   }
+  // 如果失败则忽略
+  updateAppLatestRoute({
+    name: to.name as string,
+    params: to.params,
+    query: to.query,
+  });
 });
 export default router;

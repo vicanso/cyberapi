@@ -110,7 +110,7 @@ export default defineComponent({
     onUpdateQuery: {
       type: Function as PropType<(query: KVParam[]) => void>,
       required: true,
-    }
+    },
   },
   setup(props) {
     const settingStore = useSettingStore();
@@ -240,7 +240,7 @@ export default defineComponent({
       if (props.onUpdateQuery) {
         props.onUpdateQuery(arr);
       }
-    }
+    };
     // method变化时要选定对应的tab
     const stop = watch(
       () => props.params.method,

@@ -3,7 +3,6 @@ import { forEach, isArray } from "lodash-es";
 import { run, cmdDoHTTPRequest } from "./invoke";
 import { KVParam } from "./interface";
 import { isWebMode } from "../helpers/util";
-import { gradientTextDark } from "naive-ui";
 
 export enum HTTPMethod {
   GET = "GET",

@@ -1,3 +1,4 @@
+import { resolve } from 'path'
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import vueJsx from "@vitejs/plugin-vue-jsx";
@@ -14,7 +15,12 @@ export default defineConfig({
     VitePluginLinaria(),
   ],
   build: {
+    chunkSizeWarningLimit: 1024 * 1024,
     rollupOptions: {
+      input: {
+        main: resolve(__dirname, "index.html"),
+        splashscreen: resolve(__dirname, "splashscreen.html"),
+      },
       output: {
         manualChunks: {
           common: [

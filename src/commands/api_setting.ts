@@ -56,7 +56,8 @@ export async function listAPISetting(
   collection: string
 ): Promise<APISetting[]> {
   if (isWebMode()) {
-    return await fakeList<APISetting>(store);
+    const settings = await fakeList<APISetting>(store);
+    return settings.filter((item) => item.collection === collection);
   }
   return await run<APISetting[]>(cmdListAPISetting, {
     collection,

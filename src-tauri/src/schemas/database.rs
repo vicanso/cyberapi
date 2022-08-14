@@ -1,6 +1,6 @@
 // use tauri::{Env};
 use once_cell::sync::OnceCell;
-use rusqlite::{params_from_iter, Connection};
+use rusqlite::{params, params_from_iter, Connection};
 use std::{fs, path::Path, sync::Mutex, sync::MutexGuard};
 
 use crate::util;
@@ -20,6 +20,26 @@ fn init_conn() -> &'static Mutex<Connection> {
 pub fn get_conn() -> MutexGuard<'static, Connection> {
     let result = init_conn();
     result.lock().unwrap()
+}
+
+pub fn find_by_id<T: NewFromRow<T>>(
+    table: &str,
+    id: String,
+    keys: Vec<String>,
+) -> Result<T, rusqlite::Error> {
+    let sql = format!(
+        "SELECT {} FROM {} limit 1 WHERE id = ?1",
+        keys.join(", "),
+        table
+    );
+    let conn = get_conn();
+    let mut statement = conn.prepare(&sql)?;
+    let mut rows = statement.query(params![id])?;
+    let item = rows.next()?;
+    match item {
+        Some(data) => Ok(T::from_row(data)?),
+        None => Err(rusqlite::Error::QueryReturnedNoRows),
+    }
 }
 
 pub fn add_or_update_record(
