@@ -423,8 +423,6 @@ export default defineComponent({
     onBeforeMount(async () => {
       processing.value = true;
       try {
-        await collectionStore.fetchExpandedFolders(collection);
-        await collectionStore.fetchTopTreeItems(collection);
         await folderStore.fetch(collection);
         await settingStore.fetch(collection);
       } catch (err) {

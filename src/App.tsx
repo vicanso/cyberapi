@@ -6,12 +6,12 @@ import {
   useLoadingBar,
   NModal,
 } from "naive-ui";
+import { storeToRefs } from "pinia";
 
 import "./main.css";
 import { setLoadingEvent } from "./router";
 import AppHeader from "./views/AppHeader";
 import { useDialogStore } from "./stores/dialog";
-import { storeToRefs } from "pinia";
 import AppSetting from "./views/AppSetting";
 import CookieSetting from "./views/CookieSetting";
 import EnvironmentSetting from "./views/EnvironmentSetting";

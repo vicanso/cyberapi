@@ -11,13 +11,25 @@ import {
   deleteAPICollection,
 } from "../commands/api_collection";
 
+// 记录展开的配置项
 const expandedSettingStore = localforage.createInstance({
   name: "expandedSettingStore",
 });
 
+// 记录顶层的配置项
 const topTreeItemStore = localforage.createInstance({
   name: "topTreeItemStore",
 });
+
+// TODO 是否需要清理
+const tabActiveStore = localforage.createInstance({
+  name: "tabActive",
+});
+const tabActiveKey = "activeTabs";
+
+interface TabActiveData {
+  [key: string]: string;
+}
 
 async function toggleFolderExpanded(
   collection: string,
@@ -44,6 +56,7 @@ export const useAPICollectionStore = defineStore("apiCollections", {
       apiCollections: [] as APICollection[],
       expandedFolders: [] as string[],
       topTreeItems: [] as string[],
+      activeTabs: {} as TabActiveData,
       fetching: false,
       adding: false,
       updating: false,
@@ -62,6 +75,29 @@ export const useAPICollectionStore = defineStore("apiCollections", {
       if (items) {
         this.topTreeItems = items;
       }
+    },
+    async fetchActiveTabs() {
+      const data = await tabActiveStore.getItem<TabActiveData>(tabActiveKey);
+      this.activeTabs = data || {};
+    },
+    getActiveTab(id: string) {
+      return this.activeTabs[id];
+    },
+    async updateActiveTab(params: { id: string; activeTab: string }) {
+      const { id, activeTab } = params;
+      // 已经相同
+      if (this.activeTabs[id] === activeTab) {
+        return;
+      }
+      if (activeTab) {
+        this.activeTabs[id] = activeTab;
+      } else {
+        delete this.activeTabs[id];
+      }
+      await tabActiveStore.setItem(
+        tabActiveKey,
+        Object.assign({}, this.activeTabs)
+      );
     },
     async updateTopTreeItems(collection: string, idList: string[]) {
       await topTreeItemStore.setItem(collection, idList);

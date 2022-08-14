@@ -77,9 +77,10 @@ export default defineComponent({
               await folderStore.addChild({
                 id: folder,
                 child: setting.id,
-                index: 0,
+                index: -1,
               });
             }
+            settingStore.select(setting.id);
           } catch (err) {
             showError(message, err);
           }

@@ -31,6 +31,7 @@ import { showError } from "../../helpers/util";
 import ExKeyValue, { HandleOption } from "../ExKeyValue";
 import { KVParam } from "../../commands/interface";
 import { padding } from "../../constants/style";
+import { useAPICollectionStore } from "../../stores/api_collection";
 
 enum TabItem {
   Body = "Body",
@@ -97,6 +98,10 @@ function shouldShowEditor(contentType: string) {
 export default defineComponent({
   name: "APISettingParamsReqParams",
   props: {
+    id: {
+      type: String,
+      required: true,
+    },
     params: {
       type: Object as PropType<HTTPRequest>,
       required: true,
@@ -111,20 +116,24 @@ export default defineComponent({
       type: Function as PropType<(query: KVParam[]) => void>,
       required: true,
     },
+    onUpdateHeaders: {
+      type: Function as PropType<(headers: KVParam[]) => void>,
+      required: true,
+    },
   },
   setup(props) {
     const settingStore = useSettingStore();
     const message = useMessage();
     const dialog = useDialog();
+    const collecitonStore = useAPICollectionStore();
     const codeEditor = ref<Element>();
     const contentType = ref(props.params.contentType || ContentType.JSON);
 
-    let tab = TabItem.Query;
-    // TODO 是否获取个性配置
-    if (shouldHaveBody(props.params.method)) {
+    let tab = collecitonStore.getActiveTab(props.id);
+    if (!tab && shouldHaveBody(props.params.method)) {
       tab = TabItem.Body;
     }
-    const activeTab = ref(tab);
+    const activeTab = ref(tab as TabItem);
 
     let editor: EditorView;
     const destroy = () => {
@@ -241,6 +250,14 @@ export default defineComponent({
         props.onUpdateQuery(arr);
       }
     };
+
+    const handleHeaders = (opt: HandleOption) => {
+      const arr = getParamsFromHandleOption(opt);
+      if (props.onUpdateHeaders) {
+        props.onUpdateHeaders(arr);
+      }
+    };
+
     // method变化时要选定对应的tab
     const stop = watch(
       () => props.params.method,
@@ -252,6 +269,18 @@ export default defineComponent({
         }
       }
     );
+    const handleUpdateActiveTab = async (activeTab: string) => {
+      // TODO 更新无效
+      try {
+        await collecitonStore.updateActiveTab({
+          id: props.id,
+          activeTab,
+        });
+      } catch (err) {
+        showError(message, err);
+      }
+    };
+
     onMounted(() => {
       initEditor();
     });
@@ -263,8 +292,10 @@ export default defineComponent({
       contentType,
       handleBodyParams,
       handleQueryParams,
+      handleHeaders,
       handleChangeContentType,
       handleFormat,
+      handleUpdateActiveTab,
       activeTab,
       codeEditor,
     };
@@ -276,6 +307,11 @@ export default defineComponent({
     if (shouldHaveBody(method)) {
       tabs.unshift(TabItem.Body);
     }
+    let activeIndex = tabs.indexOf(activeTab);
+    if (activeIndex < 0) {
+      activeIndex = 0;
+    }
+
     const contentTypeOptions = [
       {
         label: "JSON",
@@ -350,18 +386,29 @@ export default defineComponent({
     }
     let showBodyKeyValue = false;
     let keyValues = [];
-    if (activeTab === TabItem.Body && !shouldShowEditor(contentType)) {
-      showBodyKeyValue = true;
-      try {
-        keyValues = JSON.parse(this.params.body);
-      } catch (err) {
-        // 忽略parse出错
-        console.error(err);
+
+    switch (activeTab) {
+      case TabItem.Body:
+        {
+          if (!shouldShowEditor(contentType)) {
+            showBodyKeyValue = true;
+            try {
+              keyValues = JSON.parse(this.params.body);
+            } catch (err) {
+              // 忽略parse出错
+              console.error(err);
+            }
+          }
+        }
+        break;
+      case TabItem.Query:
+        {
+          keyValues = this.params.query || [];
+        }
+        break;
+      case TabItem.Header: {
+        keyValues = this.params.headers || [];
       }
-    }
-    // 选择了query
-    if (activeTab === TabItem.Query) {
-      keyValues = this.params.query || [];
     }
 
     return (
@@ -370,8 +417,19 @@ export default defineComponent({
           tabsPadding={15}
           key={method}
           type="line"
-          defaultValue={tabs[0]}
+          defaultValue={tabs[activeIndex]}
           onUpdateValue={(value) => {
+            let activeTab = value as string;
+            if (shouldHaveBody(method)) {
+              if (value === TabItem.Body) {
+                activeTab = "";
+              }
+            } else {
+              if (value === TabItem.Query) {
+                activeTab = "";
+              }
+            }
+            this.handleUpdateActiveTab(activeTab);
             this.activeTab = value;
           }}
         >
@@ -397,6 +455,7 @@ export default defineComponent({
           {/* body form/multipart */}
           {showBodyKeyValue && (
             <ExKeyValue
+              key="form/multipart"
               class="keyValue"
               params={keyValues}
               onHandleParam={(opt) => {
@@ -406,10 +465,21 @@ export default defineComponent({
           )}
           {activeTab === TabItem.Query && (
             <ExKeyValue
+              key="query"
               class="keyValue"
               params={keyValues}
               onHandleParam={(opt) => {
                 this.handleQueryParams(opt);
+              }}
+            />
+          )}
+          {activeTab === TabItem.Header && (
+            <ExKeyValue
+              key="header"
+              class="keyValue"
+              params={keyValues}
+              onHandleParam={(opt) => {
+                this.handleHeaders(opt);
               }}
             />
           )}

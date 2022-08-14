@@ -1,6 +1,5 @@
 import { defineComponent, PropType, ref } from "vue";
 import { css } from "@linaria/core";
-
 import {
   NButton,
   NInput,
@@ -10,13 +9,15 @@ import {
   NDropdown,
   NGradientText,
 } from "naive-ui";
-
-import { i18nCollection } from "../../i18n";
-import { HTTPRequest, HTTPMethod } from "../../commands/http_request";
-import { useEnvironmentStore, ENVRegexp } from "../../stores/environment";
+import { ulid } from "ulid";
 import { storeToRefs } from "pinia";
 import { CodeSlashOutline } from "@vicons/ionicons5";
+
+import { i18nCollection, i18nEnvironment } from "../../i18n";
+import { HTTPRequest, HTTPMethod } from "../../commands/http_request";
+import { useEnvironmentStore, ENVRegexp } from "../../stores/environment";
 import { EnvironmentStatus } from "../../commands/environment";
+import { useDialogStore } from "../../stores/dialog";
 
 const environmentSelectWidth = 50;
 const wrapperClass = css`
@@ -70,6 +71,8 @@ function cuttingURI(uri: string): CuttingURIResult {
   return result;
 }
 
+const addNewENVKey = ulid();
+
 export default defineComponent({
   name: "APISettingParamsURI",
   props: {
@@ -87,8 +90,8 @@ export default defineComponent({
     },
   },
   setup(props) {
+    const dialogStore = useDialogStore();
     const environmentStore = useEnvironmentStore();
-
     const { environments } = storeToRefs(environmentStore);
     const uriResult = cuttingURI(props.params.uri);
 
@@ -96,6 +99,10 @@ export default defineComponent({
     const env = ref(uriResult.env);
     const method = ref(props.params.method);
     const sending = ref(false);
+
+    const showEnvironment = () => {
+      dialogStore.toggleEnvironmentDialog(true);
+    };
 
     const handleUpdate = () => {
       let uri = currentURI.value;
@@ -115,6 +122,7 @@ export default defineComponent({
 
     return {
       sending,
+      showEnvironment,
       handleUpdate,
       environments,
       method,
@@ -151,6 +159,10 @@ export default defineComponent({
     if (env) {
       envPrefix = env.substring(0, 2).toUpperCase();
     }
+    envOptions.push({
+      label: i18nEnvironment("addNew"),
+      key: addNewENVKey,
+    });
 
     return (
       <div class={wrapperClass}>
@@ -170,6 +182,10 @@ export default defineComponent({
             }}
             value={env}
             onSelect={(value) => {
+              if (value === addNewENVKey) {
+                this.showEnvironment();
+                return;
+              }
               this.env = value;
               this.handleUpdate();
             }}

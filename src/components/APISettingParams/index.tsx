@@ -91,6 +91,16 @@ export default defineComponent({
       await update();
     };
 
+    const handleUpdateHeaders = async (id: string, headers: KVParam[]) => {
+      // 因为是延时执行，如果已经切换，则不更新
+      // 避免更新了其它接口的数据
+      if (id !== selectedID.value) {
+        return;
+      }
+      reqParams.value.headers = headers;
+      await update();
+    };
+
     return {
       selectedID,
       reqParams,
@@ -99,6 +109,7 @@ export default defineComponent({
       handleUpdateBody: debounce(handleUpdateBody, 300),
       handleUpdateURI,
       handleUpdateQuery: debounce(handleUpdateQuery, 300),
+      handleUpdateHeaders: debounce(handleUpdateHeaders, 300),
     };
   },
   render() {
@@ -117,12 +128,16 @@ export default defineComponent({
         />
         <NDivider />
         <APISettingParamsReqParams
+          id={selectedID}
           params={reqParams}
           onUpdateBody={(value) => {
             this.handleUpdateBody(selectedID, value);
           }}
           onUpdateQuery={(value) => {
             this.handleUpdateQuery(selectedID, value);
+          }}
+          onUpdateHeaders={(value) => {
+            this.handleUpdateHeaders(selectedID, value);
           }}
         />
       </div>

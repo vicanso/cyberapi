@@ -56,6 +56,9 @@ export default defineComponent({
             route: route.name as string,
           });
         }
+        await collectionStore.fetchExpandedFolders(collection);
+        await collectionStore.fetchTopTreeItems(collection);
+        await collectionStore.fetchActiveTabs();
       } catch (err) {
         showError(message, err);
       } finally {
@@ -152,6 +155,7 @@ export default defineComponent({
           width={width}
           showDivider={index !== 0}
           onResize={(value) => {
+            // TODO 是否设置为百分比更合理
             updateCollectionColumnWidths(value, index);
           }}
         >
