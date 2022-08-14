@@ -107,15 +107,24 @@ export default defineComponent({
       >,
       required: true,
     },
+    onUpdateQuery: {
+      type: Function as PropType<(query: KVParam[]) => void>,
+      required: true,
+    }
   },
-  emits: ["update"],
   setup(props) {
     const settingStore = useSettingStore();
     const message = useMessage();
     const dialog = useDialog();
     const codeEditor = ref<Element>();
-    const activeTab = ref("");
     const contentType = ref(props.params.contentType || ContentType.JSON);
+
+    let tab = TabItem.Query;
+    // TODO 是否获取个性配置
+    if (shouldHaveBody(props.params.method)) {
+      tab = TabItem.Body;
+    }
+    const activeTab = ref(tab);
 
     let editor: EditorView;
     const destroy = () => {
@@ -124,7 +133,7 @@ export default defineComponent({
       }
     };
     const handleEditorUpdate = (v: ViewUpdate) => {
-      if (v.docChanged) {
+      if (v.docChanged && props.onUpdateBody) {
         props.onUpdateBody({
           body: editor.state.doc.toString().trim(),
           contentType: contentType.value,
@@ -179,10 +188,12 @@ export default defineComponent({
       const changeContentType = () => {
         // 清空
         replaceContent("");
-        props.onUpdateBody({
-          body: "",
-          contentType: newContentType,
-        });
+        if (props.onUpdateBody) {
+          props.onUpdateBody({
+            body: "",
+            contentType: newContentType,
+          });
+        }
         contentType.value = newContentType;
       };
       if (!props.params.body) {
@@ -199,7 +210,7 @@ export default defineComponent({
       });
     };
 
-    const handleBodyParams = (opt: HandleOption) => {
+    const getParamsFromHandleOption = (opt: HandleOption) => {
       const arr = [] as KVParam[];
       opt.params.forEach((item) => {
         const { key, value } = item;
@@ -212,6 +223,11 @@ export default defineComponent({
           enabled: item.enabled,
         });
       });
+      return arr;
+    };
+
+    const handleBodyParams = (opt: HandleOption) => {
+      const arr = getParamsFromHandleOption(opt);
       if (props.onUpdateBody) {
         props.onUpdateBody({
           body: JSON.stringify(arr),
@@ -219,6 +235,12 @@ export default defineComponent({
         });
       }
     };
+    const handleQueryParams = (opt: HandleOption) => {
+      const arr = getParamsFromHandleOption(opt);
+      if (props.onUpdateQuery) {
+        props.onUpdateQuery(arr);
+      }
+    }
     // method变化时要选定对应的tab
     const stop = watch(
       () => props.params.method,
@@ -232,9 +254,6 @@ export default defineComponent({
     );
     onMounted(() => {
       initEditor();
-      if (shouldHaveBody(props.params.method)) {
-        activeTab.value = TabItem.Body;
-      }
     });
     onBeforeUnmount(() => {
       stop();
@@ -243,6 +262,7 @@ export default defineComponent({
     return {
       contentType,
       handleBodyParams,
+      handleQueryParams,
       handleChangeContentType,
       handleFormat,
       activeTab,
@@ -339,6 +359,10 @@ export default defineComponent({
         console.error(err);
       }
     }
+    // 选择了query
+    if (activeTab === TabItem.Query) {
+      keyValues = this.params.query || [];
+    }
 
     return (
       <div class={tabClass}>
@@ -377,6 +401,15 @@ export default defineComponent({
               params={keyValues}
               onHandleParam={(opt) => {
                 this.handleBodyParams(opt);
+              }}
+            />
+          )}
+          {activeTab === TabItem.Query && (
+            <ExKeyValue
+              class="keyValue"
+              params={keyValues}
+              onHandleParam={(opt) => {
+                this.handleQueryParams(opt);
               }}
             />
           )}

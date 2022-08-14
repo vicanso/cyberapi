@@ -6,3 +6,5 @@ fmt:
 	cd src-tauri && cargo fmt --all --
 dev:
 	npm run tauri dev
+build:
+	npm run tauri build

@@ -28,13 +28,13 @@ export default defineComponent({
       try {
         await appStore.fetch();
         await settingStore.fetch();
-        settingStore.resize();
+        await settingStore.resize();
       } catch (err) {
         // TODO 初始化基本不会出错，是否有其它方法提示
         console.error(err);
       } finally {
         processing.value = false;
-        // 延时1秒关闭，便于程序初始化
+        // 延时关闭，便于程序初始化
         setTimeout(closeSplashscreen, 1000);
       }
     });

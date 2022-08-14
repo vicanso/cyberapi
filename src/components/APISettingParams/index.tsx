@@ -10,6 +10,7 @@ import { showError } from "../../helpers/util";
 import { i18nCollection } from "../../i18n";
 import APISettingParamsURI from "./uri";
 import APISettingParamsReqParams from "./req_params";
+import { KVParam } from "../../commands/interface";
 
 const wrapperClass = css`
   height: 100%;
@@ -80,11 +81,24 @@ export default defineComponent({
       await update();
     };
 
+    const handleUpdateQuery = async (id: string, query: KVParam[]) => {
+      // 因为是延时执行，如果已经切换，则不更新
+      // 避免更新了其它接口的数据
+      if (id !== selectedID.value) {
+        return;
+      }
+      reqParams.value.query = query;
+      await update();
+    };
+
     return {
       selectedID,
       reqParams,
-      handleUpdateBody: debounce(handleUpdateBody, 1000),
+      // 避免频繁重复触发，不能设置过长
+      // 如果设置过长容易导致更新了还没生效
+      handleUpdateBody: debounce(handleUpdateBody, 300),
       handleUpdateURI,
+      handleUpdateQuery: debounce(handleUpdateQuery, 300),
     };
   },
   render() {
@@ -106,6 +120,9 @@ export default defineComponent({
           params={reqParams}
           onUpdateBody={(value) => {
             this.handleUpdateBody(selectedID, value);
+          }}
+          onUpdateQuery={(value) => {
+            this.handleUpdateQuery(selectedID, value);
           }}
         />
       </div>

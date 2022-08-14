@@ -19,11 +19,17 @@ export default defineConfig({
         manualChunks: {
           common: [
             "dayjs",
-            "localforage"
+            "localforage",
+            "debug",
+            "lodash-es",
+            "pretty-bytes",
+            "ulid",
           ],
           ui: [
             "vue",
-            // "vue-router",
+            "vue-router",
+            "vue-i18n",
+            "pinia",
           ],
           naive: [
             "naive-ui",
