@@ -1,4 +1,5 @@
 import {
+  NBadge,
   NButton,
   NDropdown,
   NIcon,
@@ -16,12 +17,8 @@ import {
   ref,
   watch,
 } from "vue";
-import { basicSetup } from "codemirror";
-import { EditorView, keymap, ViewUpdate } from "@codemirror/view";
+import { EditorView, ViewUpdate } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
-import { json } from "@codemirror/lang-json";
-import { oneDark } from "@codemirror/theme-one-dark";
-import { indentWithTab } from "@codemirror/commands";
 
 import { HTTPMethod, HTTPRequest } from "../../commands/http_request";
 import { useSettingStore } from "../../stores/setting";
@@ -32,6 +29,7 @@ import ExKeyValue, { HandleOption } from "../ExKeyValue";
 import { KVParam } from "../../commands/interface";
 import { padding } from "../../constants/style";
 import { useAPICollectionStore } from "../../stores/api_collection";
+import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
 
 enum TabItem {
   Body = "Body",
@@ -56,6 +54,18 @@ const tabClass = css`
     .contentType {
       width: 60px;
       text-align: center;
+    }
+  }
+  .badgeTab {
+    position: relative;
+    .badge {
+      position: absolute;
+      right: -15px;
+      top: 8px;
+      .n-badge-sup {
+        padding: 0 3px !important;
+        border-radius: 3px !important;
+      }
     }
   }
   .hidden {
@@ -95,6 +105,24 @@ function shouldShowEditor(contentType: string) {
   );
 }
 
+function createBadgeTab(params: {
+  tab: string;
+  value: number;
+  activeTab: string;
+}) {
+  const { value, tab, activeTab } = params;
+  const badge =
+    value && tab !== activeTab ? (
+      <NBadge class="badge" color="grey" value={value} />
+    ) : null;
+  return (
+    <NTab class="badgeTab" name={tab}>
+      {tab}
+      {badge}
+    </NTab>
+  );
+}
+
 export default defineComponent({
   name: "APISettingParamsReqParams",
   props: {
@@ -130,8 +158,12 @@ export default defineComponent({
     const contentType = ref(props.params.contentType || ContentType.JSON);
 
     let tab = collecitonStore.getActiveTab(props.id);
-    if (!tab && shouldHaveBody(props.params.method)) {
-      tab = TabItem.Body;
+    if (!tab) {
+      if (shouldHaveBody(props.params.method)) {
+        tab = TabItem.Body;
+      } else {
+        tab = TabItem.Query;
+      }
     }
     const activeTab = ref(tab as TabItem);
 
@@ -149,15 +181,10 @@ export default defineComponent({
         });
       }
     };
-    const extensions = [
-      basicSetup,
-      keymap.of([indentWithTab]),
-      json(),
-      EditorView.updateListener.of(handleEditorUpdate),
-    ];
-    if (settingStore.isDark) {
-      extensions.push(oneDark);
-    }
+    const extensions = getDefaultExtensions({
+      isDark: settingStore.isDark,
+    });
+    extensions.push(EditorView.updateListener.of(handleEditorUpdate));
     const initEditor = () => {
       const state = EditorState.create({
         doc: props.params.body,
@@ -169,25 +196,13 @@ export default defineComponent({
       });
     };
 
-    const replaceContent = (result: string) => {
-      const data = editor.state.doc.toString();
-      if (result !== data) {
-        const trans = editor.state.update({
-          changes: {
-            from: 0,
-            to: data.length,
-            insert: result,
-          },
-        });
-        editor.update([trans]);
-      }
-    };
-
     const handleFormat = () => {
       const data = editor.state.doc.toString();
       try {
         const result = JSON.stringify(JSON.parse(data), null, 2);
-        replaceContent(result);
+        if (result !== data) {
+          replaceContent(editor, result);
+        }
       } catch (err) {
         showError(message, err);
       }
@@ -196,7 +211,7 @@ export default defineComponent({
       // 如果无数据，直接切换
       const changeContentType = () => {
         // 清空
-        replaceContent("");
+        replaceContent(editor, "");
         if (props.onUpdateBody) {
           props.onUpdateBody({
             body: "",
@@ -270,7 +285,6 @@ export default defineComponent({
       }
     );
     const handleUpdateActiveTab = async (activeTab: string) => {
-      // TODO 更新无效
       try {
         await collecitonStore.updateActiveTab({
           id: props.id,
@@ -301,7 +315,8 @@ export default defineComponent({
     };
   },
   render() {
-    const { method } = this.$props.params;
+    const { params } = this.$props;
+    const { method } = params;
     const { activeTab, contentType } = this;
     const tabs = [TabItem.Query, TabItem.Header, TabItem.Auth];
     if (shouldHaveBody(method)) {
@@ -374,6 +389,20 @@ export default defineComponent({
             );
           }
           break;
+        case TabItem.Query:
+          return createBadgeTab({
+            activeTab,
+            tab: item,
+            value: params.query?.length,
+          });
+          break;
+        case TabItem.Header: {
+          return createBadgeTab({
+            activeTab,
+            tab: item,
+            value: params.headers?.length,
+          });
+        }
         default:
           return <NTab name={item}>{item}</NTab>;
           break;

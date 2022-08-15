@@ -21,6 +21,7 @@
     "codemirror": "^6.0.1",
     "dayjs": "^1.11.4",
     "debug": "^4.3.4",
+    "js-base64": "^3.7.2",
     "localforage": "^1.10.0",
     "lodash-es": "^4.17.21",
     "naive-ui": "^2.32.1",

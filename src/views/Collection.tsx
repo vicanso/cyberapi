@@ -1,5 +1,11 @@
 import { useMessage } from "naive-ui";
-import { defineComponent, onBeforeMount, ref } from "vue";
+import {
+  defineComponent,
+  onBeforeMount,
+  onBeforeUnmount,
+  ref,
+  watch,
+} from "vue";
 import { useRoute } from "vue-router";
 import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
@@ -42,6 +48,18 @@ export default defineComponent({
     const processing = ref(false);
     const sending = ref(false);
     const response = ref({} as HTTPResponse);
+
+    const stop = watch(
+      () => apiSettingStore.selectedID,
+      () => {
+        // 如果选择新的api，则重置数据
+        response.value = {} as HTTPResponse;
+      }
+    );
+
+    onBeforeUnmount(() => {
+      stop();
+    });
 
     onBeforeMount(async () => {
       processing.value = true;

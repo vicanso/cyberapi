@@ -40,6 +40,9 @@ export const useAPISettingStore = defineStore("apiSettings", {
     },
     getHTTPRequest(id: string) {
       const setting = this.findByID(id);
+      if (!setting) {
+        return {} as HTTPRequest;
+      }
       return JSON.parse(setting.setting || "{}") as HTTPRequest;
     },
     findByID(id: string): APISetting {

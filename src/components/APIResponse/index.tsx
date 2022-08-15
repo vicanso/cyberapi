@@ -7,12 +7,8 @@ import {
   watch,
 } from "vue";
 import { css } from "@linaria/core";
-import { basicSetup } from "codemirror";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
-import { json } from "@codemirror/lang-json";
-import { oneDark } from "@codemirror/theme-one-dark";
-import { indentWithTab } from "@codemirror/commands";
 import prettyBytes from "pretty-bytes";
 
 import {
@@ -24,6 +20,7 @@ import {
 import { useSettingStore } from "../../stores/setting";
 import { NDivider, NGradientText, NSpace } from "naive-ui";
 import { padding } from "../../constants/style";
+import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
 
 const responseClass = css`
   margin-left: 5px;
@@ -56,6 +53,13 @@ function getStatusType(statusCode: number) {
   return "success";
 }
 
+function formatLatency(ms: number) {
+  if (ms < 1000) {
+    return `${ms.toLocaleString()} ms`;
+  }
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
 export default defineComponent({
   name: "APIResponse",
   props: {
@@ -78,22 +82,9 @@ export default defineComponent({
         editor.destroy();
       }
     };
-    const replaceContent = (result: string) => {
-      const data = editor.state.doc.toString();
-      if (result !== data) {
-        const trans = editor.state.update({
-          changes: {
-            from: 0,
-            to: data.length,
-            insert: result,
-          },
-        });
-        editor.update([trans]);
-      }
-    };
-
     const statusCode = ref(0);
     const size = ref(-1);
+    const latency = ref(0);
 
     const stop = watch(
       () => props.response,
@@ -106,20 +97,16 @@ export default defineComponent({
           body = getResponseBody(resp);
         }
         size.value = body.size;
-        replaceContent(body.data);
+        latency.value = resp.latency;
+        replaceContent(editor, body.data);
       }
     );
 
     const codeEditor = ref<Element>();
-    const extensions = [
-      basicSetup,
-      keymap.of([indentWithTab]),
-      json(),
-      EditorState.readOnly.of(true),
-    ];
-    if (settingStore.isDark) {
-      extensions.push(oneDark);
-    }
+    const extensions = getDefaultExtensions({
+      isDark: settingStore.isDark,
+      readonly: true,
+    });
     const initEditor = () => {
       const state = EditorState.create({
         extensions,
@@ -141,12 +128,13 @@ export default defineComponent({
 
     return {
       size,
+      latency,
       statusCode,
       codeEditor,
     };
   },
   render() {
-    const { statusCode, size } = this;
+    const { statusCode, size, latency } = this;
     const statusCodeInfo = !!statusCode && (
       <NGradientText type={getStatusType(statusCode)}>
         {statusCode} {getStatusText(statusCode)}
@@ -159,6 +147,7 @@ export default defineComponent({
           {/* 占位 */}
           <span> </span>
           {size >= 0 && prettyBytes(size)}
+          {latency > 0 && formatLatency(latency)}
         </NSpace>
         <NDivider />
         <div ref="codeEditor" class="codeEditor"></div>

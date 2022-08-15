@@ -1,4 +1,5 @@
 import { forEach, isArray } from "lodash-es";
+import { decode } from "js-base64";
 
 import { run, cmdDoHTTPRequest } from "./invoke";
 import { KVParam } from "./interface";
@@ -26,6 +27,8 @@ export interface HTTPRequest {
 
 export interface HTTPResponse {
   [key: string]: unknown;
+  // 耗时(ms)
+  latency: number;
   status: number;
   headers: Map<string, string[]>;
   body: string;
@@ -132,12 +135,12 @@ export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
           const value = values.join(" ");
           if (value.includes(applicationJSON)) {
             category = ResponseBodyCategory.JSON;
-            data = window.atob(data);
+            data = decode(data);
             // format
             data = JSON.stringify(JSON.parse(data), null, 2);
           } else if (value.includes("text")) {
             category = ResponseBodyCategory.Text;
-            data = window.atob(data);
+            data = decode(data);
           }
         }
         break;
@@ -193,6 +196,7 @@ export async function doHTTPRequest(req: HTTPRequest): Promise<HTTPResponse> {
     const headers = new Map<string, string[]>();
     headers.set("Content-Type", [applicationJSON]);
     return Promise.resolve({
+      latency: 1860,
       status: 200,
       headers,
       body: window.btoa(JSON.stringify(params)),
@@ -202,6 +206,9 @@ export async function doHTTPRequest(req: HTTPRequest): Promise<HTTPResponse> {
   const resp = await run<HTTPResponse>(cmdDoHTTPRequest, {
     req: params,
   });
+  if (resp.latency <= 0) {
+    resp.latency = 1;
+  }
   // 转换为Map<string, string[]>
   const headers = new Map<string, string[]>();
   forEach(resp.headers, (value, key) => {

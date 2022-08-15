@@ -7,6 +7,7 @@ use hyper::{
 use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, vec};
+use time::Instant;
 use url::Url;
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -31,12 +32,15 @@ pub struct HTTPRequest {
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct HTTPResponse {
+    pub latency: i16,
     pub status: u16,
     pub headers: HashMap<String, Vec<String>>,
     pub body: String,
 }
 
 pub async fn request(http_request: HTTPRequest) -> Result<HTTPResponse, CyberAPIError> {
+    let now = Instant::now();
+
     let mut req = Request::new(Body::from(http_request.body));
 
     match http_request.method.to_uppercase().as_str() {
@@ -64,14 +68,27 @@ pub async fn request(http_request: HTTPRequest) -> Result<HTTPResponse, CyberAPI
     *req.uri_mut() = request_uri;
 
     // 设置header
+    let mut set_content_type = false;
+    let content_type = "content-type";
     let header = req.headers_mut();
     for h in http_request.headers {
         if !h.enabled {
             continue;
         }
+        if h.key.to_lowercase() == content_type {
+            set_content_type = true;
+        }
         header.insert(
             h.key.parse::<HeaderName>()?,
             HeaderValue::from_str(h.value.as_str())?,
+        );
+    }
+    // 如果未设置content type
+    // 设置content type
+    if !set_content_type && !http_request.content_type.is_empty() {
+        header.insert(
+            content_type.parse::<HeaderName>()?,
+            HeaderValue::from_str(http_request.content_type.as_str())?,
         );
     }
 
@@ -136,7 +153,10 @@ pub async fn request(http_request: HTTPRequest) -> Result<HTTPResponse, CyberAPI
     }
     let buf = hyper::body::to_bytes(resp).await?;
 
+    let d = Instant::now() - now;
+
     Ok(HTTPResponse {
+        latency: d.subsec_milliseconds(),
         status,
         headers,
         body: base64::encode(buf),

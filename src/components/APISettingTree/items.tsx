@@ -419,6 +419,11 @@ export default defineComponent({
       document.addEventListener("mousemove", handleMousemove);
       document.addEventListener("mouseup", handleMouseup);
     };
+    const resetDrag = () => {
+      if (isDragging) {
+        isDragging = false;
+      }
+    };
 
     onBeforeMount(async () => {
       processing.value = true;
@@ -443,6 +448,7 @@ export default defineComponent({
       handleClick,
       handleMousedown,
       setTreeItems,
+      resetDrag,
       wrapper,
     };
   },
@@ -514,6 +520,7 @@ export default defineComponent({
             class={cls}
             style={style}
             onClick={(e) => {
+              this.resetDrag();
               const { target } = e;
               if (
                 nodeHasClass(target, "preventDefault") ||
