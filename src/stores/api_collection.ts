@@ -1,5 +1,4 @@
 import dayjs from "dayjs";
-import localforage from "localforage";
 import { uniq } from "lodash-es";
 import { defineStore } from "pinia";
 
@@ -10,21 +9,12 @@ import {
   listAPICollection,
   deleteAPICollection,
 } from "../commands/api_collection";
+import {
+  getExpandedSettingStore,
+  getTopTreeItemStore,
+  getTabActiveStore,
+} from "./local";
 
-// 记录展开的配置项
-const expandedSettingStore = localforage.createInstance({
-  name: "expandedSettingStore",
-});
-
-// 记录顶层的配置项
-const topTreeItemStore = localforage.createInstance({
-  name: "topTreeItemStore",
-});
-
-// TODO 是否需要清理
-const tabActiveStore = localforage.createInstance({
-  name: "tabActive",
-});
 const tabActiveKey = "activeTabs";
 
 interface TabActiveData {
@@ -36,7 +26,7 @@ async function toggleFolderExpanded(
   folder: string,
   expanded: boolean
 ) {
-  let items = await expandedSettingStore.getItem<string[]>(collection);
+  let items = await getExpandedSettingStore().getItem<string[]>(collection);
   if (!items) {
     items = [];
   }
@@ -46,7 +36,7 @@ async function toggleFolderExpanded(
     items = items.filter((item) => item !== folder);
   }
   items = uniq(items);
-  await expandedSettingStore.setItem(collection, items);
+  await getExpandedSettingStore().setItem(collection, items);
   return items;
 }
 
@@ -65,19 +55,23 @@ export const useAPICollectionStore = defineStore("apiCollections", {
   },
   actions: {
     async fetchExpandedFolders(collection: string) {
-      const items = await expandedSettingStore.getItem<string[]>(collection);
+      const items = await getExpandedSettingStore().getItem<string[]>(
+        collection
+      );
       if (items) {
         this.expandedFolders = items;
       }
     },
     async fetchTopTreeItems(collection: string) {
-      const items = await topTreeItemStore.getItem<string[]>(collection);
+      const items = await getTopTreeItemStore().getItem<string[]>(collection);
       if (items) {
         this.topTreeItems = items;
       }
     },
     async fetchActiveTabs() {
-      const data = await tabActiveStore.getItem<TabActiveData>(tabActiveKey);
+      const data = await getTabActiveStore().getItem<TabActiveData>(
+        tabActiveKey
+      );
       this.activeTabs = data || {};
     },
     getActiveTab(id: string) {
@@ -94,13 +88,13 @@ export const useAPICollectionStore = defineStore("apiCollections", {
       } else {
         delete this.activeTabs[id];
       }
-      await tabActiveStore.setItem(
+      await getTabActiveStore().setItem(
         tabActiveKey,
         Object.assign({}, this.activeTabs)
       );
     },
     async updateTopTreeItems(collection: string, idList: string[]) {
-      await topTreeItemStore.setItem(collection, idList);
+      await getTopTreeItemStore().setItem(collection, idList);
       this.topTreeItems = idList;
     },
     async openFolder(collection: string, folder: string) {

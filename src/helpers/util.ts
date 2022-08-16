@@ -67,3 +67,14 @@ export function newRequireRules(keys: string[]) {
   });
   return rules;
 }
+
+export function tryToParseArray(data: string) {
+  if (!data) {
+    return [];
+  }
+  const body = data.trim();
+  if (body.length <= 2 || body[0] !== "[" || body[body.length - 1] !== "]") {
+    return [];
+  }
+  return JSON.parse(body);
+}

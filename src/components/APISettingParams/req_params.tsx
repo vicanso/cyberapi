@@ -24,7 +24,7 @@ import { HTTPMethod, HTTPRequest } from "../../commands/http_request";
 import { useSettingStore } from "../../stores/setting";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { CaretDownOutline, CodeSlashOutline } from "@vicons/ionicons5";
-import { showError } from "../../helpers/util";
+import { showError, tryToParseArray } from "../../helpers/util";
 import ExKeyValue, { HandleOption } from "../ExKeyValue";
 import { KVParam } from "../../commands/interface";
 import { padding } from "../../constants/style";
@@ -121,6 +121,22 @@ function createBadgeTab(params: {
       {badge}
     </NTab>
   );
+}
+
+function createBodyBadge(params: { contentType: string; body: string }) {
+  const { contentType, body } = params;
+  if (
+    ![ContentType.Multipart, ContentType.Form].includes(
+      contentType as ContentType
+    )
+  ) {
+    return;
+  }
+  const arr = tryToParseArray(body);
+  if (arr.length === 0) {
+    return;
+  }
+  return <NBadge class="badge" color="grey" value={arr.length} />;
 }
 
 export default defineComponent({
@@ -357,14 +373,19 @@ export default defineComponent({
               (opt) => opt.key === contentType
             );
             if (activeTab !== TabItem.Body) {
+              const badge = createBodyBadge({
+                contentType,
+                body: params.body,
+              });
               return (
-                <NTab name={item}>
+                <NTab name={item} class="badgeTab">
                   <div class="contentType">
                     {label?.label}
                     <NIcon>
                       <CaretDownOutline />
                     </NIcon>
                   </div>
+                  {badge}
                 </NTab>
               );
             }
@@ -422,7 +443,7 @@ export default defineComponent({
           if (!shouldShowEditor(contentType)) {
             showBodyKeyValue = true;
             try {
-              keyValues = JSON.parse(this.params.body);
+              keyValues = tryToParseArray(this.params.body);
             } catch (err) {
               // 忽略parse出错
               console.error(err);
@@ -439,6 +460,8 @@ export default defineComponent({
         keyValues = this.params.headers || [];
       }
     }
+
+    const keyValueSpans = [8, 16];
 
     return (
       <div class={tabClass}>
@@ -486,6 +509,7 @@ export default defineComponent({
             <ExKeyValue
               key="form/multipart"
               class="keyValue"
+              spans={keyValueSpans}
               params={keyValues}
               onHandleParam={(opt) => {
                 this.handleBodyParams(opt);
@@ -496,6 +520,7 @@ export default defineComponent({
             <ExKeyValue
               key="query"
               class="keyValue"
+              spans={keyValueSpans}
               params={keyValues}
               onHandleParam={(opt) => {
                 this.handleQueryParams(opt);
@@ -506,6 +531,7 @@ export default defineComponent({
             <ExKeyValue
               key="header"
               class="keyValue"
+              spans={keyValueSpans}
               params={keyValues}
               onHandleParam={(opt) => {
                 this.handleHeaders(opt);

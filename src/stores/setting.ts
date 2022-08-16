@@ -1,15 +1,11 @@
 import { defineStore } from "pinia";
 import { appWindow } from "@tauri-apps/api/window";
-import localforage from "localforage";
 
 import { setWindowSize } from "../commands/window";
 
 import { isWebMode, getBodyWidth } from "../helpers/util";
 import { LocationQuery, RouteParams } from "vue-router";
-
-const settingStore = localforage.createInstance({
-  name: "setting",
-});
+import { getSettingStore } from "./local";
 
 interface AppSetting {
   theme: string;
@@ -35,7 +31,7 @@ export enum ResizeType {
 const appSettingKey = "app";
 
 async function getAppSetting(): Promise<AppSetting> {
-  const setting = await settingStore.getItem<AppSetting>(appSettingKey);
+  const setting = await getSettingStore().getItem<AppSetting>(appSettingKey);
   if (setting) {
     return setting;
   }
@@ -43,7 +39,7 @@ async function getAppSetting(): Promise<AppSetting> {
 }
 
 function updateAppSetting(data: AppSetting): Promise<AppSetting> {
-  return settingStore.setItem(appSettingKey, data);
+  return getSettingStore().setItem(appSettingKey, data);
 }
 
 export async function updateAppLatestRoute(route: {

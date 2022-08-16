@@ -51,9 +51,11 @@ export default defineComponent({
 
     const stop = watch(
       () => apiSettingStore.selectedID,
-      () => {
+      (id) => {
         // 如果选择新的api，则重置数据
-        response.value = {} as HTTPResponse;
+        response.value = {
+          api: id,
+        } as HTTPResponse;
       }
     );
 
@@ -104,7 +106,9 @@ export default defineComponent({
         return;
       }
       try {
-        response.value = {} as HTTPResponse;
+        response.value = {
+          status: -1,
+        } as HTTPResponse;
         sending.value = true;
         const req = apiSettingStore.getHTTPRequest(id);
         if (!req.uri) {
@@ -117,7 +121,7 @@ export default defineComponent({
             req.uri = req.uri.replace(arr[0], envValue);
           }
         }
-        const res = await doHTTPRequest(req);
+        const res = await doHTTPRequest(id, req);
         response.value = res;
       } catch (err) {
         showError(message, err);

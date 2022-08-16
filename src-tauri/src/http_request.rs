@@ -32,13 +32,17 @@ pub struct HTTPRequest {
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct HTTPResponse {
-    pub latency: i16,
+    pub api: String,
+    pub latency: u32,
     pub status: u16,
     pub headers: HashMap<String, Vec<String>>,
     pub body: String,
 }
 
-pub async fn request(http_request: HTTPRequest) -> Result<HTTPResponse, CyberAPIError> {
+pub async fn request(
+    api: String,
+    http_request: HTTPRequest,
+) -> Result<HTTPResponse, CyberAPIError> {
     let now = Instant::now();
 
     let mut req = Request::new(Body::from(http_request.body));
@@ -156,7 +160,8 @@ pub async fn request(http_request: HTTPRequest) -> Result<HTTPResponse, CyberAPI
     let d = Instant::now() - now;
 
     Ok(HTTPResponse {
-        latency: d.subsec_milliseconds(),
+        api,
+        latency: d.whole_milliseconds() as u32,
         status,
         headers,
         body: base64::encode(buf),

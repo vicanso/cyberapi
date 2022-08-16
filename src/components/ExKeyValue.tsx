@@ -150,6 +150,7 @@ export default defineComponent({
     const namePlaceholder = i18nCollection("namePlaceholder");
     const valuePlaceholder = i18nCollection("valuePlaceholder");
     const size = arr.length;
+    const inputDebounce = 200;
     const list = arr.map((item, index) => {
       const isLast = index === size - 1;
       const handleFocus = () => {
@@ -191,7 +192,7 @@ export default defineComponent({
                   onUpdateValue={debounce((value) => {
                     arr[index].key = value;
                     this.handleUpdate(index);
-                  }, 500)}
+                  }, inputDebounce)}
                 ></NInput>
               </NGi>
               <NGi span={spans[1] || 12}>
@@ -203,7 +204,7 @@ export default defineComponent({
                   onUpdateValue={debounce((value) => {
                     arr[index].value = value;
                     this.handleUpdate(index);
-                  }, 500)}
+                  }, inputDebounce)}
                 ></NInput>
               </NGi>
             </NGrid>

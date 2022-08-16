@@ -136,9 +136,10 @@ pub fn list_environment(collection: String) -> CommandResult<Vec<Environment>> {
 // 执行HTTP请求
 #[command(async)]
 pub async fn do_http_request(
+    api: String,
     req: http_request::HTTPRequest,
 ) -> CommandResult<http_request::HTTPResponse> {
-    http_request::request(req).await
+    http_request::request(api, req).await
 }
 
 // 获取所有cookie

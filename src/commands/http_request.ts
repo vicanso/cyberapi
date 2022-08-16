@@ -4,6 +4,7 @@ import { decode } from "js-base64";
 import { run, cmdDoHTTPRequest } from "./invoke";
 import { KVParam } from "./interface";
 import { isWebMode } from "../helpers/util";
+import dayjs from "dayjs";
 
 export enum HTTPMethod {
   GET = "GET",
@@ -27,6 +28,8 @@ export interface HTTPRequest {
 
 export interface HTTPResponse {
   [key: string]: unknown;
+  // api id
+  api: string;
   // 耗时(ms)
   latency: number;
   status: number;
@@ -165,7 +168,35 @@ export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
   };
 }
 
-export async function doHTTPRequest(req: HTTPRequest): Promise<HTTPResponse> {
+interface Response {
+  resp: HTTPResponse;
+  createdAt: string;
+}
+
+const latestResponseList: Response[] = [];
+
+function addLatestResponse(resp: HTTPResponse) {
+  // 添加至顶部
+  latestResponseList.unshift({
+    resp,
+    createdAt: dayjs().format(),
+  });
+  if (latestResponseList.length > 10) {
+    latestResponseList.pop();
+  }
+}
+
+export function getLatestResponse(id: string) {
+  const result = latestResponseList.find((item) => item.resp.api === id);
+  if (result) {
+    return result.resp;
+  }
+}
+
+export async function doHTTPRequest(
+  id: string,
+  req: HTTPRequest
+): Promise<HTTPResponse> {
   if (!req.headers) {
     req.headers = [];
   }
@@ -195,16 +226,21 @@ export async function doHTTPRequest(req: HTTPRequest): Promise<HTTPResponse> {
   if (isWebMode()) {
     const headers = new Map<string, string[]>();
     headers.set("Content-Type", [applicationJSON]);
-    return Promise.resolve({
+    const resp = {
+      api: id,
       latency: 1860,
       status: 200,
       headers,
       body: window.btoa(JSON.stringify(params)),
-    });
+    };
+
+    addLatestResponse(resp);
+    return Promise.resolve(resp);
   }
 
   const resp = await run<HTTPResponse>(cmdDoHTTPRequest, {
     req: params,
+    api: id,
   });
   if (resp.latency <= 0) {
     resp.latency = 1;
@@ -220,5 +256,6 @@ export async function doHTTPRequest(req: HTTPRequest): Promise<HTTPResponse> {
     }
   });
   resp.headers = headers;
+  addLatestResponse(resp);
   return resp;
 }

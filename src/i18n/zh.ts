@@ -14,6 +14,7 @@ export default {
       "更换数据类型后原有的数据会清除，请确认是否要更换？",
     namePlaceholder: "名称",
     valuePlaceholder: "值",
+    requesting: "请求中...",
   },
   common: {
     app: "CyberAPI",

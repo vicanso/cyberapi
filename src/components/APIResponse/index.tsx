@@ -16,11 +16,13 @@ import {
   HTTPResponse,
   ResponseBodyResult,
   getStatusText,
+  getLatestResponse,
 } from "../../commands/http_request";
 import { useSettingStore } from "../../stores/setting";
 import { NDivider, NGradientText, NSpace } from "naive-ui";
 import { padding } from "../../constants/style";
 import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
+import { i18nCollection } from "../../i18n";
 
 const responseClass = css`
   margin-left: 5px;
@@ -86,19 +88,30 @@ export default defineComponent({
     const size = ref(-1);
     const latency = ref(0);
 
+    const fillValues = async (resp: HTTPResponse) => {
+      // 初始加载时，读取最近的响应
+      if (!resp.status) {
+        const tmp = getLatestResponse(resp.api);
+        if (tmp) {
+          resp = tmp;
+        }
+      }
+      statusCode.value = resp.status;
+      let body = {
+        size: -1,
+      } as ResponseBodyResult;
+      if (resp.body) {
+        body = getResponseBody(resp);
+      }
+      size.value = body.size;
+      latency.value = resp.latency;
+      replaceContent(editor, body.data);
+    };
+
     const stop = watch(
       () => props.response,
       (resp) => {
-        statusCode.value = resp.status;
-        let body = {
-          size: -1,
-        } as ResponseBodyResult;
-        if (resp.body) {
-          body = getResponseBody(resp);
-        }
-        size.value = body.size;
-        latency.value = resp.latency;
-        replaceContent(editor, body.data);
+        fillValues(resp);
       }
     );
 
@@ -135,11 +148,17 @@ export default defineComponent({
   },
   render() {
     const { statusCode, size, latency } = this;
-    const statusCodeInfo = !!statusCode && (
-      <NGradientText type={getStatusType(statusCode)}>
-        {statusCode} {getStatusText(statusCode)}
-      </NGradientText>
-    );
+    let statusCodeInfo = <span></span>;
+    if (statusCode === -1) {
+      statusCodeInfo = <span>{i18nCollection("requesting")}</span>;
+    } else if (statusCode) {
+      statusCodeInfo = (
+        <NGradientText type={getStatusType(statusCode)}>
+          {statusCode} {getStatusText(statusCode)}
+        </NGradientText>
+      );
+    }
+
     return (
       <div class={responseClass}>
         <NSpace class="infos">
