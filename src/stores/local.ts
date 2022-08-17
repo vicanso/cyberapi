@@ -12,17 +12,29 @@ function createNewStore(name: string) {
   };
 }
 
+enum StoreKey {
+  expandedSetting = "expandedSetting",
+  topTreeItem = "topTreeItem",
+  tabActive = "tabActive",
+  apiSetting = "apiSetting",
+  setting = "setting",
+  latestRequests = "latestRequests",
+}
+
 // 记录展开配置项
-export const getExpandedSettingStore = createNewStore("expandedSettingStore");
+export const getExpandedSettingStore = createNewStore(StoreKey.expandedSetting);
 
 // 记录顶层的配置项
-export const getTopTreeItemStore = createNewStore("topTreeItemStore");
+export const getTopTreeItemStore = createNewStore(StoreKey.topTreeItem);
 
 // 记录活动的Tab
-export const getTabActiveStore = createNewStore("tabActiveStore");
+export const getTabActiveStore = createNewStore(StoreKey.tabActive);
 
 // API Setting的额外记录，如选中记录等
-export const getAPISettingsStore = createNewStore("apiSettings");
+export const getAPISettingStore = createNewStore(StoreKey.apiSetting);
 
 // 应用配置项
-export const getSettingStore = createNewStore("setting");
+export const getSettingStore = createNewStore(StoreKey.setting);
+
+// 最近使用的API配置
+export const getLatestRequestStore = createNewStore(StoreKey.latestRequests);

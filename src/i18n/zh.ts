@@ -15,6 +15,8 @@ export default {
     namePlaceholder: "名称",
     valuePlaceholder: "值",
     requesting: "请求中...",
+    importCURL: "curl导入",
+    exportCURL: "curl导出",
   },
   common: {
     app: "CyberAPI",

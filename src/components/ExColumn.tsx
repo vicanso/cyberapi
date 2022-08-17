@@ -62,6 +62,7 @@ export default defineComponent({
       }
     };
     const onMousedown = (e: MouseEvent) => {
+      isDragging = false;
       if (!e.currentTarget) {
         return;
       }

@@ -24,6 +24,7 @@ import { i18nEnvironment } from "../i18n";
 import { useAPISettingStore } from "../stores/api_setting";
 import { doHTTPRequest, HTTPResponse } from "../commands/http_request";
 import APIResponse from "../components/APIResponse";
+import { useLatestRequestStore } from "../stores/latest_request";
 
 const contentClass = css`
   position: fixed;
@@ -40,6 +41,7 @@ export default defineComponent({
     const collection = route.query.id as string;
     const message = useMessage();
     const headerStore = useHeaderStore();
+    const latestRequestStore = useLatestRequestStore();
     const settingStore = useSettingStore();
     const apiSettingStore = useAPISettingStore();
     const environmentStore = useEnvironmentStore();
@@ -66,8 +68,8 @@ export default defineComponent({
     onBeforeMount(async () => {
       processing.value = true;
       try {
-        const environmentStore = useEnvironmentStore();
-        await environmentStore.fetch(collection);
+        await latestRequestStore.fetch(collection);
+        await useEnvironmentStore().fetch(collection);
         const collectionStore = useAPICollectionStore();
         const result = await collectionStore.get(collection);
         if (result) {
@@ -123,6 +125,19 @@ export default defineComponent({
         }
         const res = await doHTTPRequest(id, req);
         response.value = res;
+        // 添加成功或失败忽略
+        setTimeout(() => {
+          const result = apiSettingStore.findByID(id);
+          if (!result) {
+            return;
+          }
+          latestRequestStore
+            .add(collection, {
+              id,
+              name: result.name,
+            })
+            .catch(console.error);
+        }, 0);
       } catch (err) {
         showError(message, err);
       } finally {

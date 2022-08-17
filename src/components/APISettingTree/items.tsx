@@ -402,6 +402,7 @@ export default defineComponent({
       handleMove(moveItemIndex, targetItemIndex, overType);
     };
     const handleMousedown = (e: MouseEvent) => {
+      isDragging = false;
       if (!e.currentTarget) {
         return;
       }
@@ -418,11 +419,6 @@ export default defineComponent({
       originClientY = e.clientY;
       document.addEventListener("mousemove", handleMousemove);
       document.addEventListener("mouseup", handleMouseup);
-    };
-    const resetDrag = () => {
-      if (isDragging) {
-        isDragging = false;
-      }
     };
 
     onBeforeMount(async () => {
@@ -448,7 +444,6 @@ export default defineComponent({
       handleClick,
       handleMousedown,
       setTreeItems,
-      resetDrag,
       wrapper,
     };
   },
@@ -520,7 +515,6 @@ export default defineComponent({
             class={cls}
             style={style}
             onClick={(e) => {
-              this.resetDrag();
               const { target } = e;
               if (
                 nodeHasClass(target, "preventDefault") ||
@@ -533,12 +527,12 @@ export default defineComponent({
             }}
             onMousedown={this.handleMousedown}
           >
-            {icon}
-            {item.name}
             <APISettingTreeItemDropdown
               id={item.id}
               apiSettingType={item.settingType}
             />
+            {icon}
+            {item.name}
           </li>
         );
         treeItemIndex++;

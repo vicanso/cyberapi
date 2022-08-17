@@ -8,7 +8,7 @@ import {
   NTabs,
 } from "naive-ui";
 import { css } from "@linaria/core";
-import { defineComponent, watch, ref, StyleValue } from "vue";
+import { defineComponent, watch, ref, StyleValue, onBeforeUnmount } from "vue";
 import { storeToRefs } from "pinia";
 import {
   BowlingBallOutline,
@@ -24,15 +24,17 @@ import { goTo } from "../router";
 import { useHeaderStore } from "../stores/header";
 import { useDialogStore } from "../stores/dialog";
 import { useSettingStore } from "../stores/setting";
+import { useLatestRequestStore } from "../stores/latest_request";
+import { useAPISettingStore } from "../stores/api_setting";
 
-const logoWrapperWidth = 300;
+const logoWidth = 300;
 
 const headerClass = css`
+  position: relative;
   height: ${mainHeaderHeight}px;
   line-height: ${mainHeaderHeight}px;
-  .logoWrapper {
+  .loggWrapper {
     float: left;
-    width: ${logoWrapperWidth}px;
   }
   .logo {
     margin-left: 15px;
@@ -47,8 +49,13 @@ const headerClass = css`
     padding-top: ${(mainHeaderHeight - 25) / 2}px;
   }
   .latestApis {
-    float: left;
-    padding-top: 7px;
+    left: ${logoWidth}px;
+    position: absolute;
+    right: 180px;
+    padding-top: 12px;
+    .n-tabs-pad {
+      border-bottom: none !important;
+    }
   }
   .funcs {
     float: right;
@@ -73,6 +80,14 @@ export default defineComponent({
     const route = useRoute();
     const settingStore = useSettingStore();
 
+    const apiSettingStore = useAPISettingStore();
+    const latestRequestStore = useLatestRequestStore();
+
+    const { requests } = storeToRefs(latestRequestStore);
+
+    const activeLatestRequest = ref("");
+    let activeLatestRequestID = "";
+
     const { collectionColumnWidths } = storeToRefs(settingStore);
 
     const currentRoute = ref(route.name);
@@ -93,17 +108,58 @@ export default defineComponent({
     const showEnvironmentDialog = () => {
       dialogStore.toggleEnvironmentDialog(true);
     };
+
+    const stop = watch(
+      () => apiSettingStore.selectedID,
+      (id) => {
+        // 如果不是当前的tab，是置空
+        if (id !== activeLatestRequestID) {
+          activeLatestRequest.value = "";
+        }
+      }
+    );
+    onBeforeUnmount(() => {
+      stop();
+    });
+
+    const getRequest = (name: string) => {
+      const arr = name.split(":");
+      const index = Number(arr[0]) - 1;
+      return latestRequestStore.requests[index];
+    };
+
+    const handleSelecteLatestRequest = (name: string) => {
+      const req = getRequest(name);
+      if (!req) {
+        return;
+      }
+      apiSettingStore.select(req.id);
+      activeLatestRequest.value = name;
+      activeLatestRequestID = req.id;
+    };
+    const handleRemoveLatestRequest = (name: string) => {
+      const req = getRequest(name);
+      if (!req) {
+        return;
+      }
+      latestRequestStore.remove(req.id);
+    };
     return {
+      requests,
+      activeLatestRequest,
       collectionColumnWidths,
       currentRoute,
       breadcrumbs,
       showCookieDialog,
       showSettingDialog,
       showEnvironmentDialog,
+      handleSelecteLatestRequest,
+      handleRemoveLatestRequest,
     };
   },
   render() {
     const {
+      requests,
       collectionColumnWidths,
       breadcrumbs,
       $route,
@@ -111,8 +167,8 @@ export default defineComponent({
       showCookieDialog,
       showEnvironmentDialog,
       currentRoute,
+      activeLatestRequest,
     } = this;
-    console.dir(collectionColumnWidths[0]);
     const arr = [
       {
         route: names.home,
@@ -135,38 +191,53 @@ export default defineComponent({
         </NBreadcrumbItem>
       );
     });
-    const logoWrapperStyle: StyleValue = {};
+    const latestApisStyle: StyleValue = {};
     if (
       collectionColumnWidths.length &&
-      collectionColumnWidths[0] > logoWrapperWidth
+      collectionColumnWidths[0] > logoWidth
     ) {
-      logoWrapperStyle["width"] = `${collectionColumnWidths[0] + 2}px`;
+      latestApisStyle["left"] = `${collectionColumnWidths[0] + 2}px`;
     }
+
+    const getTabs = () => {
+      return requests.map((item, index) => {
+        const name = `${index + 1}: ${item.name}`;
+        return <NTab name={name} key={name}></NTab>;
+      });
+    };
 
     return (
       <div>
         <header class={headerClass}>
-          <div class="logoWrapper" style={logoWrapperStyle}>
+          <div class="loggWrapper">
             <div class="logo">
               {i18nCommon("app")}
               <NDivider vertical />
             </div>
             <NBreadcrumb class="breadcrumb">{items}</NBreadcrumb>
           </div>
-          {/* TODO 添加最近使用的接口 */}
-          <div class="latestApis">
-            <NTabs
-              type="card"
-              closable
-              tabStyle={{
-                "min-width": "100px",
-              }}
-              defaultValue={"abc"}
-            >
-              <NTab name="abc"></NTab>
-              <NTab name="abc"></NTab>
-            </NTabs>
-          </div>
+          {currentRoute == names.collection && (
+            <div class="latestApis" style={latestApisStyle}>
+              <NTabs
+                type="card"
+                closable
+                tabStyle={{
+                  "min-width": "100px",
+                  "border-bottom": "none",
+                }}
+                defaultValue={""}
+                value={activeLatestRequest}
+                onClose={(value) => {
+                  this.handleRemoveLatestRequest(value);
+                }}
+                onUpdateValue={(value: string) => {
+                  this.handleSelecteLatestRequest(value);
+                }}
+              >
+                {getTabs()}
+              </NTabs>
+            </div>
+          )}
 
           <div class="funcs">
             {currentRoute == names.collection && (

@@ -84,7 +84,7 @@ export default defineComponent({
       type: Function as PropType<(value: Map<string, unknown>) => void>,
       required: true,
     },
-    onSumbit: {
+    onSubmit: {
       type: Function as PropType<() => Promise<void>>,
       required: true,
     },
@@ -105,7 +105,7 @@ export default defineComponent({
     };
 
     const handleUpdate = () => {
-      let uri = currentURI.value;
+      let uri = currentURI.value || "";
       if (env.value) {
         uri = `{{${env.value}}}${uri}`;
       }
@@ -119,9 +119,20 @@ export default defineComponent({
         });
       }
     };
+    const handleSend = async () => {
+      try {
+        sending.value = true;
+        if (props.onSubmit) {
+          await props.onSubmit();
+        }
+      } finally {
+        sending.value = false;
+      }
+    };
 
     return {
       sending,
+      handleSend,
       showEnvironment,
       handleUpdate,
       environments,
@@ -224,16 +235,18 @@ export default defineComponent({
               onUpdateValue={(value) => {
                 this.currentURI = value;
               }}
+              onKeydown={(e) => {
+                if (e.key.toLowerCase() === "enter" && this.currentURI) {
+                  this.handleSend();
+                }
+              }}
             />
             <NButton
               type="primary"
               class="submit"
               loading={this.sending}
               onClick={() => {
-                this.sending = true;
-                this.$props.onSumbit().finally(() => {
-                  this.sending = false;
-                });
+                this.handleSend();
               }}
             >
               {i18nCollection("send")}

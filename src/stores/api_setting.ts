@@ -9,7 +9,7 @@ import {
   deleteAPISettings,
 } from "../commands/api_setting";
 import { HTTPRequest } from "../commands/http_request";
-import { getAPISettingsStore } from "./local";
+import { getAPISettingStore } from "./local";
 
 const selectedIDKey = "selectedID";
 
@@ -32,7 +32,7 @@ export const useAPISettingStore = defineStore("apiSettings", {
   actions: {
     select(id: string) {
       // 设置失败则忽略，仅输出日志
-      getAPISettingsStore().setItem(selectedIDKey, id).catch(console.error);
+      getAPISettingStore().setItem(selectedIDKey, id).catch(console.error);
       this.selectedID = id;
     },
     getHTTPRequest(id: string) {
@@ -73,7 +73,7 @@ export const useAPISettingStore = defineStore("apiSettings", {
       try {
         // 先获取所有api setting，再获取选中id
         this.apiSettings = await listAPISetting(collection);
-        this.selectedID = (await getAPISettingsStore().getItem(
+        this.selectedID = (await getAPISettingStore().getItem(
           selectedIDKey
         )) as string;
       } finally {

@@ -3,10 +3,11 @@ import {
   AddOutline,
   ChevronDownOutline,
   CreateOutline,
+  LogInOutline,
+  LogOutOutline,
   TrashOutline,
 } from "@vicons/ionicons5";
 import { NDropdown, NIcon, useDialog, useMessage } from "naive-ui";
-import { css } from "@linaria/core";
 import { defineComponent, inject } from "vue";
 import { showError } from "../../helpers/util";
 import { i18nCollection, i18nCommon } from "../../i18n";
@@ -19,11 +20,6 @@ import {
   addHTTPSettingKey,
 } from "../../constants/provide";
 
-const dropdonwClass = css`
-  .option {
-    margin: 0 10px 0 0;
-  }
-`;
 
 export default defineComponent({
   name: "APISettingTreeItemDropdown",
@@ -133,7 +129,7 @@ export default defineComponent({
     const { apiSettingType } = this.$props;
     const options = [
       {
-        label: i18nCommon("modify"),
+        label: i18nCollection("modifySetting"),
         key: HandleKey.Modify,
         icon: () => (
           <NIcon>
@@ -142,7 +138,7 @@ export default defineComponent({
         ),
       },
       {
-        label: i18nCommon("delete"),
+        label: i18nCollection("deleteSetting"),
         key: HandleKey.Delete,
         icon: () => (
           <NIcon>
@@ -161,10 +157,28 @@ export default defineComponent({
           </NIcon>
         ),
       });
+    } else {
+      options.push({
+        label: i18nCollection("importCURL"),
+        key: HandleKey.ImportCURL,
+        icon: () => (
+          <NIcon>
+            <LogInOutline />
+          </NIcon>
+        ),
+      }, {
+        label: i18nCollection("exportCURL"),
+        key: HandleKey.ExportCURL,
+        icon: () => (
+          <NIcon>
+            <LogOutOutline />
+          </NIcon>
+        ),
+      });
+      // TODO 添加从curl导入
     }
     return (
       <NDropdown
-        class={dropdonwClass}
         options={options}
         trigger="click"
         onSelect={this.handleSelect}

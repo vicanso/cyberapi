@@ -122,7 +122,7 @@ export default defineComponent({
           onUpdateURI={(data) => {
             this.handleUpdateURI(data);
           }}
-          onSumbit={() => {
+          onSubmit={() => {
             return this.$props.onSend(selectedID);
           }}
         />

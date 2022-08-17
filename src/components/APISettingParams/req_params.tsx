@@ -144,7 +144,7 @@ export default defineComponent({
   props: {
     id: {
       type: String,
-      required: true,
+      default: () => "",
     },
     params: {
       type: Object as PropType<HTTPRequest>,
