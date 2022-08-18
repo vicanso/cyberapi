@@ -10,6 +10,7 @@ import {
 } from "../commands/api_setting";
 import { HTTPRequest } from "../commands/http_request";
 import { getAPISettingStore } from "./local";
+import { useEnvironmentStore, ENVRegexp } from "./environment";
 
 const selectedIDKey = "selectedID";
 
@@ -41,6 +42,20 @@ export const useAPISettingStore = defineStore("apiSettings", {
         return {} as HTTPRequest;
       }
       return JSON.parse(setting.setting || "{}") as HTTPRequest;
+    },
+    getHTTPRequestFillENV(id: string) {
+      const req = this.getHTTPRequest(id);
+      if (!req.uri) {
+        return req;
+      }
+      const arr = ENVRegexp.exec(req.uri);
+      if (arr?.length === 2) {
+        const envValue = useEnvironmentStore().getValue(arr[1]);
+        if (envValue) {
+          req.uri = req.uri.replace(arr[0], envValue);
+        }
+      }
+      return req;
     },
     findByID(id: string): APISetting {
       const index = this.apiSettings.findIndex((item) => item.id === id);

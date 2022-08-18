@@ -28,7 +28,7 @@ pub fn find_by_id<T: NewFromRow<T>>(
     keys: Vec<String>,
 ) -> Result<T, rusqlite::Error> {
     let sql = format!(
-        "SELECT {} FROM {} limit 1 WHERE id = ?1",
+        "SELECT {} FROM {} WHERE id = ?1 limit 1",
         keys.join(", "),
         table
     );

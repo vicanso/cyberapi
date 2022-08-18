@@ -24,7 +24,7 @@ import { goTo } from "../router";
 import { useHeaderStore } from "../stores/header";
 import { useDialogStore } from "../stores/dialog";
 import { useSettingStore } from "../stores/setting";
-import { useLatestRequestStore } from "../stores/latest_request";
+import { usePinRequestStore } from "../stores/pin_request";
 import { useAPISettingStore } from "../stores/api_setting";
 
 const logoWidth = 300;
@@ -48,7 +48,7 @@ const headerClass = css`
   .breadcrumb {
     padding-top: ${(mainHeaderHeight - 25) / 2}px;
   }
-  .latestApis {
+  .pinApis {
     left: ${logoWidth}px;
     position: absolute;
     right: 180px;
@@ -81,12 +81,12 @@ export default defineComponent({
     const settingStore = useSettingStore();
 
     const apiSettingStore = useAPISettingStore();
-    const latestRequestStore = useLatestRequestStore();
+    const pinRequestStore = usePinRequestStore();
 
-    const { requests } = storeToRefs(latestRequestStore);
+    const { requests } = storeToRefs(pinRequestStore);
 
-    const activeLatestRequest = ref("");
-    let activeLatestRequestID = "";
+    const activePinRequest = ref("");
+    let activePinRequestID = "";
 
     const { collectionColumnWidths } = storeToRefs(settingStore);
 
@@ -113,8 +113,8 @@ export default defineComponent({
       () => apiSettingStore.selectedID,
       (id) => {
         // 如果不是当前的tab，是置空
-        if (id !== activeLatestRequestID) {
-          activeLatestRequest.value = "";
+        if (id !== activePinRequestID) {
+          activePinRequest.value = "";
         }
       }
     );
@@ -125,36 +125,37 @@ export default defineComponent({
     const getRequest = (name: string) => {
       const arr = name.split(":");
       const index = Number(arr[0]) - 1;
-      return latestRequestStore.requests[index];
+      return pinRequestStore.requests[index];
     };
 
-    const handleSelecteLatestRequest = (name: string) => {
+    const handleSelectePinRequest = (name: string) => {
       const req = getRequest(name);
       if (!req) {
         return;
       }
       apiSettingStore.select(req.id);
-      activeLatestRequest.value = name;
-      activeLatestRequestID = req.id;
+      activePinRequest.value = name;
+      activePinRequestID = req.id;
     };
-    const handleRemoveLatestRequest = (name: string) => {
+    const handleRemovePinRequest = (name: string) => {
       const req = getRequest(name);
       if (!req) {
         return;
       }
-      latestRequestStore.remove(req.id);
+      pinRequestStore.remove(req.id);
     };
     return {
       requests,
-      activeLatestRequest,
+      activePinRequest,
       collectionColumnWidths,
       currentRoute,
       breadcrumbs,
       showCookieDialog,
       showSettingDialog,
       showEnvironmentDialog,
-      handleSelecteLatestRequest,
-      handleRemoveLatestRequest,
+      handleSelectePinRequest,
+      handleRemovePinRequest,
+      findByID: apiSettingStore.findByID,
     };
   },
   render() {
@@ -166,8 +167,9 @@ export default defineComponent({
       showSettingDialog,
       showCookieDialog,
       showEnvironmentDialog,
+      findByID,
       currentRoute,
-      activeLatestRequest,
+      activePinRequest,
     } = this;
     const arr = [
       {
@@ -191,17 +193,21 @@ export default defineComponent({
         </NBreadcrumbItem>
       );
     });
-    const latestApisStyle: StyleValue = {};
+    const pinApisStyle: StyleValue = {};
     if (
       collectionColumnWidths.length &&
       collectionColumnWidths[0] > logoWidth
     ) {
-      latestApisStyle["left"] = `${collectionColumnWidths[0] + 2}px`;
+      pinApisStyle["left"] = `${collectionColumnWidths[0] + 2}px`;
     }
 
     const getTabs = () => {
       return requests.map((item, index) => {
-        const name = `${index + 1}: ${item.name}`;
+        const result = findByID(item.id);
+        if (!result) {
+          return;
+        }
+        const name = `${index + 1}: ${result.name}`;
         return <NTab name={name} key={name}></NTab>;
       });
     };
@@ -217,7 +223,7 @@ export default defineComponent({
             <NBreadcrumb class="breadcrumb">{items}</NBreadcrumb>
           </div>
           {currentRoute == names.collection && (
-            <div class="latestApis" style={latestApisStyle}>
+            <div class="pinApis" style={pinApisStyle}>
               <NTabs
                 type="card"
                 closable
@@ -226,12 +232,12 @@ export default defineComponent({
                   "border-bottom": "none",
                 }}
                 defaultValue={""}
-                value={activeLatestRequest}
+                value={activePinRequest}
                 onClose={(value) => {
-                  this.handleRemoveLatestRequest(value);
+                  this.handleRemovePinRequest(value);
                 }}
                 onUpdateValue={(value: string) => {
-                  this.handleSelecteLatestRequest(value);
+                  this.handleSelectePinRequest(value);
                 }}
               >
                 {getTabs()}

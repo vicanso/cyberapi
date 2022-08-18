@@ -18,7 +18,7 @@ enum StoreKey {
   tabActive = "tabActive",
   apiSetting = "apiSetting",
   setting = "setting",
-  latestRequests = "latestRequests",
+  pinRequests = "pinRequests",
 }
 
 // 记录展开配置项
@@ -36,5 +36,5 @@ export const getAPISettingStore = createNewStore(StoreKey.apiSetting);
 // 应用配置项
 export const getSettingStore = createNewStore(StoreKey.setting);
 
-// 最近使用的API配置
-export const getLatestRequestStore = createNewStore(StoreKey.latestRequests);
+// Pin的API配置
+export const getPinRequestStore = createNewStore(StoreKey.pinRequests);

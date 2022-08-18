@@ -51,6 +51,10 @@ const envLabelClass = css`
   span {
     margin-left: 10px;
   }
+  .n-icon {
+    font-weight: 900;
+    font-size: 16px;
+  }
 `;
 
 interface CuttingURIResult {
@@ -72,6 +76,7 @@ function cuttingURI(uri: string): CuttingURIResult {
 }
 
 const addNewENVKey = ulid();
+const clearENVKey = ulid();
 
 export default defineComponent({
   name: "APISettingParamsURI",
@@ -174,6 +179,12 @@ export default defineComponent({
       label: i18nEnvironment("addNew"),
       key: addNewENVKey,
     });
+    if (this.env) {
+      envOptions.push({
+        label: i18nEnvironment("clearCurrent"),
+        key: clearENVKey,
+      });
+    }
 
     return (
       <div class={wrapperClass}>
@@ -187,7 +198,7 @@ export default defineComponent({
               return (
                 <span class={envLabelClass}>
                   {arr[0]}
-                  <span class="font12">{arr[1]}</span>
+                  {arr[1] && <span class="font12">{arr[1]}</span>}
                 </span>
               );
             }}
@@ -197,7 +208,11 @@ export default defineComponent({
                 this.showEnvironment();
                 return;
               }
-              this.env = value;
+              if (value === clearENVKey) {
+                this.env = "";
+              } else {
+                this.env = value;
+              }
               this.handleUpdate();
             }}
           >

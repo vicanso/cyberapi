@@ -1,14 +1,11 @@
 import { defineStore } from "pinia";
-import { getLatestRequestStore } from "./local";
+import { getPinRequestStore } from "./local";
 
 interface LatestRequest {
-  name: string;
   id: string;
 }
 
-const max = 10;
-
-export const useLatestRequestStore = defineStore("latestRequest", {
+export const usePinRequestStore = defineStore("pinRequest", {
   state: () => {
     return {
       fetching: false,
@@ -23,7 +20,7 @@ export const useLatestRequestStore = defineStore("latestRequest", {
       }
       this.fetching = true;
       try {
-        const result = await getLatestRequestStore().getItem(collection);
+        const result = await getPinRequestStore().getItem(collection);
         if (result) {
           this.requests = result as LatestRequest[];
         }
@@ -35,23 +32,18 @@ export const useLatestRequestStore = defineStore("latestRequest", {
     async save() {
       const { currentCollection, requests } = this;
       const arr = requests.map((item) => Object.assign({}, item));
-      await getLatestRequestStore().setItem(currentCollection, arr);
+      await getPinRequestStore().setItem(currentCollection, arr);
     },
     async add(collection: string, req: LatestRequest) {
       const { currentCollection, requests } = this;
       if (currentCollection !== collection) {
         return;
       }
-      // TODO 根据次数与时间清除
-      // 已存在，不处理
       const found = requests.find((item) => item.id === req.id);
       if (found) {
         return;
       }
       requests.push(req);
-      if (requests.length > max) {
-        requests.shift();
-      }
       await this.save();
     },
     async remove(id: string) {

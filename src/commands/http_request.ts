@@ -26,6 +26,46 @@ export interface HTTPRequest {
   query: KVParam[];
 }
 
+export function convertRequestToCURL(req: HTTPRequest) {
+  const queryList: string[] = [];
+  req.query?.forEach((kv) => {
+    if (!kv.enabled) {
+      return;
+    }
+    queryList.push(`${kv.key}=${encodeURIComponent(kv.value)}`);
+  });
+  let uri = req.uri;
+  if (uri.includes("?")) {
+    uri += `&${queryList.join("&")}`;
+  } else {
+    uri += `?${queryList.join("&")}`;
+  }
+  const headerList: string[] = [];
+  let includeContentType = false;
+  req.headers?.forEach((kv) => {
+    if (!kv.enabled) {
+      return;
+    }
+    if (kv.key.toLowerCase() === "content-type") {
+      includeContentType = true;
+    }
+    headerList.push(`-H '${kv.key}:${kv.value}'`);
+  });
+  if (!includeContentType && req.contentType) {
+    headerList.push(`-H 'Content-Type:${req.contentType}'`);
+  }
+  // TODO body
+  let body = "";
+  if (req.body) {
+    const json = JSON.stringify(JSON.parse(req.body));
+    body = ` -d '${json}' `;
+  }
+  const method = req.method || "GET";
+  return `curl -X${method.toUpperCase()}${body}${headerList.join(
+    " "
+  )} '${uri}'`;
+}
+
 export interface HTTPResponse {
   [key: string]: unknown;
   // api id

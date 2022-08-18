@@ -3,12 +3,15 @@ import {
   AddOutline,
   ChevronDownOutline,
   CreateOutline,
-  LogInOutline,
+  LinkOutline,
   LogOutOutline,
   TrashOutline,
 } from "@vicons/ionicons5";
 import { NDropdown, NIcon, useDialog, useMessage } from "naive-ui";
 import { defineComponent, inject } from "vue";
+import { useRoute } from "vue-router";
+import { writeText } from "@tauri-apps/api/clipboard";
+
 import { showError } from "../../helpers/util";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { useAPIFolderStore } from "../../stores/api_folder";
@@ -19,7 +22,8 @@ import {
   addHTTPSettingDefaultValue,
   addHTTPSettingKey,
 } from "../../constants/provide";
-
+import { usePinRequestStore } from "../../stores/pin_request";
+import { convertRequestToCURL } from "../../commands/http_request";
 
 export default defineComponent({
   name: "APISettingTreeItemDropdown",
@@ -38,6 +42,10 @@ export default defineComponent({
     const message = useMessage();
     const settingStore = useAPISettingStore();
     const folderStore = useAPIFolderStore();
+    const pinRequestStore = usePinRequestStore();
+    const apiSettingStore = useAPISettingStore();
+    const route = useRoute();
+    const collection = route.query.id as string;
 
     const addHTTPSetting = inject(
       addHTTPSettingKey,
@@ -117,6 +125,26 @@ export default defineComponent({
             addHTTPSetting(id);
           }
           break;
+        case HandleKey.ExportCURL:
+          {
+            const req = apiSettingStore.getHTTPRequestFillENV(id);
+            const curl = convertRequestToCURL(req);
+            writeText(curl)
+              .then(() => {
+                message.success(i18nCollection("exportCURLSuccess"));
+              })
+              .catch((err) => {
+                showError(message, err);
+              });
+          }
+          break;
+        case HandleKey.Pin:
+          {
+            pinRequestStore.add(collection, {
+              id,
+            });
+          }
+          break;
         default:
           break;
       }
@@ -158,24 +186,27 @@ export default defineComponent({
         ),
       });
     } else {
-      options.push({
-        label: i18nCollection("importCURL"),
-        key: HandleKey.ImportCURL,
-        icon: () => (
-          <NIcon>
-            <LogInOutline />
-          </NIcon>
-        ),
-      }, {
-        label: i18nCollection("exportCURL"),
-        key: HandleKey.ExportCURL,
-        icon: () => (
-          <NIcon>
-            <LogOutOutline />
-          </NIcon>
-        ),
-      });
-      // TODO 添加从curl导入
+      // TODO 添加从curl导出
+      options.push(
+        {
+          label: i18nCollection("exportCURL"),
+          key: HandleKey.ExportCURL,
+          icon: () => (
+            <NIcon>
+              <LogOutOutline />
+            </NIcon>
+          ),
+        },
+        {
+          label: i18nCollection("pinRequest"),
+          key: HandleKey.Pin,
+          icon: () => (
+            <NIcon>
+              <LinkOutline />
+            </NIcon>
+          ),
+        }
+      );
     }
     return (
       <NDropdown

@@ -19,12 +19,11 @@ import { mainHeaderHeight } from "../constants/style";
 import ExColumn from "../components/ExColumn";
 import APISettingTree from "../components/APISettingTree";
 import APISettingParams from "../components/APISettingParams";
-import { ENVRegexp, useEnvironmentStore } from "../stores/environment";
-import { i18nEnvironment } from "../i18n";
+import { useEnvironmentStore } from "../stores/environment";
 import { useAPISettingStore } from "../stores/api_setting";
 import { doHTTPRequest, HTTPResponse } from "../commands/http_request";
 import APIResponse from "../components/APIResponse";
-import { useLatestRequestStore } from "../stores/latest_request";
+import { usePinRequestStore } from "../stores/pin_request";
 
 const contentClass = css`
   position: fixed;
@@ -41,10 +40,8 @@ export default defineComponent({
     const collection = route.query.id as string;
     const message = useMessage();
     const headerStore = useHeaderStore();
-    const latestRequestStore = useLatestRequestStore();
     const settingStore = useSettingStore();
     const apiSettingStore = useAPISettingStore();
-    const environmentStore = useEnvironmentStore();
     const { collectionColumnWidths } = storeToRefs(settingStore);
 
     const processing = ref(false);
@@ -68,7 +65,7 @@ export default defineComponent({
     onBeforeMount(async () => {
       processing.value = true;
       try {
-        await latestRequestStore.fetch(collection);
+        await usePinRequestStore().fetch(collection);
         await useEnvironmentStore().fetch(collection);
         const collectionStore = useAPICollectionStore();
         const result = await collectionStore.get(collection);
@@ -112,33 +109,11 @@ export default defineComponent({
           status: -1,
         } as HTTPResponse;
         sending.value = true;
-        const req = apiSettingStore.getHTTPRequest(id);
-        if (!req.uri) {
-          throw new Error(i18nEnvironment("uriIsNil"));
-        }
-        const arr = ENVRegexp.exec(req.uri);
-        if (arr?.length === 2) {
-          const envValue = environmentStore.getValue(arr[1]);
-          if (envValue) {
-            req.uri = req.uri.replace(arr[0], envValue);
-          }
-        }
+        const req = apiSettingStore.getHTTPRequestFillENV(id);
         const res = await doHTTPRequest(id, req);
         response.value = res;
-        // 添加成功或失败忽略
-        setTimeout(() => {
-          const result = apiSettingStore.findByID(id);
-          if (!result) {
-            return;
-          }
-          latestRequestStore
-            .add(collection, {
-              id,
-              name: result.name,
-            })
-            .catch(console.error);
-        }, 0);
       } catch (err) {
+        response.value = {} as HTTPResponse;
         showError(message, err);
       } finally {
         sending.value = false;

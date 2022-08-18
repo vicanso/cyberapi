@@ -15,8 +15,9 @@ export default {
     namePlaceholder: "名称",
     valuePlaceholder: "值",
     requesting: "请求中...",
-    importCURL: "curl导入",
     exportCURL: "curl导出",
+    exportCURLSuccess: "curl已成功复制至粘贴板",
+    pinRequest: "置顶请求",
   },
   common: {
     app: "CyberAPI",
@@ -95,5 +96,6 @@ export default {
     tips: "使用当前各环境变量，方便不同环境的切换",
     uriIsNil: "请求地址不能为空",
     addNew: "添加环境变量",
+    clearCurrent: "清除当前值",
   },
 };
