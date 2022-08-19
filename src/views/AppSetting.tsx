@@ -94,6 +94,11 @@ export default defineComponent({
           name: i18nSetting("arch"),
           value: appStore.arch,
         },
+        {
+          name: i18nSetting("dir"),
+          value: appStore.dir,
+          span: 3,
+        },
       ],
       updateSize,
       updateTheme,
@@ -105,7 +110,7 @@ export default defineComponent({
     const { theme, size, resizeType, updateSize, updateResizeType } = this;
     const descriptionItems = this.infos.map((item) => {
       return (
-        <NDescriptionsItem label={item.name} key={item.name}>
+        <NDescriptionsItem label={item.name} key={item.name} span={item.span}>
           {item.value}
         </NDescriptionsItem>
       );

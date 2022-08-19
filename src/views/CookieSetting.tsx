@@ -100,7 +100,7 @@ export default defineComponent({
       {
         title: i18nCookie("path"),
         key: "path",
-        minWidth: 60,
+        width: 60,
       },
       {
         title: i18nCookie("domain"),
@@ -113,7 +113,7 @@ export default defineComponent({
       {
         title: i18nCookie("op"),
         key: "op",
-        minWidth: 120,
+        width: 120,
         render: (row, index) => {
           return (
             <NSpace>

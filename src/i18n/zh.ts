@@ -18,6 +18,8 @@ export default {
     exportCURL: "curl导出",
     exportCURLSuccess: "curl已成功复制至粘贴板",
     pinRequest: "置顶请求",
+    importPostman: "导入postman配置",
+    importPostmanSuccess: "已经成功导入postman配置",
   },
   common: {
     app: "CyberAPI",
@@ -65,6 +67,7 @@ export default {
     platform: "平台",
     arch: "架构",
     os: "系统",
+    dir: "应用目录",
     osVersion: "系统版本",
     windowSize: "应用窗口设置",
     windowWidth: "窗口宽度",

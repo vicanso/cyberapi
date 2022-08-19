@@ -334,7 +334,7 @@ export default defineComponent({
         return;
       }
       const offset = e.clientY - originClientY;
-      if (!isDragging && Math.abs(offset) > 3) {
+      if (!isDragging && Math.abs(offset) > 5) {
         isDragging = true;
         nodeAddClass(wrapper.value, draggingClass);
 

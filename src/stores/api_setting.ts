@@ -11,6 +11,7 @@ import {
 import { HTTPRequest } from "../commands/http_request";
 import { getAPISettingStore } from "./local";
 import { useEnvironmentStore, ENVRegexp } from "./environment";
+import { isWebMode, setAppTitle } from "../helpers/util";
 
 const selectedIDKey = "selectedID";
 
@@ -31,10 +32,22 @@ export const useAPISettingStore = defineStore("apiSettings", {
     };
   },
   actions: {
+    async setWindowTitle(id: string) {
+      if (isWebMode()) {
+        return;
+      }
+      const result = this.findByID(id);
+      if (!result) {
+        return;
+      }
+
+      await setAppTitle(result.name);
+    },
     select(id: string) {
       // 设置失败则忽略，仅输出日志
       getAPISettingStore().setItem(selectedIDKey, id).catch(console.error);
       this.selectedID = id;
+      this.setWindowTitle(this.selectedID);
     },
     getHTTPRequest(id: string) {
       const setting = this.findByID(id);
@@ -91,6 +104,7 @@ export const useAPISettingStore = defineStore("apiSettings", {
         this.selectedID = (await getAPISettingStore().getItem(
           selectedIDKey
         )) as string;
+        this.setWindowTitle(this.selectedID);
       } finally {
         this.fetching = false;
       }

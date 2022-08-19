@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { getVersion, getTauriVersion } from "@tauri-apps/api/app";
 import { arch, platform, type, version } from "@tauri-apps/api/os";
+import { appDir } from "@tauri-apps/api/path";
 
 import { isWebMode } from "../helpers/util";
 
@@ -13,6 +14,7 @@ export const useAppStore = defineStore("app", {
       platform: "--",
       os: "--",
       osVersion: "--",
+      dir: "--",
     };
   },
   actions: {
@@ -24,6 +26,7 @@ export const useAppStore = defineStore("app", {
         this.platform = await platform();
         this.os = await type();
         this.osVersion = await version();
+        this.dir = await appDir();
       }
     },
   },

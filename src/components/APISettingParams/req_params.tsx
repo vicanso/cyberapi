@@ -20,7 +20,11 @@ import {
 import { EditorView, ViewUpdate } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 
-import { HTTPMethod, HTTPRequest } from "../../commands/http_request";
+import {
+  HTTPMethod,
+  HTTPRequest,
+  ContentType,
+} from "../../commands/http_request";
 import { useSettingStore } from "../../stores/setting";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { CaretDownOutline, CodeSlashOutline } from "@vicons/ionicons5";
@@ -36,14 +40,6 @@ enum TabItem {
   Query = "Query",
   Auth = "Auth",
   Header = "Header",
-}
-
-enum ContentType {
-  JSON = "application/json",
-  Form = "application/x-www-form-urlencoded",
-  Multipart = "multipart/form-data",
-  XML = "application/xml",
-  Plain = "text/plain",
 }
 
 const tabClass = css`

@@ -11,8 +11,9 @@ import { NDropdown, NIcon, useDialog, useMessage } from "naive-ui";
 import { defineComponent, inject } from "vue";
 import { useRoute } from "vue-router";
 import { writeText } from "@tauri-apps/api/clipboard";
+import { css } from "@linaria/core";
 
-import { showError } from "../../helpers/util";
+import { isWebMode, showError } from "../../helpers/util";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { useAPIFolderStore } from "../../stores/api_folder";
 import { SettingType, useAPISettingStore } from "../../stores/api_setting";
@@ -24,6 +25,13 @@ import {
 } from "../../constants/provide";
 import { usePinRequestStore } from "../../stores/pin_request";
 import { convertRequestToCURL } from "../../commands/http_request";
+import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
+
+const dropdownClass = css`
+  .n-dropdown-option {
+    margin: 2px 0;
+  }
+`;
 
 export default defineComponent({
   name: "APISettingTreeItemDropdown",
@@ -129,6 +137,10 @@ export default defineComponent({
           {
             const req = apiSettingStore.getHTTPRequestFillENV(id);
             const curl = convertRequestToCURL(req);
+            if (isWebMode()) {
+              console.dir(curl);
+              return;
+            }
             writeText(curl)
               .then(() => {
                 message.success(i18nCollection("exportCURLSuccess"));
@@ -155,22 +167,13 @@ export default defineComponent({
   },
   render() {
     const { apiSettingType } = this.$props;
-    const options = [
+    const options: DropdownMixedOption[] = [
       {
         label: i18nCollection("modifySetting"),
         key: HandleKey.Modify,
         icon: () => (
           <NIcon>
             <CreateOutline />
-          </NIcon>
-        ),
-      },
-      {
-        label: i18nCollection("deleteSetting"),
-        key: HandleKey.Delete,
-        icon: () => (
-          <NIcon>
-            <TrashOutline />
           </NIcon>
         ),
       },
@@ -197,6 +200,7 @@ export default defineComponent({
             </NIcon>
           ),
         },
+
         {
           label: i18nCollection("pinRequest"),
           key: HandleKey.Pin,
@@ -208,8 +212,24 @@ export default defineComponent({
         }
       );
     }
+    options.push(
+      {
+        type: "divider",
+        key: HandleKey.Divider,
+      },
+      {
+        label: i18nCollection("deleteSetting"),
+        key: HandleKey.Delete,
+        icon: () => (
+          <NIcon>
+            <TrashOutline />
+          </NIcon>
+        ),
+      }
+    );
     return (
       <NDropdown
+        class={dropdownClass}
         options={options}
         trigger="click"
         onSelect={this.handleSelect}

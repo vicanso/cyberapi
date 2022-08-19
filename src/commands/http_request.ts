@@ -16,6 +16,14 @@ export enum HTTPMethod {
   HEAD = "HEAD",
 }
 
+export enum ContentType {
+  JSON = "application/json",
+  Form = "application/x-www-form-urlencoded",
+  Multipart = "multipart/form-data",
+  XML = "application/xml",
+  Plain = "text/plain",
+}
+
 export interface HTTPRequest {
   [key: string]: unknown;
   method: string;
@@ -26,19 +34,30 @@ export interface HTTPRequest {
   query: KVParam[];
 }
 
-export function convertRequestToCURL(req: HTTPRequest) {
-  const queryList: string[] = [];
-  req.query?.forEach((kv) => {
+function convertKVListToURLValues(kvList: KVParam[]) {
+  if (!kvList || kvList.length === 0) {
+    return [];
+  }
+  const arr: string[] = [];
+  kvList.forEach((kv) => {
     if (!kv.enabled) {
       return;
     }
-    queryList.push(`${kv.key}=${encodeURIComponent(kv.value)}`);
+    arr.push(`${kv.key}=${encodeURIComponent(kv.value)}`);
   });
+  return arr;
+}
+
+export function convertRequestToCURL(req: HTTPRequest) {
+  const queryList = convertKVListToURLValues(req.query);
+
   let uri = req.uri;
-  if (uri.includes("?")) {
-    uri += `&${queryList.join("&")}`;
-  } else {
-    uri += `?${queryList.join("&")}`;
+  if (queryList.length !== 0) {
+    if (uri.includes("?")) {
+      uri += `&${queryList.join("&")}`;
+    } else {
+      uri += `?${queryList.join("&")}`;
+    }
   }
   const headerList: string[] = [];
   let includeContentType = false;
@@ -57,8 +76,20 @@ export function convertRequestToCURL(req: HTTPRequest) {
   // TODO body
   let body = "";
   if (req.body) {
-    const json = JSON.stringify(JSON.parse(req.body));
-    body = ` -d '${json}' `;
+    switch (req.contentType) {
+      case ContentType.JSON:
+        body = JSON.stringify(JSON.parse(req.body));
+        break;
+      case ContentType.Form:
+        {
+          const arr: KVParam[] = JSON.parse(req.body);
+          body = convertKVListToURLValues(arr).join("&");
+        }
+        break;
+      default:
+        break;
+    }
+    body = ` -d '${body}' `;
   }
   const method = req.method || "GET";
   return `curl -X${method.toUpperCase()}${body}${headerList.join(

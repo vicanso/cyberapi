@@ -31,7 +31,7 @@ import {
   APICollection,
   newDefaultAPICollection,
 } from "../commands/api_collection";
-import { formatSimpleDate, showError } from "../helpers/util";
+import { formatSimpleDate, setAppTitle, showError } from "../helpers/util";
 import ExLoading from "../components/ExLoading";
 import { ExFormItem } from "../components/ExForm";
 import { goTo } from "../router";
@@ -40,6 +40,7 @@ import { useHeaderStore } from "../stores/header";
 import { useSettingStore } from "../stores/setting";
 import { nodeHasClass } from "../helpers/html";
 import { HandleKey } from "../constants/handle_key";
+import { appName } from "../constants/common";
 
 const dashboardClass = css`
   padding: ${2 * padding}px;
@@ -173,6 +174,7 @@ export default defineComponent({
 
     onBeforeMount(async () => {
       try {
+        await setAppTitle(appName);
         await store.fetch();
       } catch (err) {
         showError(message, err);

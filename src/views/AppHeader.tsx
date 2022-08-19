@@ -115,6 +115,12 @@ export default defineComponent({
         // 如果不是当前的tab，是置空
         if (id !== activePinRequestID) {
           activePinRequest.value = "";
+          pinRequestStore.requests.forEach((item, index) => {
+            if (item.id === id) {
+              const result = apiSettingStore.findByID(id);
+              activePinRequest.value = `${index + 1}: ${result.name}`;
+            }
+          });
         }
       }
     );

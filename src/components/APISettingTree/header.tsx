@@ -1,11 +1,27 @@
 // API栏目的顶部功能栏
 import { defineComponent, inject, onBeforeUnmount, PropType } from "vue";
 import { css } from "@linaria/core";
-import { NDropdown, NButton, NGi, NGrid, NInput, NIcon } from "naive-ui";
+import {
+  NDropdown,
+  NButton,
+  NGi,
+  NGrid,
+  NInput,
+  NIcon,
+  useMessage,
+} from "naive-ui";
+import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
+import { open } from "@tauri-apps/api/dialog";
+import { readTextFile } from "@tauri-apps/api/fs";
+import { Promise } from "bluebird";
 
 import { i18nCollection, i18nCommon } from "../../i18n";
-import { SettingType } from "../../stores/api_setting";
-import { AnalyticsOutline, FolderOpenOutline } from "@vicons/ionicons5";
+import { SettingType, useAPISettingStore } from "../../stores/api_setting";
+import {
+  AnalyticsOutline,
+  CloudUploadOutline,
+  FolderOpenOutline,
+} from "@vicons/ionicons5";
 import {
   hotKeyCreateFolder,
   hotKeyCreateHTTPSetting,
@@ -17,6 +33,13 @@ import {
   addHTTPSettingDefaultValue,
   addHTTPSettingKey,
 } from "../../constants/provide";
+import { showError } from "../../helpers/util";
+import { useRoute } from "vue-router";
+import { newDefaultAPIFolder } from "../../commands/api_folder";
+import { useAPIFolderStore } from "../../stores/api_folder";
+import { newDefaultAPISetting } from "../../commands/api_setting";
+import { ContentType, HTTPRequest } from "../../commands/http_request";
+import { KVParam } from "../../commands/interface";
 
 const addDropdownClass = css`
   .label {
@@ -27,6 +50,8 @@ const addDropdownClass = css`
   }
 `;
 
+const importPostmanKey = "importPostman";
+
 export default defineComponent({
   name: "APISettingTreeHeader",
   props: {
@@ -36,6 +61,12 @@ export default defineComponent({
     },
   },
   setup() {
+    const route = useRoute();
+    const message = useMessage();
+    const folderStore = useAPIFolderStore();
+    const settingStore = useAPISettingStore();
+
+    const collection = route.query.id as string;
     const addHTTPSetting = inject(
       addHTTPSettingKey,
       addHTTPSettingDefaultValue
@@ -53,9 +84,106 @@ export default defineComponent({
       document.removeEventListener("keydown", handleKeydown);
     });
 
+    const handleImportPostman = async () => {
+      try {
+        const selected = await open({
+          filters: [
+            {
+              name: "JSON",
+              extensions: ["json"],
+            },
+          ],
+        });
+        if (!selected) {
+          return;
+        }
+        const fileData = await readTextFile(selected as string);
+        const json = JSON.parse(fileData);
+        if (!Array.isArray(json.item)) {
+          return;
+        }
+        const arr = json.item as [];
+
+        await Promise.each(
+          arr,
+          async (item: {
+            name: string;
+            item: {
+              name: string;
+              request: {
+                method: string;
+                url: {
+                  raw: string;
+                };
+                query: {
+                  key: string;
+                  value: string;
+                }[];
+                body: {
+                  mode: string;
+                  raw: string;
+                };
+              };
+            }[];
+          }) => {
+            const folder = newDefaultAPIFolder();
+            folder.collection = collection;
+            folder.name = item.name;
+            await folderStore.add(folder);
+            if (!item.item) {
+              return;
+            }
+            await Promise.each(item.item, async (apiItem) => {
+              if (!apiItem.request) {
+                return;
+              }
+              const setting = newDefaultAPISetting();
+              setting.category = SettingType.HTTP;
+              setting.collection = collection;
+              setting.name = apiItem.name;
+
+              let contentType = "";
+              const body = apiItem.request.body?.raw;
+              if (body && body.startsWith("{") && body.endsWith("}")) {
+                contentType = ContentType.JSON;
+              }
+              const query: KVParam[] = [];
+              apiItem.request.query?.forEach((q) => {
+                query.push({
+                  key: q.key,
+                  value: q.value,
+                  enabled: true,
+                });
+              });
+
+              const req: HTTPRequest = {
+                headers: [],
+                method: apiItem.request.method,
+                uri: apiItem.request.url?.raw || "",
+                contentType,
+                query,
+                body: body,
+              };
+              setting.setting = JSON.stringify(req);
+              await settingStore.add(setting);
+              await folderStore.addChild({
+                id: folder.id,
+                child: setting.id,
+                index: -1,
+              });
+            });
+          }
+        );
+        message.info(i18nCollection("importPostmanSuccess"));
+      } catch (err) {
+        showError(message, err);
+      }
+    };
+
     return {
       addHTTPSetting,
       addFolder,
+      handleImportPostman,
       text: {
         add: i18nCommon("add"),
         placeholder: i18nCollection("filterPlaceholder"),
@@ -63,7 +191,7 @@ export default defineComponent({
     };
   },
   render() {
-    const options = [
+    const options: DropdownMixedOption[] = [
       {
         label: `${i18nCollection(
           "newHTTPRequest"
@@ -81,6 +209,19 @@ export default defineComponent({
         icon: () => (
           <NIcon>
             <FolderOpenOutline />
+          </NIcon>
+        ),
+      },
+      {
+        type: "divider",
+        key: "divider",
+      },
+      {
+        label: i18nCollection("importPostman"),
+        key: importPostmanKey,
+        icon: () => (
+          <NIcon>
+            <CloudUploadOutline />
           </NIcon>
         ),
       },
@@ -124,6 +265,9 @@ export default defineComponent({
                   break;
                 case SettingType.Folder:
                   this.addFolder();
+                  break;
+                case importPostmanKey:
+                  this.handleImportPostman();
                   break;
               }
             }}

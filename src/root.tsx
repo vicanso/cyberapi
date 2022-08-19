@@ -35,7 +35,7 @@ export default defineComponent({
       } finally {
         processing.value = false;
         // 延时关闭，便于程序初始化
-        setTimeout(closeSplashscreen, 1000);
+        setTimeout(closeSplashscreen, 300);
       }
     });
 

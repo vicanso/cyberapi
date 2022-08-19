@@ -4,4 +4,5 @@ export enum HandleKey {
   Create = "create",
   ExportCURL = "exportCURL",
   Pin = "pin",
+  Divider = "divider",
 }

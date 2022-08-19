@@ -1,9 +1,17 @@
 import { FormRules, MessageApi } from "naive-ui";
 import dayjs from "dayjs";
 import { get, has } from "lodash-es";
+import { appWindow } from "@tauri-apps/api/window";
 
 export function isWebMode() {
   return !window.__TAURI_IPC__;
+}
+
+export async function setAppTitle(title: string) {
+  if (isWebMode()) {
+    return;
+  }
+  await appWindow.setTitle(title);
 }
 
 function formatError(err: Error | unknown): string {
