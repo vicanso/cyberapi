@@ -2,6 +2,7 @@ import { FormRules, MessageApi } from "naive-ui";
 import dayjs from "dayjs";
 import { get, has } from "lodash-es";
 import { appWindow } from "@tauri-apps/api/window";
+import { writeText } from "@tauri-apps/api/clipboard";
 
 export function isWebMode() {
   return !window.__TAURI_IPC__;
@@ -85,4 +86,12 @@ export function tryToParseArray(data: string) {
     return [];
   }
   return JSON.parse(body);
+}
+
+export async function writeTextToClipboard(text: string) {
+  if (isWebMode()) {
+    navigator.clipboard.writeText(text);
+    return;
+  }
+  await writeText(text);
 }

@@ -2,7 +2,7 @@ export enum HandleKey {
   Delete = "delete",
   Modify = "modify",
   Create = "create",
-  ExportCURL = "exportCURL",
+  CopyAsCURL = "copyAsCURL",
   Pin = "pin",
   Divider = "divider",
 }

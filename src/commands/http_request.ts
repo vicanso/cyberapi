@@ -49,7 +49,7 @@ function convertKVListToURLValues(kvList: KVParam[]) {
   return arr;
 }
 
-export function convertRequestToCURL(req: HTTPRequest) {
+export async function convertRequestToCURL(req: HTTPRequest) {
   const queryList = convertKVListToURLValues(req.query);
 
   let uri = req.uri;
@@ -75,7 +75,7 @@ export function convertRequestToCURL(req: HTTPRequest) {
     headerList.push(`-H 'Content-Type:${req.contentType}'`);
   }
   // TODO body
-  let body = "";
+  let body = " ";
   if (req.body) {
     switch (req.contentType) {
       case ContentType.JSON:
@@ -90,6 +90,7 @@ export function convertRequestToCURL(req: HTTPRequest) {
       default:
         break;
     }
+    body = await convertBody(body);
     body = ` -d '${body}' `;
   }
   const method = req.method || "GET";

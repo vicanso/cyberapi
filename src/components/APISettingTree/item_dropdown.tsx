@@ -10,10 +10,9 @@ import {
 import { NDropdown, NIcon, useDialog, useMessage } from "naive-ui";
 import { defineComponent, inject } from "vue";
 import { useRoute } from "vue-router";
-import { writeText } from "@tauri-apps/api/clipboard";
 import { css } from "@linaria/core";
 
-import { isWebMode, showError } from "../../helpers/util";
+import { showError, writeTextToClipboard } from "../../helpers/util";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { useAPIFolderStore } from "../../stores/api_folder";
 import { SettingType, useAPISettingStore } from "../../stores/api_setting";
@@ -133,17 +132,13 @@ export default defineComponent({
             addHTTPSetting(id);
           }
           break;
-        case HandleKey.ExportCURL:
+        case HandleKey.CopyAsCURL:
           {
             const req = apiSettingStore.getHTTPRequestFillENV(id);
-            const curl = convertRequestToCURL(req);
-            if (isWebMode()) {
-              console.dir(curl);
-              return;
-            }
-            writeText(curl)
+            convertRequestToCURL(req)
+              .then(writeTextToClipboard)
               .then(() => {
-                message.success(i18nCollection("exportCURLSuccess"));
+                message.success(i18nCollection("copyAsCURLSuccess"));
               })
               .catch((err) => {
                 showError(message, err);
@@ -189,11 +184,10 @@ export default defineComponent({
         ),
       });
     } else {
-      // TODO 添加从curl导出
       options.push(
         {
-          label: i18nCollection("exportCURL"),
-          key: HandleKey.ExportCURL,
+          label: i18nCollection("copyAsCURL"),
+          key: HandleKey.CopyAsCURL,
           icon: () => (
             <NIcon>
               <LogOutOutline />
