@@ -1,10 +1,11 @@
 import { forEach, isArray } from "lodash-es";
 import { decode } from "js-base64";
+import dayjs from "dayjs";
 
 import { run, cmdDoHTTPRequest } from "./invoke";
 import { KVParam } from "./interface";
 import { isWebMode } from "../helpers/util";
-import dayjs from "dayjs";
+import { doFnHandler, parseFunctions } from "../helpers/fn";
 
 export enum HTTPMethod {
   GET = "GET",
@@ -264,6 +265,20 @@ export function getLatestResponse(id: string) {
   }
 }
 
+export async function convertBody(body: string) {
+  const handlers = parseFunctions(body);
+  if (handlers.length === 0) {
+    return body;
+  }
+  for (let index = 0; index < handlers.length; index++) {
+    const handler = handlers[index];
+    const result = await doFnHandler(handler);
+    // 替换result的内容
+    body = body.replace(handler.text, result);
+  }
+  return body;
+}
+
 export async function doHTTPRequest(
   id: string,
   req: HTTPRequest
@@ -308,6 +323,10 @@ export async function doHTTPRequest(
     addLatestResponse(resp);
     return Promise.resolve(resp);
   }
+  // TODO 是否query、header也可支持函数处理
+
+  // 替换body中函数
+  params.body = await convertBody(params.body);
 
   const resp = await run<HTTPResponse>(cmdDoHTTPRequest, {
     req: params,
