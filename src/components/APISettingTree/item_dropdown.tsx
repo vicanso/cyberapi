@@ -2,6 +2,7 @@
 import {
   AddOutline,
   ChevronDownOutline,
+  CopyOutline,
   CreateOutline,
   LinkOutline,
   LogOutOutline,
@@ -152,6 +153,18 @@ export default defineComponent({
             });
           }
           break;
+        case HandleKey.Copy:
+          {
+            const setting = apiSettingStore.findByID(id);
+            writeTextToClipboard(JSON.stringify(setting, null, 2)).then(() => {
+              message.success(i18nCollection("copySettingSuccess"));
+            }).catch(
+              (err) => {
+                showError(message, err);
+              }
+            );
+          }
+          break;
         default:
           break;
       }
@@ -201,6 +214,15 @@ export default defineComponent({
           icon: () => (
             <NIcon>
               <LinkOutline />
+            </NIcon>
+          ),
+        },
+        {
+          label: i18nCollection("copySetting"),
+          key: HandleKey.Copy,
+          icon: () => (
+            <NIcon>
+              <CopyOutline />
             </NIcon>
           ),
         }

@@ -6,6 +6,8 @@ export default {
     deleteSetting: "删除配置",
     deleteSettingContent: "确认要删除配置(%s)吗？",
     modifySetting: "修改配置",
+    copySetting: "复制配置",
+    copySettingSuccess: "配置已成功复制至粘贴板",
     shouldSelectAPISettingFirst: "请先选择接口请求",
     send: "发送",
     format: "格式化",
