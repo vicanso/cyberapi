@@ -1,8 +1,8 @@
 // API列表，实现拖动
-import { defineComponent, ref, onBeforeMount } from "vue";
+import { defineComponent, ref, onBeforeMount, onBeforeUnmount } from "vue";
 import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
-import { NIcon, useMessage } from "naive-ui";
+import { NIcon, NInput, useMessage } from "naive-ui";
 import { sortBy, uniq } from "lodash-es";
 import {
   AnalyticsOutline,
@@ -61,14 +61,14 @@ const itemsWrapperClass = css`
   }
   li {
     list-style: none;
-    padding: 8px 10px;
-    line-height: 25px;
-    height: 25px;
+    padding: 3px 10px;
+    line-height: 34px;
+    height: 34px;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
     &.insertBefore {
-      padding-top: 7px;
+      padding-top: 2px;
       border-top: 1px dashed;
     }
     &:hover {
@@ -98,7 +98,7 @@ const itemsWrapperClass = css`
     float: left;
     font-size: 16px;
     line-height: 29px;
-    margin: 0 5px 0 10px;
+    margin: 5px 5px 0 10px;
     font-weight: 900;
   }
 `;
@@ -229,14 +229,19 @@ export default defineComponent({
 
     const collectionStore = useAPICollectionStore();
     const folderStore = useAPIFolderStore();
-    const settingStore = useAPISettingStore();
+    const apiSettingStore = useAPISettingStore();
     const { apiFolders } = storeToRefs(folderStore);
     const { expandedFolders, topTreeItems } = storeToRefs(collectionStore);
     const { isDark } = storeToRefs(useSettingStore());
-    const { apiSettings, selectedID } = storeToRefs(settingStore);
+    const { apiSettings, selectedID } = storeToRefs(apiSettingStore);
 
     let currentTreeItems = [] as TreeItem[];
     let topTreeItemIDList = [] as string[];
+    const renameItem = ref({
+      name: "",
+      id: "",
+    });
+    const renameValue = ref("");
 
     const setTreeItems = (items: TreeItem[], topItems: string[]) => {
       currentTreeItems = items;
@@ -253,7 +258,7 @@ export default defineComponent({
           }
           await fn(collection, item.id);
         } else {
-          settingStore.select(item.id);
+          apiSettingStore.select(item.id);
         }
       } catch (err) {
         showError(message, err);
@@ -407,7 +412,7 @@ export default defineComponent({
         return;
       }
       // TODO 此处导致无法复制，后续研究
-      e.preventDefault();
+      // e.preventDefault();
       currentInsertIndex = -1;
       target = e.currentTarget;
       originOffset =
@@ -421,11 +426,65 @@ export default defineComponent({
       document.addEventListener("mouseup", handleMouseup);
     };
 
+    const handelRename = async () => {
+      // 无变化，无需修改
+      const name = renameValue.value;
+      const id = renameItem.value.id;
+      if (!name || !id) {
+        return;
+      }
+      try {
+        const folder = folderStore.findByID(id);
+        if (folder) {
+          folder.name = name;
+          await folderStore.updateByID(id, folder);
+        } else {
+          const apiSetting = apiSettingStore.findByID(id);
+          apiSetting.name = name;
+          await apiSettingStore.updateByID(id, apiSetting);
+        }
+      } catch (err) {
+        showError(message, err);
+      } finally {
+        renameValue.value = "";
+        renameItem.value = {
+          name: "",
+          id: "",
+        };
+      }
+    };
+    const handleKeydown = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      switch (key) {
+        case "escape":
+          {
+            renameValue.value = "";
+            renameItem.value = {
+              id: "",
+              name: "",
+            };
+          }
+          break;
+        case "enter":
+          {
+            handelRename();
+          }
+          break;
+
+        default:
+          break;
+      }
+    };
+    document.addEventListener("keydown", handleKeydown);
+    onBeforeUnmount(() => {
+      document.removeEventListener("keydown", handleKeydown);
+    });
+
     onBeforeMount(async () => {
       processing.value = true;
       try {
         await folderStore.fetch(collection);
-        await settingStore.fetch(collection);
+        await apiSettingStore.fetch(collection);
       } catch (err) {
         showError(message, err);
       } finally {
@@ -434,6 +493,8 @@ export default defineComponent({
     });
 
     return {
+      renameValue,
+      renameItem,
       selectedID,
       topTreeItems,
       expandedFolders,
@@ -443,6 +504,7 @@ export default defineComponent({
       processing,
       handleClick,
       handleMousedown,
+      handelRename,
       setTreeItems,
       wrapper,
     };
@@ -458,6 +520,7 @@ export default defineComponent({
       topTreeItems,
       setTreeItems,
       selectedID,
+      renameItem,
     } = this;
     if (processing) {
       return <ExLoading />;
@@ -507,6 +570,20 @@ export default defineComponent({
         if (item.id === selectedID) {
           cls += " selected";
         }
+        const onClick =
+          item.id !== selectedID
+            ? (e: MouseEvent) => {
+                const { target } = e;
+                if (
+                  nodeHasClass(target, "preventDefault") ||
+                  nodeGetTagName(target) === "path"
+                ) {
+                  e.preventDefault();
+                  return;
+                }
+                this.handleClick(item);
+              }
+            : undefined;
         currentTreeItems.push(item);
         itemList.push(
           <li
@@ -514,17 +591,13 @@ export default defineComponent({
             data-index={treeItemIndex}
             class={cls}
             style={style}
-            onClick={(e) => {
-              const { target } = e;
-              if (
-                nodeHasClass(target, "preventDefault") ||
-                nodeGetTagName(target) === "path"
-              ) {
-                e.preventDefault();
-                return;
-              }
-              this.handleClick(item);
+            onDblclick={() => {
+              this.renameItem = {
+                id: item.id,
+                name: item.name,
+              };
             }}
+            onClick={onClick}
             onMousedown={this.handleMousedown}
           >
             <APISettingTreeItemDropdown
@@ -532,7 +605,23 @@ export default defineComponent({
               apiSettingType={item.settingType}
             />
             {icon}
-            {item.name}
+            {item.id === renameItem.id && (
+              <NInput
+                key={item.id}
+                bordered={false}
+                defaultValue={renameItem.name}
+                onVnodeMounted={(node) => {
+                  node.el?.getElementsByTagName("input")[0]?.focus();
+                }}
+                onUpdateValue={(value) => {
+                  this.renameValue = value;
+                }}
+                onInputBlur={() => {
+                  this.handelRename();
+                }}
+              />
+            )}
+            {item.id !== renameItem.id && item.name}
           </li>
         );
         treeItemIndex++;
