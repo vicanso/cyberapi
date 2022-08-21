@@ -3,6 +3,7 @@ import {
   readBinaryFile,
   readTextFile,
 } from "@tauri-apps/api/fs";
+import { open } from "@tauri-apps/api/dialog";
 import { trim, toString } from "lodash-es";
 import { fromUint8Array } from "js-base64";
 interface FnHandler {
@@ -18,6 +19,8 @@ enum Fn {
   readTextFile = "readTextFile",
   readFile = "readFile",
   base64 = "base64",
+  openFile = "openFile",
+  timestamp = "timestamp",
 }
 
 function trimParam(param: string) {
@@ -29,7 +32,7 @@ function trimParam(param: string) {
 
 export function parseFunctions(value: string): FnHandler[] {
   const reg = /\{\{([\s\S]+?)\}\}/g;
-  const parmaReg = /\(([\s\S]+?)\)/;
+  const parmaReg = /\(([\s\S]*?)\)/;
   let result: RegExpExecArray | null;
   const handlers: FnHandler[] = [];
   while ((result = reg.exec(value)) !== null) {
@@ -75,6 +78,19 @@ export async function doFnHandler(handler: FnHandler): Promise<string> {
       case Fn.base64:
         {
           p = fromUint8Array(p as Uint8Array);
+        }
+        break;
+      case Fn.openFile:
+        {
+          const selected = await open();
+          if (selected) {
+            p = selected as string;
+          }
+        }
+        break;
+      case Fn.timestamp:
+        {
+          p = `${Math.round(Date.now() / 1000)}`;
         }
         break;
       default:

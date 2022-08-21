@@ -159,11 +159,14 @@ pub async fn request(
 
     let d = Instant::now() - now;
 
-    Ok(HTTPResponse {
+    // TODO 记录数据至数据库
+    let resp = HTTPResponse {
         api,
         latency: d.whole_milliseconds() as u32,
         status,
         headers,
         body: base64::encode(buf),
-    })
+    };
+
+    Ok(resp)
 }
