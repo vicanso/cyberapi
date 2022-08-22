@@ -87,7 +87,7 @@ export default defineComponent({
         },
       });
     });
-    provide(addFolderKey, () => {
+    provide(addFolderKey, (parentFolder: string) => {
       ExDialog({
         dialog,
         title: i18nCollection("newFolder"),
@@ -98,6 +98,13 @@ export default defineComponent({
           folder.name = data.name as string;
           try {
             await folderStore.add(folder);
+            if (folder) {
+              await folderStore.addChild({
+                id: parentFolder,
+                child: folder.id,
+                index: -1,
+              });
+            }
           } catch (err) {
             showError(message, err);
           }

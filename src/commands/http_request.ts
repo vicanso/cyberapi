@@ -4,8 +4,9 @@ import dayjs from "dayjs";
 
 import { run, cmdDoHTTPRequest } from "./invoke";
 import { KVParam } from "./interface";
-import { isWebMode } from "../helpers/util";
+import { isWebMode, delay } from "../helpers/util";
 import { doFnHandler, parseFunctions } from "../helpers/fn";
+import { ulid } from "ulid";
 
 export enum HTTPMethod {
   GET = "GET",
@@ -280,6 +281,8 @@ export async function convertBody(body: string) {
   return body;
 }
 
+export const abortRequestID = ulid();
+
 export async function doHTTPRequest(
   id: string,
   req: HTTPRequest
@@ -311,6 +314,7 @@ export async function doHTTPRequest(
     query: req.query,
   };
   if (isWebMode()) {
+    await delay(3000);
     const headers = new Map<string, string[]>();
     headers.set("Content-Type", [applicationJSON]);
     const resp = {

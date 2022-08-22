@@ -90,7 +90,7 @@ export default defineComponent({
       required: true,
     },
     onSubmit: {
-      type: Function as PropType<() => Promise<void>>,
+      type: Function as PropType<(isAborted: boolean) => Promise<void>>,
       required: true,
     },
   },
@@ -124,14 +124,31 @@ export default defineComponent({
         });
       }
     };
+    let currentID = "";
+    const isCurrent = (id: string) => {
+      return id === currentID;
+    };
     const handleSend = async () => {
-      try {
-        sending.value = true;
-        if (props.onSubmit) {
-          await props.onSubmit();
-        }
-      } finally {
+      if (!props.onSubmit) {
+        return;
+      }
+      // 如果发送中，则中止请求
+      if (sending.value) {
         sending.value = false;
+        currentID = "";
+        await props.onSubmit(true);
+        return;
+      }
+      const id = ulid();
+      currentID = id;
+      sending.value = true;
+      try {
+        await props.onSubmit(false);
+      } finally {
+        // 只有当前id才重置状态
+        if (isCurrent(id)) {
+          sending.value = false;
+        }
       }
     };
 
@@ -259,12 +276,12 @@ export default defineComponent({
             <NButton
               type="primary"
               class="submit"
-              loading={this.sending}
+              // loading={this.sending}
               onClick={() => {
                 this.handleSend();
               }}
             >
-              {i18nCollection("send")}
+              {this.sending ? i18nCollection("abort") : i18nCollection("send")}
             </NButton>
           </NInputGroup>
         </div>

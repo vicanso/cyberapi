@@ -24,6 +24,11 @@ export default defineComponent({
     const { isDark } = storeToRefs(settingStore);
     const processing = ref(true);
 
+    // 避免发布版本可以reload页面
+    if (window.location.hostname === "tauri.localhost") {
+      document.addEventListener("contextmenu", (e) => e.preventDefault());
+    }
+
     onBeforeMount(async () => {
       try {
         await appStore.fetch();

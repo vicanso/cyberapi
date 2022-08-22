@@ -1,12 +1,15 @@
 use crate::cookies;
 use crate::error::CyberAPIError;
 use hyper::{
+    client::HttpConnector,
     header::{HeaderName, HeaderValue},
     Body, Client, Method, Request, Uri,
 };
+use hyper_timeout::TimeoutConnector;
 use hyper_tls::HttpsConnector;
+
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, vec};
+use std::{collections::HashMap, time::Duration, vec};
 use time::Instant;
 use url::Url;
 
@@ -112,17 +115,32 @@ pub async fn request(
             );
         }
     }
-    // TODO 设置超时
+    let connect_timeout = Duration::from_secs(5);
+    let write_timeout = Duration::from_secs(5);
+    // TODO 设置超时由参数指定
+    let read_timeout = Duration::from_secs(30);
 
     // http 与 https使用不同的connector
     let resp = if current_url.scheme() == "https" {
-        let https = HttpsConnector::new();
+        let h = HttpsConnector::new();
+        let mut connector = TimeoutConnector::new(h);
+        connector.set_connect_timeout(Some(connect_timeout));
+        connector.set_read_timeout(Some(read_timeout));
+        connector.set_write_timeout(Some(write_timeout));
         Client::builder()
-            .build::<_, hyper::Body>(https)
+            .build::<_, hyper::Body>(connector)
             .request(req)
             .await?
     } else {
-        Client::new().request(req).await?
+        let h = HttpConnector::new();
+        let mut connector = TimeoutConnector::new(h);
+        connector.set_connect_timeout(Some(connect_timeout));
+        connector.set_read_timeout(Some(read_timeout));
+        connector.set_write_timeout(Some(write_timeout));
+        Client::builder()
+            .build::<_, hyper::Body>(connector)
+            .request(req)
+            .await?
     };
 
     let status = resp.status().as_u16();

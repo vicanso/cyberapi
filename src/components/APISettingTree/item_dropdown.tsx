@@ -4,6 +4,7 @@ import {
   ChevronDownOutline,
   CopyOutline,
   CreateOutline,
+  FolderOpenOutline,
   LinkOutline,
   LogOutOutline,
   TrashOutline,
@@ -20,6 +21,8 @@ import { SettingType, useAPISettingStore } from "../../stores/api_setting";
 import { HandleKey } from "../../constants/handle_key";
 import ExDialog from "../ExDialog";
 import {
+  addFolderDefaultValue,
+  addFolderKey,
   addHTTPSettingDefaultValue,
   addHTTPSettingKey,
 } from "../../constants/provide";
@@ -59,6 +62,7 @@ export default defineComponent({
       addHTTPSettingKey,
       addHTTPSettingDefaultValue
     );
+    const addFolder = inject(addFolderKey, addFolderDefaultValue);
     const handleSelect = (key: string) => {
       const { id, apiSettingType } = props;
       let name = "";
@@ -133,6 +137,11 @@ export default defineComponent({
             addHTTPSetting(id);
           }
           break;
+        case HandleKey.CreateFolder:
+          {
+            addFolder(id);
+          }
+          break;
         case HandleKey.CopyAsCURL:
           {
             const req = apiSettingStore.getHTTPRequestFillENV(id);
@@ -156,13 +165,13 @@ export default defineComponent({
         case HandleKey.Copy:
           {
             const setting = apiSettingStore.findByID(id);
-            writeTextToClipboard(JSON.stringify(setting, null, 2)).then(() => {
-              message.success(i18nCollection("copySettingSuccess"));
-            }).catch(
-              (err) => {
+            writeTextToClipboard(JSON.stringify(setting, null, 2))
+              .then(() => {
+                message.success(i18nCollection("copySettingSuccess"));
+              })
+              .catch((err) => {
                 showError(message, err);
-              }
-            );
+              });
           }
           break;
         default:
@@ -187,15 +196,26 @@ export default defineComponent({
       },
     ];
     if (apiSettingType === SettingType.Folder) {
-      options.unshift({
-        label: i18nCollection("newHTTPRequest"),
-        key: HandleKey.Create,
-        icon: () => (
-          <NIcon>
-            <AddOutline />
-          </NIcon>
-        ),
-      });
+      options.unshift(
+        {
+          label: i18nCollection("newHTTPRequest"),
+          key: HandleKey.Create,
+          icon: () => (
+            <NIcon>
+              <AddOutline />
+            </NIcon>
+          ),
+        },
+        {
+          label: i18nCollection("newFolder"),
+          key: HandleKey.CreateFolder,
+          icon: () => (
+            <NIcon>
+              <FolderOpenOutline />
+            </NIcon>
+          ),
+        }
+      );
     } else {
       options.push(
         {

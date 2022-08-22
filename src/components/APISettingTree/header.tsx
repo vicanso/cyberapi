@@ -40,6 +40,7 @@ import { useAPIFolderStore } from "../../stores/api_folder";
 import { newDefaultAPISetting } from "../../commands/api_setting";
 import { ContentType, HTTPRequest } from "../../commands/http_request";
 import { KVParam } from "../../commands/interface";
+import { importAPI, ImportCategory } from "../../commands/import_api";
 
 const addDropdownClass = css`
   .label {
@@ -64,7 +65,7 @@ export default defineComponent({
     const route = useRoute();
     const message = useMessage();
     const folderStore = useAPIFolderStore();
-    const settingStore = useAPISettingStore();
+    const apiSettingStore = useAPISettingStore();
 
     const collection = route.query.id as string;
     const addHTTPSetting = inject(
@@ -87,94 +88,13 @@ export default defineComponent({
     const handleImportPostman = async () => {
       // TODO 重新整理导入流程
       try {
-        const selected = await open({
-          filters: [
-            {
-              name: "JSON",
-              extensions: ["json"],
-            },
-          ],
+        await importAPI({
+          category: ImportCategory.PostMan,
+          collection,
         });
-        if (!selected) {
-          return;
-        }
-        const fileData = await readTextFile(selected as string);
-        const json = JSON.parse(fileData);
-        if (!Array.isArray(json.item)) {
-          return;
-        }
-        const arr = json.item as [];
-
-        await Promise.each(
-          arr,
-          async (item: {
-            name: string;
-            item: {
-              name: string;
-              request: {
-                method: string;
-                url: {
-                  raw: string;
-                };
-                query: {
-                  key: string;
-                  value: string;
-                }[];
-                body: {
-                  mode: string;
-                  raw: string;
-                };
-              };
-            }[];
-          }) => {
-            const folder = newDefaultAPIFolder();
-            folder.collection = collection;
-            folder.name = item.name;
-            await folderStore.add(folder);
-            if (!item.item) {
-              return;
-            }
-            await Promise.each(item.item, async (apiItem) => {
-              if (!apiItem.request) {
-                return;
-              }
-              const setting = newDefaultAPISetting();
-              setting.category = SettingType.HTTP;
-              setting.collection = collection;
-              setting.name = apiItem.name;
-
-              let contentType = "";
-              const body = apiItem.request.body?.raw;
-              if (body && body.startsWith("{") && body.endsWith("}")) {
-                contentType = ContentType.JSON;
-              }
-              const query: KVParam[] = [];
-              apiItem.request.query?.forEach((q) => {
-                query.push({
-                  key: q.key,
-                  value: q.value,
-                  enabled: true,
-                });
-              });
-
-              const req: HTTPRequest = {
-                headers: [],
-                method: apiItem.request.method,
-                uri: apiItem.request.url?.raw || "",
-                contentType,
-                query,
-                body: body,
-              };
-              setting.setting = JSON.stringify(req);
-              await settingStore.add(setting);
-              await folderStore.addChild({
-                id: folder.id,
-                child: setting.id,
-                index: -1,
-              });
-            });
-          }
-        );
+        // 重新加载数据，触发页面刷新
+        await folderStore.fetch(collection);
+        await apiSettingStore.fetch(collection);
         message.info(i18nCollection("importPostmanSuccess"));
       } catch (err) {
         showError(message, err);
@@ -265,7 +185,7 @@ export default defineComponent({
                   this.addHTTPSetting("");
                   break;
                 case SettingType.Folder:
-                  this.addFolder();
+                  this.addFolder("");
                   break;
                 case importPostmanKey:
                   this.handleImportPostman();

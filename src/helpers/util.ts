@@ -95,3 +95,7 @@ export async function writeTextToClipboard(text: string) {
   }
   await writeText(text);
 }
+
+export async function delay(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}

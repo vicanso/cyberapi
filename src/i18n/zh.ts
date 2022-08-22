@@ -10,6 +10,7 @@ export default {
     copySettingSuccess: "配置已成功复制至粘贴板",
     shouldSelectAPISettingFirst: "请先选择接口请求",
     send: "发送",
+    abort: "中止",
     format: "格式化",
     changeContentType: "更换数据类型",
     changeContentTypeContent:

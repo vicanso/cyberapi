@@ -29,6 +29,7 @@ hyper-tls = "0.5.0"
 cookie_store = "0.16.1"
 url = "2.2.2"
 time = "0.3.13"
+hyper-timeout = "0.4.1"
 
 
 [features]

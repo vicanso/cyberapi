@@ -5,7 +5,7 @@ import { storeToRefs } from "pinia";
 import { debounce } from "lodash-es";
 
 import { useAPISettingStore } from "../../stores/api_setting";
-import { HTTPRequest } from "../../commands/http_request";
+import { abortRequestID, HTTPRequest } from "../../commands/http_request";
 import { showError } from "../../helpers/util";
 import { i18nCollection } from "../../i18n";
 import APISettingParamsURI from "./uri";
@@ -122,7 +122,10 @@ export default defineComponent({
           onUpdateURI={(data) => {
             this.handleUpdateURI(data);
           }}
-          onSubmit={() => {
+          onSubmit={(isAborted: boolean) => {
+            if (isAborted) {
+              return this.$props.onSend(abortRequestID);
+            }
             return this.$props.onSend(selectedID);
           }}
         />

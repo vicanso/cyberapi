@@ -35,6 +35,7 @@ import ExLoading from "../ExLoading";
 import APISettingTreeItemDropdown from "./item_dropdown";
 
 const itemsWrapperClass = css`
+  user-select: none;
   position: absolute;
   top: 50px;
   left: 5px;
@@ -408,7 +409,8 @@ export default defineComponent({
     };
     const handleMousedown = (e: MouseEvent) => {
       isDragging = false;
-      if (!e.currentTarget) {
+      // 无target或者点击非左键
+      if (!e.currentTarget || e.button > 1) {
         return;
       }
       // TODO 此处导致无法复制，后续研究
