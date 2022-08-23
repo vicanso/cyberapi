@@ -12,35 +12,23 @@ import {
 import { ContentType, HTTPRequest } from "./http_request";
 import { KVParam } from "./interface";
 
-// "name": "对账单订阅一期",
-// 			"item": [
-// 				{
-// 					"name": "原始接口",
-// 					"item": [
-// 						{
-// 							"name": "金管家",
-// 							"item": [
-
 interface PostManSetting {
   name: string;
-  item: {
-    name: string;
-    item?: PostManSetting[];
-    request: {
-      method: string;
-      url: {
-        raw: string;
-      };
-      query: {
-        key: string;
-        value: string;
-      }[];
-      body: {
-        mode: string;
-        raw: string;
-      };
+  item?: PostManSetting[];
+  request?: {
+    method: string;
+    url: {
+      raw: string;
     };
-  }[];
+    query: {
+      key: string;
+      value: string;
+    }[];
+    body: {
+      mode: string;
+      raw: string;
+    };
+  };
 }
 
 interface ImportData {
@@ -52,71 +40,90 @@ export enum ImportCategory {
   PostMan = "postMan",
 }
 
+function convertPostManAPISetting(item: PostManSetting, collection: string) {
+  if (!item.request) {
+    return;
+  }
+  const setting = newDefaultAPISetting();
+  setting.category = SettingType.HTTP;
+  setting.collection = collection;
+  setting.name = item.name;
+  let contentType = "";
+  const body = item.request.body?.raw;
+  if (body && body.startsWith("{") && body.endsWith("}")) {
+    contentType = ContentType.JSON;
+  }
+  const query: KVParam[] = [];
+  item.request.query?.forEach((q) => {
+    query.push({
+      key: q.key,
+      value: q.value,
+      enabled: true,
+    });
+  });
+  let uri = item.request.url?.raw || "";
+  if (uri && uri.includes("?")) {
+    const arr = uri.split("?");
+    uri = arr[0];
+    // 去除前面host+path部分
+    arr.shift();
+    const url = new URL(`http://localhost/?${arr.join("?")}`);
+    url.searchParams.forEach((value, key) => {
+      query.push({
+        key,
+        value,
+        enabled: true,
+      });
+    });
+  }
+
+  const req: HTTPRequest = {
+    headers: [],
+    method: item.request.method,
+    uri,
+    contentType,
+    query,
+    body: body,
+  };
+  setting.setting = JSON.stringify(req);
+  return setting;
+}
+
 function convertPostManSetting(params: {
   result: ImportData;
   items: PostManSetting[];
   collection: string;
-  parentChild: string[];
+  parentChildren: string[];
 }) {
-  const { result, items, collection, parentChild } = params;
+  const { result, items, collection, parentChildren } = params;
   if (!items || items.length === 0) {
     return;
   }
   items.forEach((item) => {
-    const folder = newDefaultAPIFolder();
-    parentChild.push(folder.id);
-    result.folders.push(folder);
-
-    folder.collection = collection;
-    folder.name = item.name;
-    const children: string[] = [];
-    const apiItems = item.item || [];
-    apiItems.forEach((apiItem) => {
-      if (!apiItem.request) {
-        if (apiItem.item) {
-          convertPostManSetting({
-            result,
-            items: apiItem.item,
-            collection,
-            parentChild: children,
-          });
-        }
-        return;
+    // api 接口
+    if (item.request) {
+      const setting = convertPostManAPISetting(item, collection);
+      if (setting) {
+        result.settings.push(setting);
+        parentChildren.push(setting.id);
       }
-      const setting = newDefaultAPISetting();
-      result.settings.push(setting);
-
-      children.push(setting.id);
-      setting.category = SettingType.HTTP;
-      setting.collection = collection;
-      setting.name = apiItem.name;
-
-      let contentType = "";
-      const body = apiItem.request.body?.raw;
-      if (body && body.startsWith("{") && body.endsWith("}")) {
-        contentType = ContentType.JSON;
-      }
-      const query: KVParam[] = [];
-      apiItem.request.query?.forEach((q) => {
-        query.push({
-          key: q.key,
-          value: q.value,
-          enabled: true,
-        });
+    } else {
+      // folder
+      const folder = newDefaultAPIFolder();
+      result.folders.push(folder);
+      parentChildren.push(folder.id);
+      folder.collection = collection;
+      folder.name = item.name;
+      const subChildren: string[] = [];
+      convertPostManSetting({
+        result,
+        items: item.item || [],
+        collection,
+        parentChildren: subChildren,
       });
-      const req: HTTPRequest = {
-        headers: [],
-        method: apiItem.request.method,
-        uri: apiItem.request.url?.raw || "",
-        contentType,
-        query,
-        body: body,
-      };
-      setting.setting = JSON.stringify(req);
-    });
-    folder.children = children.join(",");
+      folder.children = subChildren.join(",");
+    }
   });
-  return result;
 }
 
 export async function importAPI(params: {
@@ -154,7 +161,7 @@ export async function importAPI(params: {
           result,
           items: arr,
           collection,
-          parentChild: [],
+          parentChildren: [],
         });
       }
       break;

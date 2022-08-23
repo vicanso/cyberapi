@@ -7,4 +7,5 @@ export enum HandleKey {
   CopyAsCURL = "copyAsCURL",
   Pin = "pin",
   Divider = "divider",
+  ImportSettings = "importSettings",
 }

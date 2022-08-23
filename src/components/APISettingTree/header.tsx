@@ -11,9 +11,6 @@ import {
   useMessage,
 } from "naive-ui";
 import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
-import { open } from "@tauri-apps/api/dialog";
-import { readTextFile } from "@tauri-apps/api/fs";
-import { Promise } from "bluebird";
 
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { SettingType, useAPISettingStore } from "../../stores/api_setting";
@@ -21,6 +18,7 @@ import {
   AnalyticsOutline,
   CloudUploadOutline,
   FolderOpenOutline,
+  FolderOutline,
 } from "@vicons/ionicons5";
 import {
   hotKeyCreateFolder,
@@ -35,12 +33,26 @@ import {
 } from "../../constants/provide";
 import { showError } from "../../helpers/util";
 import { useRoute } from "vue-router";
-import { newDefaultAPIFolder } from "../../commands/api_folder";
 import { useAPIFolderStore } from "../../stores/api_folder";
-import { newDefaultAPISetting } from "../../commands/api_setting";
-import { ContentType, HTTPRequest } from "../../commands/http_request";
-import { KVParam } from "../../commands/interface";
 import { importAPI, ImportCategory } from "../../commands/import_api";
+import { useAPICollectionStore } from "../../stores/api_collection";
+
+const collapseWidth = 50;
+
+const headerClass = css`
+  margin-right: ${collapseWidth}px;
+  position: relative;
+  .collapse {
+    position: absolute;
+    top: 0;
+    right: ${-collapseWidth}px;
+    bottom: 0;
+    width: ${collapseWidth}px;
+    .n-button {
+      margin-left: 10px;
+    }
+  }
+`;
 
 const addDropdownClass = css`
   .label {
@@ -66,6 +78,7 @@ export default defineComponent({
     const message = useMessage();
     const folderStore = useAPIFolderStore();
     const apiSettingStore = useAPISettingStore();
+    const collectionStore = useAPICollectionStore();
 
     const collection = route.query.id as string;
     const addHTTPSetting = inject(
@@ -101,10 +114,19 @@ export default defineComponent({
       }
     };
 
+    const handleCloseAllFolders = async () => {
+      try {
+        await collectionStore.closeAllFolders(collection);
+      } catch (err) {
+        showError(message, err);
+      }
+    };
+
     return {
       addHTTPSetting,
       addFolder,
       handleImportPostman,
+      handleCloseAllFolders,
       text: {
         add: i18nCommon("add"),
         placeholder: i18nCollection("filterPlaceholder"),
@@ -149,54 +171,67 @@ export default defineComponent({
     ];
     const { text } = this;
     return (
-      <NGrid xGap={12}>
-        <NGi span={16}>
-          <NInput
-            type="text"
-            clearable
-            placeholder={text.placeholder}
-            onInput={(value: string) => {
-              this.$props.onFilter(value.toLowerCase());
-            }}
-          />
-        </NGi>
-        <NGi span={8}>
-          <NDropdown
-            class={addDropdownClass}
-            trigger="click"
-            options={options}
-            renderLabel={(option) => {
-              const arr = (option.label as string).split(" | ");
-              const hotkey =
-                arr.length === 2 ? (
-                  <span class="hotKey">{arr[1]}</span>
-                ) : undefined;
+      <div class={headerClass}>
+        <NGrid xGap={12}>
+          <NGi span={16}>
+            <NInput
+              type="text"
+              clearable
+              placeholder={text.placeholder}
+              onInput={(value: string) => {
+                this.$props.onFilter(value.toLowerCase());
+              }}
+            />
+          </NGi>
+          <NGi span={8}>
+            <NDropdown
+              class={addDropdownClass}
+              trigger="click"
+              options={options}
+              renderLabel={(option) => {
+                const arr = (option.label as string).split(" | ");
+                const hotkey =
+                  arr.length === 2 ? (
+                    <span class="hotKey">{arr[1]}</span>
+                  ) : undefined;
 
-              return (
-                <div class="label">
-                  {arr[0]}
-                  {hotkey}
-                </div>
-              );
-            }}
-            onSelect={(key: string) => {
-              switch (key) {
-                case SettingType.HTTP:
-                  this.addHTTPSetting("");
-                  break;
-                case SettingType.Folder:
-                  this.addFolder("");
-                  break;
-                case importPostmanKey:
-                  this.handleImportPostman();
-                  break;
-              }
+                return (
+                  <div class="label">
+                    {arr[0]}
+                    {hotkey}
+                  </div>
+                );
+              }}
+              onSelect={(key: string) => {
+                switch (key) {
+                  case SettingType.HTTP:
+                    this.addHTTPSetting("");
+                    break;
+                  case SettingType.Folder:
+                    this.addFolder("");
+                    break;
+                  case importPostmanKey:
+                    this.handleImportPostman();
+                    break;
+                }
+              }}
+            >
+              <NButton class="widthFull">{text.add}</NButton>
+            </NDropdown>
+          </NGi>
+        </NGrid>
+        <div class="collapse">
+          <NButton
+            onClick={() => {
+              this.handleCloseAllFolders();
             }}
           >
-            <NButton class="widthFull">{text.add}</NButton>
-          </NDropdown>
-        </NGi>
-      </NGrid>
+            <NIcon>
+              <FolderOutline />
+            </NIcon>
+          </NButton>
+        </div>
+      </div>
     );
   },
 });

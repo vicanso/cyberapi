@@ -54,6 +54,11 @@ export const useAPICollectionStore = defineStore("apiCollections", {
     };
   },
   actions: {
+    async closeAllFolders(collection: string) {
+      const items: string[] = [];
+      await getExpandedSettingStore().setItem(collection, items);
+      this.expandedFolders = items;
+    },
     async fetchExpandedFolders(collection: string) {
       const items = await getExpandedSettingStore().getItem<string[]>(
         collection

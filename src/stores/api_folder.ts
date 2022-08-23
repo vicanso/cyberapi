@@ -62,6 +62,7 @@ export const useAPIFolderStore = defineStore("apiFolders", {
     async addChild(params: {
       // folder的id(为空则表示添加至顶层)
       id: string;
+      // TODO child调整为可支持数组
       // 要添加的元素
       child: string;
       // 要添加的位置

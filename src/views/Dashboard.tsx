@@ -160,6 +160,7 @@ export default defineComponent({
         dialog,
         title: i18nDashboard("newCollection"),
         formItems: getFormItems(),
+        enterTriggerSubmit: true,
         onConfirm: async (data) => {
           try {
             const colleciton = newDefaultAPICollection();

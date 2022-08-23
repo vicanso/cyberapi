@@ -428,11 +428,20 @@ export default defineComponent({
       document.addEventListener("mouseup", handleMouseup);
     };
 
+    const resetRename = () => {
+      renameValue.value = "";
+      renameItem.value = {
+        name: "",
+        id: "",
+      };
+    };
+
     const handelRename = async () => {
       // 无变化，无需修改
       const name = renameValue.value;
       const id = renameItem.value.id;
       if (!name || !id) {
+        resetRename();
         return;
       }
       try {
@@ -448,11 +457,7 @@ export default defineComponent({
       } catch (err) {
         showError(message, err);
       } finally {
-        renameValue.value = "";
-        renameItem.value = {
-          name: "",
-          id: "",
-        };
+        resetRename();
       }
     };
     const handleKeydown = (e: KeyboardEvent) => {
@@ -460,11 +465,7 @@ export default defineComponent({
       switch (key) {
         case "escape":
           {
-            renameValue.value = "";
-            renameItem.value = {
-              id: "",
-              name: "",
-            };
+            resetRename();
           }
           break;
         case "enter":

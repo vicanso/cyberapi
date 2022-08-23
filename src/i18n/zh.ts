@@ -21,6 +21,7 @@ export default {
     copyAsCURL: "复制为curl",
     copyAsCURLSuccess: "curl已成功复制至粘贴板",
     pinRequest: "置顶请求",
+    importSettings: "导入配置",
     importPostman: "导入postman配置",
     importPostmanSuccess: "已经成功导入postman配置",
   },

@@ -25,10 +25,10 @@ export default defineComponent({
     const processing = ref(true);
 
     // 避免发布版本可以reload页面
-    if (window.location.hostname === "tauri.localhost") {
+    if (window.location.protocol.includes("tauri")) {
       document.addEventListener("contextmenu", (e) => e.preventDefault());
     }
-
+    const startedAt = Date.now();
     onBeforeMount(async () => {
       try {
         await appStore.fetch();
@@ -39,8 +39,9 @@ export default defineComponent({
         console.error(err);
       } finally {
         processing.value = false;
-        // 延时关闭，便于程序初始化
-        setTimeout(closeSplashscreen, 300);
+        // splashscreen最多300ms
+        const delay = 300 - (Date.now() - startedAt);
+        setTimeout(closeSplashscreen, delay);
       }
     });
 

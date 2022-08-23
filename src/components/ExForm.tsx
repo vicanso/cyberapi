@@ -41,6 +41,10 @@ export default defineComponent({
       type: Function as PropType<ExOnSubmit>,
       required: true,
     },
+    enterTriggerSubmit: {
+      type: Boolean,
+      default: () => false,
+    },
   },
   setup(props) {
     const message = useMessage();
@@ -87,14 +91,14 @@ export default defineComponent({
     const { formItems } = this.$props;
     const lastIndex = formItems.length - 1;
     const items = formItems.map((item, index) => {
-      const onKeyup =
-        index === lastIndex
-          ? (e: KeyboardEvent) => {
-              if (e.key.toLocaleLowerCase() === "enter") {
-                submit();
-              }
+      const isAddEvent = index === lastIndex || this.$props.enterTriggerSubmit;
+      const onKeyup = isAddEvent
+        ? (e: KeyboardEvent) => {
+            if (e.key.toLocaleLowerCase() === "enter") {
+              submit();
             }
-          : undefined;
+          }
+        : undefined;
       return (
         <NFormItem label={item.label} path={item.key} key={item.key}>
           <NInput

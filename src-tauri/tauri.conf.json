@@ -21,7 +21,7 @@
     "bundle": {
       "active": true,
       "category": "DeveloperTool",
-      "copyright": "",
+      "copyright": "© 2022 Tree Xie. All rights reserved.",
       "deb": {
         "depends": []
       },
@@ -59,7 +59,6 @@
     },
     "windows": [
       {
-        "theme": "Dark",
         "fullscreen": false,
         "height": 600,
         "resizable": true,

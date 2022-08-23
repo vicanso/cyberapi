@@ -2,6 +2,7 @@
 import {
   AddOutline,
   ChevronDownOutline,
+  CloudUploadOutline,
   CopyOutline,
   CreateOutline,
   FolderOpenOutline,
@@ -13,13 +14,18 @@ import { NDropdown, NIcon, useDialog, useMessage } from "naive-ui";
 import { defineComponent, inject } from "vue";
 import { useRoute } from "vue-router";
 import { css } from "@linaria/core";
+import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
 
-import { showError, writeTextToClipboard } from "../../helpers/util";
+import {
+  readTextFromClipboard,
+  showError,
+  writeTextToClipboard,
+} from "../../helpers/util";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { useAPIFolderStore } from "../../stores/api_folder";
 import { SettingType, useAPISettingStore } from "../../stores/api_setting";
 import { HandleKey } from "../../constants/handle_key";
-import ExDialog from "../ExDialog";
+import ExDialog, { newImportDialog } from "../ExDialog";
 import {
   addFolderDefaultValue,
   addFolderKey,
@@ -28,7 +34,6 @@ import {
 } from "../../constants/provide";
 import { usePinRequestStore } from "../../stores/pin_request";
 import { convertRequestToCURL } from "../../commands/http_request";
-import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
 
 const dropdownClass = css`
   .n-dropdown-option {
@@ -63,6 +68,20 @@ export default defineComponent({
       addHTTPSettingDefaultValue
     );
     const addFolder = inject(addFolderKey, addFolderDefaultValue);
+
+    const hanldeImport = async (id: string) => {
+      try {
+        const data = (await readTextFromClipboard()) || "";
+        newImportDialog({
+          dialog,
+          collection,
+          folder: id,
+          data,
+        });
+      } catch (err) {
+        showError(message, err);
+      }
+    };
     const handleSelect = (key: string) => {
       const { id, apiSettingType } = props;
       let name = "";
@@ -162,6 +181,11 @@ export default defineComponent({
             });
           }
           break;
+        case HandleKey.ImportSettings:
+          {
+            hanldeImport(id);
+          }
+          break;
         case HandleKey.Copy:
           {
             const setting = apiSettingStore.findByID(id);
@@ -216,6 +240,15 @@ export default defineComponent({
           ),
         }
       );
+      options.push({
+        label: i18nCollection("importSettings"),
+        key: HandleKey.ImportSettings,
+        icon: () => (
+          <NIcon>
+            <CloudUploadOutline />
+          </NIcon>
+        ),
+      });
     } else {
       options.push(
         {
