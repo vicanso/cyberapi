@@ -35,5 +35,9 @@ init()
   // 初始化失败是否弹窗
   .catch(console.error)
   .finally(() => {
+    // TODO 全局出错处理
+    app.config.errorHandler = (err, instance, info) => {
+      // handle error, e.g. report to a service
+    };
     app.use(naive).use(createPinia()).mount("#app");
   });

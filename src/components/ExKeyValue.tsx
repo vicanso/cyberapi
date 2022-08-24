@@ -185,6 +185,8 @@ export default defineComponent({
             <NGrid yGap={padding} xGap={padding}>
               <NGi span={spans[0] || 12}>
                 <NInput
+                  type="textarea"
+                  autosize={true}
                   placeholder={namePlaceholder}
                   onFocus={handleFocus}
                   clearable
@@ -197,6 +199,8 @@ export default defineComponent({
               </NGi>
               <NGi span={spans[1] || 12}>
                 <NInput
+                  type="textarea"
+                  autosize={true}
                   placeholder={valuePlaceholder}
                   onFocus={handleFocus}
                   clearable

@@ -23,18 +23,42 @@ body {
 .tac {
   text-align: center;
 }
+
 .tar {
   text-align: right;
 }
+
 .font12 {
   font-size: 12px;
 }
+
 .font16 {
   font-size: 16px;
 }
+
 .font20 {
   font-size: 20px;
 }
+
 .bold {
   font-weight: 900;
 }
+
+/* 滚动条会一直存在，暂时先不使用 */
+/* ::-webkit-scrollbar {
+  height: 9px;
+  width: 9px;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 10px;
+  border-style: dashed;
+  border-color: transparent;
+  border-width: 2px;
+  background-color: rgba(157, 165, 183, 0.4);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(157, 165, 183, 0.7);
+} */

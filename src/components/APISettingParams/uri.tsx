@@ -259,6 +259,8 @@ export default defineComponent({
 
             <NInput
               defaultValue={currentURI}
+              type="textarea"
+              autosize={true}
               placeholder={"http://test.com/users/v1/me"}
               clearable
               onBlur={() => {

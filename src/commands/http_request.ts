@@ -1,11 +1,11 @@
 import { forEach, isArray } from "lodash-es";
-import { decode } from "js-base64";
+import { decode, encode } from "js-base64";
 import dayjs from "dayjs";
 
 import { run, cmdDoHTTPRequest } from "./invoke";
 import { KVParam } from "./interface";
 import { isWebMode, delay } from "../helpers/util";
-import { doFnHandler, parseFunctions } from "../helpers/fn";
+import { doFnHandler, parseFunctions } from "./fn";
 import { ulid } from "ulid";
 
 export enum HTTPMethod {
@@ -122,6 +122,7 @@ export interface ResponseBodyResult {
   category: ResponseBodyCategory;
   data: string;
   size: number;
+  json?: Map<string, unknown>;
 }
 
 const statusTextMap = new Map<string, string>();
@@ -204,6 +205,8 @@ export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
   let category = ResponseBodyCategory.Binary;
   let data = body;
   let size = -1;
+  let json: Map<string, unknown> = new Map<string, unknown>();
+  let isJSON = false;
   headers.forEach((values, key) => {
     const k = key.toLowerCase();
     switch (k) {
@@ -213,8 +216,10 @@ export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
           if (value.includes(applicationJSON)) {
             category = ResponseBodyCategory.JSON;
             data = decode(data);
+            json = JSON.parse(data);
+            isJSON = true;
             // format
-            data = JSON.stringify(JSON.parse(data), null, 2);
+            data = JSON.stringify(json, null, 2);
           } else if (value.includes("text")) {
             category = ResponseBodyCategory.Text;
             data = decode(data);
@@ -235,11 +240,15 @@ export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
     size = Math.ceil((body.length / 4) * 3);
   }
 
-  return {
+  const result: ResponseBodyResult = {
     category,
     data,
     size,
   };
+  if (isJSON) {
+    result.json = json;
+  }
+  return result;
 }
 
 interface Response {
@@ -255,7 +264,7 @@ function addLatestResponse(resp: HTTPResponse) {
     resp,
     createdAt: dayjs().format(),
   });
-  if (latestResponseList.length > 10) {
+  if (latestResponseList.length > 50) {
     latestResponseList.pop();
   }
 }
@@ -272,13 +281,31 @@ export async function convertBody(body: string) {
   if (handlers.length === 0) {
     return body;
   }
-  for (let index = 0; index < handlers.length; index++) {
-    const handler = handlers[index];
+  for (let i = 0; i < handlers.length; i++) {
+    const handler = handlers[i];
     const result = await doFnHandler(handler);
     // 替换result的内容
     body = body.replace(handler.text, result);
   }
   return body;
+}
+
+export async function convertKVParams(params: KVParam[]) {
+  for (let i = 0; i < params.length; i++) {
+    const param = params[i];
+    const handlers = parseFunctions(param.value);
+    if (handlers.length === 0) {
+      continue;
+    }
+    let { value } = param;
+    for (let j = 0; j < handlers.length; j++) {
+      const handler = handlers[j];
+      const result = await doFnHandler(handler);
+      // 替换result的内容
+      value = value.replace(handler.text, result);
+    }
+    param.value = value;
+  }
 }
 
 export const abortRequestID = ulid();
@@ -313,6 +340,9 @@ export async function doHTTPRequest(
     headers: req.headers,
     query: req.query,
   };
+  await convertKVParams(params.query);
+  await convertKVParams(params.headers);
+  params.body = await convertBody(params.body);
   if (isWebMode()) {
     await delay(3000);
     const headers = new Map<string, string[]>();
@@ -322,16 +352,12 @@ export async function doHTTPRequest(
       latency: 1860,
       status: 200,
       headers,
-      body: window.btoa(JSON.stringify(params)),
+      body: encode(JSON.stringify(params)),
     };
 
     addLatestResponse(resp);
     return Promise.resolve(resp);
   }
-  // TODO 是否query、header也可支持函数处理
-
-  // 替换body中函数
-  params.body = await convertBody(params.body);
 
   const resp = await run<HTTPResponse>(cmdDoHTTPRequest, {
     req: params,

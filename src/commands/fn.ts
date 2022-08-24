@@ -4,30 +4,48 @@ import {
   readTextFile,
 } from "@tauri-apps/api/fs";
 import { open } from "@tauri-apps/api/dialog";
-import { trim, toString } from "lodash-es";
+import { toString, get, trim } from "lodash-es";
 import { fromUint8Array } from "js-base64";
+import { getLatestResponse, getResponseBody } from "./http_request";
 interface FnHandler {
   // 原始字符
   text: string;
   // 函数列表
   fnList: string[];
   // 初始参数
-  param: string;
+  param: string | string[];
 }
 
 enum Fn {
   readTextFile = "readTextFile",
+  rtf = "rtf",
   readFile = "readFile",
+  rf = "rf",
   base64 = "base64",
+  b64 = "b64",
   openFile = "openFile",
+  of = "of",
+  get = "get",
+  g = "g",
   timestamp = "timestamp",
+  ts = "ts",
 }
 
-function trimParam(param: string) {
-  param = param.trim();
-  param = trim(param, "'");
-  param = trim(param, '"');
-  return param;
+function trimParam(param: string): string | string[] {
+  const arr = param.split(",").map((item) => {
+    item = item.trim();
+    item = trim(item, "'");
+    item = trim(item, '"');
+    return item;
+  });
+
+  // 单引号替换为双引号
+  // const str = `[${param.replaceAll("'", '"')}]`;
+  // const arr = JSON.parse(str);
+  if (arr.length < 2) {
+    return arr[0];
+  }
+  return arr;
 }
 
 export function parseFunctions(value: string): FnHandler[] {
@@ -62,6 +80,7 @@ export async function doFnHandler(handler: FnHandler): Promise<string> {
     const fn = fnList[index];
     switch (fn) {
       case Fn.readTextFile:
+      case Fn.rtf:
         {
           p = await readTextFile(toString(p), {
             dir: BaseDirectory.Download,
@@ -69,6 +88,7 @@ export async function doFnHandler(handler: FnHandler): Promise<string> {
         }
         break;
       case Fn.readFile:
+      case Fn.rf:
         {
           p = await readBinaryFile(toString(p), {
             dir: BaseDirectory.Download,
@@ -76,11 +96,13 @@ export async function doFnHandler(handler: FnHandler): Promise<string> {
         }
         break;
       case Fn.base64:
+      case Fn.b64:
         {
           p = fromUint8Array(p as Uint8Array);
         }
         break;
       case Fn.openFile:
+      case Fn.of:
         {
           const selected = await open();
           if (selected) {
@@ -89,8 +111,25 @@ export async function doFnHandler(handler: FnHandler): Promise<string> {
         }
         break;
       case Fn.timestamp:
+      case Fn.ts:
         {
           p = `${Math.round(Date.now() / 1000)}`;
+        }
+        break;
+      case Fn.get:
+      case Fn.g:
+        {
+          const arr = toString(p).split(",");
+          if (arr.length !== 2) {
+            throw new Error("params of get from response is invalid");
+          }
+          const resp = getLatestResponse(arr[0].trim());
+          console.dir(arr);
+          if (resp) {
+            const result = getResponseBody(resp);
+            p = get(result.json, arr[1].trim());
+          }
+          console.dir(p);
         }
         break;
       default:

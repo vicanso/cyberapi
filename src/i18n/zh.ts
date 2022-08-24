@@ -24,6 +24,7 @@ export default {
     importSettings: "导入配置",
     importPostman: "导入postman配置",
     importPostmanSuccess: "已经成功导入postman配置",
+    apiID: "该请求配置ID",
   },
   common: {
     app: "CyberAPI",

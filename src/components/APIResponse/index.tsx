@@ -10,6 +10,7 @@ import { css } from "@linaria/core";
 import { EditorView } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import prettyBytes from "pretty-bytes";
+import { InformationCircleOutline } from "@vicons/ionicons5";
 
 import {
   getResponseBody,
@@ -19,7 +20,7 @@ import {
   getLatestResponse,
 } from "../../commands/http_request";
 import { useSettingStore } from "../../stores/setting";
-import { NDivider, NGradientText, NSpace } from "naive-ui";
+import { NDivider, NGradientText, NIcon, NSpace, NTooltip } from "naive-ui";
 import { padding } from "../../constants/style";
 import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
 import { i18nCollection } from "../../i18n";
@@ -42,6 +43,11 @@ const responseClass = css`
   }
   .n-divider {
     margin: 0;
+  }
+  .info {
+    float: left;
+    margin-top: 15px;
+    font-size: 16px;
   }
 `;
 
@@ -87,6 +93,7 @@ export default defineComponent({
     const statusCode = ref(0);
     const size = ref(-1);
     const latency = ref(0);
+    const apiID = ref("");
 
     const fillValues = async (resp: HTTPResponse) => {
       // 初始加载时，读取最近的响应
@@ -105,6 +112,7 @@ export default defineComponent({
       }
       size.value = body.size;
       latency.value = resp.latency;
+      apiID.value = resp.api;
       replaceContent(editor, body.data);
     };
 
@@ -143,11 +151,12 @@ export default defineComponent({
       size,
       latency,
       statusCode,
+      apiID,
       codeEditor,
     };
   },
   render() {
-    const { statusCode, size, latency } = this;
+    const { statusCode, size, latency, apiID } = this;
     let statusCodeInfo = <span></span>;
     if (statusCode === -1) {
       statusCodeInfo = <span>{i18nCollection("requesting")}</span>;
@@ -159,9 +168,22 @@ export default defineComponent({
       );
     }
 
+    const slots = {
+      trigger: () => (
+        <NIcon class="info">
+          <InformationCircleOutline />
+        </NIcon>
+      ),
+    };
+
     return (
       <div class={responseClass}>
         <NSpace class="infos">
+          {statusCode > 0 && apiID && (
+            <NTooltip v-slots={slots}>
+              {i18nCollection("apiID")}: {apiID}
+            </NTooltip>
+          )}
           {statusCodeInfo}
           {/* 占位 */}
           <span> </span>
