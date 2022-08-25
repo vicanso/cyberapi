@@ -19,6 +19,7 @@ enum StoreKey {
   apiSetting = "apiSetting",
   setting = "setting",
   pinRequests = "pinRequests",
+  latestResponse = "latestResponse",
 }
 
 // 记录展开配置项
@@ -38,3 +39,6 @@ export const getSettingStore = createNewStore(StoreKey.setting);
 
 // Pin的API配置
 export const getPinRequestStore = createNewStore(StoreKey.pinRequests);
+
+// 最新请求响应
+export const getLatestResponseStore = createNewStore(StoreKey.latestResponse);

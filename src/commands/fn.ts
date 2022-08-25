@@ -6,7 +6,7 @@ import {
 import { open } from "@tauri-apps/api/dialog";
 import { toString, get, trim } from "lodash-es";
 import { fromUint8Array } from "js-base64";
-import { getLatestResponse, getResponseBody } from "./http_request";
+import { getLatestResponse, getResponseBody } from "./http_response";
 interface FnHandler {
   // 原始字符
   text: string;
@@ -123,13 +123,11 @@ export async function doFnHandler(handler: FnHandler): Promise<string> {
           if (arr.length !== 2) {
             throw new Error("params of get from response is invalid");
           }
-          const resp = getLatestResponse(arr[0].trim());
-          console.dir(arr);
+          const resp = await getLatestResponse(arr[0].trim());
           if (resp) {
             const result = getResponseBody(resp);
             p = get(result.json, arr[1].trim());
           }
-          console.dir(p);
         }
         break;
       default:

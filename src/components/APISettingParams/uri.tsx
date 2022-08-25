@@ -272,6 +272,7 @@ export default defineComponent({
               onKeydown={(e) => {
                 if (e.key.toLowerCase() === "enter" && this.currentURI) {
                   this.handleSend();
+                  e.preventDefault();
                 }
               }}
             />

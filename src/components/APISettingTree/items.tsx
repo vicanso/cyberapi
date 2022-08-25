@@ -2,13 +2,9 @@
 import { defineComponent, ref, onBeforeMount, onBeforeUnmount } from "vue";
 import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
-import { NIcon, NInput, useMessage } from "naive-ui";
+import { NGradientText, NIcon, NInput, useMessage } from "naive-ui";
 import { sortBy, uniq } from "lodash-es";
-import {
-  AnalyticsOutline,
-  FolderOpenOutline,
-  FolderOutline,
-} from "@vicons/ionicons5";
+import { FolderOpenOutline, FolderOutline } from "@vicons/ionicons5";
 import { useRoute } from "vue-router";
 
 import { useAPIFolderStore } from "../../stores/api_folder";
@@ -33,6 +29,7 @@ import {
 } from "../../helpers/html";
 import ExLoading from "../ExLoading";
 import APISettingTreeItemDropdown from "./item_dropdown";
+import { HTTPMethod } from "../../commands/http_request";
 
 const itemsWrapperClass = css`
   user-select: none;
@@ -68,6 +65,10 @@ const itemsWrapperClass = css`
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+    .method {
+      margin: 0 8px 0 5px;
+      font-size: 12px;
+    }
     &.insertBefore {
       padding-top: 2px;
       border-top: 1px dashed;
@@ -114,11 +115,28 @@ interface TreeItem {
   id: string;
   name: string;
   settingType: string;
+  method: string;
   children: TreeItem[];
   expanded: boolean;
   parent: string;
   childIndex: number;
   hidden: boolean;
+}
+
+function getMethodColorType(method: string) {
+  switch (method) {
+    case HTTPMethod.DELETE:
+      return "error";
+      break;
+    case HTTPMethod.PATCH:
+    case HTTPMethod.PUT:
+    case HTTPMethod.POST:
+      return "info";
+      break;
+    default:
+      return "warning";
+      break;
+  }
 }
 
 function convertToTreeItems(params: {
@@ -133,8 +151,17 @@ function convertToTreeItems(params: {
 
   const keyword = params.keyword.toLowerCase();
 
+  const reg = /"method":"(\S+?)"/;
   apiSettings.forEach((item) => {
+    let method = "";
+    if (item.setting) {
+      const result = reg.exec(item.setting);
+      if (result?.length === 2) {
+        method = result[1];
+      }
+    }
     map.set(item.id, {
+      method,
       id: item.id,
       name: item.name,
       settingType: SettingType.HTTP,
@@ -156,6 +183,7 @@ function convertToTreeItems(params: {
       parent: "",
       childIndex: -1,
       hidden: false,
+      method: "",
     });
   });
 
@@ -554,15 +582,18 @@ export default defineComponent({
         }
         let icon = (
           <NIcon>
-            <AnalyticsOutline />
+            {item.expanded ? <FolderOpenOutline /> : <FolderOutline />}
           </NIcon>
         );
         const isFolder = item.settingType === SettingType.Folder;
-        if (isFolder) {
+        if (!isFolder) {
           icon = (
-            <NIcon>
-              {item.expanded ? <FolderOpenOutline /> : <FolderOutline />}
-            </NIcon>
+            <NGradientText
+              class="method"
+              type={getMethodColorType(item.method)}
+            >
+              {item.method || HTTPMethod.GET}
+            </NGradientText>
           );
         }
 

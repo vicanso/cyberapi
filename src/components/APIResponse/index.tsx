@@ -13,12 +13,12 @@ import prettyBytes from "pretty-bytes";
 import { InformationCircleOutline } from "@vicons/ionicons5";
 
 import {
-  getResponseBody,
   HTTPResponse,
   ResponseBodyResult,
   getStatusText,
   getLatestResponse,
-} from "../../commands/http_request";
+  getResponseBody,
+} from "../../commands/http_response";
 import { useSettingStore } from "../../stores/setting";
 import { NDivider, NGradientText, NIcon, NSpace, NTooltip } from "naive-ui";
 import { padding } from "../../constants/style";
@@ -98,7 +98,7 @@ export default defineComponent({
     const fillValues = async (resp: HTTPResponse) => {
       // 初始加载时，读取最近的响应
       if (!resp.status) {
-        const tmp = getLatestResponse(resp.api);
+        const tmp = await getLatestResponse(resp.api);
         if (tmp) {
           resp = tmp;
         }

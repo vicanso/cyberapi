@@ -22,11 +22,8 @@ import APISettingTree from "../components/APISettingTree";
 import APISettingParams from "../components/APISettingParams";
 import { useEnvironmentStore } from "../stores/environment";
 import { useAPISettingStore } from "../stores/api_setting";
-import {
-  abortRequestID,
-  doHTTPRequest,
-  HTTPResponse,
-} from "../commands/http_request";
+import { abortRequestID, doHTTPRequest } from "../commands/http_request";
+import { HTTPResponse } from "../commands/http_response";
 import APIResponse from "../components/APIResponse";
 import { usePinRequestStore } from "../stores/pin_request";
 
