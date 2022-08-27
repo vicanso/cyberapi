@@ -43,7 +43,8 @@ enum TabItem {
 }
 
 const tabClass = css`
-  overflow: hidden;
+  position: relative;
+  height: 100vh;
   .n-tabs-tab__label {
     .n-icon {
       margin-left: 5px;
@@ -79,7 +80,7 @@ const tabClass = css`
   }
   .content {
     position: absolute;
-    top: 92px;
+    top: 40px;
     left: 0;
     right: 0;
     bottom: 0;
