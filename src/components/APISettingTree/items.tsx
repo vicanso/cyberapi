@@ -95,6 +95,21 @@ const itemsWrapperClass = css`
       float: right;
       display: none;
     }
+    .folder {
+      display: block;
+      float: left;
+      width: 30px;
+      height: 100%;
+      background-size: 18px;
+      background-repeat: no-repeat;
+      background-position: center;
+      &.close {
+        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAABmJLR0QA/wD/AP+gvaeTAAABf0lEQVRoge2ZPUvDUBSG39h84CyU1ioOMXToILWCf8Ctf8DBTfE3OBoUwUHEwUEHQcRf4u7iIogIOtihflBQ8tHkOhVyAzVgTtMmngcynCS89z73ngRCAIZhGCYFSrR4vUJbAc4EUPtjngDwAAUH1Q1cpp9eMpLA8wVeAMxRBAsBe2ETuxRZvyEJPJ5DEOcfmtvYIc6UkATuT8kFIIDj0MB+Ywvv1NlATODuhF6gbLZQNlcARUm+OYG+8x30uk/2zNrN3uCclHp7RCtQtVqoWC3KSPjOV6A3r9VBrUoXfbqBavVlVBabgAjpQgFoxnQpWssC/fQDqLqB+foSZq0GgCB9YNJ40WK1vQ5VN2iSiVd+GJKAqmmZDUyFKpf5mjwQF8jZ6gO8A+OnYALcQtlTMIG8t5DgHciegj0DuRfgFsqemMDov6Co4RYaNwUT4BbKnmLtgOe4gW5opWE3TwKe40vv+qlo8dHp2Z7jBhAhJvHwHDfovn2O/J8DwzDMP+IHy6i/03h8hHEAAAAASUVORK5CYII=);
+      }
+      &.open {
+        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAABmJLR0QA/wD/AP+gvaeTAAADrklEQVRoge2Xy2oUQRSG/+rbXDLTE0zIQmKiYFCUKIKIoEvFVdz5ACLoQ4jg1qUuFXyB4MaVm+DGlcSFlyCCcZGFEMGowUSc7q7jontS1d2nuntiJgj2gWGGmqm/vr/qnNM1QB111FFHHf9zCNMXm8vXLlqQjwHMlQh8jGBd988uvthzugrBGthcXphEIFYATFXU+WoJnOycf7q+d2jVwuIG5Za8J4NwSgYhKr4mgn745MfzK0f32wB7AhtLl78D6O0zCxdrRPLWxKWlZ6YfONyg7If/AjwAzAB4mLyzwRsIglEB7SYOFX1pMBD+9ap2sw1/bh6u30OcqRS/iAAARJQbA0iNE3a+D9fOEcVjPwnytjd7/8FIDVieh/ETZ2A3WyCKEsA0FAeKGFMzpRmOP3cg6A6AMgO7TCEBeP44/GOnYHkuSAYJaB4qDzrA1MaAnc+azoa+ZPkJCIHe8XmMTc/Ccpy0WCYNdCiSAQ+VO4W0EdYwtJQjelvBgDqBsZkj6MweTkFRKne53asAxekkm1KoQ3hXwYA6gebkJCgaGKKSBdTuGnavmk5ihNeRr0sNUBipH7TbIBmWLAC1QyZQBqpUR0+5RMcWqJBCYXwCwrFht7wkdbgF0gA86E4HyUFV1lEpt92YP/0JWCwzEJ9Aw/dBFCYaRR2EA1VzWFA95fKgrI4ErQhxV5aeACUn4HSS9DEWGQeah8qDluhkUkerq1T6GA0MTsDptnMFbF4gW6wZUGZOqY5eG0QgyKoG4hPwOq1cARdBmUEBMFBFxZoaU+NvKhkYdCG3244LeERQhQ9ERseWlHoGmA1EEeymB8sTmRpQYizoLqBKn9Jqznr3wssvFQ1IuH4HJMOCDsKBIlOYHOgQOpqWIOTyv9CA57eTyxhSQvwCCsAMCm3+kDqx0Vz+FxiI4PaaoCgsWSAPlQdFpgYUlGqlFXREvoUaDQCAO96MT4BdAHyr02sjM8eokzqRAh0r30KNBoQQcMe8uAYKi4wDVbtrBmV04l0x6UThr/77ygacTgOwJEhGxV2FgRrm7s/qJGtlntKrBxc+b1c24PZapX9I9uXun4yRoQMVGGik+v8ooNgHovlaMqSBrpvcgTgxBbC7PyQGHT3lsp2OJNtCjQacjp26A+3lH5JSHb3wkzFpRcOdgOWQJBlYbAfR68DYQTJjesoNey0R+DB9tb86lIHf37YeuQcaNy0LohgUqZ3kQdWcIa8lkgivgOiGEINJddRRRx111JGOPxu6cCKSl0emAAAAAElFTkSuQmCC);
+      }
+    }
   }
   .n-icon {
     float: left;
@@ -580,11 +595,13 @@ export default defineComponent({
         if (level === 0) {
           topTreeItemIDList.push(item.id);
         }
-        let icon = (
-          <NIcon>
-            {item.expanded ? <FolderOpenOutline /> : <FolderOutline />}
-          </NIcon>
-        );
+        let folderClass = "folder";
+        if (item.expanded) {
+          folderClass += " open";
+        } else {
+          folderClass += " close";
+        }
+        let icon = <span class={folderClass}></span>;
         const isFolder = item.settingType === SettingType.Folder;
         if (!isFolder) {
           icon = (
