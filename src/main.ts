@@ -1,6 +1,8 @@
 import { createApp } from "vue";
 import { create } from "naive-ui";
 import { createPinia } from "pinia";
+import { message } from "@tauri-apps/api/dialog";
+
 import Debug from "debug";
 import Root from "./Root";
 import router, { goTo } from "./router";
@@ -37,7 +39,14 @@ init()
   .finally(() => {
     // TODO 全局出错处理
     app.config.errorHandler = (err, instance, info) => {
-      // handle error, e.g. report to a service
+      const name = instance?.$options.name || "unknown";
+      const msg = (err as Error).message || "unknown";
+      const content = `${name}(${msg}): ${info}`;
+      if (isWebMode()) {
+        console.error(content);
+      } else {
+        message(content);
+      }
     };
     app.use(naive).use(createPinia()).mount("#app");
   });

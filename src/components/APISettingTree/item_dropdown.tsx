@@ -2,9 +2,9 @@
 import {
   AddOutline,
   ChevronDownOutline,
-  CloudUploadOutline,
   CopyOutline,
   CreateOutline,
+  DownloadOutline,
   FolderOpenOutline,
   LinkOutline,
   LogOutOutline,
@@ -34,6 +34,7 @@ import {
 } from "../../constants/provide";
 import { usePinRequestStore } from "../../stores/pin_request";
 import { convertRequestToCURL } from "../../commands/http_request";
+import { APISetting } from "../../commands/api_setting";
 
 const dropdownClass = css`
   .n-dropdown-option {
@@ -78,6 +79,22 @@ export default defineComponent({
           folder: id,
           data,
         });
+      } catch (err) {
+        showError(message, err);
+      }
+    };
+    const handleExport = async (id: string) => {
+      try {
+        const folder = folderStore.findByID(id);
+        const apiSettings: APISetting[] = [];
+        folder.children.split(",").forEach((item) => {
+          const apiSetting = apiSettingStore.findByID(item);
+          if (apiSetting) {
+            apiSettings.push(apiSetting);
+          }
+        });
+        await writeTextToClipboard(JSON.stringify(apiSettings, null, 2));
+        message.info(i18nCollection("exportSettingsSuccess"));
       } catch (err) {
         showError(message, err);
       }
@@ -186,6 +203,11 @@ export default defineComponent({
             hanldeImport(id);
           }
           break;
+        case HandleKey.ExportSettings:
+          {
+            handleExport(id);
+          }
+          break;
         case HandleKey.Copy:
           {
             const setting = apiSettingStore.findByID(id);
@@ -240,15 +262,26 @@ export default defineComponent({
           ),
         }
       );
-      options.push({
-        label: i18nCollection("importSettings"),
-        key: HandleKey.ImportSettings,
-        icon: () => (
-          <NIcon>
-            <CloudUploadOutline />
-          </NIcon>
-        ),
-      });
+      options.push(
+        {
+          label: i18nCollection("importSettings"),
+          key: HandleKey.ImportSettings,
+          icon: () => (
+            <NIcon>
+              <DownloadOutline class="rotate270" />
+            </NIcon>
+          ),
+        },
+        {
+          label: i18nCollection("exportSettings"),
+          key: HandleKey.ExportSettings,
+          icon: () => (
+            <NIcon>
+              <DownloadOutline class="rotate90" />
+            </NIcon>
+          ),
+        }
+      );
     } else {
       options.push(
         {

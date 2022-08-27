@@ -8,4 +8,5 @@ export enum HandleKey {
   Pin = "pin",
   Divider = "divider",
   ImportSettings = "importSettings",
+  ExportSettings = "exportSettings",
 }

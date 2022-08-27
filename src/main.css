@@ -43,6 +43,16 @@ body {
 .bold {
   font-weight: 900;
 }
+.rotate90 {
+  rotate: 90deg;
+}
+.rotate180 {
+  rotate: 180deg;
+}
+.rotate270 {
+  rotate: 270deg;
+}
+
 
 /* 滚动条会一直存在，暂时先不使用 */
 /* ::-webkit-scrollbar {

@@ -24,6 +24,8 @@ export default {
     importSettings: "导入配置",
     importPostman: "导入postman配置",
     importPostmanSuccess: "已经成功导入postman配置",
+    exportSettings: "导出配置",
+    exportSettingsSuccess: "配置已成功复制至粘贴板",
     apiID: "该请求配置ID",
   },
   common: {
