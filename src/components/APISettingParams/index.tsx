@@ -13,9 +13,12 @@ import APISettingParamsReqParams from "./req_params";
 import { KVParam } from "../../commands/interface";
 
 const wrapperClass = css`
-  height: 100%;
-  position: relative;
-  margin-left: 5px;
+  position: absolute;
+  left: 5px;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
   .n-divider {
     margin: 0;
   }
