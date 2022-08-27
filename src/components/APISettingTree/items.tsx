@@ -2,9 +2,8 @@
 import { defineComponent, ref, onBeforeMount, onBeforeUnmount } from "vue";
 import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
-import { NGradientText, NIcon, NInput, useMessage } from "naive-ui";
+import { NGradientText, NInput, useMessage } from "naive-ui";
 import { sortBy, uniq } from "lodash-es";
-import { FolderOpenOutline, FolderOutline } from "@vicons/ionicons5";
 import { useRoute } from "vue-router";
 
 import { useAPIFolderStore } from "../../stores/api_folder";

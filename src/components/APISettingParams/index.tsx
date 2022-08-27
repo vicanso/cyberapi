@@ -1,4 +1,11 @@
-import { defineComponent, watch, ref, onBeforeUnmount, PropType } from "vue";
+import {
+  defineComponent,
+  watch,
+  ref,
+  onBeforeUnmount,
+  PropType,
+  VNode,
+} from "vue";
 import { css } from "@linaria/core";
 import { NDivider, useMessage } from "naive-ui";
 import { storeToRefs } from "pinia";
@@ -34,6 +41,25 @@ export default defineComponent({
     const settingStore = useAPISettingStore();
     const { selectedID } = storeToRefs(settingStore);
     const reqParams = ref({} as HTTPRequest);
+    const reqParamsStyle = ref({
+      height: "0px",
+    });
+
+    const wrapper = ref<Element>();
+    let uriNodeHeight = 0;
+    const caclWrapperHeight = () => {
+      const height = wrapper.value?.clientHeight || 0;
+      if (!height) {
+        return;
+      }
+      reqParamsStyle.value.height = `${height - uriNodeHeight}px`;
+    };
+
+    const updateURINodeHeight = (node: VNode) => {
+      uriNodeHeight = node.el?.clientHeight || 0;
+      caclWrapperHeight();
+    };
+
     const stop = watch(selectedID, (id) => {
       if (!id) {
         return;
@@ -42,8 +68,11 @@ export default defineComponent({
         reqParams.value = settingStore.getHTTPRequest(id);
       } catch (err) {
         console.error(err);
+      } finally {
+        caclWrapperHeight();
       }
     });
+
     onBeforeUnmount(stop);
     const update = async () => {
       const id = selectedID.value;
@@ -102,6 +131,9 @@ export default defineComponent({
     };
 
     return {
+      reqParamsStyle,
+      updateURINodeHeight,
+      wrapper,
       selectedID,
       reqParams,
       // 避免频繁重复触发，不能设置过长
@@ -116,8 +148,14 @@ export default defineComponent({
     const { reqParams, selectedID } = this;
 
     return (
-      <div class={wrapperClass} key={selectedID}>
+      <div class={wrapperClass} key={selectedID} ref="wrapper">
         <APISettingParamsURI
+          onVnodeMounted={(node) => {
+            this.updateURINodeHeight(node);
+          }}
+          onVnodeUpdated={(node) => {
+            this.updateURINodeHeight(node);
+          }}
           params={reqParams}
           onUpdateURI={(data) => {
             this.handleUpdateURI(data);
@@ -131,6 +169,7 @@ export default defineComponent({
         />
         <NDivider />
         <APISettingParamsReqParams
+          style={this.reqParamsStyle}
           id={selectedID}
           params={reqParams}
           onUpdateBody={(value) => {
