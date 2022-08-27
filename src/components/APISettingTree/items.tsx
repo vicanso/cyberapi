@@ -641,6 +641,14 @@ export default defineComponent({
                 this.handleClick(item);
               }
             : undefined;
+        const onDblclick = !isFolder
+          ? () => {
+              this.renameItem = {
+                id: item.id,
+                name: item.name,
+              };
+            }
+          : undefined;
         currentTreeItems.push(item);
         itemList.push(
           <li
@@ -648,12 +656,7 @@ export default defineComponent({
             data-index={treeItemIndex}
             class={cls}
             style={style}
-            onDblclick={() => {
-              this.renameItem = {
-                id: item.id,
-                name: item.name,
-              };
-            }}
+            onDblclick={onDblclick}
             onClick={onClick}
             onMousedown={this.handleMousedown}
           >
