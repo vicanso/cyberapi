@@ -226,7 +226,7 @@ function convertToTreeItems(params: {
       children.push(child);
     });
   });
-  const result = [] as TreeItem[];
+  let result = [] as TreeItem[];
   map.forEach((item, key) => {
     if (children.includes(key)) {
       return;
@@ -250,6 +250,14 @@ function convertToTreeItems(params: {
     };
     result.forEach(shouldBeHide);
   }
+  const filterVisible = (item: TreeItem) => {
+    if (item.hidden) {
+      return false;
+    }
+    item.children = item.children.filter(filterVisible);
+    return true;
+  };
+  result = result.filter(filterVisible);
   return sortBy(result, (item) => {
     return topTreeItems.indexOf(item.id);
   });
@@ -577,6 +585,7 @@ export default defineComponent({
       topTreeItems,
       keyword,
     });
+    const showAllChildren = keyword.trim().length !== 0;
     const itemList = [] as JSX.Element[];
     // 当前展示的tree item
     const currentTreeItems = [] as TreeItem[];
@@ -588,9 +597,6 @@ export default defineComponent({
         return;
       }
       items.forEach((item) => {
-        if (item.hidden) {
-          return;
-        }
         if (level === 0) {
           topTreeItemIDList.push(item.id);
         }
@@ -685,7 +691,8 @@ export default defineComponent({
         );
         treeItemIndex++;
         // 未展开的则不需要展示子元素
-        if (!item.expanded) {
+        // 而且非展示所有子元素
+        if (!item.expanded && !showAllChildren) {
           return;
         }
         appendToList(item.children, level + 1);
