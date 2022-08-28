@@ -139,8 +139,6 @@ export default defineComponent({
       }
       try {
         curl.value = await convertRequestToCURL(req);
-        await writeTextToClipboard(curl.value);
-        message.info(i18nCollection("copyAsCURLSuccess"));
       } catch (err) {
         showError(message, err);
       }
