@@ -145,10 +145,10 @@ function getMethodColorType(method: string) {
     case HTTPMethod.PATCH:
     case HTTPMethod.PUT:
     case HTTPMethod.POST:
-      return "info";
+      return "success";
       break;
     default:
-      return "warning";
+      return "info";
       break;
   }
 }

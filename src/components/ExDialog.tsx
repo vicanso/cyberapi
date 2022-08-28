@@ -32,7 +32,7 @@ interface DialogOption {
 interface ImportDialogOption {
   dialog: DialogApiInjection;
   collection: string;
-  folder: string;
+  folder?: string;
   data: string;
 }
 export default function newDialog(option: DialogOption) {
@@ -74,7 +74,7 @@ const ImportEditor = defineComponent({
     },
     folder: {
       type: String,
-      required: true,
+      default: () => "",
     },
     onConfirm: {
       type: Function as PropType<() => void>,
@@ -121,16 +121,18 @@ const ImportEditor = defineComponent({
         for (let i = 0; i < arr.length; i++) {
           const item = arr[i];
           const category = item.category as string;
-          if (category === SettingType.Folder) {
-            await apiFolderStore.add(item);
-          } else {
+          if (category === SettingType.HTTP) {
             await apiSettingStore.add(item);
+          } else {
+            await apiFolderStore.add(item);
           }
-          await apiFolderStore.addChild({
-            id: props.folder,
-            child: item.id as string,
-            index: -1,
-          });
+          if (props.folder) {
+            await apiFolderStore.addChild({
+              id: props.folder,
+              child: item.id as string,
+              index: -1,
+            });
+          }
         }
         if (props.onConfirm) {
           props.onConfirm();

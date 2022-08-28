@@ -9,6 +9,7 @@ import {
   NInput,
   NIcon,
   useMessage,
+  useDialog,
 } from "naive-ui";
 import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
 
@@ -17,6 +18,7 @@ import { SettingType, useAPISettingStore } from "../../stores/api_setting";
 import {
   AnalyticsOutline,
   CloudUploadOutline,
+  DownloadOutline,
   FolderOpenOutline,
   FolderOutline,
 } from "@vicons/ionicons5";
@@ -31,11 +33,13 @@ import {
   addHTTPSettingDefaultValue,
   addHTTPSettingKey,
 } from "../../constants/provide";
-import { showError } from "../../helpers/util";
+import { readTextFromClipboard, showError } from "../../helpers/util";
 import { useRoute } from "vue-router";
 import { useAPIFolderStore } from "../../stores/api_folder";
 import { importAPI, ImportCategory } from "../../commands/import_api";
 import { useAPICollectionStore } from "../../stores/api_collection";
+import { HandleKey } from "../../constants/handle_key";
+import { newImportDialog } from "../ExDialog";
 
 const collapseWidth = 50;
 
@@ -76,6 +80,7 @@ export default defineComponent({
   setup() {
     const route = useRoute();
     const message = useMessage();
+    const dialog = useDialog();
     const folderStore = useAPIFolderStore();
     const apiSettingStore = useAPISettingStore();
     const collectionStore = useAPICollectionStore();
@@ -122,7 +127,21 @@ export default defineComponent({
       }
     };
 
+    const hanldeImport = async () => {
+      try {
+        const data = (await readTextFromClipboard()) || "";
+        newImportDialog({
+          dialog,
+          collection,
+          data,
+        });
+      } catch (err) {
+        showError(message, err);
+      }
+    };
+
     return {
+      hanldeImport,
       addHTTPSetting,
       addFolder,
       handleImportPostman,
@@ -158,6 +177,15 @@ export default defineComponent({
       {
         type: "divider",
         key: "divider",
+      },
+      {
+        label: i18nCollection("importSettings"),
+        key: HandleKey.ImportSettings,
+        icon: () => (
+          <NIcon>
+            <DownloadOutline class="rotate270" />
+          </NIcon>
+        ),
       },
       {
         label: i18nCollection("importPostman"),
@@ -209,6 +237,9 @@ export default defineComponent({
                     break;
                   case SettingType.Folder:
                     this.addFolder("");
+                    break;
+                  case HandleKey.ImportSettings:
+                    this.hanldeImport();
                     break;
                   case importPostmanKey:
                     this.handleImportPostman();

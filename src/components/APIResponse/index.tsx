@@ -33,7 +33,7 @@ import { padding } from "../../constants/style";
 import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
 import { i18nCollection } from "../../i18n";
 import { convertRequestToCURL, HTTPRequest } from "../../commands/http_request";
-import { showError, writeTextToClipboard } from "../../helpers/util";
+import { showError } from "../../helpers/util";
 
 const responseClass = css`
   margin-left: 5px;

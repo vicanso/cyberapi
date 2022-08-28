@@ -35,6 +35,7 @@ import {
 import { usePinRequestStore } from "../../stores/pin_request";
 import { convertRequestToCURL } from "../../commands/http_request";
 import { APISetting } from "../../commands/api_setting";
+import { APIFolder } from "../../commands/api_folder";
 
 const dropdownClass = css`
   .n-dropdown-option {
@@ -85,15 +86,29 @@ export default defineComponent({
     };
     const handleExport = async (id: string) => {
       try {
-        const folder = folderStore.findByID(id);
         const apiSettings: APISetting[] = [];
-        folder.children.split(",").forEach((item) => {
-          const apiSetting = apiSettingStore.findByID(item);
-          if (apiSetting) {
-            apiSettings.push(apiSetting);
+        const folders: APIFolder[] = [];
+        const appendChildren = (folderId: string) => {
+          const folder = folderStore.findByID(folderId);
+          if (!folder) {
+            return;
           }
-        });
-        await writeTextToClipboard(JSON.stringify(apiSettings, null, 2));
+          folders.push(folder);
+          folder.children.split(",").forEach((child) => {
+            const apiSetting = apiSettingStore.findByID(child);
+            if (apiSetting) {
+              apiSettings.push(apiSetting);
+            } else {
+              // folder
+              appendChildren(child);
+            }
+          });
+        };
+        appendChildren(id);
+        const arr: unknown[] = [];
+        folders.forEach((folder) => arr.push(folder));
+        apiSettings.forEach((apiSetting) => arr.push(apiSetting));
+        await writeTextToClipboard(JSON.stringify(arr, null, 2));
         message.info(i18nCollection("exportSettingsSuccess"));
       } catch (err) {
         showError(message, err);
