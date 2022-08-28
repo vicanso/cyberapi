@@ -4,7 +4,7 @@ import { createPinia } from "pinia";
 import { message } from "@tauri-apps/api/dialog";
 
 import Debug from "debug";
-import Root from "./Root";
+import Root from "./root";
 import router, { goTo } from "./router";
 import { isWebMode } from "./helpers/util";
 import { changeI18nLocale } from "./i18n";
