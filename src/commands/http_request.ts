@@ -100,7 +100,7 @@ export async function convertRequestToCURL(req: HTTPRequest) {
   )} '${uri}'`;
 }
 
-export async function convertBody(body: string) {
+async function convertBody(body: string) {
   const handlers = parseFunctions(body);
   if (handlers.length === 0) {
     return body;
@@ -168,12 +168,14 @@ export async function doHTTPRequest(
   await convertKVParams(params.headers);
   params.body = await convertBody(params.body);
   if (isWebMode()) {
-    await delay(3000);
+    const ms = Math.random() * 2000;
+    await delay(ms);
     const headers = new Map<string, string[]>();
     headers.set("Content-Type", ["application/json"]);
     const resp = {
       api: id,
-      latency: 1860,
+      req: req,
+      latency: Math.ceil(ms),
       status: 200,
       headers,
       body: encode(JSON.stringify(params)),
@@ -200,6 +202,7 @@ export async function doHTTPRequest(
       headers.set(k, [value as string]);
     }
   });
+  resp.req = req;
   resp.headers = headers;
   addLatestResponse(resp);
   return resp;

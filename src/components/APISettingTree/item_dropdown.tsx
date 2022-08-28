@@ -7,7 +7,7 @@ import {
   DownloadOutline,
   FolderOpenOutline,
   LinkOutline,
-  LogOutOutline,
+  PinOutline,
   TrashOutline,
 } from "@vicons/ionicons5";
 import { NDropdown, NIcon, useDialog, useMessage } from "naive-ui";
@@ -289,7 +289,7 @@ export default defineComponent({
           key: HandleKey.CopyAsCURL,
           icon: () => (
             <NIcon>
-              <LogOutOutline />
+              <LinkOutline />
             </NIcon>
           ),
         },
@@ -299,7 +299,7 @@ export default defineComponent({
           key: HandleKey.Pin,
           icon: () => (
             <NIcon>
-              <LinkOutline />
+              <PinOutline />
             </NIcon>
           ),
         },

@@ -10,7 +10,7 @@ import { css } from "@linaria/core";
 import { EditorView } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import prettyBytes from "pretty-bytes";
-import { InformationCircleOutline } from "@vicons/ionicons5";
+import { InformationCircleOutline, LinkOutline } from "@vicons/ionicons5";
 
 import {
   HTTPResponse,
@@ -20,10 +20,20 @@ import {
   getResponseBody,
 } from "../../commands/http_response";
 import { useSettingStore } from "../../stores/setting";
-import { NDivider, NGradientText, NIcon, NSpace, NTooltip } from "naive-ui";
+import {
+  NDivider,
+  NGradientText,
+  NIcon,
+  NPopover,
+  NSpace,
+  NTooltip,
+  useMessage,
+} from "naive-ui";
 import { padding } from "../../constants/style";
 import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
 import { i18nCollection } from "../../i18n";
+import { convertRequestToCURL, HTTPRequest } from "../../commands/http_request";
+import { showError, writeTextToClipboard } from "../../helpers/util";
 
 const responseClass = css`
   margin-left: 5px;
@@ -83,6 +93,7 @@ export default defineComponent({
     },
   },
   setup(props) {
+    const message = useMessage();
     const settingStore = useSettingStore();
     let editor: EditorView;
     const destroy = () => {
@@ -94,6 +105,10 @@ export default defineComponent({
     const size = ref(-1);
     const latency = ref(0);
     const apiID = ref("");
+
+    let req: HTTPRequest;
+
+    const curl = ref("");
 
     const fillValues = async (resp: HTTPResponse) => {
       // 初始加载时，读取最近的响应
@@ -113,7 +128,22 @@ export default defineComponent({
       size.value = body.size;
       latency.value = resp.latency;
       apiID.value = resp.api;
+      req = resp.req;
+      curl.value = "";
       replaceContent(editor, body.data);
+    };
+
+    const handleToCURL = async () => {
+      if (!req || curl.value) {
+        return;
+      }
+      try {
+        curl.value = await convertRequestToCURL(req);
+        await writeTextToClipboard(curl.value);
+        message.info(i18nCollection("copyAsCURLSuccess"));
+      } catch (err) {
+        showError(message, err);
+      }
     };
 
     const stop = watch(
@@ -148,15 +178,17 @@ export default defineComponent({
     });
 
     return {
+      curl,
       size,
       latency,
       statusCode,
       apiID,
       codeEditor,
+      handleToCURL,
     };
   },
   render() {
-    const { statusCode, size, latency, apiID } = this;
+    const { statusCode, size, latency, apiID, curl } = this;
     let statusCodeInfo = <span></span>;
     if (statusCode === -1) {
       statusCodeInfo = <span>{i18nCollection("requesting")}</span>;
@@ -168,10 +200,18 @@ export default defineComponent({
       );
     }
 
-    const slots = {
+    const apiIDSlots = {
       trigger: () => (
         <NIcon class="info">
           <InformationCircleOutline />
+        </NIcon>
+      ),
+    };
+
+    const curlSlots = {
+      trigger: () => (
+        <NIcon class="info">
+          <LinkOutline />
         </NIcon>
       ),
     };
@@ -180,7 +220,7 @@ export default defineComponent({
       <div class={responseClass}>
         <NSpace class="infos">
           {statusCode > 0 && apiID && (
-            <NTooltip v-slots={slots}>
+            <NTooltip v-slots={apiIDSlots}>
               {i18nCollection("apiID")}: {apiID}
             </NTooltip>
           )}
@@ -189,6 +229,30 @@ export default defineComponent({
           <span> </span>
           {size >= 0 && prettyBytes(size)}
           {latency > 0 && formatLatency(latency)}
+          {/* 占位 */}
+          <span> </span>
+          {statusCode > 0 && (
+            <NPopover
+              v-slots={curlSlots}
+              trigger="click"
+              placement="bottom-end"
+              onUpdateShow={(value) => {
+                if (value) {
+                  this.handleToCURL();
+                }
+              }}
+            >
+              <div
+                style={{
+                  width: "400px",
+                  "word-break": "break-all",
+                  "word-wrap": "break-word",
+                }}
+              >
+                {curl}
+              </div>
+            </NPopover>
+          )}
         </NSpace>
         <NDivider />
         <div ref="codeEditor" class="codeEditor"></div>

@@ -2,6 +2,7 @@ import { decode } from "js-base64";
 import dayjs from "dayjs";
 import { forEach } from "lodash-es";
 import { getLatestResponseStore } from "../stores/local";
+import { HTTPRequest } from "./http_request";
 
 const applicationJSON = "application/json";
 
@@ -9,6 +10,7 @@ export interface HTTPResponse {
   [key: string]: unknown;
   // api id
   api: string;
+  req: HTTPRequest;
   // 耗时(ms)
   latency: number;
   status: number;
