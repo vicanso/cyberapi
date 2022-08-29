@@ -647,7 +647,10 @@ export default defineComponent({
               }
             : undefined;
         const onDblclick = !isFolder
-          ? () => {
+          ? (e: MouseEvent) => {
+              if (!nodeHasClass(e.target, "name")) {
+                return;
+              }
               this.renameItem = {
                 id: item.id,
                 name: item.name,
@@ -686,7 +689,7 @@ export default defineComponent({
                 }}
               />
             )}
-            {item.id !== renameItem.id && item.name}
+            {item.id !== renameItem.id && <span class="name">{item.name}</span>}
           </li>
         );
         treeItemIndex++;

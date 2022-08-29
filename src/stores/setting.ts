@@ -113,7 +113,7 @@ export const useSettingStore = defineStore("common", {
         // 设置默认值
         if (!this.collectionColumnWidths.length || sum > bodyWidth - 200) {
           // 左侧，中间，右侧自动填充
-          const first = 350;
+          const first = 300;
           this.collectionColumnWidths = [first, (bodyWidth - first) >> 1];
         }
         if (setting.size) {

@@ -200,7 +200,7 @@ export default defineComponent({
     const { text } = this;
     return (
       <div class={headerClass}>
-        <NGrid xGap={12}>
+        <NGrid xGap={8}>
           <NGi span={16}>
             <NInput
               type="text"
