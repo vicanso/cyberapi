@@ -15,7 +15,7 @@ import { useAPISettingStore } from "../../stores/api_setting";
 import { abortRequestID, HTTPRequest } from "../../commands/http_request";
 import { showError } from "../../helpers/util";
 import { i18nCollection } from "../../i18n";
-import APISettingParamsURI from "./uri";
+import APISettingParamsURI, { RequestURI } from "./uri";
 import APISettingParamsReqParams from "./req_params";
 import { KVParam } from "../../commands/interface";
 
@@ -88,7 +88,7 @@ export default defineComponent({
         showError(message, err);
       }
     };
-    const handleUpdateURI = async (data: Map<string, unknown>) => {
+    const handleUpdateURI = async (data: RequestURI) => {
       Object.assign(reqParams.value, data);
       await update();
     };

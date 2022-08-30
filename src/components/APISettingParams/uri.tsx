@@ -75,6 +75,11 @@ function cuttingURI(uri: string): CuttingURIResult {
   return result;
 }
 
+export interface RequestURI {
+  method: string;
+  uri: string;
+}
+
 const addNewENVKey = ulid();
 const clearENVKey = ulid();
 
@@ -86,7 +91,7 @@ export default defineComponent({
       required: true,
     },
     onUpdateURI: {
-      type: Function as PropType<(value: Map<string, unknown>) => void>,
+      type: Function as PropType<(value: RequestURI) => void>,
       required: true,
     },
     onSubmit: {
