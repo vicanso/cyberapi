@@ -4,6 +4,7 @@ import {
   onMounted,
   PropType,
   ref,
+  StyleValue,
   watch,
 } from "vue";
 import { css } from "@linaria/core";
@@ -33,7 +34,7 @@ import { padding } from "../../constants/style";
 import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
 import { i18nCollection } from "../../i18n";
 import { convertRequestToCURL, HTTPRequest } from "../../commands/http_request";
-import { showError } from "../../helpers/util";
+import { showError, writeTextToClipboard } from "../../helpers/util";
 
 const responseClass = css`
   margin-left: 5px;
@@ -55,6 +56,7 @@ const responseClass = css`
     margin: 0;
   }
   .info {
+    cursor: pointer;
     float: left;
     margin-top: 15px;
     font-size: 16px;
@@ -78,6 +80,7 @@ function formatLatency(ms: number) {
   return `${(ms / 1000).toFixed(2)} s`;
 }
 
+const showCurlLimitSize = 2 * 1024;
 export default defineComponent({
   name: "APIResponse",
   props: {
@@ -138,7 +141,11 @@ export default defineComponent({
         return;
       }
       try {
-        curl.value = await convertRequestToCURL(req);
+        const value = await convertRequestToCURL(req);
+        if (value.length > showCurlLimitSize) {
+          await writeTextToClipboard(value);
+        }
+        curl.value = value;
       } catch (err) {
         showError(message, err);
       }
@@ -213,44 +220,46 @@ export default defineComponent({
         </NIcon>
       ),
     };
+    const isTooLarge = curl.length > showCurlLimitSize;
+    let curlText = i18nCollection("curlTooLargeTips");
+    if (!isTooLarge) {
+      curlText = curl;
+    }
+    const curlStyle: StyleValue = isTooLarge
+      ? {}
+      : {
+          width: "400px",
+          "word-break": "break-all",
+          "word-wrap": "break-word",
+        };
 
     return (
       <div class={responseClass}>
         <NSpace class="infos">
           {statusCode > 0 && apiID && (
-            <NTooltip v-slots={apiIDSlots}>
+            <NTooltip v-slots={apiIDSlots} trigger="click" placement="bottom">
               {i18nCollection("apiID")}: {apiID}
             </NTooltip>
           )}
-          {statusCodeInfo}
-          {/* 占位 */}
-          <span> </span>
-          {size >= 0 && prettyBytes(size)}
-          {latency > 0 && formatLatency(latency)}
-          {/* 占位 */}
-          <span> </span>
           {statusCode > 0 && (
             <NPopover
               v-slots={curlSlots}
               trigger="click"
-              placement="bottom-end"
+              placement="bottom"
               onUpdateShow={(value) => {
                 if (value) {
                   this.handleToCURL();
                 }
               }}
             >
-              <div
-                style={{
-                  width: "400px",
-                  "word-break": "break-all",
-                  "word-wrap": "break-word",
-                }}
-              >
-                {curl}
-              </div>
+              <div style={curlStyle}>{curlText}</div>
             </NPopover>
           )}
+          {statusCodeInfo}
+          {/* 占位 */}
+          <span> </span>
+          {size >= 0 && prettyBytes(size)}
+          {latency > 0 && formatLatency(latency)}
         </NSpace>
         <NDivider />
         <div ref="codeEditor" class="codeEditor"></div>

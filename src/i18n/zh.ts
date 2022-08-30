@@ -26,6 +26,7 @@ export default {
     importPostmanSuccess: "已经成功导入postman配置",
     exportSettings: "导出配置",
     exportSettingsSuccess: "配置已成功复制至粘贴板",
+    curlTooLargeTips: "curl数据太大，内容已复制至粘贴板",
     apiID: "该请求配置ID",
   },
   common: {

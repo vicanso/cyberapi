@@ -212,10 +212,9 @@ function convertToTreeItems(params: {
       return;
     }
     item.children.split(",").forEach((child) => {
-      if (child === treeItem.id) {
+      if (!child || child === treeItem.id) {
         return;
       }
-
       const subItem = map.get(child);
       if (!subItem) {
         return;
