@@ -64,9 +64,14 @@ const itemsWrapperClass = css`
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+
     .method {
       margin: 0 8px 0 5px;
       font-size: 12px;
+    }
+    &.renameItem {
+      // 避免出现...
+      text-overflow: initial;
     }
     &.insertBefore {
       padding-top: 2px;
@@ -624,6 +629,9 @@ export default defineComponent({
         let cls = isDark ? "" : "light";
         if (item.id === selectedID) {
           cls += " selected";
+        }
+        if (item.id === renameItem.id) {
+          cls += " renameItem";
         }
         const onClick =
           item.id !== selectedID

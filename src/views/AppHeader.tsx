@@ -13,6 +13,7 @@ import { storeToRefs } from "pinia";
 import {
   BowlingBallOutline,
   CodeSlashOutline,
+  ServerOutline,
   SettingsOutline,
 } from "@vicons/ionicons5";
 import { useRoute } from "vue-router";
@@ -51,7 +52,7 @@ const headerClass = css`
   .pinApis {
     left: ${logoWidth}px;
     position: absolute;
-    right: 180px;
+    right: 230px;
     padding-top: 12px;
     .n-tabs-pad {
       border-bottom: none !important;
@@ -108,6 +109,9 @@ export default defineComponent({
     const showEnvironmentDialog = () => {
       dialogStore.toggleEnvironmentDialog(true);
     };
+    const showStoreDialog = () => {
+      dialogStore.toggleStoreDialog(true);
+    };
 
     const stop = watch(
       () => apiSettingStore.selectedID,
@@ -118,6 +122,9 @@ export default defineComponent({
           pinRequestStore.requests.forEach((item, index) => {
             if (item.id === id) {
               const result = apiSettingStore.findByID(id);
+              if (!result) {
+                return;
+              }
               activePinRequest.value = `${index + 1}: ${result.name}`;
             }
           });
@@ -159,6 +166,7 @@ export default defineComponent({
       showCookieDialog,
       showSettingDialog,
       showEnvironmentDialog,
+      showStoreDialog,
       handleSelectePinRequest,
       handleRemovePinRequest,
       findByID: apiSettingStore.findByID,
@@ -173,6 +181,7 @@ export default defineComponent({
       showSettingDialog,
       showCookieDialog,
       showEnvironmentDialog,
+      showStoreDialog,
       findByID,
       currentRoute,
       activePinRequest,
@@ -272,6 +281,16 @@ export default defineComponent({
             >
               <NIcon>
                 <BowlingBallOutline />
+              </NIcon>
+            </NButton>
+            <NButton
+              quaternary
+              onClick={() => {
+                showStoreDialog();
+              }}
+            >
+              <NIcon>
+                <ServerOutline />
               </NIcon>
             </NButton>
             <NButton

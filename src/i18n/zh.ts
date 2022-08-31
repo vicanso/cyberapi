@@ -109,4 +109,14 @@ export default {
     addNew: "添加环境变量",
     clearCurrent: "清除当前值",
   },
+  store: {
+    title: "应用相关存储",
+    name: "存储",
+    op: "操作",
+    settingStore: "应用配置",
+    pinRequestsStore: "置顶配置",
+    latestResponseStore: "最新响应",
+    clearTips: "确认清除(%s)的所有数据吗？清除后无法恢复！",
+    clearSuccess: "存储数据已清除，请重启应用",
+  },
 };

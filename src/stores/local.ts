@@ -1,5 +1,7 @@
 import localforage from "localforage";
 
+const stores: Map<string, LocalForage> = new Map();
+
 function createNewStore(name: string) {
   let store: LocalForage;
   return function () {
@@ -8,11 +10,12 @@ function createNewStore(name: string) {
         name,
       });
     }
+    stores.set(name, store);
     return store;
   };
 }
 
-enum StoreKey {
+export enum StoreKey {
   expandedSetting = "expandedSetting",
   topTreeItem = "topTreeItem",
   tabActive = "tabActive",
@@ -42,3 +45,11 @@ export const getPinRequestStore = createNewStore(StoreKey.pinRequests);
 
 // 最新请求响应
 export const getLatestResponseStore = createNewStore(StoreKey.latestResponse);
+
+export async function clearStore(name: StoreKey) {
+  const s = stores.get(name);
+  if (!s) {
+    return;
+  }
+  await s.clear();
+}

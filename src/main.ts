@@ -33,17 +33,19 @@ async function init() {
 
 const naive = create();
 init()
-  // TODO
   // 初始化失败是否弹窗
   .catch(console.error)
   .finally(() => {
-    // TODO 全局出错处理
+    // TODO 确认客户是否允许提交此类出错信息至服务
+    // 便于后续优化
+    const unknown = "unknown";
     app.config.errorHandler = (err, instance, info) => {
-      const name = instance?.$options.name || "unknown";
-      const msg = (err as Error).message || "unknown";
+      const name = instance?.$options.name || unknown;
+      const msg = (err as Error).message || unknown;
       const content = `${name}(${msg}): ${info}`;
       if (isWebMode()) {
         console.error(content);
+        throw err;
       } else {
         message(content);
       }

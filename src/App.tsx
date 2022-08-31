@@ -15,18 +15,20 @@ import { useDialogStore } from "./stores/dialog";
 import AppSetting from "./views/AppSetting";
 import CookieSetting from "./views/CookieSetting";
 import EnvironmentSetting from "./views/EnvironmentSetting";
+import StoreSetting from "./views/StoreSetting";
 
 export default defineComponent({
   name: "App",
   setup() {
     const loadingBar = useLoadingBar();
     const dialogStore = useDialogStore();
-    const { showSetting, showCookie, showEnvironment } =
+    const { showSetting, showCookie, showEnvironment, showStore } =
       storeToRefs(dialogStore);
     const closeDialog = () => {
       dialogStore.toggleSettingDialog(false);
       dialogStore.toggleCookieDialog(false);
       dialogStore.toggleEnvironmentDialog(false);
+      dialogStore.toggleStoreDialog(false);
     };
     setLoadingEvent(loadingBar.start, loadingBar.finish);
     onMounted(() => {
@@ -37,10 +39,12 @@ export default defineComponent({
       showSetting,
       showCookie,
       showEnvironment,
+      showStore,
     };
   },
   render() {
-    const { showSetting, showCookie, showEnvironment, closeDialog } = this;
+    const { showSetting, showCookie, showEnvironment, showStore, closeDialog } =
+      this;
     const settingModal = (
       <NModal
         autoFocus={false}
@@ -86,11 +90,26 @@ export default defineComponent({
         <EnvironmentSetting />
       </NModal>
     );
+    const storeModal = (
+      <NModal
+        autoFocus={false}
+        show={showStore}
+        onEsc={() => {
+          closeDialog();
+        }}
+        onMaskClick={() => {
+          closeDialog();
+        }}
+      >
+        <StoreSetting />
+      </NModal>
+    );
     return (
       <NLayout>
         {settingModal}
         {cookieModal}
         {environmentModal}
+        {storeModal}
         <NLayoutHeader bordered>
           <AppHeader />
         </NLayoutHeader>

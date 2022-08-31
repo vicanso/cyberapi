@@ -6,6 +6,7 @@ export const useDialogStore = defineStore("dialogs", {
       showSetting: false,
       showCookie: false,
       showEnvironment: false,
+      showStore: false,
     };
   },
   actions: {
@@ -17,6 +18,9 @@ export const useDialogStore = defineStore("dialogs", {
     },
     toggleEnvironmentDialog(shown: boolean) {
       this.showEnvironment = shown;
+    },
+    toggleStoreDialog(shown: boolean) {
+      this.showStore = shown;
     },
   },
 });
