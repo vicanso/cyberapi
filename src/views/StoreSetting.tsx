@@ -31,14 +31,17 @@ export default defineComponent({
     const stores = [
       {
         name: i18nStore("settingStore"),
+        desc: i18nStore("settingStoreDesc"),
         id: StoreKey.setting,
       },
       {
         name: i18nStore("pinRequestsStore"),
+        desc: i18nStore("pinRequestsStoreDesc"),
         id: StoreKey.pinRequests,
       },
       {
         name: i18nStore("latestResponseStore"),
+        desc: i18nStore("latestResponseStoreDesc"),
         id: StoreKey.latestResponse,
       },
     ];
@@ -62,6 +65,10 @@ export default defineComponent({
       {
         title: i18nStore("name"),
         key: "name",
+      },
+      {
+        title: i18nStore("desc"),
+        key: "desc",
       },
       {
         title: i18nStore("op"),

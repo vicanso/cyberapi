@@ -15,6 +15,7 @@ import { useSettingStore } from "./stores/setting";
 import App from "./App";
 import ExLoading from "./components/ExLoading";
 import { useAppStore } from "./stores/app";
+import { getLocale } from "./i18n";
 
 export default defineComponent({
   name: "RootView",
@@ -56,7 +57,7 @@ export default defineComponent({
       return <ExLoading />;
     }
     return (
-      <NConfigProvider theme={isDark ? darkTheme : null}>
+      <NConfigProvider theme={isDark ? darkTheme : null} locale={getLocale()}>
         <NGlobalStyle />
         <NLoadingBarProvider>
           <NMessageProvider>

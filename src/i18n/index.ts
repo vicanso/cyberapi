@@ -1,6 +1,13 @@
 import { createI18n } from "vue-i18n";
+import { enUS, zhCN } from "naive-ui";
+
 import en from "./en";
 import zh from "./zh";
+
+export enum LANG {
+  en = "en",
+  zh = "zh",
+}
 
 const i18n = createI18n({
   locale: "en",
@@ -12,8 +19,17 @@ const i18n = createI18n({
 });
 export default i18n;
 
-export function changeI18nLocale(locale: "zh" | "en") {
-  i18n.global.locale = locale;
+export function getLocale() {
+  if (i18n.global.locale === LANG.zh) {
+    return zhCN;
+  }
+  return enUS;
+}
+
+export function changeI18nLocale(locale: string) {
+  if (locale === LANG.zh || locale === LANG.en) {
+    i18n.global.locale = locale;
+  }
 }
 
 export function i18nGet(

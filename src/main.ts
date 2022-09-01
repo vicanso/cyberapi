@@ -7,8 +7,9 @@ import Debug from "debug";
 import Root from "./root";
 import router, { goTo } from "./router";
 import { isWebMode } from "./helpers/util";
-import { changeI18nLocale } from "./i18n";
+import { changeI18nLocale, LANG } from "./i18n";
 import { getAppLatestRoute } from "./stores/setting";
+import { getLang } from "./stores/local";
 
 // web mode enable debug:*
 if (isWebMode()) {
@@ -18,7 +19,8 @@ if (isWebMode()) {
 const app = createApp(Root);
 
 async function init() {
-  changeI18nLocale("zh");
+  const lang = (await getLang()) || LANG.zh;
+  changeI18nLocale(lang);
   app.use(router);
   // 非浏览器模式打开上次打开的页面
   if (!isWebMode()) {

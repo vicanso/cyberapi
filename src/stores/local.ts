@@ -23,6 +23,7 @@ export enum StoreKey {
   setting = "setting",
   pinRequests = "pinRequests",
   latestResponse = "latestResponse",
+  lang = "lang",
 }
 
 // 记录展开配置项
@@ -45,6 +46,17 @@ export const getPinRequestStore = createNewStore(StoreKey.pinRequests);
 
 // 最新请求响应
 export const getLatestResponseStore = createNewStore(StoreKey.latestResponse);
+
+const getLangStore = createNewStore(StoreKey.lang);
+// 语言配置
+export async function getLang() {
+  const lang = await getLangStore().getItem("lang");
+  return lang as string;
+}
+
+export async function setLang(lang: string) {
+  await getLangStore().setItem("lang", lang);
+}
 
 export async function clearStore(name: StoreKey) {
   const s = stores.get(name);

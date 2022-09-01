@@ -119,7 +119,7 @@ export const useSettingStore = defineStore("common", {
         if (setting.size) {
           this.size = setting.size;
         }
-        this.resizeType = setting.resizeType || ResizeType.Custom;
+        this.resizeType = setting.resizeType || ResizeType.Max;
       } catch (err) {
         // 获取失败则忽略
       } finally {
