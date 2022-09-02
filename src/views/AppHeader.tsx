@@ -23,7 +23,7 @@ import {
 import { useRoute } from "vue-router";
 
 import { mainHeaderHeight } from "../constants/style";
-import { i18nCommon, i18nSetting, LANG } from "../i18n";
+import { getCurrentLang, i18nCommon, i18nSetting, LANG } from "../i18n";
 import { names } from "../router/routes";
 import { goTo } from "../router";
 import { useHeaderStore } from "../stores/header";
@@ -176,9 +176,13 @@ export default defineComponent({
     };
 
     const handleChangeLang = async (lang: string) => {
+      if (lang === getCurrentLang()) {
+        return;
+      }
       try {
         await setLang(lang);
         message.info(i18nSetting("langChangeSuccess"));
+        setTimeout(() => window.location.reload(), 3000);
       } catch (err) {
         showError(message, err);
       }

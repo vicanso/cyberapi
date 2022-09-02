@@ -11,7 +11,7 @@ import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
 import { ulid } from "ulid";
 
-import { showError } from "../helpers/util";
+import { getBodyWidth, showError } from "../helpers/util";
 import { useAPICollectionStore } from "../stores/api_collection";
 import ExLoading from "../components/ExLoading";
 import { useHeaderStore } from "../stores/header";
@@ -87,14 +87,22 @@ export default defineComponent({
       }
     });
 
-    const updateCollectionColumnWidths = async (
-      value: number,
-      index: number
-    ) => {
+    const updateCollectionColumnWidths = async (params: {
+      restWidth: number;
+      value: number;
+      index: number;
+    }) => {
+      const { index, value, restWidth } = params;
+      if (index < 1 || index > 2) {
+        return;
+      }
       const widths = settingStore.collectionColumnWidths.slice(0);
-      widths[index - 1] += value;
-      if (widths.length > index) {
-        widths[index] -= value;
+
+      // 第一行绝对值，其它记录百分比
+      if (index === 1) {
+        widths[index - 1] += value;
+      } else {
+        widths[index - 1] += value / restWidth;
       }
       try {
         await settingStore.updateCollectionColumnWidths(widths);
@@ -170,7 +178,18 @@ export default defineComponent({
     if (widths.length) {
       widths.push(0);
     }
+    let restWidth = getBodyWidth();
+    widths.forEach((width) => {
+      // 绝对值
+      if (width > 1) {
+        restWidth = restWidth - width;
+      }
+    });
+
     const columns = widths.map((width, index) => {
+      if (width < 1) {
+        width = Math.floor(restWidth * width);
+      }
       let element = <div />;
       if (index === 0) {
         element = <APISettingTree />;
@@ -192,7 +211,11 @@ export default defineComponent({
           showDivider={index !== 0}
           onResize={(value) => {
             // TODO 是否设置为百分比更合理
-            updateCollectionColumnWidths(value, index);
+            updateCollectionColumnWidths({
+              restWidth,
+              value,
+              index,
+            });
           }}
         >
           {element}

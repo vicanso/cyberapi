@@ -54,8 +54,8 @@ export default defineComponent({
   name: "APISettingTree",
   setup() {
     const keyword = ref("");
-    const settingStore = useAPISettingStore();
-    const folderStore = useAPIFolderStore();
+    const apiSettingStore = useAPISettingStore();
+    const apiFolderStore = useAPIFolderStore();
     const dialog = useDialog();
     const route = useRoute();
     const message = useMessage();
@@ -72,15 +72,14 @@ export default defineComponent({
           setting.collection = collection;
           setting.name = data.name as string;
           try {
-            await settingStore.add(setting);
+            await apiSettingStore.add(setting);
             if (folder) {
-              await folderStore.addChild({
+              await apiFolderStore.addChild({
                 id: folder,
-                child: setting.id,
-                index: -1,
+                children: [setting.id],
               });
             }
-            settingStore.select(setting.id);
+            apiSettingStore.select(setting.id);
           } catch (err) {
             showError(message, err);
           }
@@ -97,12 +96,11 @@ export default defineComponent({
           folder.collection = collection;
           folder.name = data.name as string;
           try {
-            await folderStore.add(folder);
+            await apiFolderStore.add(folder);
             if (folder) {
-              await folderStore.addChild({
+              await apiFolderStore.addChild({
                 id: parentFolder,
-                child: folder.id,
-                index: -1,
+                children: [folder.id],
               });
             }
           } catch (err) {

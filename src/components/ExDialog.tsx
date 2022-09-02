@@ -129,8 +129,7 @@ const ImportEditor = defineComponent({
           if (props.folder) {
             await apiFolderStore.addChild({
               id: props.folder,
-              child: item.id as string,
-              index: -1,
+              children: [item.id as string],
             });
           }
         }

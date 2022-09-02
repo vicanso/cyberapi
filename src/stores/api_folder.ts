@@ -1,6 +1,6 @@
 import dayjs from "dayjs";
 import { defineStore } from "pinia";
-import { uniq } from "lodash-es";
+import { compact, uniq } from "lodash-es";
 import {
   createAPIFolder,
   deleteAPIFolder,
@@ -62,67 +62,66 @@ export const useAPIFolderStore = defineStore("apiFolders", {
     async addChild(params: {
       // folder的id(为空则表示添加至顶层)
       id: string;
-      // TODO child调整为可支持数组
       // 要添加的元素
-      child: string;
-      // 要添加的位置
-      index: number;
-    }): Promise<void> {
+      children: string[];
+      // 添加在哪个元素之前
+      before?: string;
+    }) {
       if (this.updating) {
         return;
       }
-
-      // 同目录拖动顺序
-      // 不同目录拖动
-      // 将一个目录拖至另外一个目录
-
-      const { id, child } = params;
-      // 如果同元素，则忽略
-      if (id === child) {
-        return;
-      }
-      let prevParentIndex = -1;
-      let currentParentIndex = -1;
-      const arr = this.apiFolders;
-      // 查找以前及现在的folder
-      arr.forEach((item, index) => {
-        if (item.children?.includes(child)) {
-          prevParentIndex = index;
-        }
-        if (item.id === id) {
-          currentParentIndex = index;
-        }
-      });
-
       this.updating = true;
-      try {
-        const currentParent = arr[currentParentIndex];
-        const children = currentParent?.children?.split(",");
-        // 同一目录，只调整顺序
-        if (currentParent && prevParentIndex === currentParentIndex) {
-          const currentIndex = children.indexOf(child);
-          children.splice(currentIndex, 1);
-        } else if (prevParentIndex !== -1) {
-          const prevParent = arr[prevParentIndex];
-          const children = prevParent.children
-            .split(",")
-            .filter((item) => item !== child);
-          prevParent.children = uniq(children).join(",");
-          // 先清除原有记录
-          await updateAPIFolder(prevParent);
-        }
+      const { id, children } = params;
+      const { apiFolders } = this;
+      // 如果folder不存在
+      const currentFolder = apiFolders.find((item) => item.id === id);
+      const omitChild = (children: string, child: string) => {
+        const arr = children.split(",").filter((item) => item !== child);
 
-        // 如果无匹配的folder，则表示添加至collection最顶层
-        // 无需更新current parent
-        if (currentParentIndex !== -1) {
-          // 添加至新的folder
-          if (params.index === -1) {
-            children.push(child);
-          } else {
-            children.splice(params.index, 0, child);
+        return uniq(compact(arr)).join(",");
+      };
+      const addChild = (
+        children: string,
+        child: string,
+        beforeItem: string
+      ) => {
+        const arr = compact(children.split(","));
+        const index = arr.indexOf(beforeItem);
+        if (index === -1) {
+          arr.push(child);
+        } else {
+          arr.splice(index, 0, child);
+        }
+        return uniq(compact(arr)).join(",");
+      };
+
+      const updateData: Map<string, APIFolder> = new Map();
+
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        // 查找此child是否有已有对应folder
+        apiFolders.forEach((folder) => {
+          if (folder.children?.includes(child)) {
+            folder.children = omitChild(folder.children, child);
+            updateData.set(folder.id, folder);
           }
-          currentParent.children = uniq(children).join(",");
-          await updateAPIFolder(currentParent);
+        });
+        if (currentFolder) {
+          currentFolder.children = addChild(
+            currentFolder.children,
+            child,
+            params.before || ""
+          );
+          updateData.set(currentFolder.id, currentFolder);
+        }
+      }
+      const list: APIFolder[] = [];
+      updateData.forEach((value) => {
+        list.push(value);
+      });
+      try {
+        for (let i = 0; i < list.length; i++) {
+          await updateAPIFolder(list[i]);
         }
       } finally {
         this.updating = false;

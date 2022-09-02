@@ -4,6 +4,8 @@ import { get, has } from "lodash-es";
 import { appWindow } from "@tauri-apps/api/window";
 import { readText, writeText } from "@tauri-apps/api/clipboard";
 
+import { appName } from "../constants/common";
+
 export function isWebMode() {
   return !window.__TAURI_IPC__;
 }
@@ -11,6 +13,9 @@ export function isWebMode() {
 export async function setAppTitle(title: string) {
   if (isWebMode()) {
     return;
+  }
+  if (title !== appName) {
+    title = `${appName} - ${title}`;
   }
   await appWindow.setTitle(title);
 }

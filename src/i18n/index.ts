@@ -26,6 +26,10 @@ export function getLocale() {
   return enUS;
 }
 
+export function getCurrentLang() {
+  return i18n.global.locale;
+}
+
 export function changeI18nLocale(locale: string) {
   if (locale === LANG.zh || locale === LANG.en) {
     i18n.global.locale = locale;

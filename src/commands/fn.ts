@@ -1,5 +1,6 @@
 import {
   BaseDirectory,
+  FsOptions,
   readBinaryFile,
   readTextFile,
 } from "@tauri-apps/api/fs";
@@ -71,6 +72,42 @@ export function parseFunctions(value: string): FnHandler[] {
   return handlers;
 }
 
+interface FsParams {
+  file: string;
+  option: FsOptions;
+}
+
+function getDir(dir: string): BaseDirectory {
+  switch (dir.toLowerCase()) {
+    case "document":
+      return BaseDirectory.Document;
+      break;
+    case "desktop":
+      return BaseDirectory.Desktop;
+      break;
+    default:
+      return BaseDirectory.Download;
+      break;
+  }
+}
+
+function convertToFsParams(p: unknown): FsParams {
+  const option = {
+    dir: BaseDirectory.Download,
+  };
+  let file = toString(p);
+  if (Array.isArray(p)) {
+    file = toString(p[0]);
+    if (p[1]) {
+      option.dir = getDir(p[1]);
+    }
+  }
+  return {
+    file,
+    option,
+  };
+}
+
 export async function doFnHandler(handler: FnHandler): Promise<string> {
   const { param, fnList } = handler;
   let p: unknown = param;
@@ -82,17 +119,15 @@ export async function doFnHandler(handler: FnHandler): Promise<string> {
       case Fn.readTextFile:
       case Fn.rtf:
         {
-          p = await readTextFile(toString(p), {
-            dir: BaseDirectory.Download,
-          });
+          const params = convertToFsParams(p);
+          p = await readTextFile(params.file, params.option);
         }
         break;
       case Fn.readFile:
       case Fn.rf:
         {
-          p = await readBinaryFile(toString(p), {
-            dir: BaseDirectory.Download,
-          });
+          const params = convertToFsParams(p);
+          p = await readBinaryFile(params.file, params.option);
         }
         break;
       case Fn.base64:

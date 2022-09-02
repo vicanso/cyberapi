@@ -89,7 +89,7 @@ export default {
     storeSetting: "存储设置",
     appSetting: "应用设置",
     envSetting: "环境变量设置",
-    langChangeSuccess: "修改语言配置需重启应用后生效，请重启应用",
+    langChangeSuccess: "修改语言配置成功，应用将在3秒后刷新",
   },
   cookie: {
     title: "Cookie设置",

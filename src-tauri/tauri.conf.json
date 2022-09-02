@@ -15,7 +15,7 @@
       "all": true,
       "fs": {
         "all": true,
-        "scope": ["$APP/*", "$DOWNLOAD/*"]
+        "scope": ["$APP/*", "$DOWNLOAD/*", "$DESKTOP/*", "$DOCUMENT/*"]
       }
     },
     "bundle": {

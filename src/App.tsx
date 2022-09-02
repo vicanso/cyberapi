@@ -1,7 +1,6 @@
 import { defineComponent, onMounted } from "vue";
 import {
   NLayout,
-  NLayoutContent,
   NLayoutHeader,
   useLoadingBar,
   NModal,
@@ -113,9 +112,9 @@ export default defineComponent({
         <NLayoutHeader bordered>
           <AppHeader />
         </NLayoutHeader>
-        <NLayoutContent>
+        <div>
           <router-view />
-        </NLayoutContent>
+        </div>
       </NLayout>
     );
   },

@@ -3,7 +3,7 @@ import { appWindow } from "@tauri-apps/api/window";
 
 import { setWindowSize } from "../commands/window";
 
-import { isWebMode, getBodyWidth } from "../helpers/util";
+import { isWebMode } from "../helpers/util";
 import { LocationQuery, RouteParams } from "vue-router";
 import { getSettingStore } from "./local";
 
@@ -103,18 +103,12 @@ export const useSettingStore = defineStore("common", {
         this.isDark = isDarkTheme(currentTheme);
         this.collectionSortType = setting.collectionSortType;
 
-        let sum = 0;
-        this.collectionColumnWidths.forEach((item) => {
-          sum += item;
-        });
-        const bodyWidth = getBodyWidth();
-
-        // 如果为空或者最后侧宽度太少
+        // 如果为空
         // 设置默认值
-        if (!this.collectionColumnWidths.length || sum > bodyWidth - 200) {
+        if (!this.collectionColumnWidths.length) {
           // 左侧，中间，右侧自动填充
           const first = 300;
-          this.collectionColumnWidths = [first, (bodyWidth - first) >> 1];
+          this.collectionColumnWidths = [first, 0.5];
         }
         if (setting.size) {
           this.size = setting.size;

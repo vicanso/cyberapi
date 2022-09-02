@@ -283,9 +283,9 @@ export default defineComponent({
     const collection = route.query.id as string;
 
     const collectionStore = useAPICollectionStore();
-    const folderStore = useAPIFolderStore();
+    const apiFolderStore = useAPIFolderStore();
     const apiSettingStore = useAPISettingStore();
-    const { apiFolders } = storeToRefs(folderStore);
+    const { apiFolders } = storeToRefs(apiFolderStore);
     const { expandedFolders, topTreeItems } = storeToRefs(collectionStore);
     const { isDark } = storeToRefs(useSettingStore());
     const { apiSettings, selectedID } = storeToRefs(apiSettingStore);
@@ -338,41 +338,42 @@ export default defineComponent({
         return;
       }
       let parentID = targetItem.parent;
-      let childIndex = targetItem.childIndex;
-      // 如果target是目录，而且是over
-      // 则表示拖至此目录
-      if (
-        targetItem.settingType === SettingType.Folder &&
-        overType === OverType.Over
-      ) {
-        parentID = targetItem.id;
-        childIndex = 0;
+      let insertBefore = targetItem.id;
+
+      if (targetItem.settingType === SettingType.Folder) {
+        // 拖动至文件上面，则add chil
+        if (overType === OverType.Over) {
+          parentID = targetItem.id;
+          insertBefore = "";
+        } else {
+          // 如果folder前面是元素，而且有parent
+          // 则添加至该元素所有在folder
+          const newTarget = currentTreeItems[targetIndex - 1];
+          if (newTarget && newTarget.parent) {
+            parentID = newTarget.parent;
+            insertBefore = "";
+          }
+        }
       }
       try {
-        // 记录顶层顺序
+        await apiFolderStore.addChild({
+          id: parentID,
+          children: [moveItem.id],
+          before: insertBefore,
+        });
+        // 设置至top items
         if (!parentID) {
-          let targetIndex = topTreeItemIDList.indexOf(targetItem.id);
-          if (targetIndex < 0) {
-            targetIndex = 0;
+          const index = topTreeItemIDList.indexOf(insertBefore);
+          if (index === -1) {
+            topTreeItemIDList.push(moveItem.id);
+          } else {
+            topTreeItemIDList.splice(index, 0, moveItem.id);
           }
-          const moveIndex = topTreeItemIDList.indexOf(moveItem.id);
-          //  如果是后移
-          if (moveIndex !== -1 && moveIndex < targetIndex) {
-            topTreeItemIDList.splice(moveIndex, 1);
-            targetIndex--;
-          }
-
-          topTreeItemIDList.splice(targetIndex, 0, moveItem.id);
           await collectionStore.updateTopTreeItems(
             collection,
             uniq(topTreeItemIDList)
           );
         }
-        await folderStore.addChild({
-          id: parentID,
-          child: moveItem.id,
-          index: childIndex,
-        });
       } catch (err) {
         showError(message, err);
       }
@@ -499,10 +500,10 @@ export default defineComponent({
         return;
       }
       try {
-        const folder = folderStore.findByID(id);
+        const folder = apiFolderStore.findByID(id);
         if (folder) {
           folder.name = name;
-          await folderStore.updateByID(id, folder);
+          await apiFolderStore.updateByID(id, folder);
         } else {
           const apiSetting = apiSettingStore.findByID(id);
           apiSetting.name = name;
@@ -540,7 +541,7 @@ export default defineComponent({
     onBeforeMount(async () => {
       processing.value = true;
       try {
-        await folderStore.fetch(collection);
+        await apiFolderStore.fetch(collection);
         await apiSettingStore.fetch(collection);
       } catch (err) {
         showError(message, err);
@@ -669,6 +670,7 @@ export default defineComponent({
           <li
             key={`${item.id}-${level}`}
             data-index={treeItemIndex}
+            data-key={item.id}
             class={cls}
             style={style}
             onDblclick={onDblclick}
