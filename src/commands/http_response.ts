@@ -16,6 +16,9 @@ export interface HTTPResponse {
   status: number;
   headers: Map<string, string[]>;
   body: string;
+  stats: {
+    remoteAddr: string;
+  };
 }
 
 export enum ResponseBodyCategory {

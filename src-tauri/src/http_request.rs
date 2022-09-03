@@ -1,6 +1,7 @@
 use crate::cookies;
 use crate::error::CyberAPIError;
 use hyper::{
+    client::connect::HttpInfo,
     client::HttpConnector,
     header::{HeaderName, HeaderValue},
     Body, Client, Method, Request, Uri,
@@ -32,6 +33,11 @@ pub struct HTTPRequest {
     pub query: Vec<HTTPRequestKVParam>,
 }
 
+#[derive(Deserialize, Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HTTPStats {
+    pub remote_addr: String,
+}
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct HTTPResponse {
@@ -40,6 +46,7 @@ pub struct HTTPResponse {
     pub status: u16,
     pub headers: HashMap<String, Vec<String>>,
     pub body: String,
+    pub stats: HTTPStats,
 }
 
 pub async fn request(
@@ -173,6 +180,12 @@ pub async fn request(
     if !set_cookies.is_empty() {
         cookies::save_cookie_store(set_cookies, &current_url)?;
     }
+    let mut stats = HTTPStats {
+        ..Default::default()
+    };
+    resp.extensions().get::<HttpInfo>().map(|info| {
+        stats.remote_addr = info.remote_addr().to_string();
+    });
     let buf = hyper::body::to_bytes(resp).await?;
 
     let d = Instant::now() - now;
@@ -184,6 +197,7 @@ pub async fn request(
         status,
         headers,
         body: base64::encode(buf),
+        stats: stats,
     };
 
     Ok(resp)

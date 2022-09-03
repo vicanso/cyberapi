@@ -67,7 +67,7 @@ const headerClass = css`
   .funcs {
     float: right;
     padding-top: 6px;
-    margin-right: 20px;
+    margin-right: 30px;
     text-align: right;
     .n-icon {
       padding: 5px;

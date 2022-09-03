@@ -72,6 +72,7 @@
         "visible": false
       },
       {
+        "theme": "Dark",
         "width": 400,
         "height": 200,
         "resizable": false,

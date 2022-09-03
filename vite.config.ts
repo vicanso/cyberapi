@@ -1,5 +1,6 @@
 import { resolve } from 'path'
 import { defineConfig } from "vite";
+import { visualizer } from "rollup-plugin-visualizer";
 import vue from "@vitejs/plugin-vue";
 import vueJsx from "@vitejs/plugin-vue-jsx";
 import VitePluginLinaria from "vite-plugin-linaria";
@@ -13,6 +14,7 @@ export default defineConfig({
     vue(),
     vueJsx(),
     VitePluginLinaria(),
+    visualizer(),
   ],
   build: {
     chunkSizeWarningLimit: 1024 * 1024,
@@ -30,6 +32,10 @@ export default defineConfig({
             "lodash-es",
             "pretty-bytes",
             "ulid",
+            "bluebird",
+            "js-base64",
+            "pretty-bytes",
+            "codemirror",
           ],
           ui: [
             "vue",

@@ -179,6 +179,9 @@ export async function doHTTPRequest(
       status: 200,
       headers,
       body: encode(JSON.stringify(params)),
+      stats: {
+        remoteAddr: "",
+      },
     };
 
     addLatestResponse(resp);
