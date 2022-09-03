@@ -72,9 +72,12 @@ const itemsWrapperClass = css`
     &.renameItem {
       // 避免出现...
       text-overflow: initial;
+      &:hover .itemDropitem {
+        display: none;
+      }
     }
     .renameInput {
-      width: 70% !important;
+      width: 86% !important;
     }
     &.insertBefore {
       padding-top: 2px;
@@ -680,7 +683,6 @@ export default defineComponent({
           <li
             key={`${item.id}-${level}`}
             data-index={treeItemIndex}
-            data-key={item.id}
             class={cls}
             style={style}
             onDblclick={onDblclick}
