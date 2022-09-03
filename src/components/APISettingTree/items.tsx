@@ -342,9 +342,16 @@ export default defineComponent({
       }
       let parentID = targetItem.parent;
       let insertBefore = targetItem.id;
+      // 如果是最后一个元素，而且bottom
+      if (
+        targetIndex === currentTreeItems.length - 1 &&
+        overType === OverType.Bottom
+      ) {
+        insertBefore = "";
+      }
 
       if (targetItem.settingType === SettingType.Folder) {
-        // 拖动至文件上面，则add chil
+        // 拖动至文件上面，则add child
         if (overType === OverType.Over) {
           parentID = targetItem.id;
           insertBefore = "";
