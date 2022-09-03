@@ -28,7 +28,7 @@ import {
 import { useSettingStore } from "../../stores/setting";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { CaretDownOutline, CodeSlashOutline } from "@vicons/ionicons5";
-import { showError, tryToParseArray } from "../../helpers/util";
+import { jsonFormat, showError, tryToParseArray } from "../../helpers/util";
 import ExKeyValue, { HandleOption } from "../ExKeyValue";
 import { KVParam } from "../../commands/interface";
 import { padding } from "../../constants/style";
@@ -212,7 +212,7 @@ export default defineComponent({
     const handleFormat = () => {
       const data = editor.state.doc.toString();
       try {
-        const result = JSON.stringify(JSON.parse(data), null, 2);
+        const result = jsonFormat(data);
         if (result !== data) {
           replaceContent(editor, result);
         }

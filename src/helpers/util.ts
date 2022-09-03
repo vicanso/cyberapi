@@ -128,3 +128,21 @@ export function isJSON(data: string) {
   const value = `${data[0]}${data[data.length - 1]}`;
   return value === "[]" || value === "{}";
 }
+
+export function jsonFormat(data: string) {
+  try {
+    const result = JSON.stringify(JSON.parse(data), null, 2);
+    return result;
+  } catch (err) {
+    const arr = data.split("\n");
+    if (arr.length < 2) {
+      throw err;
+    }
+    // 如果第一次出错，判断是否有换行，如果有，则一行行parse
+    return arr
+      .map((item) => {
+        return JSON.stringify(JSON.parse(item), null, 2);
+      })
+      .join("\n");
+  }
+}
