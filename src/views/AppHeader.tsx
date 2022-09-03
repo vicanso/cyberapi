@@ -32,7 +32,7 @@ import { useSettingStore } from "../stores/setting";
 import { usePinRequestStore } from "../stores/pin_request";
 import { useAPISettingStore } from "../stores/api_setting";
 import { setLang } from "../stores/local";
-import { showError } from "../helpers/util";
+import { reload, showError } from "../helpers/util";
 
 const logoWidth = 300;
 
@@ -182,7 +182,9 @@ export default defineComponent({
       try {
         await setLang(lang);
         message.info(i18nSetting("langChangeSuccess"));
-        setTimeout(() => window.location.reload(), 3000);
+        setTimeout(() => {
+          reload();
+        }, 3000);
       } catch (err) {
         showError(message, err);
       }

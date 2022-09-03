@@ -10,7 +10,7 @@ import {
   useMessage,
 } from "naive-ui";
 import { defineComponent } from "vue";
-import { showError } from "../helpers/util";
+import { reload, showError } from "../helpers/util";
 
 import { i18nStore } from "../i18n";
 import { clearStore, StoreKey } from "../stores/local";
@@ -50,6 +50,9 @@ export default defineComponent({
         const { id } = stores[index];
         await clearStore(id);
         message.info(i18nStore("clearSuccess"));
+        setTimeout(() => {
+          reload();
+        }, 3000);
       } catch (err) {
         showError(message, err);
       }

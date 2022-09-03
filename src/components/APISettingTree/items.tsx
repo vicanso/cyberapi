@@ -73,6 +73,9 @@ const itemsWrapperClass = css`
       // 避免出现...
       text-overflow: initial;
     }
+    .renameInput {
+      width: 70% !important;
+    }
     &.insertBefore {
       padding-top: 2px;
       border-top: 1px dashed;
@@ -684,8 +687,10 @@ export default defineComponent({
             {icon}
             {item.id === renameItem.id && (
               <NInput
+                class="renameInput"
                 key={item.id}
                 bordered={false}
+                clearable
                 defaultValue={renameItem.name}
                 onVnodeMounted={(node) => {
                   node.el?.getElementsByTagName("input")[0]?.focus();

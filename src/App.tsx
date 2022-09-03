@@ -1,10 +1,5 @@
 import { defineComponent, onMounted } from "vue";
-import {
-  NLayout,
-  NLayoutHeader,
-  useLoadingBar,
-  NModal,
-} from "naive-ui";
+import { NLayout, NLayoutHeader, useLoadingBar, NModal } from "naive-ui";
 import { storeToRefs } from "pinia";
 
 import "./main.css";

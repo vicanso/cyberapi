@@ -89,7 +89,7 @@ export default {
     storeSetting: "存储设置",
     appSetting: "应用设置",
     envSetting: "环境变量设置",
-    langChangeSuccess: "修改语言配置成功，应用将在3秒后刷新",
+    langChangeSuccess: "修改语言配置成功，应用将在3秒后重启",
   },
   cookie: {
     title: "Cookie设置",
@@ -126,6 +126,6 @@ export default {
     latestResponseStore: "请求响应",
     latestResponseStoreDesc: "保存最新的请求响应",
     clearTips: "确认清除(%s)的所有数据吗？清除后无法恢复！",
-    clearSuccess: "存储数据已清除，请重启应用",
+    clearSuccess: "存储数据已清除，应用将在3秒后重启",
   },
 };

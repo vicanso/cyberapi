@@ -3,6 +3,7 @@ import dayjs from "dayjs";
 import { get, has } from "lodash-es";
 import { appWindow } from "@tauri-apps/api/window";
 import { readText, writeText } from "@tauri-apps/api/clipboard";
+import { relaunch } from "@tauri-apps/api/process";
 
 import { appName } from "../constants/common";
 
@@ -106,6 +107,14 @@ export async function readTextFromClipboard() {
     return navigator.clipboard.readText();
   }
   return readText();
+}
+
+export async function reload() {
+  if (isWebMode()) {
+    window.location.reload();
+  } else {
+    relaunch();
+  }
 }
 
 export async function delay(ms: number) {
