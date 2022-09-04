@@ -69,7 +69,7 @@ function cuttingURI(uri: string): CuttingURIResult {
   };
   const arr = ENVRegexp.exec(uri);
   if (arr?.length === 2) {
-    result.env = arr[1];
+    result.env = arr[1].trim();
     result.uri = uri.substring(arr[0].length);
   }
   return result;

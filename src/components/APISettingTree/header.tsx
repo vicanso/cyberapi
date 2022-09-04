@@ -68,6 +68,7 @@ const addDropdownClass = css`
 `;
 
 const importPostmanKey = "importPostman";
+const importInsomniaKey = "importInsomnia";
 
 export default defineComponent({
   name: "APISettingTreeHeader",
@@ -103,17 +104,19 @@ export default defineComponent({
       document.removeEventListener("keydown", handleKeydown);
     });
 
-    const handleImportPostman = async () => {
-      // TODO 重新整理导入流程
+    const handleImport = async (category: ImportCategory) => {
       try {
-        await importAPI({
-          category: ImportCategory.PostMan,
+        const done = await importAPI({
+          category,
           collection,
+          message,
         });
-        // 重新加载数据，触发页面刷新
-        await folderStore.fetch(collection);
-        await apiSettingStore.fetch(collection);
-        message.info(i18nCollection("importPostmanSuccess"));
+        if (done) {
+          // 重新加载数据，触发页面刷新
+          await folderStore.fetch(collection);
+          await apiSettingStore.fetch(collection);
+          message.info(i18nCollection("importSuccess"));
+        }
       } catch (err) {
         showError(message, err);
       }
@@ -144,7 +147,7 @@ export default defineComponent({
       hanldeImport,
       addHTTPSetting,
       addFolder,
-      handleImportPostman,
+      handleImport,
       handleCloseAllFolders,
       text: {
         add: i18nCommon("add"),
@@ -190,6 +193,15 @@ export default defineComponent({
       {
         label: i18nCollection("importPostman"),
         key: importPostmanKey,
+        icon: () => (
+          <NIcon>
+            <CloudUploadOutline />
+          </NIcon>
+        ),
+      },
+      {
+        label: i18nCollection("importInsomnia"),
+        key: importInsomniaKey,
         icon: () => (
           <NIcon>
             <CloudUploadOutline />
@@ -242,7 +254,10 @@ export default defineComponent({
                     this.hanldeImport();
                     break;
                   case importPostmanKey:
-                    this.handleImportPostman();
+                    this.handleImport(ImportCategory.PostMan);
+                    break;
+                  case importInsomniaKey:
+                    this.handleImport(ImportCategory.Insomnia);
                     break;
                 }
               }}

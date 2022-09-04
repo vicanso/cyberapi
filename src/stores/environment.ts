@@ -9,7 +9,7 @@ import {
   updateEnvironment,
 } from "../commands/environment";
 
-export const ENVRegexp = /\{\{(\S+)\}\}/;
+export const ENVRegexp = /\{\{([\S\s]+)\}\}/;
 
 export const useEnvironmentStore = defineStore("environments", {
   state: () => {
