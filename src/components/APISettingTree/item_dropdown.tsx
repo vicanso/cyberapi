@@ -15,6 +15,7 @@ import { defineComponent, inject } from "vue";
 import { useRoute } from "vue-router";
 import { css } from "@linaria/core";
 import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
+import { BaseDirectory, writeTextFile } from "@tauri-apps/api/fs";
 
 import {
   readTextFromClipboard,
@@ -58,8 +59,7 @@ export default defineComponent({
   setup(props) {
     const dialog = useDialog();
     const message = useMessage();
-    const settingStore = useAPISettingStore();
-    const folderStore = useAPIFolderStore();
+    const apiFolderStore = useAPIFolderStore();
     const pinRequestStore = usePinRequestStore();
     const apiSettingStore = useAPISettingStore();
     const route = useRoute();
@@ -89,7 +89,7 @@ export default defineComponent({
         const apiSettings: APISetting[] = [];
         const folders: APIFolder[] = [];
         const appendChildren = (folderId: string) => {
-          const folder = folderStore.findByID(folderId);
+          const folder = apiFolderStore.findByID(folderId);
           if (!folder) {
             return;
           }
@@ -108,7 +108,11 @@ export default defineComponent({
         const arr: unknown[] = [];
         folders.forEach((folder) => arr.push(folder));
         apiSettings.forEach((apiSetting) => arr.push(apiSetting));
-        await writeTextToClipboard(JSON.stringify(arr, null, 2));
+        const data = JSON.stringify(arr, null, 2);
+        const file = `cyberapi-${new Date().toISOString()}.json`;
+        await writeTextFile(file, data, {
+          dir: BaseDirectory.Download,
+        });
         message.info(i18nCollection("exportSettingsSuccess"));
       } catch (err) {
         showError(message, err);
@@ -120,9 +124,9 @@ export default defineComponent({
       let isFolder = false;
       if (apiSettingType === SettingType.Folder) {
         isFolder = true;
-        name = folderStore.findByID(id).name;
+        name = apiFolderStore.findByID(id).name;
       } else {
-        name = settingStore.findByID(id).name;
+        name = apiSettingStore.findByID(id).name;
       }
 
       switch (key) {
@@ -140,9 +144,9 @@ export default defineComponent({
                 d.loading = true;
                 try {
                   if (isFolder) {
-                    await folderStore.remove(id);
+                    await apiFolderStore.remove(id);
                   } else {
-                    await settingStore.remove(id);
+                    await apiSettingStore.remove(id);
                   }
                 } catch (err) {
                   showError(message, err);
@@ -172,9 +176,9 @@ export default defineComponent({
               onConfirm: async (data) => {
                 try {
                   if (isFolder) {
-                    await folderStore.updateByID(id, data);
+                    await apiFolderStore.updateByID(id, data);
                   } else {
-                    await settingStore.updateByID(id, data);
+                    await apiSettingStore.updateByID(id, data);
                   }
                 } catch (err) {
                   showError(message, err);
@@ -279,20 +283,20 @@ export default defineComponent({
       );
       options.push(
         {
-          label: i18nCollection("importSettings"),
-          key: HandleKey.ImportSettings,
-          icon: () => (
-            <NIcon>
-              <DownloadOutline class="rotate270" />
-            </NIcon>
-          ),
-        },
-        {
           label: i18nCollection("exportSettings"),
           key: HandleKey.ExportSettings,
           icon: () => (
             <NIcon>
               <DownloadOutline class="rotate90" />
+            </NIcon>
+          ),
+        },
+        {
+          label: i18nCollection("importSettings"),
+          key: HandleKey.ImportSettings,
+          icon: () => (
+            <NIcon>
+              <DownloadOutline class="rotate270" />
             </NIcon>
           ),
         }

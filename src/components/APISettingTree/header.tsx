@@ -12,12 +12,12 @@ import {
   useDialog,
 } from "naive-ui";
 import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
+import { BaseDirectory, writeTextFile } from "@tauri-apps/api/fs";
 
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { SettingType, useAPISettingStore } from "../../stores/api_setting";
 import {
   AnalyticsOutline,
-  CloudUploadOutline,
   DownloadOutline,
   FolderOpenOutline,
   FolderOutline,
@@ -82,7 +82,7 @@ export default defineComponent({
     const route = useRoute();
     const message = useMessage();
     const dialog = useDialog();
-    const folderStore = useAPIFolderStore();
+    const apiFolderStore = useAPIFolderStore();
     const apiSettingStore = useAPISettingStore();
     const collectionStore = useAPICollectionStore();
 
@@ -113,7 +113,7 @@ export default defineComponent({
         });
         if (done) {
           // 重新加载数据，触发页面刷新
-          await folderStore.fetch(collection);
+          await apiFolderStore.fetch(collection);
           await apiSettingStore.fetch(collection);
           message.info(i18nCollection("importSuccess"));
         }
@@ -143,8 +143,25 @@ export default defineComponent({
       }
     };
 
+    const handleExport = async () => {
+      const arr: unknown[] = [];
+      apiFolderStore.apiFolders.forEach((folder) => arr.push(folder));
+      apiSettingStore.apiSettings.forEach((apiSetting) => arr.push(apiSetting));
+      try {
+        const data = JSON.stringify(arr, null, 2);
+        const file = `cyberapi-${new Date().toISOString()}.json`;
+        await writeTextFile(file, data, {
+          dir: BaseDirectory.Download,
+        });
+        message.info(i18nCollection("exportSettingsSuccess"));
+      } catch (err) {
+        showError(message, err);
+      }
+    };
+
     return {
       hanldeImport,
+      handleExport,
       addHTTPSetting,
       addFolder,
       handleImport,
@@ -182,6 +199,15 @@ export default defineComponent({
         key: "divider",
       },
       {
+        label: i18nCollection("exportSettings"),
+        key: HandleKey.ExportSettings,
+        icon: () => (
+          <NIcon>
+            <DownloadOutline class="rotate90" />
+          </NIcon>
+        ),
+      },
+      {
         label: i18nCollection("importSettings"),
         key: HandleKey.ImportSettings,
         icon: () => (
@@ -195,7 +221,7 @@ export default defineComponent({
         key: importPostmanKey,
         icon: () => (
           <NIcon>
-            <CloudUploadOutline />
+            <DownloadOutline class="rotate270" />
           </NIcon>
         ),
       },
@@ -204,7 +230,7 @@ export default defineComponent({
         key: importInsomniaKey,
         icon: () => (
           <NIcon>
-            <CloudUploadOutline />
+            <DownloadOutline class="rotate270" />
           </NIcon>
         ),
       },
@@ -252,6 +278,9 @@ export default defineComponent({
                     break;
                   case HandleKey.ImportSettings:
                     this.hanldeImport();
+                    break;
+                  case HandleKey.ExportSettings:
+                    this.handleExport();
                     break;
                   case importPostmanKey:
                     this.handleImport(ImportCategory.PostMan);
