@@ -186,9 +186,9 @@ pub async fn request(
     let mut stats = HTTPStats {
         ..Default::default()
     };
-    resp.extensions().get::<HttpInfo>().map(|info| {
+    if let Some(info) = resp.extensions().get::<HttpInfo>() {
         stats.remote_addr = info.remote_addr().to_string();
-    });
+    }
     let buf = hyper::body::to_bytes(resp).await?;
 
     let d = Instant::now() - now;
@@ -200,7 +200,7 @@ pub async fn request(
         status,
         headers,
         body: base64::encode(buf),
-        stats: stats,
+        stats,
     };
 
     Ok(resp)
