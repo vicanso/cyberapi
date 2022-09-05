@@ -51,7 +51,11 @@ const getLangStore = createNewStore(StoreKey.lang);
 // 语言配置
 export async function getLang() {
   const lang = await getLangStore().getItem("lang");
-  return lang as string;
+  if (lang) {
+    return lang as string;
+  }
+  const arr = window.navigator.language?.split("-");
+  return arr[0] || "";
 }
 
 export async function setLang(lang: string) {

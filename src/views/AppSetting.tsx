@@ -99,6 +99,11 @@ export default defineComponent({
           value: appStore.dir,
           span: 3,
         },
+        {
+          name: "User Agent",
+          value: window.navigator.userAgent,
+          span: 3,
+        },
       ],
       updateSize,
       updateTheme,

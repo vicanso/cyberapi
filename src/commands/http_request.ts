@@ -34,6 +34,7 @@ export interface HTTPRequest {
   contentType: string;
   headers: KVParam[];
   query: KVParam[];
+  auth: KVParam[];
 }
 
 function convertKVListToURLValues(kvList: KVParam[]) {

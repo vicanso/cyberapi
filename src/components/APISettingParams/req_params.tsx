@@ -161,6 +161,10 @@ export default defineComponent({
       type: Function as PropType<(headers: KVParam[]) => void>,
       required: true,
     },
+    onUpdateAuth: {
+      type: Function as PropType<(auth: KVParam[]) => void>,
+      required: true,
+    },
   },
   setup(props) {
     const settingStore = useSettingStore();
@@ -286,6 +290,13 @@ export default defineComponent({
       }
     };
 
+    const handleAuth = (opt: HandleOption) => {
+      const arr = getParamsFromHandleOption(opt);
+      if (props.onUpdateAuth) {
+        props.onUpdateAuth(arr);
+      }
+    };
+
     // method变化时要选定对应的tab
     const stop = watch(
       () => props.params.method,
@@ -320,6 +331,7 @@ export default defineComponent({
       handleBodyParams,
       handleQueryParams,
       handleHeaders,
+      handleAuth,
       handleChangeContentType,
       handleFormat,
       handleUpdateActiveTab,
@@ -414,13 +426,24 @@ export default defineComponent({
             value: params.query?.length,
           });
           break;
-        case TabItem.Header: {
-          return createBadgeTab({
-            activeTab,
-            tab: item,
-            value: params.headers?.length,
-          });
-        }
+        case TabItem.Header:
+          {
+            return createBadgeTab({
+              activeTab,
+              tab: item,
+              value: params.headers?.length,
+            });
+          }
+          break;
+        case TabItem.Auth:
+          {
+            return createBadgeTab({
+              activeTab,
+              tab: item,
+              value: params.auth?.length,
+            });
+          }
+          break;
         default:
           return <NTab name={item}>{item}</NTab>;
           break;
@@ -453,9 +476,16 @@ export default defineComponent({
           keyValues = this.params.query || [];
         }
         break;
-      case TabItem.Header: {
-        keyValues = this.params.headers || [];
-      }
+      case TabItem.Header:
+        {
+          keyValues = this.params.headers || [];
+        }
+        break;
+      case TabItem.Auth:
+        {
+          keyValues = this.params.auth || [];
+        }
+        break;
     }
 
     const keyValueSpans = [8, 16];
@@ -532,6 +562,17 @@ export default defineComponent({
               params={keyValues}
               onHandleParam={(opt) => {
                 this.handleHeaders(opt);
+              }}
+            />
+          )}
+          {activeTab === TabItem.Auth && (
+            <ExKeyValue
+              key="auth"
+              class="keyValue"
+              spans={keyValueSpans}
+              params={keyValues}
+              onHandleParam={(opt) => {
+                this.handleAuth(opt);
               }}
             />
           )}

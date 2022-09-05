@@ -111,6 +111,7 @@ function convertPostManAPISetting(item: PostManSetting, collection: string) {
     contentType,
     query,
     body: body,
+    auth: [],
   };
   setting.setting = JSON.stringify(req);
   return setting;
@@ -228,6 +229,7 @@ function convertInsomniaSetting(params: {
       contentType,
       query,
       body: body,
+      auth: [],
     };
     setting.setting = JSON.stringify(req);
     addToParent(setting.id, item.parentId);

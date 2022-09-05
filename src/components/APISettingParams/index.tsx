@@ -110,25 +110,23 @@ export default defineComponent({
       await update();
     };
 
-    const handleUpdateQuery = async (id: string, query: KVParam[]) => {
-      // 因为是延时执行，如果已经切换，则不更新
-      // 避免更新了其它接口的数据
-      if (id !== selectedID.value) {
-        return;
-      }
-      reqParams.value.query = query;
-      await update();
+    const newHandleUpdate = (key: string) => {
+      return async (id: string, data: KVParam[]) => {
+        // 因为是延时执行，如果已经切换，则不更新
+        // 避免更新了其它接口的数据
+        if (id !== selectedID.value) {
+          return;
+        }
+        reqParams.value[key] = data;
+        await update();
+      };
     };
 
-    const handleUpdateHeaders = async (id: string, headers: KVParam[]) => {
-      // 因为是延时执行，如果已经切换，则不更新
-      // 避免更新了其它接口的数据
-      if (id !== selectedID.value) {
-        return;
-      }
-      reqParams.value.headers = headers;
-      await update();
-    };
+    const handleUpdateAuth = debounce(newHandleUpdate("auth"), 300);
+
+    const handleUpdateQuery = debounce(newHandleUpdate("query"), 300);
+
+    const handleUpdateHeaders = debounce(newHandleUpdate("headers"), 300);
 
     return {
       reqParamsStyle,
@@ -138,10 +136,11 @@ export default defineComponent({
       reqParams,
       // 避免频繁重复触发，不能设置过长
       // 如果设置过长容易导致更新了还没生效
+      handleUpdateAuth,
       handleUpdateBody: debounce(handleUpdateBody, 300),
       handleUpdateURI,
-      handleUpdateQuery: debounce(handleUpdateQuery, 300),
-      handleUpdateHeaders: debounce(handleUpdateHeaders, 300),
+      handleUpdateQuery,
+      handleUpdateHeaders,
     };
   },
   render() {
@@ -174,6 +173,9 @@ export default defineComponent({
           params={reqParams}
           onUpdateBody={(value) => {
             this.handleUpdateBody(selectedID, value);
+          }}
+          onUpdateAuth={(value) => {
+            this.handleUpdateAuth(selectedID, value);
           }}
           onUpdateQuery={(value) => {
             this.handleUpdateQuery(selectedID, value);
