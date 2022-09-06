@@ -100,7 +100,7 @@ export default defineComponent({
           span: 3,
         },
         {
-          name: "User Agent",
+          name: i18nSetting("browser"),
           value: window.navigator.userAgent,
           span: 3,
         },

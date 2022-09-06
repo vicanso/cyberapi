@@ -1,8 +1,8 @@
 export default {
   collection: {
     filterPlaceholder: "filter keywords",
-    newHTTPRequest: "Create a new HTTP request",
-    newFolder: "Create a new folder",
+    newHTTPRequest: "Create a HTTP request",
+    newFolder: "Create a folder",
     deleteSetting: "Delete configurations",
     deleteSettingContent: "Please confirm the deletion of configurations(%s)",
     modifySetting: "Modify configurations",
@@ -23,9 +23,9 @@ export default {
     copyAsCURLSuccess: "CURL has been copied to the clipboard successfully",
     pinRequest: "Pin request",
     importSettings: "Import configurations",
-    importPostman: "Import configurations of postman",
+    importPostman: "Import from postman",
     importing: "Importing configurations, please wait...",
-    importInsomnia: "Import configurations of insomnia",
+    importInsomnia: "Import from insomnia",
     importSuccess: "Imported configurations successfully",
     exportSettings: "Export configurations",
     exportSettingsSuccess:
@@ -41,19 +41,19 @@ export default {
     confirm: "Confirm",
     back: "Return",
 
-    name: "name",
+    name: "Name",
     nameRequireError: "name can not be blank",
     namePlaceholder: "please enter a name",
 
-    description: "description",
+    description: "Description",
     descriptionPlaceholder: "please enter description",
 
-    modify: "modify",
+    modify: "Modify",
 
-    loading: "loading",
-    delete: "delete",
-    duplicate: "duplicate",
-    settings: "configurations",
+    loading: "Loading",
+    delete: "Delete",
+    duplicate: "Duplicate",
+    settings: "Configurations",
     create: "Create",
     keywordFilterPlaceholder: "please enter a keyword",
   },
@@ -97,6 +97,7 @@ export default {
     envSetting: "ENV",
     langChangeSuccess:
       "language configuration is modified successfully, and the application will restart in 3 seconds",
+    browser: "Browser",
   },
   cookie: {
     title: "Cookie",

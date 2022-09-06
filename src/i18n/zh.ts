@@ -92,6 +92,7 @@ export default {
     appSetting: "应用设置",
     envSetting: "环境变量设置",
     langChangeSuccess: "修改语言配置成功，应用将在3秒后重启",
+    browser: "浏览器",
   },
   cookie: {
     title: "Cookie设置",
