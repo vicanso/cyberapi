@@ -14,6 +14,9 @@ const kvClass = css`
   .item {
     margin-bottom: ${padding}px;
   }
+  .n-input--autosize {
+    width: 100%;
+  }
   .btns {
     float: right;
     margin-left: 5px;
@@ -61,6 +64,10 @@ export default defineComponent({
     onHandleParam: {
       type: Function as PropType<(opt: HandleOption) => void>,
       required: true,
+    },
+    typeList: {
+      type: Array as PropType<("textarea" | "text" | "password")[]>,
+      default: () => ["textarea", "textarea"],
     },
   },
   setup(props) {
@@ -136,7 +143,7 @@ export default defineComponent({
     };
   },
   render() {
-    const { spans } = this.$props;
+    const { spans, typeList } = this.$props;
     const { kvList } = this;
     const arr = kvList.slice(0);
     const lastItem: KVItem = {
@@ -185,7 +192,7 @@ export default defineComponent({
             <NGrid yGap={padding} xGap={padding}>
               <NGi span={spans[0] || 12}>
                 <NInput
-                  type="textarea"
+                  type={typeList[0]}
                   autosize={true}
                   placeholder={namePlaceholder}
                   onFocus={handleFocus}
@@ -199,10 +206,11 @@ export default defineComponent({
               </NGi>
               <NGi span={spans[1] || 12}>
                 <NInput
-                  type="textarea"
+                  type={typeList[1]}
                   autosize={true}
                   placeholder={valuePlaceholder}
                   onFocus={handleFocus}
+                  showPasswordOn="click"
                   clearable
                   defaultValue={arr[index].value}
                   onUpdateValue={debounce((value) => {

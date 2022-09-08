@@ -569,6 +569,7 @@ export default defineComponent({
             <ExKeyValue
               key="auth"
               class="keyValue"
+              typeList={["textarea", "password"]}
               spans={keyValueSpans}
               params={keyValues}
               onHandleParam={(opt) => {

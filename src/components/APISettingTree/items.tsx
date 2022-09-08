@@ -1,5 +1,5 @@
 // API列表，实现拖动
-import { defineComponent, ref, onBeforeMount, onBeforeUnmount } from "vue";
+import { defineComponent, ref, onBeforeUnmount } from "vue";
 import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
 import { NGradientText, NInput, useMessage } from "naive-ui";
@@ -26,7 +26,6 @@ import {
   nodeHasClass,
   nodeGetTagName,
 } from "../../helpers/html";
-import ExLoading from "../ExLoading";
 import APISettingTreeItemDropdown from "./item_dropdown";
 import { HTTPMethod } from "../../commands/http_request";
 
@@ -283,7 +282,6 @@ export default defineComponent({
   },
   setup() {
     const message = useMessage();
-    const processing = ref(false);
     const route = useRoute();
     const wrapper = ref(null);
     const collection = route.query.id as string;
@@ -551,18 +549,6 @@ export default defineComponent({
       document.removeEventListener("keydown", handleKeydown);
     });
 
-    onBeforeMount(async () => {
-      processing.value = true;
-      try {
-        await apiFolderStore.fetch(collection);
-        await apiSettingStore.fetch(collection);
-      } catch (err) {
-        showError(message, err);
-      } finally {
-        processing.value = false;
-      }
-    });
-
     return {
       renameValue,
       renameItem,
@@ -572,7 +558,6 @@ export default defineComponent({
       isDark,
       apiFolders,
       apiSettings,
-      processing,
       handleClick,
       handleMousedown,
       handelRename,
@@ -587,15 +572,11 @@ export default defineComponent({
       apiSettings,
       isDark,
       expandedFolders,
-      processing,
       topTreeItems,
       setTreeItems,
       selectedID,
       renameItem,
     } = this;
-    if (processing) {
-      return <ExLoading />;
-    }
     const treeItems = convertToTreeItems({
       apiFolders,
       apiSettings,

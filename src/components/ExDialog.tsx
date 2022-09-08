@@ -120,6 +120,7 @@ const ImportEditor = defineComponent({
         const arr = Array.isArray(result) ? result : [result];
         for (let i = 0; i < arr.length; i++) {
           const item = arr[i];
+          item.collection = props.collection;
           const category = item.category as string;
           if (category === SettingType.HTTP) {
             await apiSettingStore.add(item);

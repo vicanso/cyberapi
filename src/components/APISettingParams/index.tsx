@@ -59,8 +59,7 @@ export default defineComponent({
       uriNodeHeight = node.el?.clientHeight || 0;
       caclWrapperHeight();
     };
-
-    const stop = watch(selectedID, (id) => {
+    const updateReqParams = (id: string) => {
       if (!id) {
         return;
       }
@@ -71,7 +70,12 @@ export default defineComponent({
       } finally {
         caclWrapperHeight();
       }
-    });
+    };
+
+    const stop = watch(selectedID, updateReqParams);
+    if (selectedID.value) {
+      updateReqParams(selectedID.value);
+    }
 
     onBeforeUnmount(stop);
     const update = async () => {

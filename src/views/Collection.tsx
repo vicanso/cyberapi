@@ -26,6 +26,7 @@ import { abortRequestID, doHTTPRequest } from "../commands/http_request";
 import { HTTPResponse } from "../commands/http_response";
 import APIResponse from "../components/APIResponse";
 import { usePinRequestStore } from "../stores/pin_request";
+import { useAPIFolderStore } from "../stores/api_folder";
 
 const contentClass = css`
   position: fixed;
@@ -43,6 +44,7 @@ export default defineComponent({
     const message = useMessage();
     const headerStore = useHeaderStore();
     const settingStore = useSettingStore();
+    const apiFolderStore = useAPIFolderStore();
     const apiSettingStore = useAPISettingStore();
     const { collectionColumnWidths } = storeToRefs(settingStore);
 
@@ -67,6 +69,8 @@ export default defineComponent({
     onBeforeMount(async () => {
       processing.value = true;
       try {
+        await apiFolderStore.fetch(collection);
+        await apiSettingStore.fetch(collection);
         await usePinRequestStore().fetch(collection);
         await useEnvironmentStore().fetch(collection);
         const collectionStore = useAPICollectionStore();

@@ -1,6 +1,7 @@
 import { forEach, isArray } from "lodash-es";
 import { encode } from "js-base64";
 import { ulid } from "ulid";
+import { getVersion } from "@tauri-apps/api/app";
 
 import { run, cmdDoHTTPRequest } from "./invoke";
 import { KVParam } from "./interface";
@@ -135,6 +136,8 @@ export async function convertKVParams(params: KVParam[]) {
 
 export const abortRequestID = ulid();
 
+let appVersion = "";
+
 export async function doHTTPRequest(
   id: string,
   req: HTTPRequest
@@ -144,6 +147,9 @@ export async function doHTTPRequest(
   }
   if (!req.query) {
     req.query = [];
+  }
+  if (!req.auth) {
+    req.auth = [];
   }
   const method = req.method || HTTPMethod.GET;
   let body = req.body || "";
@@ -157,6 +163,28 @@ export async function doHTTPRequest(
     body = "";
     contentType = "";
   }
+  body = await convertBody(body);
+  // 如果不是json，则需要转换
+  if (
+    body &&
+    [ContentType.Form, ContentType.Multipart].includes(
+      contentType as ContentType
+    )
+  ) {
+    const arr = JSON.parse(body) as KVParam[];
+    const result: string[] = [];
+    arr.forEach((item) => {
+      if (!item.enabled) {
+        return;
+      }
+      result.push(
+        `${window.encodeURIComponent(item.key)}=${window.encodeURIComponent(
+          item.value
+        )}`
+      );
+    });
+    body = result.join("&");
+  }
   const params = {
     method: method,
     uri: req.uri,
@@ -167,7 +195,6 @@ export async function doHTTPRequest(
   };
   await convertKVParams(params.query);
   await convertKVParams(params.headers);
-  params.body = await convertBody(params.body);
   if (isWebMode()) {
     const ms = Math.random() * 2000;
     await delay(ms);
@@ -189,6 +216,26 @@ export async function doHTTPRequest(
     return Promise.resolve(resp);
   }
 
+  if (!appVersion) {
+    appVersion = await getVersion();
+  }
+  const userAgent = `CyberAPI/${appVersion}`;
+  params.headers.push({
+    key: "User-Agent",
+    value: userAgent,
+    enabled: true,
+  });
+
+  const auth = req.auth.filter((item) => item.enabled);
+  if (auth.length) {
+    const value = encode(`${auth[0].key}:${auth[0].value}`);
+    params.headers.push({
+      key: "Authorization",
+      value: `Basic ${value}`,
+      enabled: true,
+    });
+  }
+
   const resp = await run<HTTPResponse>(cmdDoHTTPRequest, {
     req: params,
     api: id,
@@ -206,6 +253,7 @@ export async function doHTTPRequest(
       headers.set(k, [value as string]);
     }
   });
+
   resp.req = req;
   resp.headers = headers;
   addLatestResponse(resp);
