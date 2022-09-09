@@ -208,6 +208,8 @@ export default defineComponent({
       });
     }
 
+    const autoSizeOption = { minRows: 1, maxRows: 3 };
+
     return (
       <div class={wrapperClass}>
         <div class="environmentSelect">
@@ -265,7 +267,7 @@ export default defineComponent({
             <NInput
               defaultValue={currentURI}
               type="textarea"
-              autosize={true}
+              autosize={autoSizeOption}
               placeholder={"http://test.com/users/v1/me"}
               clearable
               onBlur={() => {

@@ -109,11 +109,8 @@ export default defineComponent({
         folders.forEach((folder) => arr.push(folder));
         apiSettings.forEach((apiSetting) => arr.push(apiSetting));
         const data = JSON.stringify(arr, null, 2);
-        const file = `cyberapi-${new Date().toISOString()}.json`;
-        await writeTextFile(file, data, {
-          dir: BaseDirectory.Download,
-        });
-        message.info(i18nCollection("exportSettingsSuccess"));
+        await writeTextToClipboard(data);
+        message.info(i18nCollection("copySettingSuccess"));
       } catch (err) {
         showError(message, err);
       }

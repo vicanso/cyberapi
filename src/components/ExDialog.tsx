@@ -179,6 +179,9 @@ export function newImportDialog(option: ImportDialogOption) {
   const d = dialog.info({
     title: i18nCollection("importSettings"),
     closable: false,
+    style: {
+      width: "700px",
+    },
     content: () => (
       <ImportEditor
         data={data}

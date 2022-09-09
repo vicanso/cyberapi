@@ -11,6 +11,7 @@ import {
   useMessage,
   useDialog,
 } from "naive-ui";
+import dayjs from "dayjs";
 import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
 import { BaseDirectory, writeTextFile } from "@tauri-apps/api/fs";
 
@@ -149,7 +150,7 @@ export default defineComponent({
       apiSettingStore.apiSettings.forEach((apiSetting) => arr.push(apiSetting));
       try {
         const data = JSON.stringify(arr, null, 2);
-        const file = `cyberapi-${new Date().toISOString()}.json`;
+        const file = `cyberapi-${dayjs().format()}.json`;
         await writeTextFile(file, data, {
           dir: BaseDirectory.Download,
         });
