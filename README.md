@@ -6,7 +6,7 @@ CyberAPI是基于[tauri](https://github.com/tauri-apps/tauri)开发的跨平台A
 
 ## 创建项目
 
-首次启动时，需要先创建项目，建议将不同的项目来创建，同一项目可共用环境变量的配置。
+首次启动时，需要先创建项目，建议按不同的项目来创建，同一项目可共用环境变量的配置。
 
 <p align="center">
     <img src="./asset/home.png" alt="home">
@@ -20,7 +20,7 @@ CyberAPI是基于[tauri](https://github.com/tauri-apps/tauri)开发的跨平台A
     <img src="./asset/env-select.png" alt="env-select">
 </p>
 
-tiny配置了两个环境的ENV设置，其中`http://tiny.npmtrend.com`未生效(复选框未勾选)，如果需要切换不同的环境时，则选择勾选不同的配置生效即可，需要注意不要同时选择相同的环境变量生效。
+tiny配置了两个环境的ENV设置，其中`http://tiny.npmtrend.com`未生效(复选框未勾选)，如果需要切换不同的环境时，选择勾选不同的配置生效即可，需要注意不要同时选择相同的环境变量生效。
 
 <p align="center">
     <img src="./asset/env-editor.png" alt="env-editor">
@@ -41,14 +41,14 @@ tiny配置了两个环境的ENV设置，其中`http://tiny.npmtrend.com`未生�
 </p>
 
 
-在创建请求之后，则可以选择请求使用的env(自动添加至请求url中)，对应的HTTP Method以及输入URL。对于POST类请求的body部分，则可以选择对应的数据类型，如选择了json数据，填写对应的参数，图中的`{{md5(123123)}}`为函数形式，会在请求时执行此函数，填充对应的数据，后续会专门介绍有哪些函数：
+在创建请求之后，则可以选择请求使用的env(自动添加至请求url中)，对应的HTTP Method以及输入URL。对于POST类请求的body部分，则可以选择对应的数据类型，如选择了json数据，填写对应的参数，图中的`{{md5(123123)}}`为函数形式，会在请求时执行此函数，填充对应的数据，后续会专门介绍此类函数：
 
 <p align="center">
     <img src="./asset/create-request-detail.png" alt="create-request-detail">
 </p>
 
 
-配置完成后，点击发送则发送该请求，获取到响应后则展示如下图。第一个图标点击时会展示该请求的ID(后续可用于其它请求指定获取该请求的响应时使用)，第二个图标点击会会展示此请求对应的`curl`。
+配置完成后，点击发送则发送该请求，获取到响应后则展示如下图。第一个图标点击时会展示该请求的ID(后续可用于其它请求指定获取该请求的响应时使用)，第二个图标点击会展示此请求对应的`curl`。
 
 <p align="center">
     <img src="./asset/request-result.png" alt="request-result">
@@ -127,7 +127,7 @@ CyberAPI内置支持了部分函数，便于在请求中动态生成参数值，
 
 ## Cookie设置
 
-Cookie的数据为应用级别共享，在HTTP响应头中有`Set-Cookie`则会自动保存，需要注意对于`Session`有效期的数据，在程序关闭之后会自动清除。可根据场景用户直接修改Cookie的有效期、值等信息或删除Cookie。
+Cookie的数据为应用共享，在HTTP响应头中有`Set-Cookie`则会自动保存，需要注意对于`Session`有效期的Cookie，在程序关闭之后会自动清除。用户可直接修改Cookie的有效期、值等信息或删除Cookie。
 
 <p align="center">
     <img src="./asset/cookies.png" alt="cookies">
