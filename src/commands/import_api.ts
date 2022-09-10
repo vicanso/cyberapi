@@ -191,6 +191,9 @@ function convertInsomniaSetting(params: {
     }
     const query: KVParam[] = [];
     item.parameters?.forEach((q) => {
+      if (!q.value && !q.name) {
+        return;
+      }
       query.push({
         key: q.name,
         value: q.value,
@@ -199,6 +202,9 @@ function convertInsomniaSetting(params: {
     });
     const headers: KVParam[] = [];
     item.headers?.forEach((q) => {
+      if (!q.value && !q.name) {
+        return;
+      }
       headers.push({
         key: q.name,
         value: q.value,

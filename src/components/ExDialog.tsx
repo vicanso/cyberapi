@@ -229,7 +229,7 @@ const ImportEditor = defineComponent({
         >
           <NTabPane
             name={ImportCategory.Text}
-            tab="JSON / CURL"
+            tab="JSON"
             onVnodeMounted={() => {
               this.initEditor();
             }}
