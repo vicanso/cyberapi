@@ -133,6 +133,19 @@ Cookie的数据为应用级别共享，在HTTP响应头中有`Set-Cookie`则会�
     <img src="./asset/cookies.png" alt="cookies">
 </p>
 
+## 配置导入
+
+配置导入支持四种方式，`JSON`与`File`仅支持`CyberAPI`的配置形式导入，`PostMan`用于导入postman的配置，`Insonmia`则用于导入insonmia的配置。
+
+<p align="center">
+    <img src="./asset/import-configurations.png" alt="import-configurations">
+</p>
+
+
+<p align="center">
+    <img src="./asset/import-editor.png" alt="import-editor">
+</p>
+
 
 <p align="center">
     <img src="./asset/" alt="">
