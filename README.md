@@ -1,7 +1,7 @@
 # Cyber API
 
 
-CyberAPI是基于`tauri`[https://github.com/tauri-apps/tauri]开发的跨平台API客户端，用于开发测试HTTP的接口。
+CyberAPI是基于[tauri](https://github.com/tauri-apps/tauri)开发的跨平台API客户端，用于开发测试HTTP的接口。
 
 
 ## 创建项目
