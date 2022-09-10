@@ -15,7 +15,6 @@ import { defineComponent, inject } from "vue";
 import { useRoute } from "vue-router";
 import { css } from "@linaria/core";
 import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
-import { BaseDirectory, writeTextFile } from "@tauri-apps/api/fs";
 
 import {
   readTextFromClipboard,

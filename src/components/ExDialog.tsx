@@ -1,22 +1,28 @@
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "codemirror";
 import { DialogApiInjection } from "naive-ui/es/dialog/src/DialogProvider";
-import {
-  defineComponent,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-  PropType,
-} from "vue";
+import { defineComponent, onBeforeUnmount, ref, PropType } from "vue";
 import { i18nCollection, i18nCommon } from "../i18n";
 import { useSettingStore } from "../stores/setting";
 import ExForm, { ExFormItem, ExUpdateData } from "./ExForm";
 import { getDefaultExtensions, replaceContent } from "../helpers/editor";
 import { css } from "@linaria/core";
-import { NButton, useMessage } from "naive-ui";
-import { SettingType, useAPISettingStore } from "../stores/api_setting";
+import {
+  NButton,
+  NIcon,
+  NTabPane,
+  NTabs,
+  NText,
+  NUpload,
+  NUploadDragger,
+  UploadFileInfo,
+  useMessage,
+} from "naive-ui";
+import { useAPISettingStore } from "../stores/api_setting";
 import { useAPIFolderStore } from "../stores/api_folder";
-import { showError } from "../helpers/util";
+import { getNormalDialogStyle, showError } from "../helpers/util";
+import { CloudUploadOutline } from "@vicons/ionicons5";
+import { importAPI, ImportCategory } from "../commands/import_api";
 
 interface OnConfirm {
   (data: ExUpdateData): Promise<void>;
@@ -54,15 +60,16 @@ export default function newDialog(option: DialogOption) {
   });
 }
 
+const importWrapperHeight = 300;
 const codeEditorClass = css`
   .codeEditor {
-    height: 300px;
+    height: ${importWrapperHeight}px;
     overflow-y: auto;
   }
 `;
 
 const ImportEditor = defineComponent({
-  name: "CodeEditor",
+  name: "ImportEditor",
   props: {
     data: {
       type: String,
@@ -86,10 +93,15 @@ const ImportEditor = defineComponent({
     const apiSettingStore = useAPISettingStore();
     const apiFolderStore = useAPIFolderStore();
     const message = useMessage();
-    let editor: EditorView;
-    const destroy = () => {
+
+    const currentTab = ref(ImportCategory.Text);
+    const fileData = ref("");
+
+    let editor: EditorView | null;
+    const destroyEditor = () => {
       if (editor) {
         editor.destroy();
+        editor = null;
       }
     };
 
@@ -98,6 +110,9 @@ const ImportEditor = defineComponent({
       isDark: settingStore.isDark,
     });
     const initEditor = () => {
+      if (editor) {
+        return;
+      }
       const state = EditorState.create({
         extensions,
       });
@@ -114,26 +129,32 @@ const ImportEditor = defineComponent({
         return;
       }
       processing.value = true;
-      const data = editor.state.doc.toString();
       try {
-        const result = JSON.parse(data);
-        const arr = Array.isArray(result) ? result : [result];
-        for (let i = 0; i < arr.length; i++) {
-          const item = arr[i];
-          item.collection = props.collection;
-          const category = item.category as string;
-          if (category === SettingType.HTTP) {
-            await apiSettingStore.add(item);
+        if (currentTab.value === ImportCategory.Text) {
+          if (editor) {
+            fileData.value = editor.state.doc.toString();
           } else {
-            await apiFolderStore.add(item);
-          }
-          if (props.folder) {
-            await apiFolderStore.addChild({
-              id: props.folder,
-              children: [item.id as string],
-            });
+            fileData.value = "";
           }
         }
+        const topIDList = await importAPI({
+          category: currentTab.value,
+          collection: props.collection,
+          fileData: fileData.value,
+        });
+        // 如果指定了目录
+        if (props.folder && topIDList.length) {
+          await apiFolderStore.addChild({
+            id: props.folder,
+            children: topIDList,
+          });
+        }
+
+        // 重新加载数据，触发页面刷新
+        await apiFolderStore.fetch(props.collection);
+        await apiSettingStore.fetch(props.collection);
+        message.info(i18nCollection("importSuccess"));
+
         if (props.onConfirm) {
           props.onConfirm();
         }
@@ -143,22 +164,93 @@ const ImportEditor = defineComponent({
         processing.value = false;
       }
     };
-    onMounted(() => {
-      initEditor();
-    });
+
+    const handleReadFile = (blob: Blob) => {
+      const r = new FileReader();
+      r.onload = () => {
+        fileData.value = r.result as string;
+      };
+      r.onerror = () => {
+        fileData.value = "";
+        showError(message, new Error("read file fail"));
+      };
+      r.readAsText(blob);
+    };
     onBeforeUnmount(() => {
-      destroy();
+      destroyEditor();
     });
     return {
+      currentTab,
+      fileData,
+      destroyEditor,
+      initEditor,
+      handleReadFile,
       handleImport,
       processing,
       codeEditor,
     };
   },
   render() {
+    const { currentTab } = this;
+    const uploadWrapper = (
+      <NUpload
+        style={{
+          height: `${importWrapperHeight}px`,
+        }}
+        onChange={(data: {
+          file: UploadFileInfo;
+          fileList: UploadFileInfo[];
+        }) => {
+          this.handleReadFile(data.fileList[0].file as Blob);
+        }}
+      >
+        <NUploadDragger>
+          <div
+            style={{
+              marginBottom: "10px",
+            }}
+          >
+            <NIcon size="48">
+              <CloudUploadOutline />
+            </NIcon>
+          </div>
+          <NText>{i18nCollection("dragUploadTips")}</NText>
+        </NUploadDragger>
+      </NUpload>
+    );
     return (
-      <div class={codeEditorClass}>
-        <div ref="codeEditor" class="codeEditor"></div>
+      <div>
+        <NTabs
+          defaultValue={currentTab}
+          onUpdateValue={(value) => {
+            this.fileData = "";
+            this.currentTab = value;
+          }}
+        >
+          <NTabPane
+            name={ImportCategory.Text}
+            tab="JSON / CURL"
+            onVnodeMounted={() => {
+              this.initEditor();
+            }}
+            onVnodeUnmounted={() => {
+              this.destroyEditor();
+            }}
+          >
+            <div class={codeEditorClass}>
+              <div ref="codeEditor" class="codeEditor"></div>
+            </div>
+          </NTabPane>
+          <NTabPane name={ImportCategory.File} tab="File">
+            {uploadWrapper}
+          </NTabPane>
+          <NTabPane name={ImportCategory.PostMan} tab="PostMan">
+            {uploadWrapper}
+          </NTabPane>
+          <NTabPane name={ImportCategory.Insomnia} tab="Insonmia">
+            {uploadWrapper}
+          </NTabPane>
+        </NTabs>
         <div class="tar">
           <NButton
             loading={this.processing}
@@ -176,12 +268,11 @@ const ImportEditor = defineComponent({
 
 export function newImportDialog(option: ImportDialogOption) {
   const { dialog, data, collection, folder } = option;
+
   const d = dialog.info({
     title: i18nCollection("importSettings"),
     closable: false,
-    style: {
-      width: "700px",
-    },
+    style: getNormalDialogStyle(),
     content: () => (
       <ImportEditor
         data={data}

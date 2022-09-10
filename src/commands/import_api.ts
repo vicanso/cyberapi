@@ -1,8 +1,5 @@
-import { readTextFile } from "@tauri-apps/api/fs";
 import { Promise } from "bluebird";
-import { open } from "@tauri-apps/api/dialog";
-import { get } from "lodash-es";
-import { MessageApiInjection } from "naive-ui/es/message/src/MessageProvider";
+import { get, uniq } from "lodash-es";
 
 import { SettingType } from "../stores/api_setting";
 import { APIFolder, createAPIFolder, newDefaultAPIFolder } from "./api_folder";
@@ -13,7 +10,6 @@ import {
 } from "./api_setting";
 import { ContentType, HTTPRequest } from "./http_request";
 import { KVParam } from "./interface";
-import { i18nCollection } from "../i18n";
 
 interface PostManSetting {
   name: string;
@@ -64,6 +60,8 @@ interface ImportData {
 export enum ImportCategory {
   PostMan = "postMan",
   Insomnia = "insomnia",
+  File = "file",
+  Text = "text",
 }
 
 function convertPostManAPISetting(item: PostManSetting, collection: string) {
@@ -247,34 +245,20 @@ function convertInsomniaSetting(params: {
 export async function importAPI(params: {
   category: ImportCategory;
   collection: string;
-  message: MessageApiInjection;
-}) {
-  const selected = await open({
-    filters: [
-      {
-        name: "JSON",
-        extensions: ["json"],
-      },
-    ],
-  });
-  if (!selected) {
-    return false;
-  }
-
-  const { collection, category, message } = params;
-  const d = message.loading(i18nCollection("importing"));
-  const fileData = await readTextFile(selected as string);
+  fileData: string;
+}): Promise<string[]> {
+  const { collection, category } = params;
   const result: ImportData = {
     settings: [],
     folders: [],
   };
-  const json = JSON.parse(fileData);
+  const json = JSON.parse(params.fileData);
 
   switch (category) {
     case ImportCategory.PostMan:
       {
         if (!Array.isArray(json.item)) {
-          return false;
+          return [];
         }
         const arr = json.item as PostManSetting[];
         convertPostManSetting({
@@ -289,7 +273,7 @@ export async function importAPI(params: {
       {
         const items = get(json, "resources");
         if (!Array.isArray(items)) {
-          return false;
+          return [];
         }
         let arr = items as InsomniaSetting[];
         arr.forEach((item) => {
@@ -317,17 +301,45 @@ export async function importAPI(params: {
         });
       }
       break;
+    case ImportCategory.Text:
+    case ImportCategory.File:
+      {
+        const arr = Array.isArray(json) ? json : [json];
+        arr.forEach((item) => {
+          item.collection = collection;
+          if (item.category === SettingType.HTTP) {
+            result.settings.push(item);
+          } else {
+            result.folders.push(item);
+          }
+        });
+      }
+      break;
     default:
       throw new Error(`${category} is not supported`);
       break;
   }
 
+  const topIDList: string[] = [];
+  const childrenIDMap: Map<string, boolean> = new Map();
+  result.folders.forEach((item) => {
+    const children = item.children?.split(",") || [];
+    children.forEach((id) => {
+      childrenIDMap.set(id, true);
+    });
+  });
+
   await Promise.each(result.folders, async (item) => {
+    if (!childrenIDMap.has(item.id)) {
+      topIDList.push(item.id);
+    }
     await createAPIFolder(item);
   });
   await Promise.each(result.settings, async (item) => {
+    if (!childrenIDMap.has(item.id)) {
+      topIDList.push(item.id);
+    }
     await createAPISetting(item);
   });
-  d.destroy();
-  return true;
+  return uniq(topIDList);
 }

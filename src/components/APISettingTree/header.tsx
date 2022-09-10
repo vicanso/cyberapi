@@ -37,7 +37,6 @@ import {
 import { readTextFromClipboard, showError } from "../../helpers/util";
 import { useRoute } from "vue-router";
 import { useAPIFolderStore } from "../../stores/api_folder";
-import { importAPI, ImportCategory } from "../../commands/import_api";
 import { useAPICollectionStore } from "../../stores/api_collection";
 import { HandleKey } from "../../constants/handle_key";
 import { newImportDialog } from "../ExDialog";
@@ -67,9 +66,6 @@ const addDropdownClass = css`
     float: right;
   }
 `;
-
-const importPostmanKey = "importPostman";
-const importInsomniaKey = "importInsomnia";
 
 export default defineComponent({
   name: "APISettingTreeHeader",
@@ -104,24 +100,6 @@ export default defineComponent({
     onBeforeUnmount(() => {
       document.removeEventListener("keydown", handleKeydown);
     });
-
-    const handleImport = async (category: ImportCategory) => {
-      try {
-        const done = await importAPI({
-          category,
-          collection,
-          message,
-        });
-        if (done) {
-          // 重新加载数据，触发页面刷新
-          await apiFolderStore.fetch(collection);
-          await apiSettingStore.fetch(collection);
-          message.info(i18nCollection("importSuccess"));
-        }
-      } catch (err) {
-        showError(message, err);
-      }
-    };
 
     const handleCloseAllFolders = async () => {
       try {
@@ -165,7 +143,6 @@ export default defineComponent({
       handleExport,
       addHTTPSetting,
       addFolder,
-      handleImport,
       handleCloseAllFolders,
       text: {
         add: i18nCommon("add"),
@@ -211,24 +188,6 @@ export default defineComponent({
       {
         label: i18nCollection("importSettings"),
         key: HandleKey.ImportSettings,
-        icon: () => (
-          <NIcon>
-            <DownloadOutline class="rotate270" />
-          </NIcon>
-        ),
-      },
-      {
-        label: i18nCollection("importPostman"),
-        key: importPostmanKey,
-        icon: () => (
-          <NIcon>
-            <DownloadOutline class="rotate270" />
-          </NIcon>
-        ),
-      },
-      {
-        label: i18nCollection("importInsomnia"),
-        key: importInsomniaKey,
         icon: () => (
           <NIcon>
             <DownloadOutline class="rotate270" />
@@ -282,12 +241,6 @@ export default defineComponent({
                     break;
                   case HandleKey.ExportSettings:
                     this.handleExport();
-                    break;
-                  case importPostmanKey:
-                    this.handleImport(ImportCategory.PostMan);
-                    break;
-                  case importInsomniaKey:
-                    this.handleImport(ImportCategory.Insomnia);
                     break;
                 }
               }}

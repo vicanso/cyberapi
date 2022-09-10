@@ -5,8 +5,8 @@ export default {
     newFolder: "Create a folder",
     deleteSetting: "Delete configurations",
     deleteSettingContent: "Please confirm the deletion of configurations(%s)",
-    modifySetting: "Modify configurations",
-    copySetting: "Duplicate configurations",
+    modifySetting: "Modify configuration",
+    copySetting: "Copy configuration",
     copySettingSuccess:
       "Configurations have been copied to clipboard successfully",
     shouldSelectAPISettingFirst: "Please select API request first",
@@ -23,11 +23,9 @@ export default {
     copyAsCURLSuccess: "CURL has been copied to the clipboard successfully",
     pinRequest: "Pin request",
     importSettings: "Import configurations",
-    importPostman: "Import from postman",
-    importing: "Importing configurations, please wait...",
-    importInsomnia: "Import from insomnia",
     importSuccess: "Imported configurations successfully",
     exportSettings: "Export configurations",
+    dragUploadTips: "Click or drag a file to this area to upload",
     exportSettingsSuccess:
       "The configurations are successfully exported to the download directory",
     curlTooLargeTips:
