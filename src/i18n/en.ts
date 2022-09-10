@@ -58,7 +58,7 @@ export default {
   dashboard: {
     newCollection: "Create API group",
     updateCollection: "Update API group",
-    deleteCollection: "Delete API group",
+    deleteCollection: "Delete API Group",
     deleteCollectionContent:
       "Please confirm the deletion of API group, which can not be recovered after deletion!",
     deleteCollectionDone: "The API group was successfully deleted",

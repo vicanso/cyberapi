@@ -372,8 +372,12 @@ export default defineComponent({
           children: [moveItem.id],
           before: insertBefore,
         });
-        // 设置至top items
         if (!parentID) {
+          // 设置至top items
+          const moveItemIndex = topTreeItemIDList.indexOf(moveItem.id);
+          if (moveItemIndex !== -1) {
+            topTreeItemIDList.splice(moveItemIndex, 1);
+          }
           const index = topTreeItemIDList.indexOf(insertBefore);
           if (index === -1) {
             topTreeItemIDList.push(moveItem.id);
