@@ -1,11 +1,13 @@
 # Cyber API
 
 
-CyberAPI是基于[tauri](https://github.com/tauri-apps/tauri)开发的跨平台API客户端，用于开发测试HTTP的接口。
+CyberAPI是基于[tauri](https://github.com/tauri-apps/tauri)开发的跨平台API客户端，用于开发测试HTTP的接口，提供macos、windows与linux三个系统的安装包，安装包均在10MB以下，启动时间在1秒以下，性能表现也挺不错。
 
 <p align="center">
     <img src="./asset/cyberapi.png" alt="cyberapi">
 </p>
+
+CyberAPI暂时仅是开发版本，主要是在业余时间的个人项目，如果有BUG或期望新增功能可以issue，对于BUG请附上系统版本信息，本人尽可能抽时间处理。
 
 ## 创建项目
 
