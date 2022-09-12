@@ -1,3 +1,4 @@
+import { sortBy } from "lodash-es";
 import { defineStore } from "pinia";
 
 import {
@@ -27,7 +28,8 @@ export const useCookieStore = defineStore("cookie", {
       }
       this.fetching = true;
       try {
-        this.cookies = await listCookie();
+        const cookies = await listCookie();
+        this.cookies = sortBy(cookies, (c) => c.name);
       } finally {
         this.fetching = false;
       }

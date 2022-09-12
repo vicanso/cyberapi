@@ -36,6 +36,7 @@ export default defineConfig({
             "js-base64",
             "pretty-bytes",
             "codemirror",
+            "crypto-js",
           ],
           ui: [
             "vue",

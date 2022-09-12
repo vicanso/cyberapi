@@ -1,4 +1,5 @@
 import dayjs from "dayjs";
+import { sortBy } from "lodash-es";
 import { defineStore } from "pinia";
 import {
   createEnvironment,
@@ -46,7 +47,8 @@ export const useEnvironmentStore = defineStore("environments", {
       }
       this.fetching = true;
       try {
-        this.environments = await listEnvironment(collection);
+        const result = await listEnvironment(collection);
+        this.environments = sortBy(result, (item) => item.name);
       } finally {
         this.fetching = false;
       }

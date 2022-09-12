@@ -7,7 +7,9 @@ import {
 import { open } from "@tauri-apps/api/dialog";
 import { toString, get, trim } from "lodash-es";
 import { fromUint8Array } from "js-base64";
-import md5 from "md5";
+import sha256 from "crypto-js/sha256";
+import md5 from "crypto-js/md5";
+
 import { getLatestResponse, getResponseBody } from "./http_response";
 interface FnHandler {
   // 原始字符
@@ -32,6 +34,7 @@ enum Fn {
   timestamp = "timestamp",
   ts = "ts",
   md5 = "md5",
+  sha256 = "sha256",
 }
 
 function trimParam(param: string): string | string[] {
@@ -126,7 +129,10 @@ export async function doFnHandler(handler: FnHandler): Promise<string> {
         }
         break;
       case Fn.md5:
-        p = md5(toString(p));
+        p = md5(toString(p)).toString();
+        break;
+      case Fn.sha256:
+        p = sha256(toString(p)).toString();
         break;
       case Fn.readFile:
       case Fn.rf:

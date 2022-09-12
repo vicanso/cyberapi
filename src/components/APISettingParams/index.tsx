@@ -85,8 +85,15 @@ export default defineComponent({
         return;
       }
       const data = settingStore.findByID(id);
+      if (!data) {
+        return;
+      }
       try {
-        data.setting = JSON.stringify(reqParams.value);
+        let value = "";
+        if (reqParams.value) {
+          value = JSON.stringify(reqParams.value);
+        }
+        data.setting = value;
         await settingStore.updateByID(id, data);
       } catch (err) {
         showError(message, err);
