@@ -7,7 +7,7 @@ CyberAPI是基于[tauri](https://github.com/tauri-apps/tauri)开发的跨平台A
     <img src="./asset/cyberapi.png" alt="cyberapi">
 </p>
 
-CyberAPI暂时仅是开发版本，主要是在业余时间的个人项目，如果有BUG或期望新增功能可以issue，对于BUG请附上系统版本信息，本人尽可能抽时间处理。
+CyberAPI暂时仅是开发版本，业余时间的个人项目，如果有BUG或期望新增功能可以issue，对于BUG请附上系统版本信息，本人尽可能抽时间处理。
 
 ## 创建项目
 
