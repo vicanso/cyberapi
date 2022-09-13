@@ -19,15 +19,17 @@ import {
   getStatusText,
   getLatestResponse,
   getResponseBody,
+  HTTPStats,
 } from "../../commands/http_response";
 import { useSettingStore } from "../../stores/setting";
 import {
+  NDescriptions,
+  NDescriptionsItem,
   NDivider,
   NGradientText,
   NIcon,
   NPopover,
   NSpace,
-  NTooltip,
   useMessage,
 } from "naive-ui";
 import { padding } from "../../constants/style";
@@ -108,6 +110,7 @@ export default defineComponent({
     const size = ref(-1);
     const latency = ref(0);
     const apiID = ref("");
+    const stats = ref({} as HTTPStats);
 
     let req: HTTPRequest;
 
@@ -133,6 +136,7 @@ export default defineComponent({
       apiID.value = resp.api;
       req = resp.req;
       curl.value = "";
+      stats.value = resp.stats;
       replaceContent(editor, body.data);
     };
 
@@ -185,6 +189,7 @@ export default defineComponent({
     return {
       curl,
       size,
+      stats,
       latency,
       statusCode,
       apiID,
@@ -193,7 +198,7 @@ export default defineComponent({
     };
   },
   render() {
-    const { statusCode, size, latency, apiID, curl } = this;
+    const { statusCode, size, latency, apiID, curl, stats } = this;
     let statusCodeInfo = <span></span>;
     if (statusCode === -1) {
       statusCodeInfo = <span>{i18nCollection("requesting")}</span>;
@@ -233,13 +238,38 @@ export default defineComponent({
           "word-wrap": "break-word",
         };
 
+    const descriptionItemOptions = [
+      {
+        label: i18nCollection("apiID"),
+        key: "apiID",
+        value: apiID,
+      },
+    ];
+    if (stats?.remoteAddr) {
+      descriptionItemOptions.push({
+        label: i18nCollection("remoteAddr"),
+        key: "remoteAddr",
+        value: stats.remoteAddr,
+      });
+    }
+
+    const descriptionItems = descriptionItemOptions.map((item) => {
+      return (
+        <NDescriptionsItem label={item.label} key={item.key} span={3}>
+          {item.value}
+        </NDescriptionsItem>
+      );
+    });
+
     return (
       <div class={responseClass}>
         <NSpace class="infos">
           {statusCode > 0 && apiID && (
-            <NTooltip v-slots={apiIDSlots} trigger="click" placement="bottom">
-              {i18nCollection("apiID")}: {apiID}
-            </NTooltip>
+            <NPopover v-slots={apiIDSlots} trigger="click" placement="bottom">
+              <NDescriptions labelPlacement="left">
+                {descriptionItems}
+              </NDescriptions>
+            </NPopover>
           )}
           {statusCode > 0 && (
             <NPopover

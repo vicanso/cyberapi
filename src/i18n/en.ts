@@ -31,6 +31,7 @@ export default {
     curlTooLargeTips:
       "CURL data is too large, and the content has been copied to the clipboard",
     apiID: "Request ID",
+    remoteAddr: "Remote Addr",
   },
   common: {
     app: "CyberAPI",

@@ -37,6 +37,8 @@ pub struct HTTPRequest {
 #[serde(rename_all = "camelCase")]
 pub struct HTTPStats {
     pub remote_addr: String,
+    pub got_first_response_byte: u32,
+    pub done: u32,
 }
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +128,9 @@ pub async fn request(
     let write_timeout = Duration::from_secs(5);
     // TODO 设置超时由参数指定
     let read_timeout = Duration::from_secs(30);
+    let mut stats = HTTPStats {
+        ..Default::default()
+    };
 
     // TODO 后续增加各阶段耗时
     // https://docs.rs/tower-http/latest/tower_http/
@@ -152,6 +157,8 @@ pub async fn request(
             .request(req)
             .await?
     };
+
+    stats.got_first_response_byte = (Instant::now() - now).whole_milliseconds() as u32;
 
     let status = resp.status().as_u16();
     let mut headers = HashMap::new();
@@ -183,20 +190,17 @@ pub async fn request(
     if !set_cookies.is_empty() {
         cookies::save_cookie_store(set_cookies, &current_url)?;
     }
-    let mut stats = HTTPStats {
-        ..Default::default()
-    };
+
     if let Some(info) = resp.extensions().get::<HttpInfo>() {
         stats.remote_addr = info.remote_addr().to_string();
     }
     let buf = hyper::body::to_bytes(resp).await?;
-
-    let d = Instant::now() - now;
+    stats.done = (Instant::now() - now).whole_milliseconds() as u32;
 
     // TODO 记录数据至数据库
     let resp = HTTPResponse {
         api,
-        latency: d.whole_milliseconds() as u32,
+        latency: stats.done,
         status,
         headers,
         body: base64::encode(buf),

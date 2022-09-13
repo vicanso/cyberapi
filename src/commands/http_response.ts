@@ -6,6 +6,12 @@ import { HTTPRequest } from "./http_request";
 
 const applicationJSON = "application/json";
 
+export interface HTTPStats {
+  remoteAddr: string;
+  gotFirstResponseByte: number;
+  done: number;
+}
+
 export interface HTTPResponse {
   [key: string]: unknown;
   // api id
@@ -16,9 +22,7 @@ export interface HTTPResponse {
   status: number;
   headers: Map<string, string[]>;
   body: string;
-  stats: {
-    remoteAddr: string;
-  };
+  stats: HTTPStats;
 }
 
 export enum ResponseBodyCategory {

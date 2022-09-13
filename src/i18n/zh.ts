@@ -29,6 +29,7 @@ export default {
     exportSettingsSuccess: "配置已成功导出至下载目录",
     curlTooLargeTips: "curl数据太大，内容已复制至粘贴板",
     apiID: "该请求配置ID",
+    remoteAddr: "请求地址",
   },
   common: {
     app: "CyberAPI",
