@@ -46,9 +46,15 @@
       "shortDescription": "",
       "targets": "all",
       "windows": {
+        "wix": {
+          "language": [
+            "zh-CN",
+            "en-US"
+          ]
+        },
         "webviewInstallMode": {
           "silent": true,
-          "type": "downloadBootstrapper"
+          "type": "embedBootstrapper"
         },
         "certificateThumbprint": null,
         "digestAlgorithm": "sha256",

@@ -60,7 +60,7 @@ export function formatSimpleDate(str: string): string {
 }
 
 export function getBodyWidth(): number {
-  return window?.document?.body?.clientWidth || 800;
+  return window.innerWidth || 800;
 }
 
 export function getNormalDialogStyle() {

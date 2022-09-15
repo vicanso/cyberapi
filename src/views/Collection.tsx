@@ -133,20 +133,23 @@ export default defineComponent({
       }
       const reqID = ulid();
       senddingRequestID = reqID;
+      const req = apiSettingStore.getHTTPRequestFillENV(id);
 
       try {
         response.value = {
           status: -1,
         } as HTTPResponse;
         sending.value = true;
-        const req = apiSettingStore.getHTTPRequestFillENV(id);
         const res = await doHTTPRequest(id, req);
         if (isCurrnetRequest(reqID)) {
           response.value = res;
         }
       } catch (err) {
         if (isCurrnetRequest(reqID)) {
-          response.value = {} as HTTPResponse;
+          response.value = {
+            api: reqID,
+            req,
+          } as HTTPResponse;
           showError(message, err);
         }
       } finally {

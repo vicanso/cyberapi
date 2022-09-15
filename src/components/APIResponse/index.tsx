@@ -37,6 +37,7 @@ import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
 import { i18nCollection } from "../../i18n";
 import { convertRequestToCURL, HTTPRequest } from "../../commands/http_request";
 import { showError, writeTextToClipboard } from "../../helpers/util";
+import ExPreview, { isSupportPreview } from "../ExPreview";
 
 const responseClass = css`
   margin-left: 5px;
@@ -62,6 +63,9 @@ const responseClass = css`
     float: left;
     margin-top: 15px;
     font-size: 16px;
+  }
+  .hidden {
+    display: none;
   }
 `;
 
@@ -112,6 +116,12 @@ export default defineComponent({
     const apiID = ref("");
     const stats = ref({} as HTTPStats);
 
+    const previewMode = ref(false);
+    const previewData = ref({
+      contentType: "",
+      data: "",
+    });
+
     let req: HTTPRequest;
 
     const curl = ref("");
@@ -131,13 +141,32 @@ export default defineComponent({
       if (resp.body) {
         body = getResponseBody(resp);
       }
+
+      let contentType = "";
+      resp.headers?.forEach((values, key) => {
+        if (key.toLowerCase() === "content-type") {
+          contentType = values[0];
+        }
+      });
+
+      if (isSupportPreview(contentType)) {
+        previewMode.value = true;
+        previewData.value = {
+          contentType,
+          data: body.data,
+        };
+      } else {
+        previewMode.value = false;
+      }
       size.value = body.size;
       latency.value = resp.latency;
       apiID.value = resp.api;
       req = resp.req;
       curl.value = "";
       stats.value = resp.stats;
-      replaceContent(editor, body.data);
+      if (!previewMode.value) {
+        replaceContent(editor, body.data);
+      }
     };
 
     const handleToCURL = async () => {
@@ -193,12 +222,23 @@ export default defineComponent({
       latency,
       statusCode,
       apiID,
+      previewMode,
+      previewData,
       codeEditor,
       handleToCURL,
     };
   },
   render() {
-    const { statusCode, size, latency, apiID, curl, stats } = this;
+    const {
+      statusCode,
+      size,
+      latency,
+      apiID,
+      curl,
+      stats,
+      previewMode,
+      previewData,
+    } = this;
     let statusCodeInfo = <span></span>;
     if (statusCode === -1) {
       statusCodeInfo = <span>{i18nCollection("requesting")}</span>;
@@ -261,17 +301,25 @@ export default defineComponent({
       );
     });
 
+    const codeEditorCls = {
+      codeEditor: true,
+      hidden: false,
+    };
+    if (previewMode) {
+      codeEditorCls.hidden = true;
+    }
+
     return (
       <div class={responseClass}>
         <NSpace class="infos">
-          {statusCode > 0 && apiID && (
+          {apiID && (
             <NPopover v-slots={apiIDSlots} trigger="click" placement="bottom">
               <NDescriptions labelPlacement="left">
                 {descriptionItems}
               </NDescriptions>
             </NPopover>
           )}
-          {statusCode > 0 && (
+          {apiID && (
             <NPopover
               v-slots={curlSlots}
               trigger="click"
@@ -292,7 +340,13 @@ export default defineComponent({
           {latency > 0 && formatLatency(latency)}
         </NSpace>
         <NDivider />
-        <div ref="codeEditor" class="codeEditor"></div>
+        <div ref="codeEditor" class={codeEditorCls}></div>
+        {codeEditorCls.hidden && (
+          <ExPreview
+            contentType={previewData.contentType}
+            data={previewData.data}
+          />
+        )}
       </div>
     );
   },
