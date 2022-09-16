@@ -105,10 +105,12 @@ export default defineComponent({
       {
         title: i18nCookie("domain"),
         key: "domain",
+        width: 130,
       },
       {
         title: i18nCookie("expires"),
         key: "expires",
+        width: 200,
       },
       {
         title: i18nCookie("op"),

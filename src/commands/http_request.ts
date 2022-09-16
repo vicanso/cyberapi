@@ -1,7 +1,8 @@
 import { forEach, isArray } from "lodash-es";
 import { encode } from "js-base64";
 import { ulid } from "ulid";
-import { getVersion } from "@tauri-apps/api/app";
+import { getVersion, getTauriVersion } from "@tauri-apps/api/app";
+import { arch, type, version } from "@tauri-apps/api/os";
 
 import { run, cmdDoHTTPRequest } from "./invoke";
 import { KVParam } from "./interface";
@@ -136,7 +137,8 @@ export async function convertKVParams(params: KVParam[]) {
 
 export const abortRequestID = ulid();
 
-let appVersion = "";
+// Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)
+let userAgent = "";
 
 export async function doHTTPRequest(
   id: string,
@@ -218,10 +220,15 @@ export async function doHTTPRequest(
     return Promise.resolve(resp);
   }
 
-  if (!appVersion) {
-    appVersion = await getVersion();
+  if (!userAgent) {
+    const appVersion = await getVersion();
+    const appOS = await type();
+    const appOSVersion = await version();
+    const appArch = await arch();
+    const tauriVersion = await getTauriVersion();
+    userAgent = `CyberAPI/${appVersion} (${appOS}; tauri/${tauriVersion}; ${appOSVersion}; ${appArch})`;
   }
-  const userAgent = `CyberAPI/${appVersion}`;
+
   params.headers.push({
     key: "User-Agent",
     value: userAgent,

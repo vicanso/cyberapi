@@ -3,6 +3,8 @@
 
 CyberAPI是基于[tauri](https://github.com/tauri-apps/tauri)开发的跨平台API客户端，用于开发测试HTTP的接口，提供macos、windows与linux三个系统的安装包，安装包均在10MB以下，启动时间在1秒以下，性能表现也挺不错。
 
+需要注意如果是win7或者未安装Edge的windows，在安装时会提示需要执行MicrosoftEdgeUpdateSetup的程序，如果杀毒软件提示允许执行即可。
+
 <p align="center">
     <img src="./asset/cyberapi.png" alt="cyberapi">
 </p>

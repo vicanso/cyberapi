@@ -7,6 +7,6 @@ fmt:
 dev:
 	npm run tauri dev
 icon:
-	npx @tauri-apps/tauricon ./cyberapi.svg
+	cargo tauri icon ./cyberapi.png
 build:
 	cargo tauri build

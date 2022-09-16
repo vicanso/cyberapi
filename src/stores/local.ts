@@ -47,10 +47,13 @@ export const getPinRequestStore = createNewStore(StoreKey.pinRequests);
 // 最新请求响应
 export const getLatestResponseStore = createNewStore(StoreKey.latestResponse);
 
+
+const langKey = "lang";
+
 const getLangStore = createNewStore(StoreKey.lang);
 // 语言配置
 export async function getLang() {
-  const lang = await getLangStore().getItem("lang");
+  const lang = await getLangStore().getItem(langKey);
   if (lang) {
     return lang as string;
   }
@@ -59,7 +62,7 @@ export async function getLang() {
 }
 
 export async function setLang(lang: string) {
-  await getLangStore().setItem("lang", lang);
+  await getLangStore().setItem(langKey, lang);
 }
 
 export async function clearStore(name: StoreKey) {
