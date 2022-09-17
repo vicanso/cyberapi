@@ -124,6 +124,7 @@ export default defineComponent({
 
     let req: HTTPRequest;
 
+    const reqExists = ref(false);
     const curl = ref("");
 
     const fillValues = async (resp: HTTPResponse) => {
@@ -162,6 +163,11 @@ export default defineComponent({
       latency.value = resp.latency;
       apiID.value = resp.api;
       req = resp.req;
+      if (!req) {
+        reqExists.value = false;
+      } else {
+        reqExists.value = true;
+      }
       curl.value = "";
       stats.value = resp.stats;
       if (!previewMode.value) {
@@ -217,6 +223,7 @@ export default defineComponent({
 
     return {
       curl,
+      reqExists,
       size,
       stats,
       latency,
@@ -235,6 +242,7 @@ export default defineComponent({
       latency,
       apiID,
       curl,
+      reqExists,
       stats,
       previewMode,
       previewData,
@@ -319,7 +327,7 @@ export default defineComponent({
               </NDescriptions>
             </NPopover>
           )}
-          {apiID && (
+          {reqExists && (
             <NPopover
               v-slots={curlSlots}
               trigger="click"

@@ -371,9 +371,14 @@ export default defineComponent({
                 handleCollection(item, key);
               }}
             >
-              <NButton quaternary class="preventDefault">
-                <NIcon class="preventDefault">
-                  <ListOutline class="preventDefault" />
+              <NButton
+                quaternary
+                onClick={(e) => {
+                  e.stopPropagation();
+                }}
+              >
+                <NIcon>
+                  <ListOutline />
                 </NIcon>
               </NButton>
             </NDropdown>
@@ -383,11 +388,7 @@ export default defineComponent({
           <NGi key={item.id}>
             <div
               class={collectionContentClass}
-              onClick={(e) => {
-                if (nodeHasClass(e.target, "preventDefault")) {
-                  e.preventDefault();
-                  return;
-                }
+              onClick={() => {
                 goTo(names.collection, {
                   query: {
                     id: item.id,

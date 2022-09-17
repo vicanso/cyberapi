@@ -47,7 +47,6 @@ export const getPinRequestStore = createNewStore(StoreKey.pinRequests);
 // 最新请求响应
 export const getLatestResponseStore = createNewStore(StoreKey.latestResponse);
 
-
 const langKey = "lang";
 
 const getLangStore = createNewStore(StoreKey.lang);

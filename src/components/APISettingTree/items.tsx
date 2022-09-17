@@ -634,21 +634,14 @@ export default defineComponent({
         }
         const onClick =
           item.id !== selectedID
-            ? (e: MouseEvent) => {
+            ? () => {
                 if (this.renameItem.id) {
                   this.renameItem = {
                     id: "",
                     name: "",
                   };
                 }
-                const { target } = e;
-                if (
-                  nodeHasClass(target, "preventDefault") ||
-                  nodeGetTagName(target) === "path"
-                ) {
-                  e.preventDefault();
-                  return;
-                }
+
                 this.handleClick(item);
               }
             : undefined;

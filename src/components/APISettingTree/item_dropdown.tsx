@@ -354,9 +354,14 @@ export default defineComponent({
           return <span class="option">{option.label}</span>;
         }}
       >
-        <span class="preventDefault itemDropitem">
-          <NIcon class="preventDefault">
-            <ChevronDownOutline class="preventDefault" />
+        <span
+          class="itemDropitem"
+          onClick={(e) => {
+            e.stopPropagation();
+          }}
+        >
+          <NIcon>
+            <ChevronDownOutline />
           </NIcon>
         </span>
       </NDropdown>
