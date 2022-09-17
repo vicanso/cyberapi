@@ -1,0 +1,31 @@
+{
+  "name": "web",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "format": "prettier --write src/*.ts src/*.tsx src/**/*.ts src/**/*.tsx src/**/**/*.tsx",
+    "lint": "eslint . --ext .js,.tsx,.ts --fix && vue-tsc --noEmit",
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@linaria/core": "3.0.0-beta.22",
+    "naive-ui": "^2.33.3",
+    "vue": "^3.2.37",
+    "vue-router": "^4.1.5"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^5.35.1",
+    "@vitejs/plugin-vue": "^3.1.0",
+    "@vitejs/plugin-vue-jsx": "^2.0.1",
+    "eslint": "^8.23.0",
+    "eslint-plugin-vue": "^9.4.0",
+    "prettier": "^2.7.1",
+    "typescript": "^4.6.4",
+    "vite": "^3.1.0",
+    "vite-plugin-linaria": "^1.0.0",
+    "vite-svg-loader": "^3.6.0",
+    "vue-tsc": "^0.40.4"
+  }
+}

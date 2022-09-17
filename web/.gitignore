@@ -22,8 +22,3 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-stats.html
-
-# Added by cargo
-
-/target
