@@ -25,6 +25,7 @@ async fn main() {
     // build our application with a route
     let app = Router::new()
         .route("/", get(root))
+        .route("/ping", get(ping))
         .route("/docs/:name", get(root))
         .route("/api/markdowns/v1/:name", get(markdown))
         .fallback_service(get_service(ServeDir::new(static_path)).handle_error(handle_error))
@@ -50,6 +51,10 @@ async fn root() -> Html<String> {
     let file = path::Path::new(static_path.as_str()).join("index.html");
     let result = fs::read_to_string(file).unwrap();
     Html(result)
+}
+
+async fn ping() -> &'static str {
+    return "pong"
 }
 
 #[derive(Serialize)]

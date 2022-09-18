@@ -41,5 +41,6 @@ WORKDIR /home/rust
 
 HEALTHCHECK --timeout=10s --interval=10s CMD [ "wget", "http://127.0.0.1:3000/ping", "-q", "-O", "-"]
 
+CMD ["cyberapi-web"]
 
 ENTRYPOINT ["/entrypoint.sh"]
