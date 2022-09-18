@@ -4,7 +4,7 @@ import { NButton, NGradientText } from "naive-ui";
 import { RouterLink } from "vue-router";
 
 import { MAIN_CONTENT_WIDTH } from "../constant";
-import { goToDoc, goToHome } from "../router";
+import { goToDoc } from "../router";
 import { names } from "../router/routes";
 
 const headerClass = css`
@@ -52,7 +52,7 @@ export default defineComponent({
                 goToDoc("start");
               }}
             >
-              立即使用
+              开始使用
             </NButton>
             <NButton text>下载APP</NButton>
           </div>

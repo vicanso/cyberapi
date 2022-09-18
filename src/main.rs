@@ -1,13 +1,13 @@
 use axum::{
+    extract::Path,
     http::StatusCode,
     response::Html,
     response::IntoResponse,
-    extract::{Path},
-    routing::{get, get_service, post},
+    routing::{get, get_service},
     Json, Router,
 };
 use pulldown_cmark::{html, Options, Parser};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{env, fs, io, net::SocketAddr, path};
 use tower_http::{services::ServeDir, trace::TraceLayer};
 
@@ -25,6 +25,7 @@ async fn main() {
     // build our application with a route
     let app = Router::new()
         .route("/", get(root))
+        .route("/docs/:name", get(root))
         .route("/api/markdowns/v1/:name", get(markdown))
         .fallback_service(get_service(ServeDir::new(static_path)).handle_error(handle_error))
         .layer(TraceLayer::new_for_http());
@@ -52,11 +53,11 @@ async fn root() -> Html<String> {
 }
 
 #[derive(Serialize)]
-struct HTML {
+struct MarkdownResult {
     html: String,
 }
 
-async fn markdown(Path(name): Path<String>) -> Json<HTML> {
+async fn markdown(Path(name): Path<String>) -> Json<MarkdownResult> {
     let static_path = get_static_path();
     let file = path::Path::new(static_path.as_str()).join(format!("docs/{}.md", name));
     let result = fs::read_to_string(file).unwrap();
@@ -67,6 +68,6 @@ async fn markdown(Path(name): Path<String>) -> Json<HTML> {
     // Write to String buffer.
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
-    let resp = HTML { html: html_output };
+    let resp = MarkdownResult { html: html_output };
     Json(resp)
 }
