@@ -14,7 +14,6 @@ RUN apk update \
   && apk add git make \
   && cd /cberapi-web \
   && rm -rf dist \
-  && mkdir dist \
   && cp -rf web/dist dist \
   && cp -rf docs dist/ \
   && cp assets/* dist/assets \
