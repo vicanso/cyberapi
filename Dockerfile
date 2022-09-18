@@ -26,7 +26,7 @@ EXPOSE 7001
 # tzdata 安装所有时区配置或可根据需要只添加所需时区
 
 RUN addgroup -g 1000 rust \
-  && adduser -u 1000 -G go -s /bin/sh -D rust \
+  && adduser -u 1000 -G rust -s /bin/sh -D rust \
   && apk add --no-cache ca-certificates tzdata
 
 COPY --from=builder /cberapi-web/target/release/cyberapi-web /usr/local/bin/cyberapi-web
