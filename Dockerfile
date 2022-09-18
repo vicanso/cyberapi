@@ -11,7 +11,7 @@ FROM rust:alpine as builder
 COPY --from=webbuilder /cberapi-web /cberapi-web
 
 RUN apk update \
-  && apk add git make \
+  && apk add git make musl-dev \
   && cd /cberapi-web \
   && rm -rf dist \
   && cp -rf web/dist dist \
