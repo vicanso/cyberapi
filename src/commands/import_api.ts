@@ -1,5 +1,5 @@
 import { Promise } from "bluebird";
-import { get, uniq } from "lodash-es";
+import { get, uniq, forEach } from "lodash-es";
 
 import { SettingType } from "../stores/api_setting";
 import { APIFolder, createAPIFolder, newDefaultAPIFolder } from "./api_folder";
@@ -10,6 +10,11 @@ import {
 } from "./api_setting";
 import { ContentType, HTTPRequest } from "./http_request";
 import { KVParam } from "./interface";
+import {
+  Environment,
+  newDefaultEnvironment,
+  createEnvironment,
+} from "../commands/environment";
 
 interface PostManSetting {
   name: string;
@@ -36,6 +41,7 @@ interface InsomniaSetting {
   name: string;
   method: string;
   sort: number;
+  data: Map<string, string>;
   body: {
     mimeType: string;
     text: string;
@@ -259,6 +265,7 @@ export async function importAPI(params: {
     folders: [],
   };
   const json = JSON.parse(params.fileData);
+  const environments: Environment[] = [];
 
   switch (category) {
     case ImportCategory.PostMan:
@@ -273,6 +280,13 @@ export async function importAPI(params: {
           collection,
           parentChildren: [],
         });
+
+        forEach(json.variable as [], (item: { key: string; value: string }) => {
+          const env = newDefaultEnvironment();
+          env.name = item.key;
+          env.value = item.value;
+          environments.push(env);
+        });
       }
       break;
     case ImportCategory.Insomnia:
@@ -283,6 +297,15 @@ export async function importAPI(params: {
         }
         let arr = items as InsomniaSetting[];
         arr.forEach((item) => {
+          if (item._type === "environment") {
+            forEach(item.data, (value, key) => {
+              const env = newDefaultEnvironment();
+              env.name = key;
+              env.value = value as string;
+              environments.push(env);
+            });
+            return;
+          }
           if (item._type === "request_group") {
             if (item.parentId.startsWith("wrk_")) {
               item.sort = 0;
@@ -346,6 +369,12 @@ export async function importAPI(params: {
       topIDList.push(item.id);
     }
     await createAPISetting(item);
+  });
+  await Promise.each(environments, async (item) => {
+    if (!item.name && !item.value) {
+      return;
+    }
+    await createEnvironment(item);
   });
   return uniq(topIDList);
 }
