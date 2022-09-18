@@ -1,7 +1,8 @@
 import { createApp } from "vue";
 import { create } from "naive-ui";
 import "./style.css";
-import App from "./App";
+import Root from "./root";
+import router from "./router";
 
 const naive = create();
-createApp(App).use(naive).mount("#app");
+createApp(Root).use(router).use(naive).mount("#app");
