@@ -11,7 +11,18 @@ const markdownClass = css`
   margin: auto;
   width: ${MAIN_CONTENT_WIDTH}px;
   img {
+    display: block;
+    margin: 30px 0;
     max-width: 100%;
+  }
+  p {
+    font-size: 16px;
+  }
+  h2 {
+    margin-top: 50px;
+    &:first-child {
+      margin-top: 20px;
+    }
   }
 `;
 

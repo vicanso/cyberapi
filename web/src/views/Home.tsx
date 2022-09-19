@@ -29,7 +29,7 @@ const appClass = css`
     }
   }
   .desc {
-    background-color: rgba(47, 47, 47, 255);
+    background-color: #3c2c64;
     padding: 20px 30px 30px 30px;
     border-radius: 8px;
   }
@@ -74,7 +74,14 @@ export default defineComponent({
             用于开发测试HTTP的接口，提供macos、windows与linux三个系统的安装包，安装包均在10MB以下，启动时间在1秒以下，性能表现也挺不错。可直接导入postname与insomnia的配置，零成本快速迁移。
           </NText>
           <div class="functions">
-            <NButton>下载</NButton>
+            <NButton
+              onClick={() => {
+                window.location.href =
+                  "https://github.com/vicanso/cyberapi/releases";
+              }}
+            >
+              下载
+            </NButton>
           </div>
         </div>
         <NGrid xGap={20} yGap={20}>

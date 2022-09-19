@@ -6,6 +6,7 @@ import {
   NGlobalStyle,
   NMessageProvider,
   NNotificationProvider,
+  GlobalThemeOverrides,
 } from "naive-ui";
 
 import App from "./App";
@@ -13,8 +14,13 @@ import App from "./App";
 export default defineComponent({
   name: "RootView",
   render() {
+    const themeOverrides: GlobalThemeOverrides = {
+      common: {
+        bodyColor: "#292040",
+      },
+    };
     return (
-      <NConfigProvider theme={darkTheme}>
+      <NConfigProvider theme={darkTheme} themeOverrides={themeOverrides}>
         <NGlobalStyle />
         <NMessageProvider>
           <NNotificationProvider>

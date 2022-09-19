@@ -41,7 +41,15 @@ export default defineComponent({
               name: names.home,
             }}
           >
-            <NGradientText class="name" type="warning">
+            <NGradientText
+              class="name"
+              type="warning"
+              gradient={{
+                deg: 90,
+                from: "#7cb0fa",
+                to: "#ae3ff5",
+              }}
+            >
               Cyber API
             </NGradientText>
           </RouterLink>
@@ -54,7 +62,15 @@ export default defineComponent({
             >
               开始使用
             </NButton>
-            <NButton text>下载APP</NButton>
+            <NButton
+              text
+              onClick={() => {
+                window.location.href =
+                  "https://github.com/vicanso/cyberapi/releases";
+              }}
+            >
+              下载APP
+            </NButton>
           </div>
         </div>
       </header>
