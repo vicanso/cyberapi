@@ -1,5 +1,5 @@
 import { Promise } from "bluebird";
-import { get, uniq, forEach } from "lodash-es";
+import { get, uniq, forEach, has } from "lodash-es";
 
 import { SettingType } from "../stores/api_setting";
 import { APIFolder, createAPIFolder, newDefaultAPIFolder } from "./api_folder";
@@ -259,13 +259,19 @@ export async function importAPI(params: {
   collection: string;
   fileData: string;
 }): Promise<string[]> {
-  const { collection, category } = params;
+  let category = params.category;
+  const { collection } = params;
   const result: ImportData = {
     settings: [],
     folders: [],
   };
   const json = JSON.parse(params.fileData);
   const environments: Environment[] = [];
+  if (has(json, "item")) {
+    category = ImportCategory.PostMan;
+  } else if (has(json, "resources")) {
+    category = ImportCategory.Insomnia;
+  }
 
   switch (category) {
     case ImportCategory.PostMan:
@@ -374,6 +380,7 @@ export async function importAPI(params: {
     if (!item.name && !item.value) {
       return;
     }
+    item.collection = collection;
     await createEnvironment(item);
   });
   return uniq(topIDList);

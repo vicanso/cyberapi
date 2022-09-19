@@ -241,13 +241,7 @@ const ImportEditor = defineComponent({
               <div ref="codeEditor" class="codeEditor"></div>
             </div>
           </NTabPane>
-          <NTabPane name={ImportCategory.File} tab="File">
-            {uploadWrapper}
-          </NTabPane>
-          <NTabPane name={ImportCategory.PostMan} tab="PostMan">
-            {uploadWrapper}
-          </NTabPane>
-          <NTabPane name={ImportCategory.Insomnia} tab="Insonmia">
+          <NTabPane name={ImportCategory.File} tab="File/Postman/Insonmia">
             {uploadWrapper}
           </NTabPane>
         </NTabs>
