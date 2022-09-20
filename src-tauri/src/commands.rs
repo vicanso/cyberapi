@@ -161,3 +161,17 @@ pub fn add_cookie(c: cookies::Cookie) -> CommandResult<()> {
     cookies::add_cookie(c)?;
     Ok(())
 }
+
+// 获取最新版本
+#[command(async)]
+pub fn get_latest_version() -> CommandResult<schemas::Version> {
+    let result = schemas::get_latest_version()?;
+    Ok(result)
+}
+
+// 添加版本记录
+#[command(async)]
+pub fn add_version(version: schemas::Version) -> CommandResult<()> {
+    _ = schemas::add_version(version)?;
+    Ok(())
+}

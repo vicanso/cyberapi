@@ -3,6 +3,7 @@ mod api_folder;
 mod api_setting;
 mod database;
 mod environment;
+mod version;
 pub use api_collection::{
     add_or_update_api_collection, delete_api_collection, list_api_collection, APICollection,
 };
@@ -17,3 +18,5 @@ pub use api_setting::{
 pub use environment::{
     add_or_update_environment, delete_environment, list_environment, Environment,
 };
+
+pub use version::{add_version, get_latest_version, Version};

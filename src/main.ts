@@ -10,6 +10,7 @@ import { isWebMode } from "./helpers/util";
 import { changeI18nLocale, LANG } from "./i18n";
 import { getAppLatestRoute } from "./stores/setting";
 import { getLang } from "./stores/local";
+import { handleDatabaseCompatible } from "./commands/database";
 
 // web mode enable debug:*
 if (isWebMode()) {
@@ -19,6 +20,9 @@ if (isWebMode()) {
 const app = createApp(Root);
 
 async function init() {
+  // TODO 校验数据库版本
+  // 判断是否需要升级级别
+  await handleDatabaseCompatible();
   const lang = (await getLang()) || LANG.zh;
   changeI18nLocale(lang);
   app.use(router);

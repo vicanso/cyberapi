@@ -41,6 +41,8 @@ fn main() {
             commands::update_environment,
             commands::delete_environment,
             commands::list_environment,
+            commands::get_latest_version,
+            commands::add_version,
         ])
         .run(context)
         .expect("error while running tauri application");

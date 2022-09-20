@@ -28,6 +28,9 @@ export const cmdUpdateEnvironment = "update_environment";
 export const cmdDeleteEnvironment = "delete_environment";
 export const cmdListEnvironment = "list_environment";
 
+export const cmdGetLatestVersion = "get_latest_version";
+export const cmdAddVersion = "add_version";
+
 const debug = Debug("invoke");
 export async function run<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   if (isWebMode()) {
