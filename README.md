@@ -1,7 +1,20 @@
 # Cyber API
 
+<p align="center">
+    <img src="./cyberapi.png" alt="cyberapi" width="128">
+</p>
 
-CyberAPI是基于[tauri](https://github.com/tauri-apps/tauri)开发的跨平台API客户端，用于开发测试HTTP的接口，提供macos、windows与linux三个系统的安装包，安装包均在10MB以下，启动时间在1秒以下，性能表现也挺不错。
+<h3>
+<a href="https://github.com/vicanso/cyberapi">CyberAPI</a>是基于<a href="https://github.com/tauri-apps/tauri">tauri</a>开发的跨平台API客户端
+</h3>
+
+## 功能点
+
+- 方便快捷的HTTP请求管理
+- 少于10MB的安装包，启动时间在1秒以内
+- 各类自定义的函数，提供各请求间相关关联数据
+- 可快速导入postman与insomnia的配置
+- 支持windows、macos以及linux三个主流桌面系统
 
 需要注意如果是win7或者未安装Edge的windows，在安装时会提示需要执行MicrosoftEdgeUpdateSetup的程序，如果杀毒软件提示允许执行即可。
 
