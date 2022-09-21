@@ -4,7 +4,7 @@
     <img src="./cyberapi.png" alt="cyberapi" width="128">
 </p>
 
-<h3>
+<h3 align="center">
 <a href="https://github.com/vicanso/cyberapi">CyberAPI</a>是基于<a href="https://github.com/tauri-apps/tauri">tauri</a>开发的跨平台API客户端
 </h3>
 
