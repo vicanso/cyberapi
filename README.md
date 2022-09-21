@@ -16,13 +16,45 @@
 - 可快速导入postman与insomnia的配置
 - 支持windows、macos以及linux三个主流桌面系统
 
-需要注意如果是win7或者未安装Edge的windows，在安装时会提示需要执行MicrosoftEdgeUpdateSetup的程序，如果杀毒软件提示允许执行即可。
 
 <p align="center">
     <img src="./asset/cyberapi.png" alt="cyberapi">
 </p>
 
 CyberAPI暂时仅是开发版本，业余时间的个人项目，如果有BUG或期望新增功能可以issue，对于BUG请附上系统版本信息，本人尽可能抽时间处理。
+
+
+## 安装
+
+安装程序可以通过[release](https://github.com/vicanso/cyberapi/releases)下载，包括windows、macos以及linux版本。
+
+需要注意如果是win7或者未安装Edge的windows，在安装时会提示需要执行MicrosoftEdgeUpdateSetup的程序，如果杀毒软件提示允许执行即可。
+
+## 开发者
+
+项目依赖于rust与Nodejs，如果想自行编译或参与开发，可以先参考[这里](https://tauri.app/v1/guides/getting-started/prerequisites)的相关文档安装tauri的依赖，之后执行：
+
+```shell
+npm install
+```
+
+仅调整前端界面时可直接使用浏览器的方式来测试(增加了各类mock的接口)，执行：
+
+```shell
+npm run dev
+```
+
+如果以APP的形式运行，则执行：
+
+```shell
+make dev
+```
+
+如果想编译安装包，则执行：
+
+```shell
+make build
+```
 
 ## 创建项目
 
