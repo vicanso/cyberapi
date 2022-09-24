@@ -30,7 +30,7 @@ cookie_store = "0.16.1"
 url = "2.2.2"
 time = "0.3.13"
 hyper-timeout = "0.4.1"
-windows = "0.39.0"
+windows = "0.41.0"
 
 
 [features]
