@@ -32,13 +32,14 @@ import {
   NSpace,
   useMessage,
 } from "naive-ui";
+import { useRoute } from "vue-router";
 import { padding } from "../../constants/style";
 import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
 import { i18nCollection } from "../../i18n";
 import { convertRequestToCURL, HTTPRequest } from "../../commands/http_request";
 import { showError, writeTextToClipboard } from "../../helpers/util";
 import ExPreview, { isSupportPreview } from "../ExPreview";
-import { useRoute } from "vue-router";
+import ExTimer from "../ExTimer";
 
 const responseClass = css`
   margin-left: 5px;
@@ -252,7 +253,11 @@ export default defineComponent({
     } = this;
     let statusCodeInfo = <span></span>;
     if (statusCode === -1) {
-      statusCodeInfo = <span>{i18nCollection("requesting")}</span>;
+      statusCodeInfo = (
+        <span>
+          {i18nCollection("requesting")} <ExTimer />
+        </span>
+      );
     } else if (statusCode) {
       statusCodeInfo = (
         <NGradientText type={getStatusType(statusCode)}>
