@@ -33,6 +33,7 @@ import { usePinRequestStore } from "../stores/pin_request";
 import { useAPISettingStore } from "../stores/api_setting";
 import { setLang } from "../stores/local";
 import { reload, showError } from "../helpers/util";
+import { logoIcon } from "../icons";
 
 const logoWidth = 300;
 
@@ -44,12 +45,16 @@ const headerClass = css`
     float: left;
   }
   .logo {
-    margin-left: 15px;
-    margin-right: 10px;
+    margin-left: 10px;
     float: left;
     font-weight: 600;
+    background-image: url(${logoIcon});
+    background-repeat: no-repeat;
+    background-size: 30px;
+    background-position: left center;
+    padding-left: 40px;
     div {
-      margin-left: 20px !important;
+      margin-left: 10px !important;
     }
   }
   .breadcrumb {
