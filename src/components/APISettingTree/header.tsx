@@ -83,7 +83,7 @@ export default defineComponent({
     const apiSettingStore = useAPISettingStore();
     const collectionStore = useAPICollectionStore();
 
-    const collection = route.query.id as string;
+    const collection = route.query.collection as string;
     const addHTTPSetting = inject(
       addHTTPSettingKey,
       addHTTPSettingDefaultValue

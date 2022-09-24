@@ -62,7 +62,7 @@ export default defineComponent({
     const pinRequestStore = usePinRequestStore();
     const apiSettingStore = useAPISettingStore();
     const route = useRoute();
-    const collection = route.query.id as string;
+    const collection = route.query.collection as string;
 
     const addHTTPSetting = inject(
       addHTTPSettingKey,
@@ -196,7 +196,7 @@ export default defineComponent({
         case HandleKey.CopyAsCURL:
           {
             const req = apiSettingStore.getHTTPRequestFillENV(id);
-            convertRequestToCURL(req)
+            convertRequestToCURL(collection, req)
               .then(writeTextToClipboard)
               .then(() => {
                 message.success(i18nCollection("copyAsCURLSuccess"));

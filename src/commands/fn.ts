@@ -12,6 +12,7 @@ import md5 from "crypto-js/md5";
 
 import { getLatestResponse, getResponseBody } from "./http_response";
 interface FnHandler {
+  collection: string;
   // 原始字符
   text: string;
   // 函数列表
@@ -54,7 +55,7 @@ function trimParam(param: string): string | string[] {
   return arr;
 }
 
-export function parseFunctions(value: string): FnHandler[] {
+export function parseFunctions(collection: string, value: string): FnHandler[] {
   const reg = /\{\{([\s\S]+?)\}\}/g;
   const parmaReg = /\(([\s\S]*?)\)/;
   let result: RegExpExecArray | null;
@@ -69,6 +70,7 @@ export function parseFunctions(value: string): FnHandler[] {
     }
     const fnList = result[1].replace(paramResult[0], "").split(".");
     handlers.push({
+      collection,
       text: result[0],
       fnList: fnList,
       param: trimParam(paramResult[1]),

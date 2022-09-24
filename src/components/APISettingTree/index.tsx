@@ -59,7 +59,7 @@ export default defineComponent({
     const dialog = useDialog();
     const route = useRoute();
     const message = useMessage();
-    const collection = route.query.id as string;
+    const collection = route.query.collection as string;
 
     provide(addHTTPSettingKey, (folder: string) => {
       ExDialog({

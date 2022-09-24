@@ -43,7 +43,7 @@ export default defineComponent({
   setup() {
     const message = useMessage();
     const route = useRoute();
-    const collection = route.query.id as string;
+    const collection = route.query.collection as string;
     const environmentStore = useEnvironmentStore();
     const { environments, fetching } = storeToRefs(environmentStore);
     onBeforeMount(async () => {

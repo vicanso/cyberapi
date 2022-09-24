@@ -40,7 +40,7 @@ export default defineComponent({
   name: "CollectionView",
   setup() {
     const route = useRoute();
-    const collection = route.query.id as string;
+    const collection = route.query.collection as string;
     const message = useMessage();
     const headerStore = useHeaderStore();
     const settingStore = useSettingStore();
@@ -140,7 +140,7 @@ export default defineComponent({
           status: -1,
         } as HTTPResponse;
         sending.value = true;
-        const res = await doHTTPRequest(id, req);
+        const res = await doHTTPRequest(id, collection, req);
         if (isCurrnetRequest(reqID)) {
           response.value = res;
         }

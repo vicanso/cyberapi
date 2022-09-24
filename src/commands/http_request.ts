@@ -53,7 +53,12 @@ function convertKVListToURLValues(kvList: KVParam[]) {
   return arr;
 }
 
-export async function convertRequestToCURL(req: HTTPRequest) {
+export async function convertRequestToCURL(
+  collection: string,
+  req: HTTPRequest
+) {
+  await convertKVParams(collection, req.query);
+  await convertKVParams(collection, req.headers);
   const queryList = convertKVListToURLValues(req.query);
 
   let uri = req.uri;
@@ -94,7 +99,7 @@ export async function convertRequestToCURL(req: HTTPRequest) {
       default:
         break;
     }
-    body = await convertBody(body);
+    body = await convertBody(collection, body);
     body = ` -d '${body}' `;
   }
   const method = req.method || "GET";
@@ -103,8 +108,8 @@ export async function convertRequestToCURL(req: HTTPRequest) {
   )} '${uri}'`;
 }
 
-async function convertBody(body: string) {
-  const handlers = parseFunctions(body);
+async function convertBody(collection: string, body: string) {
+  const handlers = parseFunctions(collection, body);
   if (handlers.length === 0) {
     return body;
   }
@@ -117,10 +122,13 @@ async function convertBody(body: string) {
   return body;
 }
 
-export async function convertKVParams(params: KVParam[]) {
+export async function convertKVParams(collection: string, params: KVParam[]) {
+  if (!params || params.length === 0) {
+    return;
+  }
   for (let i = 0; i < params.length; i++) {
     const param = params[i];
-    const handlers = parseFunctions(param.value);
+    const handlers = parseFunctions(collection, param.value);
     if (handlers.length === 0) {
       continue;
     }
@@ -142,6 +150,7 @@ let userAgent = "";
 
 export async function doHTTPRequest(
   id: string,
+  collection: string,
   req: HTTPRequest
 ): Promise<HTTPResponse> {
   if (!req.headers) {
@@ -165,7 +174,7 @@ export async function doHTTPRequest(
     body = "";
     contentType = "";
   }
-  body = await convertBody(body);
+  body = await convertBody(collection, body);
   // 如果不是json，则需要转换
   if (
     body &&
@@ -195,8 +204,8 @@ export async function doHTTPRequest(
     headers: req.headers,
     query: req.query,
   };
-  await convertKVParams(params.query);
-  await convertKVParams(params.headers);
+  await convertKVParams(collection, params.query);
+  await convertKVParams(collection, params.headers);
   if (isWebMode()) {
     const ms = Math.random() * 2000;
     await delay(ms);

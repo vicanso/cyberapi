@@ -38,7 +38,6 @@ import { goTo } from "../router";
 import { names } from "../router/routes";
 import { useHeaderStore } from "../stores/header";
 import { useSettingStore } from "../stores/setting";
-import { nodeHasClass } from "../helpers/html";
 import { HandleKey } from "../constants/handle_key";
 import { appName } from "../constants/common";
 
@@ -391,7 +390,7 @@ export default defineComponent({
               onClick={() => {
                 goTo(names.collection, {
                   query: {
-                    id: item.id,
+                    collection: item.id,
                   },
                 });
               }}

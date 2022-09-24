@@ -38,6 +38,7 @@ import { i18nCollection } from "../../i18n";
 import { convertRequestToCURL, HTTPRequest } from "../../commands/http_request";
 import { showError, writeTextToClipboard } from "../../helpers/util";
 import ExPreview, { isSupportPreview } from "../ExPreview";
+import { useRoute } from "vue-router";
 
 const responseClass = css`
   margin-left: 5px;
@@ -102,6 +103,7 @@ export default defineComponent({
     },
   },
   setup(props) {
+    const route = useRoute();
     const message = useMessage();
     const settingStore = useSettingStore();
     let editor: EditorView;
@@ -115,6 +117,7 @@ export default defineComponent({
     const latency = ref(0);
     const apiID = ref("");
     const stats = ref({} as HTTPStats);
+    const collection = route.query.collection as string;
 
     const previewMode = ref(false);
     const previewData = ref({
@@ -180,7 +183,7 @@ export default defineComponent({
         return;
       }
       try {
-        const value = await convertRequestToCURL(req);
+        const value = await convertRequestToCURL(collection, req);
         if (value.length > showCurlLimitSize) {
           await writeTextToClipboard(value);
         }

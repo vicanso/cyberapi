@@ -284,7 +284,7 @@ export default defineComponent({
     const message = useMessage();
     const route = useRoute();
     const wrapper = ref(null);
-    const collection = route.query.id as string;
+    const collection = route.query.collection as string;
 
     const collectionStore = useAPICollectionStore();
     const apiFolderStore = useAPIFolderStore();

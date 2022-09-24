@@ -38,6 +38,7 @@ const wrapperClass = css`
     }
     .submit {
       width: 80px;
+      height: 36px;
     }
   }
   .n-input,
