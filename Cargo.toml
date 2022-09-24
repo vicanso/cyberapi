@@ -13,3 +13,4 @@ tokio = { version = "1.21.1", features = ["full"] }
 tower-http = { version = "0.3.4", features = ["fs", "trace"] }
 tracing = "0.1.36"
 tracing-subscriber = { version ="0.3.15", features = ["env-filter"] }
+windows = "0.41.0"
