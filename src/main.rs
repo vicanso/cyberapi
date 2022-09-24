@@ -6,8 +6,6 @@ mod web;
 
 #[tokio::main]
 async fn main() {
-    // let static_path = get_static_path();
-
     // initialize tracing
     tracing_subscriber::fmt::init();
 

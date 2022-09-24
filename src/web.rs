@@ -21,8 +21,12 @@ pub fn new_router() -> Router {
 }
 
 fn get_static_path() -> String {
-    env::var("STATIC_PATH").unwrap()
+    if let Ok(static_path) = env::var("STATIC_PATH") {
+        return static_path
+    }
+    "/web".to_string()
 }
+    
 
 async fn handle_error(_err: io::Error) -> impl IntoResponse {
     (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong...")

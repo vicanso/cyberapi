@@ -17,6 +17,11 @@ const headerClass = css`
     max-width: ${MAIN_CONTENT_WIDTH}px;
     margin: auto;
   }
+  img {
+    float: left;
+    margin-right: 5px;
+    height: 48px;
+  }
   .name {
     font-size: 32px;
   }
@@ -41,13 +46,14 @@ export default defineComponent({
               name: names.home,
             }}
           >
+            <img src="/assets/icon.png" />
             <NGradientText
               class="name"
               type="warning"
               gradient={{
                 deg: 90,
-                from: "#7cb0fa",
-                to: "#ae3ff5",
+                from: "#b9cfef",
+                to: "#7678ef",
               }}
             >
               Cyber API
