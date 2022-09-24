@@ -1,5 +1,5 @@
 use crate::error::CyberAPIError;
-use crate::schemas::{self, APICollection, APIFolder, APISetting, Environment};
+use crate::schemas::{self, APICollection, APIFolder, APISetting, Variable};
 use crate::{cookies, http_request};
 use tauri::Manager;
 use tauri::{command, Window};
@@ -105,31 +105,30 @@ pub fn delete_api_folder(id: String) -> CommandResult<schemas::APIFolderChildren
     Ok(result)
 }
 
-// 新增环境变量
+// 新增变量
 #[command(async)]
-pub fn add_environment(env: Environment) -> CommandResult<()> {
-    schemas::add_or_update_environment(env)?;
+pub fn add_variable(value: Variable) -> CommandResult<()> {
+    schemas::add_or_update_variable(value)?;
     Ok(())
 }
 
-// 更新环境变量
+// 更新变量
 #[command(async)]
-pub fn update_environment(env: Environment) -> CommandResult<()> {
-    schemas::add_or_update_environment(env)?;
+pub fn update_variable(value: Variable) -> CommandResult<()> {
+    schemas::add_or_update_variable(value)?;
     Ok(())
 }
 
-// 更新环境变量
+// 删除变量
 #[command(async)]
-pub fn delete_environment(ids: Vec<String>) -> CommandResult<()> {
-    schemas::delete_environment(ids)?;
+pub fn delete_variable(ids: Vec<String>) -> CommandResult<()> {
+    schemas::delete_variable(ids)?;
     Ok(())
 }
-
-// 获取所有环境变量
+// 获取所有变量
 #[command(async)]
-pub fn list_environment(collection: String) -> CommandResult<Vec<Environment>> {
-    let result = schemas::list_environment(collection)?;
+pub fn list_variable(collection: String, category: String) -> CommandResult<Vec<Variable>> {
+    let result = schemas::list_variable(collection, category)?;
     Ok(result)
 }
 

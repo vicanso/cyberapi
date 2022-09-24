@@ -23,6 +23,9 @@ async function getDatabaseLatestVersion() {
 
 // handleDatabaseCompatible 处理数据库兼容
 export async function handleDatabaseCompatible() {
+  if (isWebMode()) {
+    return;
+  }
   try {
     const version = await getVersion();
     const latestVersion = await getDatabaseLatestVersion();

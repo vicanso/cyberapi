@@ -12,12 +12,12 @@ import { useRoute } from "vue-router";
 import { useEnvironmentStore } from "../stores/environment";
 import { showError } from "../helpers/util";
 import { storeToRefs } from "pinia";
-import {
-  Environment,
-  EnvironmentStatus,
-  newDefaultEnvironment,
-} from "../commands/environment";
 import ExLoading from "../components/ExLoading";
+import {
+  newDefaultVariable,
+  Variable,
+  VariableStatus,
+} from "../commands/variable";
 
 const environmentClass = css`
   max-width: 800px;
@@ -28,12 +28,12 @@ const environmentClass = css`
   }
 `;
 
-function convertKVParams(environments: Environment[]): KVParam[] {
+function convertKVParams(environments: Variable[]): KVParam[] {
   return environments.map((item) => {
     return {
       key: item.name,
       value: item.value,
-      enabled: item.enabled == EnvironmentStatus.Enabled,
+      enabled: item.enabled == VariableStatus.Enabled,
     };
   });
 }
@@ -45,7 +45,8 @@ export default defineComponent({
     const route = useRoute();
     const collection = route.query.collection as string;
     const environmentStore = useEnvironmentStore();
-    const { environments, fetching } = storeToRefs(environmentStore);
+    const { fetching } = storeToRefs(environmentStore);
+    const environments = storeToRefs(environmentStore).variables;
     onBeforeMount(async () => {
       try {
         await environmentStore.fetch(collection);
@@ -58,11 +59,11 @@ export default defineComponent({
         case HandleOptionCategory.Add:
           {
             const item = opt.param;
-            let enabled = EnvironmentStatus.Enabled;
+            let enabled = VariableStatus.Enabled;
             if (item && !item.enabled) {
-              enabled = EnvironmentStatus.Disabled;
+              enabled = VariableStatus.Disabled;
             }
-            const newEnv = newDefaultEnvironment();
+            const newEnv = newDefaultVariable();
             newEnv.collection = collection;
             newEnv.name = item?.key || "";
             newEnv.value = item?.value || "";
@@ -72,20 +73,20 @@ export default defineComponent({
           break;
         case HandleOptionCategory.Delete:
           {
-            if (opt.index < environmentStore.environments.length) {
-              const item = environmentStore.environments[opt.index];
+            if (opt.index < environmentStore.variables.length) {
+              const item = environmentStore.variables[opt.index];
               await environmentStore.remove(item.id);
             }
           }
           break;
         default:
           {
-            if (opt.index < environmentStore.environments.length) {
-              const updateItem = environmentStore.environments[opt.index];
+            if (opt.index < environmentStore.variables.length) {
+              const updateItem = environmentStore.variables[opt.index];
               const item = opt.param;
-              let enabled = EnvironmentStatus.Enabled;
+              let enabled = VariableStatus.Enabled;
               if (item && !item.enabled) {
-                enabled = EnvironmentStatus.Disabled;
+                enabled = VariableStatus.Disabled;
               }
               updateItem.name = item?.key || "";
               updateItem.value = item?.value || "";
@@ -97,16 +98,16 @@ export default defineComponent({
       }
     };
     const handleUpdate = async (params: KVParam[]) => {
-      const arr = environmentStore.environments.slice(0);
+      const arr = environmentStore.variables.slice(0);
       const promiseList = [] as Promise<void>[];
       params.forEach((item, index) => {
         const enabled = item.enabled
-          ? EnvironmentStatus.Enabled
-          : EnvironmentStatus.Disabled;
+          ? VariableStatus.Enabled
+          : VariableStatus.Disabled;
         const env = arr[index];
         // 增加元素
         if (!env) {
-          const newEnv = newDefaultEnvironment();
+          const newEnv = newDefaultVariable();
           newEnv.collection = collection;
           newEnv.name = item.key;
           newEnv.value = item.value;

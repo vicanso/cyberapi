@@ -8,14 +8,16 @@ use super::database::{
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct Environment {
+pub struct Variable {
     // id
     pub id: String,
+    // 分类
+    pub category: String,
     // collection ID
     pub collection: String,
-    // 环境变量名称
+    // 变量名称
     pub name: String,
-    // 环境变量值
+    // 变量值
     pub value: String,
     // 是否启用(0:禁用 1:启用)
     pub enabled: String,
@@ -25,10 +27,11 @@ pub struct Environment {
     pub updated_at: String,
 }
 
-impl Environment {
+impl Variable {
     fn keys() -> Vec<String> {
         vec![
             "id".to_string(),
+            "category".to_string(),
             "collection".to_string(),
             "name".to_string(),
             "value".to_string(),
@@ -48,6 +51,7 @@ impl Environment {
         }
         vec![
             self.id.clone(),
+            self.category.clone(),
             self.collection.clone(),
             self.name.clone(),
             self.value.clone(),
@@ -58,27 +62,29 @@ impl Environment {
     }
 }
 
-impl NewFromRow<Environment> for Environment {
-    fn from_row(data: &rusqlite::Row) -> Result<Environment, rusqlite::Error> {
-        Ok(Environment {
+impl NewFromRow<Variable> for Variable {
+    fn from_row(data: &rusqlite::Row) -> Result<Variable, rusqlite::Error> {
+        Ok(Variable {
             id: data.get(0)?,
-            collection: data.get(1)?,
-            name: data.get(2)?,
-            value: data.get(3)?,
-            enabled: data.get(4)?,
-            created_at: data.get(5)?,
-            updated_at: data.get(6)?,
+            category: data.get(1)?,
+            collection: data.get(2)?,
+            name: data.get(3)?,
+            value: data.get(4)?,
+            enabled: data.get(5)?,
+            created_at: data.get(6)?,
+            updated_at: data.get(7)?,
         })
     }
 }
 
-static TABLE_NAME: &str = "environments";
+static TABLE_NAME: &str = "variables";
 
-fn create_environment_if_not_exist() -> Result<usize, rusqlite::Error> {
+fn create_value_if_not_exist() -> Result<usize, rusqlite::Error> {
     let conn = get_conn();
     let sql = format!(
         "CREATE TABLE IF NOT EXISTS  {} (
             id TEXT PRIMARY KEY NOT NULL check (id != ''),
+            category TEXT NOT NULL check (category != ''),
             collection TEXT NOT NULL check (collection != ''),
             name TEXT DEFAULT '',
             value TEXT DEFAULT '',
@@ -91,22 +97,24 @@ fn create_environment_if_not_exist() -> Result<usize, rusqlite::Error> {
     conn.execute(&sql, [])
 }
 
-pub fn add_or_update_environment(env: Environment) -> Result<usize, rusqlite::Error> {
-    create_environment_if_not_exist()?;
-    add_or_update_record(TABLE_NAME, Environment::keys(), env.values())
+pub fn add_or_update_variable(value: Variable) -> Result<usize, rusqlite::Error> {
+    create_value_if_not_exist()?;
+    add_or_update_record(TABLE_NAME, Variable::keys(), value.values())
 }
 
-pub fn list_environment(collection: String) -> Result<Vec<Environment>, rusqlite::Error> {
-    // 有可能未有table，先创建
-    create_environment_if_not_exist()?;
+pub fn list_variable(
+    collection: String,
+    category: String,
+) -> Result<Vec<Variable>, rusqlite::Error> {
+    create_value_if_not_exist()?;
     let sql = format!(
-        "SELECT {} FROM {} WHERE collection = ?1",
-        Environment::keys().join(", "),
+        "SELECT {} FROM {} WHERE collection = ?1 and category = ?2",
+        Variable::keys().join(", "),
         TABLE_NAME
     );
-    list_condition_records::<Environment>(&sql, vec![collection])
+    list_condition_records::<Variable>(&sql, vec![collection, category])
 }
 
-pub fn delete_environment(ids: Vec<String>) -> Result<usize, rusqlite::Error> {
+pub fn delete_variable(ids: Vec<String>) -> Result<usize, rusqlite::Error> {
     delete_by_ids(TABLE_NAME, ids)
 }

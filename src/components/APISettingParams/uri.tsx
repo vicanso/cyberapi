@@ -16,8 +16,8 @@ import { CodeSlashOutline } from "@vicons/ionicons5";
 import { i18nCollection, i18nEnvironment } from "../../i18n";
 import { HTTPRequest, HTTPMethod } from "../../commands/http_request";
 import { useEnvironmentStore, ENVRegexp } from "../../stores/environment";
-import { EnvironmentStatus } from "../../commands/environment";
 import { useDialogStore } from "../../stores/dialog";
+import { VariableStatus } from "../../commands/variable";
 
 const environmentSelectWidth = 50;
 const wrapperClass = css`
@@ -103,7 +103,7 @@ export default defineComponent({
   setup(props) {
     const dialogStore = useDialogStore();
     const environmentStore = useEnvironmentStore();
-    const { environments } = storeToRefs(environmentStore);
+    const environments = storeToRefs(environmentStore).variables;
     const uriResult = cuttingURI(props.params.uri);
 
     const currentURI = ref(uriResult.uri);
@@ -187,7 +187,7 @@ export default defineComponent({
     });
     // 只过滤启用的
     const envOptions = environments
-      .filter((item) => item.enabled === EnvironmentStatus.Enabled)
+      .filter((item) => item.enabled === VariableStatus.Enabled)
       .map((item) => {
         return {
           label: `${item.name} | ${item.value}`,

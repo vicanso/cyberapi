@@ -11,10 +11,11 @@ import {
 import { ContentType, HTTPRequest } from "./http_request";
 import { KVParam } from "./interface";
 import {
-  Environment,
-  newDefaultEnvironment,
-  createEnvironment,
-} from "../commands/environment";
+  createVariable,
+  newDefaultVariable,
+  Variable,
+  VariableCategory,
+} from "./variable";
 
 interface PostManSetting {
   name: string;
@@ -266,7 +267,7 @@ export async function importAPI(params: {
     folders: [],
   };
   const json = JSON.parse(params.fileData);
-  const environments: Environment[] = [];
+  const environments: Variable[] = [];
   if (has(json, "item")) {
     category = ImportCategory.PostMan;
   } else if (has(json, "resources")) {
@@ -288,7 +289,8 @@ export async function importAPI(params: {
         });
 
         forEach(json.variable as [], (item: { key: string; value: string }) => {
-          const env = newDefaultEnvironment();
+          const env = newDefaultVariable();
+          env.category = VariableCategory.Environment;
           env.name = item.key;
           env.value = item.value;
           environments.push(env);
@@ -305,7 +307,8 @@ export async function importAPI(params: {
         arr.forEach((item) => {
           if (item._type === "environment") {
             forEach(item.data, (value, key) => {
-              const env = newDefaultEnvironment();
+              const env = newDefaultVariable();
+              env.category = VariableCategory.Environment;
               env.name = key;
               env.value = value as string;
               environments.push(env);
@@ -381,7 +384,7 @@ export async function importAPI(params: {
       return;
     }
     item.collection = collection;
-    await createEnvironment(item);
+    await createVariable(item);
   });
   return uniq(topIDList);
 }

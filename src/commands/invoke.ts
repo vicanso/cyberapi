@@ -3,8 +3,8 @@ import Debug from "debug";
 import { isWebMode } from "../helpers/util";
 
 export const cmdAddAPISetting = "add_api_setting";
-export const cmdListAPISetting = "list_api_setting";
 export const cmdUpdateAPISetting = "update_api_setting";
+export const cmdListAPISetting = "list_api_setting";
 export const cmdDeleteAPISettings = "delete_api_settings";
 
 export const cmdAddAPIFolder = "add_api_folder";
@@ -23,10 +23,10 @@ export const cmdListCookie = "list_cookie";
 export const cmdDeleteCookie = "delete_cookie";
 export const cmdAddCookie = "add_cookie";
 
-export const cmdAddEnvironment = "add_environment";
-export const cmdUpdateEnvironment = "update_environment";
-export const cmdDeleteEnvironment = "delete_environment";
-export const cmdListEnvironment = "list_environment";
+export const cmdAddVariable = "add_variable";
+export const cmdUpdateVariable = "update_variable";
+export const cmdDeleteVariable = "delete_variable";
+export const cmdListVariable = "list_variable";
 
 export const cmdGetLatestVersion = "get_latest_version";
 export const cmdAddVersion = "add_version";
