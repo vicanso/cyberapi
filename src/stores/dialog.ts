@@ -7,6 +7,7 @@ export const useDialogStore = defineStore("dialogs", {
       showCookie: false,
       showEnvironment: false,
       showStore: false,
+      showCustomizeVariableStore: false,
     };
   },
   actions: {
@@ -21,6 +22,9 @@ export const useDialogStore = defineStore("dialogs", {
     },
     toggleStoreDialog(shown: boolean) {
       this.showStore = shown;
+    },
+    toggleCustomizeVariableDialog(shown: boolean) {
+      this.showCustomizeVariableStore = shown;
     },
   },
 });

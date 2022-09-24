@@ -91,6 +91,7 @@ export default {
     storeSetting: "存储设置",
     appSetting: "应用设置",
     envSetting: "环境变量设置",
+    customizeVariableSetting: "变量设置",
     langChangeSuccess: "修改语言配置成功，应用将在3秒后重启",
     browser: "浏览器",
   },
@@ -116,6 +117,10 @@ export default {
     uriIsNil: "请求地址不能为空",
     addNew: "添加环境变量",
     clearCurrent: "清除当前值",
+  },
+  customizeVariable: {
+    title: "自定义变量",
+    tips: "自定义变量，可存储常用的变量值，通过value函数获取变量值",
   },
   store: {
     title: "应用相关存储",

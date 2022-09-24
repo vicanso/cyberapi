@@ -11,6 +11,7 @@ import sha256 from "crypto-js/sha256";
 import md5 from "crypto-js/md5";
 
 import { getLatestResponse, getResponseBody } from "./http_response";
+import { listVariable, VariableCategory, VariableStatus } from "./variable";
 interface FnHandler {
   collection: string;
   // 原始字符
@@ -36,6 +37,7 @@ enum Fn {
   ts = "ts",
   md5 = "md5",
   sha256 = "sha256",
+  value = "value",
 }
 
 function trimParam(param: string): string | string[] {
@@ -116,7 +118,7 @@ function convertToFsParams(p: unknown): FsParams {
 }
 
 export async function doFnHandler(handler: FnHandler): Promise<string> {
-  const { param, fnList } = handler;
+  const { param, fnList, collection } = handler;
   let p: unknown = param;
   const size = fnList.length;
   //   函数处理从后往前
@@ -175,6 +177,22 @@ export async function doFnHandler(handler: FnHandler): Promise<string> {
           if (resp) {
             const result = getResponseBody(resp);
             p = get(result.json, arr[1].trim());
+          }
+        }
+        break;
+      case Fn.value:
+        {
+          const name = toString(p);
+          const arr = await listVariable(
+            collection,
+            VariableCategory.Customize
+          );
+          const found = arr.find(
+            (item) =>
+              item.enabled === VariableStatus.Enabled && item.name === name
+          );
+          if (found) {
+            p = found.value;
           }
         }
         break;

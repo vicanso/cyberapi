@@ -7,8 +7,14 @@ import {
   listVariable,
   updateVariable,
   Variable,
+  VariableCategory,
   VariableStatus,
 } from "../commands/variable";
+
+export const useCustomizeStore = newVariableStore(
+  "customizeVariables",
+  VariableCategory.Customize
+);
 
 export function newVariableStore(name: string, category: string) {
   return defineStore(name, {

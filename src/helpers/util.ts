@@ -141,6 +141,9 @@ export function jsonFormat(data: string) {
     // 如果第一次出错，判断是否有换行，如果有，则一行行parse
     return arr
       .map((item) => {
+        if (!isJSON(item)) {
+          return item;
+        }
         return JSON.stringify(JSON.parse(item), null, 2);
       })
       .join("\n");

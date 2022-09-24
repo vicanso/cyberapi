@@ -86,20 +86,20 @@ export async function convertRequestToCURL(
   // TODO body
   let body = " ";
   if (req.body) {
+    body = await convertBody(collection, req.body);
     switch (req.contentType) {
       case ContentType.JSON:
-        body = JSON.stringify(JSON.parse(req.body));
+        body = JSON.stringify(JSON.parse(body));
         break;
       case ContentType.Form:
         {
-          const arr: KVParam[] = JSON.parse(req.body);
+          const arr: KVParam[] = JSON.parse(body);
           body = convertKVListToURLValues(arr).join("&");
         }
         break;
       default:
         break;
     }
-    body = await convertBody(collection, body);
     body = ` -d '${body}' `;
   }
   const method = req.method || "GET";

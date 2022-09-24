@@ -16,6 +16,7 @@ import {
   AppsOutline,
   BowlingBallOutline,
   CodeSlashOutline,
+  CodeWorkingOutline,
   LanguageOutline,
   ServerOutline,
   SettingsOutline,
@@ -86,6 +87,7 @@ enum FnKey {
   cookie = "cookie",
   store = "store",
   env = "env",
+  customizeVariable = "customizeVariable",
   setting = "setting",
 }
 
@@ -120,6 +122,7 @@ export default defineComponent({
     const stop = watch(
       () => apiSettingStore.selectedID,
       (id) => {
+        console.dir(id);
         // 如果不是当前的tab，是置空
         if (id !== activePinRequestID) {
           activePinRequest.value = "";
@@ -174,6 +177,9 @@ export default defineComponent({
           break;
         case FnKey.setting:
           dialogStore.toggleSettingDialog(true);
+          break;
+        case FnKey.customizeVariable:
+          dialogStore.toggleCustomizeVariableDialog(true);
           break;
         default:
           break;
@@ -288,15 +294,26 @@ export default defineComponent({
       },
     ];
     if (currentRoute == names.collection) {
-      options.unshift({
-        label: i18nSetting("envSetting"),
-        key: FnKey.env,
-        icon: () => (
-          <NIcon>
-            <CodeSlashOutline />
-          </NIcon>
-        ),
-      });
+      options.unshift(
+        {
+          label: i18nSetting("envSetting"),
+          key: FnKey.env,
+          icon: () => (
+            <NIcon>
+              <CodeSlashOutline />
+            </NIcon>
+          ),
+        },
+        {
+          label: i18nSetting("customizeVariableSetting"),
+          key: FnKey.customizeVariable,
+          icon: () => (
+            <NIcon>
+              <CodeWorkingOutline />
+            </NIcon>
+          ),
+        }
+      );
     }
 
     const langs = [

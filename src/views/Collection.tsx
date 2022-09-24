@@ -69,9 +69,9 @@ export default defineComponent({
     onBeforeMount(async () => {
       processing.value = true;
       try {
+        await usePinRequestStore().fetch(collection);
         await apiFolderStore.fetch(collection);
         await apiSettingStore.fetch(collection);
-        await usePinRequestStore().fetch(collection);
         await useEnvironmentStore().fetch(collection);
         const collectionStore = useAPICollectionStore();
         const result = await collectionStore.get(collection);

@@ -20,7 +20,7 @@ import {
 } from "naive-ui";
 import { useAPISettingStore } from "../stores/api_setting";
 import { useAPIFolderStore } from "../stores/api_folder";
-import { getNormalDialogStyle, showError } from "../helpers/util";
+import { getNormalDialogStyle, isJSON, showError } from "../helpers/util";
 import { CloudUploadOutline } from "@vicons/ionicons5";
 import { importAPI, ImportCategory } from "../commands/import_api";
 
@@ -121,7 +121,8 @@ const ImportEditor = defineComponent({
         parent: codeEditor.value,
       });
       editor.dispatch({});
-      replaceContent(editor, props.data);
+      const data = isJSON(props.data) ? props.data : "";
+      replaceContent(editor, data);
     };
     const processing = ref(false);
     const handleImport = async () => {

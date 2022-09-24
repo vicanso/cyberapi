@@ -94,6 +94,7 @@ export default {
     storeSetting: "Storage",
     appSetting: "Setting",
     envSetting: "ENV",
+    customizeVariableSetting: "Variable",
     langChangeSuccess:
       "language configuration is modified successfully, and the application will restart in 3 seconds",
     browser: "Browser",
@@ -120,6 +121,10 @@ export default {
     uriIsNil: "request address can not be blank",
     addNew: "add environmental variable",
     clearCurrent: "clear current value",
+  },
+  customizeVariable: {
+    title: "Customize Variable",
+    tips: "Customize commonly used variables, get using value function",
   },
   store: {
     title: "Storage",

@@ -6,20 +6,21 @@ import ExKeyValue, {
   HandleOption,
   HandleOptionCategory,
 } from "../components/ExKeyValue";
-import { i18nEnvironment } from "../i18n";
 import { KVParam } from "../commands/interface";
 import { useRoute } from "vue-router";
 import { useEnvironmentStore } from "../stores/environment";
+import { useCustomizeStore } from "../stores/variable";
 import { showError } from "../helpers/util";
 import { storeToRefs } from "pinia";
 import ExLoading from "../components/ExLoading";
 import {
   newDefaultVariable,
   Variable,
+  VariableCategory,
   VariableStatus,
 } from "../commands/variable";
 
-const environmentClass = css`
+const variableClass = css`
   max-width: 800px;
   .n-card__content {
     min-height: 200px;
@@ -28,8 +29,8 @@ const environmentClass = css`
   }
 `;
 
-function convertKVParams(environments: Variable[]): KVParam[] {
-  return environments.map((item) => {
+function convertKVParams(variables: Variable[]): KVParam[] {
+  return variables.map((item) => {
     return {
       key: item.name,
       value: item.value,
@@ -39,17 +40,33 @@ function convertKVParams(environments: Variable[]): KVParam[] {
 }
 
 export default defineComponent({
-  name: "EnvironmentSetting",
-  setup() {
+  name: "VariableSetting",
+  props: {
+    category: {
+      type: String,
+      required: true,
+    },
+    title: {
+      type: String,
+      required: true,
+    },
+    tips: {
+      type: String,
+      required: true,
+    },
+  },
+  setup(props) {
     const message = useMessage();
     const route = useRoute();
     const collection = route.query.collection as string;
-    const environmentStore = useEnvironmentStore();
-    const { fetching } = storeToRefs(environmentStore);
-    const environments = storeToRefs(environmentStore).variables;
+    let variableStore = useCustomizeStore();
+    if (props.category === VariableCategory.Environment) {
+      variableStore = useEnvironmentStore();
+    }
+    const { fetching, variables } = storeToRefs(variableStore);
     onBeforeMount(async () => {
       try {
-        await environmentStore.fetch(collection);
+        await variableStore.fetch(collection);
       } catch (err) {
         showError(message, err);
       }
@@ -63,26 +80,26 @@ export default defineComponent({
             if (item && !item.enabled) {
               enabled = VariableStatus.Disabled;
             }
-            const newEnv = newDefaultVariable();
-            newEnv.collection = collection;
-            newEnv.name = item?.key || "";
-            newEnv.value = item?.value || "";
-            newEnv.enabled = enabled;
-            await environmentStore.add(newEnv);
+            const value = newDefaultVariable();
+            value.collection = collection;
+            value.name = item?.key || "";
+            value.value = item?.value || "";
+            value.enabled = enabled;
+            await variableStore.add(value);
           }
           break;
         case HandleOptionCategory.Delete:
           {
-            if (opt.index < environmentStore.variables.length) {
-              const item = environmentStore.variables[opt.index];
-              await environmentStore.remove(item.id);
+            if (opt.index < variableStore.variables.length) {
+              const item = variableStore.variables[opt.index];
+              await variableStore.remove(item.id);
             }
           }
           break;
         default:
           {
-            if (opt.index < environmentStore.variables.length) {
-              const updateItem = environmentStore.variables[opt.index];
+            if (opt.index < variableStore.variables.length) {
+              const updateItem = variableStore.variables[opt.index];
               const item = opt.param;
               let enabled = VariableStatus.Enabled;
               if (item && !item.enabled) {
@@ -91,62 +108,63 @@ export default defineComponent({
               updateItem.name = item?.key || "";
               updateItem.value = item?.value || "";
               updateItem.enabled = enabled;
-              await environmentStore.update(updateItem);
+              await variableStore.update(updateItem);
             }
           }
           break;
       }
     };
     const handleUpdate = async (params: KVParam[]) => {
-      const arr = environmentStore.variables.slice(0);
+      const arr = variableStore.variables.slice(0);
       const promiseList = [] as Promise<void>[];
       params.forEach((item, index) => {
         const enabled = item.enabled
           ? VariableStatus.Enabled
           : VariableStatus.Disabled;
-        const env = arr[index];
+        const value = arr[index];
         // 增加元素
-        if (!env) {
-          const newEnv = newDefaultVariable();
-          newEnv.collection = collection;
-          newEnv.name = item.key;
-          newEnv.value = item.value;
-          newEnv.enabled = enabled;
-          promiseList.push(environmentStore.add(newEnv));
+        if (!value) {
+          const newValue = newDefaultVariable();
+          newValue.collection = collection;
+          newValue.name = item.key;
+          newValue.value = item.value;
+          newValue.enabled = enabled;
+          promiseList.push(variableStore.add(newValue));
           return;
         }
         // 其中一个不一样
         if (
-          env.name !== item.key ||
-          env.value !== item.value ||
-          env.enabled !== enabled
+          value.name !== item.key ||
+          value.value !== item.value ||
+          value.enabled !== enabled
         ) {
-          env.name = item.key;
-          env.value = item.value;
-          env.enabled = enabled;
-          promiseList.push(environmentStore.update(env));
+          value.name = item.key;
+          value.value = item.value;
+          value.enabled = enabled;
+          promiseList.push(variableStore.update(value));
         }
       });
       await Promise.all(promiseList);
     };
     return {
       fetching,
-      environments,
+      variables,
       handle,
       handleUpdate,
     };
   },
   render() {
-    const { environments, fetching } = this;
+    const { title, tips } = this.$props;
+    const { variables, fetching } = this;
     if (fetching) {
       return <ExLoading />;
     }
     return (
-      <NCard title={i18nEnvironment("title")} class={environmentClass}>
-        <NP>{i18nEnvironment("tips")}</NP>
+      <NCard title={title} class={variableClass}>
+        <NP>{tips}</NP>
         <ExKeyValue
           spans={[10, 14]}
-          params={convertKVParams(environments)}
+          params={convertKVParams(variables)}
           onHandleParam={this.handle}
         />
       </NCard>

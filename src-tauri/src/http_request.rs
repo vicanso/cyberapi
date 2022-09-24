@@ -124,10 +124,10 @@ pub async fn request(
             );
         }
     }
-    let connect_timeout = Duration::from_secs(5);
+    let connect_timeout = Duration::from_secs(10);
     let write_timeout = Duration::from_secs(5);
     // TODO 设置超时由参数指定
-    let read_timeout = Duration::from_secs(30);
+    let read_timeout = Duration::from_secs(60);
     let mut stats = HTTPStats {
         ..Default::default()
     };
