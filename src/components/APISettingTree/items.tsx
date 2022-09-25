@@ -244,6 +244,10 @@ function convertToTreeItems(params: {
   });
   if (keyword) {
     const shouldBeHide = (item: TreeItem) => {
+      // 如果当前元素匹配，则其子元素展示
+      if (isMatchTextOrPinYin(item.name, keyword)) {
+        return;
+      }
       let hidden = true;
       item.children.forEach((item) => {
         shouldBeHide(item);
@@ -252,9 +256,7 @@ function convertToTreeItems(params: {
           hidden = false;
         }
       });
-      if (isMatchTextOrPinYin(item.name, keyword)) {
-        hidden = false;
-      }
+
       item.hidden = hidden;
     };
     result.forEach(shouldBeHide);
