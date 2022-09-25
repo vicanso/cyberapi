@@ -21,7 +21,6 @@ import {
 } from "../commands/variable";
 
 const variableClass = css`
-  max-width: 800px;
   .n-card__content {
     min-height: 200px;
     max-height: 400px;
@@ -53,6 +52,10 @@ export default defineComponent({
     tips: {
       type: String,
       required: true,
+    },
+    maxWidth: {
+      type: Number,
+      default: () => 800,
     },
   },
   setup(props) {
@@ -154,16 +157,22 @@ export default defineComponent({
     };
   },
   render() {
-    const { title, tips } = this.$props;
+    const { title, tips, maxWidth } = this.$props;
     const { variables, fetching } = this;
     if (fetching) {
       return <ExLoading />;
     }
     return (
-      <NCard title={title} class={variableClass}>
+      <NCard
+        style={{
+          maxWidth: `${maxWidth}px`,
+        }}
+        title={title}
+        class={variableClass}
+      >
         <NP>{tips}</NP>
         <ExKeyValue
-          spans={[10, 14]}
+          spans={[8, 16]}
           params={convertKVParams(variables)}
           onHandleParam={this.handle}
         />

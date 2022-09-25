@@ -405,6 +405,7 @@ export default defineComponent({
     let isDragging = false;
     const draggingClass = "dragging";
     let listItems = [] as HTMLCollection[];
+    let mousedownFiredAt = 0;
     const handleMousemove = (e: MouseEvent) => {
       // 每移动两个点再处理
       if (isDragging && e.clientY % 2 !== 0) {
@@ -412,7 +413,11 @@ export default defineComponent({
         return;
       }
       const offset = e.clientY - originClientY;
-      if (!isDragging && Math.abs(offset) > 5) {
+      if (
+        !isDragging &&
+        Math.abs(offset) > 5 &&
+        Date.now() - mousedownFiredAt < 500
+      ) {
         isDragging = true;
         nodeAddClass(wrapper.value, draggingClass);
 
@@ -485,6 +490,7 @@ export default defineComponent({
       if (!e.currentTarget || e.button > 1) {
         return;
       }
+      mousedownFiredAt = Date.now();
       // TODO 此处导致无法复制，后续研究
       // e.preventDefault();
       currentInsertIndex = -1;

@@ -116,6 +116,7 @@ export default defineComponent({
         }}
       >
         <VariableSetting
+          maxWidth={1000}
           category={VariableCategory.Customize}
           title={i18nCustomizeVariable("title")}
           tips={i18nCustomizeVariable("tips")}
