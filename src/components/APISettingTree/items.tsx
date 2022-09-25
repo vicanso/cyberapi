@@ -7,7 +7,7 @@ import { sortBy, uniq } from "lodash-es";
 import { useRoute } from "vue-router";
 
 import { useAPIFolderStore } from "../../stores/api_folder";
-import { showError } from "../../helpers/util";
+import { isMatchTextOrPinYin, showError } from "../../helpers/util";
 import { useAPISettingStore, SettingType } from "../../stores/api_setting";
 import { APIFolder } from "../../commands/api_folder";
 import { APISetting } from "../../commands/api_setting";
@@ -252,7 +252,7 @@ function convertToTreeItems(params: {
           hidden = false;
         }
       });
-      if (item.name.toLowerCase().includes(keyword)) {
+      if (isMatchTextOrPinYin(item.name, keyword)) {
         hidden = false;
       }
       item.hidden = hidden;

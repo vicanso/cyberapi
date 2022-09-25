@@ -122,7 +122,6 @@ export default defineComponent({
     const stop = watch(
       () => apiSettingStore.selectedID,
       (id) => {
-        console.dir(id);
         // 如果不是当前的tab，是置空
         if (id !== activePinRequestID) {
           activePinRequest.value = "";

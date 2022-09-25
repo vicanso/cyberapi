@@ -35,6 +35,9 @@ const wrapperClass = css`
     margin-left: ${environmentSelectWidth}px;
     .method {
       width: 120px;
+      .n-base-selection {
+        height: 36px;
+      }
     }
     .submit {
       width: 80px;

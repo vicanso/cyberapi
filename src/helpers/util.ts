@@ -6,6 +6,7 @@ import { readText, writeText } from "@tauri-apps/api/clipboard";
 import { relaunch } from "@tauri-apps/api/process";
 
 import { appName } from "../constants/common";
+import getPinYin from "./pinyin";
 
 export function isWebMode() {
   return !window.__TAURI_IPC__;
@@ -148,4 +149,18 @@ export function jsonFormat(data: string) {
       })
       .join("\n");
   }
+}
+
+export function isMatchTextOrPinYin(content: string, keyword: string) {
+  const k = keyword.toLowerCase();
+  if (content.toLowerCase().includes(k)) {
+    return true;
+  }
+  const arr = getPinYin(content);
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i].includes(k) || new RegExp(arr[i]).test(k)) {
+      return true;
+    }
+  }
+  return false;
 }

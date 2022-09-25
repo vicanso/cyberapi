@@ -31,7 +31,12 @@ import {
   APICollection,
   newDefaultAPICollection,
 } from "../commands/api_collection";
-import { formatSimpleDate, setAppTitle, showError } from "../helpers/util";
+import {
+  formatSimpleDate,
+  isMatchTextOrPinYin,
+  setAppTitle,
+  showError,
+} from "../helpers/util";
 import ExLoading from "../components/ExLoading";
 import { ExFormItem } from "../components/ExForm";
 import { goTo } from "../router";
@@ -97,10 +102,11 @@ function filterAndSort(
     if (!keyword) {
       return true;
     }
-    const name = item.name.toLowerCase();
-    const description = item.description.toLowerCase();
-    const k = keyword.toLowerCase();
-    return name.includes(k) || description.includes(k);
+    const arr: string[] = [
+      item.name.toLowerCase(),
+      item.description.toLowerCase(),
+    ];
+    return isMatchTextOrPinYin(arr.join(""), keyword);
   });
   collections.sort((col1, col2) => {
     let value1 = "";

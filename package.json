@@ -26,7 +26,7 @@
     "js-base64": "^3.7.2",
     "localforage": "^1.10.0",
     "lodash-es": "^4.17.21",
-    "naive-ui": "^2.32.2",
+    "naive-ui": "^2.33.3",
     "pinia": "^2.0.21",
     "pretty-bytes": "^6.0.0",
     "ulid": "^2.3.0",

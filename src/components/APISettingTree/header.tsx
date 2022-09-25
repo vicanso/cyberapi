@@ -196,6 +196,9 @@ export default defineComponent({
       },
     ];
     const { text } = this;
+    const inputProps = {
+      spellcheck: false,
+    };
     return (
       <div class={headerClass}>
         <NGrid xGap={8}>
@@ -203,6 +206,7 @@ export default defineComponent({
             <NInput
               type="text"
               clearable
+              inputProps={inputProps}
               placeholder={text.placeholder}
               onInput={(value: string) => {
                 this.$props.onFilter(value.toLowerCase());
