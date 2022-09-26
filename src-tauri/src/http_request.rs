@@ -1,6 +1,7 @@
 use crate::cookies;
 use crate::error::CyberAPIError;
 use hyper::{
+    body::Bytes,
     client::connect::HttpInfo,
     client::HttpConnector,
     header::{HeaderName, HeaderValue},
@@ -8,9 +9,10 @@ use hyper::{
 };
 use hyper_timeout::TimeoutConnector;
 use hyper_tls::HttpsConnector;
+use libflate::gzip::Decoder;
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, time::Duration, vec};
+use std::{collections::HashMap, io::Read, time::Duration, vec};
 use time::Instant;
 use url::Url;
 
@@ -49,6 +51,7 @@ pub struct HTTPResponse {
     pub headers: HashMap<String, Vec<String>>,
     pub body: String,
     pub stats: HTTPStats,
+    pub body_size: u32,
 }
 
 pub async fn request(
@@ -166,12 +169,18 @@ pub async fn request(
     let mut set_cookies = Vec::new();
     // 对响应的header处理
     // 对于set-cookie记录至cookie store
+    let mut is_gzip = false;
+    let content_encoding_key = "content-encoding";
     for (name, value) in resp.headers() {
-        let key = name.to_string();
+        let mut key = name.to_string();
+        key = key.to_lowercase();
 
         let value = value.to_str()?.to_string();
-        if key.to_lowercase() == "set-cookie" {
+        if key == "set-cookie" {
             set_cookies.push(value.clone());
+        }
+        if key == content_encoding_key && value == "gzip" {
+            is_gzip = true;
         }
         // 响应的Header value处理
         let values: Option<&Vec<String>> = headers.get(&key);
@@ -194,12 +203,22 @@ pub async fn request(
     if let Some(info) = resp.extensions().get::<HttpInfo>() {
         stats.remote_addr = info.remote_addr().to_string();
     }
-    let buf = hyper::body::to_bytes(resp).await?;
+    let mut buf = hyper::body::to_bytes(resp).await?;
+    let body_size = buf.len();
+    // 解压gzip
+    if is_gzip {
+        let mut decoder = Decoder::new(&buf[..])?;
+        let mut decode_data = Vec::new();
+        let _ = decoder.read_to_end(&mut decode_data)?;
+        buf = Bytes::copy_from_slice(&decode_data);
+        let _ = headers.remove(content_encoding_key);
+    }
+
     stats.done = (Instant::now() - now).whole_milliseconds() as u32;
 
-    // TODO 记录数据至数据库
     let resp = HTTPResponse {
         api,
+        body_size: body_size as u32,
         latency: stats.done,
         status,
         headers,

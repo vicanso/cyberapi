@@ -37,7 +37,11 @@ import { padding } from "../../constants/style";
 import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
 import { i18nCollection } from "../../i18n";
 import { convertRequestToCURL, HTTPRequest } from "../../commands/http_request";
-import { showError, writeTextToClipboard } from "../../helpers/util";
+import {
+  convertHTTPHeaderName,
+  showError,
+  writeTextToClipboard,
+} from "../../helpers/util";
 import ExPreview, { isSupportPreview } from "../ExPreview";
 import ExTimer from "../ExTimer";
 
@@ -65,6 +69,9 @@ const responseClass = css`
     float: left;
     margin-top: 15px;
     font-size: 16px;
+  }
+  .header {
+    cursor: pointer;
   }
   .hidden {
     display: none;
@@ -118,6 +125,7 @@ export default defineComponent({
     const latency = ref(0);
     const apiID = ref("");
     const stats = ref({} as HTTPStats);
+    const headers = ref(new Map<string, string[]>());
     const collection = route.query.collection as string;
 
     const previewMode = ref(false);
@@ -166,6 +174,7 @@ export default defineComponent({
       size.value = body.size;
       latency.value = resp.latency;
       apiID.value = resp.api;
+      headers.value = resp.headers;
       req = resp.req;
       if (!req) {
         reqExists.value = false;
@@ -228,6 +237,7 @@ export default defineComponent({
     return {
       curl,
       reqExists,
+      headers,
       size,
       stats,
       latency,
@@ -246,6 +256,7 @@ export default defineComponent({
       latency,
       apiID,
       curl,
+      headers,
       reqExists,
       stats,
       previewMode,
@@ -272,6 +283,10 @@ export default defineComponent({
           <InformationCircleOutline />
         </NIcon>
       ),
+    };
+
+    const headerSlots = {
+      trigger: () => <span class="header">H</span>,
     };
 
     const curlSlots = {
@@ -309,6 +324,23 @@ export default defineComponent({
       });
     }
 
+    const headerDescriptionItems: JSX.Element[] = [];
+    if (headers && headers.size !== 0) {
+      headers.forEach((values, key) => {
+        values.forEach((value, index) => {
+          headerDescriptionItems.push(
+            <NDescriptionsItem
+              label={convertHTTPHeaderName(key)}
+              key={`${key}-${index}`}
+              span={3}
+            >
+              {value}
+            </NDescriptionsItem>
+          );
+        });
+      });
+    }
+
     const descriptionItems = descriptionItemOptions.map((item) => {
       return (
         <NDescriptionsItem label={item.label} key={item.key} span={3}>
@@ -330,8 +362,23 @@ export default defineComponent({
         <NSpace class="infos">
           {apiID && (
             <NPopover v-slots={apiIDSlots} trigger="click" placement="bottom">
-              <NDescriptions labelPlacement="left">
+              <NDescriptions labelPlacement="left" size="small">
                 {descriptionItems}
+              </NDescriptions>
+            </NPopover>
+          )}
+          {headerDescriptionItems.length !== 0 && (
+            <NPopover v-slots={headerSlots} trigger="click" placement="bottom">
+              <NDescriptions
+                contentStyle={{
+                  maxWidth: "600px",
+                  wordBreak: "break-all",
+                  wordWrap: "break-word",
+                }}
+                labelPlacement="left"
+                size="small"
+              >
+                {headerDescriptionItems}
               </NDescriptions>
             </NPopover>
           )}

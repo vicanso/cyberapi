@@ -4,9 +4,12 @@ import { get, has } from "lodash-es";
 import { appWindow } from "@tauri-apps/api/window";
 import { readText, writeText } from "@tauri-apps/api/clipboard";
 import { relaunch } from "@tauri-apps/api/process";
+import Debug from "debug";
 
 import { appName } from "../constants/common";
 import getPinYin from "./pinyin";
+
+const debug = Debug("util");
 
 export function isWebMode() {
   return !window.__TAURI_IPC__;
@@ -151,14 +154,24 @@ export function jsonFormat(data: string) {
   }
 }
 
+export function convertHTTPHeaderName(name: string) {
+  const arr = name.split("-");
+  return arr
+    .map((item) => `${item[0].toUpperCase()}${item.substring(1)}`)
+    .join("-");
+}
+
 export function isMatchTextOrPinYin(content: string, keyword: string) {
   const k = keyword.toLowerCase();
   if (content.toLowerCase().includes(k)) {
     return true;
   }
   const arr = getPinYin(content);
+
+  debug("pinyin:%s", arr.join(","));
+
   for (let i = 0; i < arr.length; i++) {
-    if (arr[i].includes(k) || new RegExp(arr[i]).test(k)) {
+    if (arr[i].includes(k)) {
       return true;
     }
   }
