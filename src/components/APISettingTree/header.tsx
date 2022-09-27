@@ -34,7 +34,11 @@ import {
   addHTTPSettingDefaultValue,
   addHTTPSettingKey,
 } from "../../constants/provide";
-import { readTextFromClipboard, showError } from "../../helpers/util";
+import {
+  readTextFromClipboard,
+  showError,
+  writeSettingToDownload,
+} from "../../helpers/util";
 import { useRoute } from "vue-router";
 import { useAPIFolderStore } from "../../stores/api_folder";
 import { useAPICollectionStore } from "../../stores/api_collection";
@@ -127,11 +131,7 @@ export default defineComponent({
       apiFolderStore.apiFolders.forEach((folder) => arr.push(folder));
       apiSettingStore.apiSettings.forEach((apiSetting) => arr.push(apiSetting));
       try {
-        const data = JSON.stringify(arr, null, 2);
-        const file = `cyberapi-${dayjs().format()}.json`;
-        await writeTextFile(file, data, {
-          dir: BaseDirectory.Download,
-        });
+        await writeSettingToDownload(arr);
         message.info(i18nCollection("exportSettingsSuccess"));
       } catch (err) {
         showError(message, err);

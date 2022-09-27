@@ -216,6 +216,7 @@ export async function doHTTPRequest(
       req: req,
       latency: Math.ceil(ms),
       status: 200,
+      bodySize: 0,
       headers,
       body: encode(JSON.stringify(params)),
       stats: {

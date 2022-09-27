@@ -19,6 +19,7 @@ import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
 import {
   readTextFromClipboard,
   showError,
+  writeSettingToDownload,
   writeTextToClipboard,
 } from "../../helpers/util";
 import { i18nCollection, i18nCommon } from "../../i18n";
@@ -107,9 +108,8 @@ export default defineComponent({
         const arr: unknown[] = [];
         folders.forEach((folder) => arr.push(folder));
         apiSettings.forEach((apiSetting) => arr.push(apiSetting));
-        const data = JSON.stringify(arr, null, 2);
-        await writeTextToClipboard(data);
-        message.info(i18nCollection("copySettingSuccess"));
+        await writeSettingToDownload(arr);
+        message.info(i18nCollection("exportSettingsSuccess"));
       } catch (err) {
         showError(message, err);
       }

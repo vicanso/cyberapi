@@ -1,7 +1,7 @@
 use crate::cookies;
 use crate::error::CyberAPIError;
 use hyper::{
-    body::Bytes,
+    body::{Buf, Bytes},
     client::connect::HttpInfo,
     client::HttpConnector,
     header::{HeaderName, HeaderValue},
@@ -170,6 +170,7 @@ pub async fn request(
     // 对响应的header处理
     // 对于set-cookie记录至cookie store
     let mut is_gzip = false;
+    let mut is_br = false;
     let content_encoding_key = "content-encoding";
     for (name, value) in resp.headers() {
         let mut key = name.to_string();
@@ -179,8 +180,13 @@ pub async fn request(
         if key == "set-cookie" {
             set_cookies.push(value.clone());
         }
-        if key == content_encoding_key && value == "gzip" {
-            is_gzip = true;
+        if key == content_encoding_key {
+            if value == "gzip" {
+                is_gzip = true;
+            }
+            if value == "br" {
+                is_br = true;
+            }
         }
         // 响应的Header value处理
         let values: Option<&Vec<String>> = headers.get(&key);
@@ -211,7 +217,13 @@ pub async fn request(
         let mut decode_data = Vec::new();
         let _ = decoder.read_to_end(&mut decode_data)?;
         buf = Bytes::copy_from_slice(&decode_data);
-        let _ = headers.remove(content_encoding_key);
+    }
+    // 解压br
+    if is_br {
+        let mut decode_data = Vec::new();
+        let mut r = buf.reader();
+        brotli_decompressor::BrotliDecompress(&mut r, &mut decode_data)?;
+        buf = Bytes::copy_from_slice(&decode_data);
     }
 
     stats.done = (Instant::now() - now).whole_milliseconds() as u32;

@@ -519,6 +519,7 @@ name = "cyberapi"
 version = "0.1.0"
 dependencies = [
  "base64 0.20.0-alpha.1",
+ "brotli-decompressor",
  "chrono",
  "cookie_store",
  "hyper",

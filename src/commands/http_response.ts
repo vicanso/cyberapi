@@ -17,6 +17,8 @@ export interface HTTPResponse {
   // api id
   api: string;
   req: HTTPRequest;
+  // 原始body的大小(未解压)
+  bodySize: number;
   // 耗时(ms)
   latency: number;
   status: number;

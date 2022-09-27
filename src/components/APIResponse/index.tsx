@@ -11,7 +11,11 @@ import { css } from "@linaria/core";
 import { EditorView } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import prettyBytes from "pretty-bytes";
-import { InformationCircleOutline, LinkOutline } from "@vicons/ionicons5";
+import {
+  BowlingBallOutline,
+  InformationCircleOutline,
+  LinkOutline,
+} from "@vicons/ionicons5";
 
 import {
   HTTPResponse,
@@ -122,6 +126,7 @@ export default defineComponent({
     };
     const statusCode = ref(0);
     const size = ref(-1);
+    const originalSize = ref(-1);
     const latency = ref(0);
     const apiID = ref("");
     const stats = ref({} as HTTPStats);
@@ -171,6 +176,7 @@ export default defineComponent({
       } else {
         previewMode.value = false;
       }
+      originalSize.value = resp.bodySize;
       size.value = body.size;
       latency.value = resp.latency;
       apiID.value = resp.api;
@@ -239,6 +245,7 @@ export default defineComponent({
       reqExists,
       headers,
       size,
+      originalSize,
       stats,
       latency,
       statusCode,
@@ -253,6 +260,7 @@ export default defineComponent({
     const {
       statusCode,
       size,
+      originalSize,
       latency,
       apiID,
       curl,
@@ -296,6 +304,14 @@ export default defineComponent({
         </NIcon>
       ),
     };
+
+    const cookieSlots = {
+      trigger: () => (
+        <NIcon class="info">
+          <BowlingBallOutline />
+        </NIcon>
+      ),
+    };
     const isTooLarge = curl.length > showCurlLimitSize;
     let curlText = i18nCollection("curlTooLargeTips");
     if (!isTooLarge) {
@@ -323,11 +339,25 @@ export default defineComponent({
         value: stats.remoteAddr,
       });
     }
-
     const headerDescriptionItems: JSX.Element[] = [];
+    const cookieDescriptionItems: JSX.Element[] = [];
+    const setCookieKey = "set-cookie";
     if (headers && headers.size !== 0) {
       headers.forEach((values, key) => {
         values.forEach((value, index) => {
+          if (key === setCookieKey) {
+            const cookie = value.split(";")[0];
+            if (!cookie) {
+              return;
+            }
+            const arr = cookie.split("=");
+            cookieDescriptionItems.push(
+              <NDescriptionsItem label={arr[0]} key={`${arr[0]}`} span={3}>
+                {arr[1]}
+              </NDescriptionsItem>
+            );
+            return;
+          }
           headerDescriptionItems.push(
             <NDescriptionsItem
               label={convertHTTPHeaderName(key)}
@@ -357,6 +387,20 @@ export default defineComponent({
       codeEditorCls.hidden = true;
     }
 
+    const popupContentStyle: StyleValue = {
+      maxWidth: "600px",
+      wordBreak: "break-all",
+      wordWrap: "break-word",
+    };
+
+    const sizeDesc: string[] = [];
+    if (size > 0) {
+      sizeDesc.push(prettyBytes(size));
+      if (originalSize > 0 && Math.abs(size - originalSize) > 100) {
+        sizeDesc.push(prettyBytes(originalSize));
+      }
+    }
+
     return (
       <div class={responseClass}>
         <NSpace class="infos">
@@ -367,14 +411,22 @@ export default defineComponent({
               </NDescriptions>
             </NPopover>
           )}
+          {cookieDescriptionItems.length !== 0 && (
+            <NPopover
+              v-slots={cookieSlots}
+              trigger="click"
+              placement="bottom"
+              contentStyle={popupContentStyle}
+            >
+              <NDescriptions labelPlacement="left" size="small">
+                {cookieDescriptionItems}
+              </NDescriptions>
+            </NPopover>
+          )}
           {headerDescriptionItems.length !== 0 && (
             <NPopover v-slots={headerSlots} trigger="click" placement="bottom">
               <NDescriptions
-                contentStyle={{
-                  maxWidth: "600px",
-                  wordBreak: "break-all",
-                  wordWrap: "break-word",
-                }}
+                contentStyle={popupContentStyle}
                 labelPlacement="left"
                 size="small"
               >
@@ -399,7 +451,7 @@ export default defineComponent({
           {statusCodeInfo}
           {/* 占位 */}
           <span> </span>
-          {size >= 0 && prettyBytes(size)}
+          {sizeDesc.length !== 0 && sizeDesc.join(" / ")}
           {latency > 0 && formatLatency(latency)}
         </NSpace>
         <NDivider />
