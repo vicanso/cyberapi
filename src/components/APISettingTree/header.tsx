@@ -11,9 +11,7 @@ import {
   useMessage,
   useDialog,
 } from "naive-ui";
-import dayjs from "dayjs";
 import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
-import { BaseDirectory, writeTextFile } from "@tauri-apps/api/fs";
 
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { SettingType, useAPISettingStore } from "../../stores/api_setting";

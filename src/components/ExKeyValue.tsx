@@ -1,14 +1,20 @@
 import { ulid } from "ulid";
-import { NButton, NGi, NGrid, NIcon, NInput } from "naive-ui";
+import { NButton, NGi, NGrid, NIcon, NInput, useMessage } from "naive-ui";
 import { defineComponent, PropType, ref } from "vue";
 import { css } from "@linaria/core";
-import { CheckboxOutline, SquareOutline } from "@vicons/ionicons5";
+import {
+  CheckboxOutline,
+  DocumentOutline,
+  SquareOutline,
+} from "@vicons/ionicons5";
 import { debounce } from "lodash-es";
+import { open } from "@tauri-apps/api/dialog";
 
 import ExDeleteCheck from "./ExDeleteCheck";
 import { KVParam } from "../commands/interface";
 import { i18nCollection } from "../i18n";
 import { padding } from "../constants/style";
+import { showError } from "../helpers/util";
 
 const kvClass = css`
   .item {
@@ -30,6 +36,9 @@ const kvClass = css`
   }
   .kv {
     margin-right: 75px;
+    &.withFile {
+      margin-right: 110px;
+    }
   }
 `;
 
@@ -69,8 +78,13 @@ export default defineComponent({
       type: Array as PropType<("textarea" | "text" | "password")[]>,
       default: () => ["textarea", "textarea"],
     },
+    supportFileSelect: {
+      type: Boolean,
+      default: () => false,
+    },
   },
   setup(props) {
+    const message = useMessage();
     const arr = props.params.map((item) => {
       return Object.assign(
         {
@@ -104,6 +118,7 @@ export default defineComponent({
         });
       }
     };
+
     const handleUpdate = (index: number) => {
       if (index >= kvList.value.length) {
         return;
@@ -134,16 +149,31 @@ export default defineComponent({
         params: kvList.value,
       });
     };
+    const selectFile = async (index: number) => {
+      if (index >= kvList.value.length) {
+        return;
+      }
+      try {
+        const selected = await open();
+        if (selected) {
+          kvList.value[index].value = ("file://" + selected) as string;
+        }
+        handleUpdate(index);
+      } catch (err) {
+        showError(message, err);
+      }
+    };
     return {
       kvList,
       handleUpdate,
+      selectFile,
       toggleEnabled,
       deleteParams,
       addParams,
     };
   },
   render() {
-    const { spans, typeList } = this.$props;
+    const { spans, typeList, supportFileSelect } = this.$props;
     const { kvList } = this;
     const arr = kvList.slice(0);
     const lastItem: KVItem = {
@@ -158,6 +188,10 @@ export default defineComponent({
     const valuePlaceholder = i18nCollection("valuePlaceholder");
     const size = arr.length;
     const inputDebounce = 200;
+    const kvCls = ["kv"];
+    if (supportFileSelect) {
+      kvCls.push("withFile");
+    }
     const list = arr.map((item, index) => {
       const isLast = index === size - 1;
       const handleFocus = () => {
@@ -170,6 +204,18 @@ export default defineComponent({
         <div class="item" key={item.id}>
           {!isLast && (
             <div class="btns">
+              {supportFileSelect && (
+                <NButton
+                  quaternary
+                  onClick={() => {
+                    this.selectFile(index);
+                  }}
+                >
+                  <NIcon>
+                    <DocumentOutline />
+                  </NIcon>
+                </NButton>
+              )}
               <NButton
                 quaternary
                 onClick={() => {
@@ -188,7 +234,7 @@ export default defineComponent({
               />
             </div>
           )}
-          <div class="kv">
+          <div class={kvCls}>
             <NGrid yGap={padding} xGap={padding}>
               <NGi span={spans[0] || 12}>
                 <NInput
@@ -212,7 +258,7 @@ export default defineComponent({
                   onFocus={handleFocus}
                   showPasswordOn="click"
                   clearable
-                  defaultValue={arr[index].value}
+                  value={arr[index].value}
                   onUpdateValue={debounce((value) => {
                     arr[index].value = value;
                     this.handleUpdate(index);

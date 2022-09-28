@@ -175,13 +175,23 @@ export async function doHTTPRequest(
     contentType = "";
   }
   body = await convertBody(collection, body);
-  // 如果不是json，则需要转换
-  if (
-    body &&
-    [ContentType.Form, ContentType.Multipart].includes(
-      contentType as ContentType
-    )
-  ) {
+  // 如果是form
+  if (body && contentType === ContentType.Form) {
+    const arr = JSON.parse(body) as KVParam[];
+    const result: string[] = [];
+    arr.forEach((item) => {
+      if (!item.enabled) {
+        return;
+      }
+      result.push(
+        `${window.encodeURIComponent(item.key)}=${window.encodeURIComponent(
+          item.value
+        )}`
+      );
+    });
+    body = result.join("&");
+  }
+  if (body && contentType === ContentType.Multipart) {
     const arr = JSON.parse(body) as KVParam[];
     const result: string[] = [];
     arr.forEach((item) => {

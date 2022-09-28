@@ -538,6 +538,7 @@ export default defineComponent({
               class="keyValue"
               spans={keyValueSpans}
               params={keyValues}
+              supportFileSelect={contentType === ContentType.Multipart}
               onHandleParam={(opt) => {
                 this.handleBodyParams(opt);
               }}
