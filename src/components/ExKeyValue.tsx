@@ -156,7 +156,10 @@ export default defineComponent({
       try {
         const selected = await open();
         if (selected) {
-          kvList.value[index].value = ("file://" + selected) as string;
+          const item = kvList.value[index];
+          item.value = ("file://" + selected) as string;
+          item.id = ulid();
+          kvList.value[index] = item;
         }
         handleUpdate(index);
       } catch (err) {
@@ -258,7 +261,7 @@ export default defineComponent({
                   onFocus={handleFocus}
                   showPasswordOn="click"
                   clearable
-                  value={arr[index].value}
+                  defaultValue={arr[index].value}
                   onUpdateValue={debounce((value) => {
                     arr[index].value = value;
                     this.handleUpdate(index);

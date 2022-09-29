@@ -23,6 +23,7 @@
     "crypto-js": "^4.1.1",
     "dayjs": "^1.11.5",
     "debug": "^4.3.4",
+    "form-data-encoder": "^2.1.2",
     "js-base64": "^3.7.2",
     "localforage": "^1.10.0",
     "lodash-es": "^4.17.21",

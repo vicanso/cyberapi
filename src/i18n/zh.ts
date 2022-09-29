@@ -110,6 +110,7 @@ export default {
     op: "操作",
     deleteCookie: "删除Cookie",
     deleteCookieContent: "确认要删除Cookie吗？",
+    neverExpired: "永久有效",
   },
   environment: {
     title: "环境变量设置",

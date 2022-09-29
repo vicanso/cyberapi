@@ -88,6 +88,10 @@ export default defineComponent({
     if (cookie.expires) {
       defaultExpires = dayjs(cookie.expires).unix() * 1000;
     }
+    const shortcuts = {
+      [i18nCookie("neverExpired")]: 32503651200000,
+    };
+
     const isAdd = !cookie.name;
     const rules = newRequireRules([
       "name",
@@ -128,7 +132,7 @@ export default defineComponent({
             </NFormItem>
           </NGi>
           <NGi span={8}>
-            <NFormItem label={i18nCookie("domain")}>
+            <NFormItem label={i18nCookie("domain")} path="domain">
               {!isAdd && <NP>{cookie.domain}</NP>}
               {isAdd && (
                 <NInput
@@ -158,6 +162,7 @@ export default defineComponent({
               <NDatePicker
                 class="widthFull"
                 type="datetime"
+                shortcuts={shortcuts}
                 placeholder={i18nCookie("expiresPlaceholder")}
                 defaultValue={defaultExpires}
                 onUpdateValue={(value) => {

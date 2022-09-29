@@ -37,6 +37,7 @@ export default defineConfig({
             "pretty-bytes",
             "codemirror",
             "crypto-js",
+            "form-data-encoder"
           ],
           ui: [
             "vue",

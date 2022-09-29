@@ -114,6 +114,7 @@ export default {
     op: "Operation",
     deleteCookie: "delete cookie",
     deleteCookieContent: "please confirm the deletion of cookie",
+    neverExpired: "Never Expired",
   },
   environment: {
     title: "Environment",

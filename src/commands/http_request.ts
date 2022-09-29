@@ -3,6 +3,9 @@ import { encode } from "js-base64";
 import { ulid } from "ulid";
 import { getVersion, getTauriVersion } from "@tauri-apps/api/app";
 import { arch, type, version } from "@tauri-apps/api/os";
+import { FormDataEncoder, FormDataEncoderHeaders } from "form-data-encoder";
+import { fromUint8Array } from "js-base64";
+import { readBinaryFile } from "@tauri-apps/api/fs";
 
 import { run, cmdDoHTTPRequest } from "./invoke";
 import { KVParam } from "./interface";
@@ -145,6 +148,47 @@ export async function convertKVParams(collection: string, params: KVParam[]) {
 
 export const abortRequestID = ulid();
 
+interface MultipartFormData {
+  headers: FormDataEncoderHeaders;
+  body: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore
+async function convertMultipartForm(body: string): Promise<MultipartFormData> {
+  const arr = JSON.parse(body) as KVParam[];
+  const form = new FormData();
+  for (let i = 0; i < arr.length; i++) {
+    const item = arr[i];
+    if (!item.enabled || !item.key) {
+      continue;
+    }
+    const fileProtocol = "file://";
+    if (item.value.startsWith(fileProtocol)) {
+      const file = item.value.substring(fileProtocol.length);
+      const fileData = await readBinaryFile(file);
+      form.append(item.key, new Blob([fileData]), file);
+      continue;
+    }
+
+    form.append(item.key, item.value);
+  }
+  // eslint-disable-next-line
+  // @ts-ignore
+  const encoder = new FormDataEncoder(form);
+  // eslint-disable-next-line
+  // @ts-ignore
+  const b = new Blob(encoder, {
+    type: encoder.contentType,
+  });
+  const buf = await b.arrayBuffer();
+  encoder.headers;
+  return {
+    headers: encoder.headers,
+    body: fromUint8Array(new Uint8Array(buf)),
+  };
+}
+
 // Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)
 let userAgent = "";
 
@@ -192,19 +236,9 @@ export async function doHTTPRequest(
     body = result.join("&");
   }
   if (body && contentType === ContentType.Multipart) {
-    const arr = JSON.parse(body) as KVParam[];
-    const result: string[] = [];
-    arr.forEach((item) => {
-      if (!item.enabled) {
-        return;
-      }
-      result.push(
-        `${window.encodeURIComponent(item.key)}=${window.encodeURIComponent(
-          item.value
-        )}`
-      );
-    });
-    body = result.join("&");
+    const data = await convertMultipartForm(body);
+    contentType = data.headers["Content-Type"];
+    body = data.body;
   }
   const params = {
     method: method,

@@ -145,6 +145,7 @@ interface TreeItem {
   parent: string;
   childIndex: number;
   hidden: boolean;
+  isLastChild: boolean;
 }
 
 function getMethodColorType(method: string) {
@@ -194,6 +195,7 @@ function convertToTreeItems(params: {
       parent: "",
       childIndex: -1,
       hidden: false,
+      isLastChild: false,
     });
   });
 
@@ -208,6 +210,7 @@ function convertToTreeItems(params: {
       childIndex: -1,
       hidden: false,
       method: "",
+      isLastChild: false,
     });
   });
 
@@ -221,16 +224,22 @@ function convertToTreeItems(params: {
     if (!treeItem) {
       return;
     }
+    const arr: string[] = [];
     item.children.split(",").forEach((child) => {
       if (!child || child === treeItem.id) {
         return;
       }
+      arr.push(child);
+    });
+    const childCount = arr.length;
+    arr.forEach((child, index) => {
       const subItem = map.get(child);
       if (!subItem) {
         return;
       }
       subItem.parent = treeItem.id;
       subItem.childIndex = treeItem.children.length;
+      subItem.isLastChild = index === childCount - 1;
       treeItem.children.push(subItem);
       children.push(child);
     });
@@ -360,9 +369,10 @@ export default defineComponent({
           insertBefore = "";
         } else {
           // 如果folder前面是元素，而且有parent
+          // 且是该folder的最后元素
           // 则添加至该元素所有在folder
           const newTarget = currentTreeItems[targetIndex - 1];
-          if (newTarget && newTarget.parent) {
+          if (newTarget && newTarget.parent && newTarget.isLastChild) {
             parentID = newTarget.parent;
             insertBefore = "";
           }

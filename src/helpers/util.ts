@@ -4,7 +4,7 @@ import { get, has } from "lodash-es";
 import { appWindow } from "@tauri-apps/api/window";
 import { readText, writeText } from "@tauri-apps/api/clipboard";
 import { relaunch } from "@tauri-apps/api/process";
-import { BaseDirectory, writeTextFile } from "@tauri-apps/api/fs";
+import { BaseDirectory, writeTextFile, exists } from "@tauri-apps/api/fs";
 import Debug from "debug";
 
 import { appName } from "../constants/common";
@@ -179,10 +179,22 @@ export function isMatchTextOrPinYin(content: string, keyword: string) {
   return false;
 }
 
-export async function writeSettingToDownload(arr: unknown) {
+export async function writeSettingToDownload(arr: unknown, name: string) {
   const data = JSON.stringify(arr, null, 2);
-  const file = `cyberapi-${dayjs().format()}.json`;
-  await writeTextFile(file, data, {
+  const baseFileName = `cyberapi-${name}`;
+  const opt = {
     dir: BaseDirectory.Download,
-  });
+  };
+  // 如果有重名的，则数字+1
+  for (let i = 0; i < 10; i++) {
+    const file = (i === 0 ? baseFileName : `${baseFileName}-${i}`) + ".json";
+    const fileExists = await exists(file, opt);
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
+    if (!fileExists) {
+      await writeTextFile(file, data, opt);
+      return;
+    }
+  }
+  throw new Error(`${baseFileName}.json exists`);
 }

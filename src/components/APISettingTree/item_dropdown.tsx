@@ -88,6 +88,7 @@ export default defineComponent({
       try {
         const apiSettings: APISetting[] = [];
         const folders: APIFolder[] = [];
+        const name = apiFolderStore.findByID(id).name;
         const appendChildren = (folderId: string) => {
           const folder = apiFolderStore.findByID(folderId);
           if (!folder) {
@@ -108,7 +109,7 @@ export default defineComponent({
         const arr: unknown[] = [];
         folders.forEach((folder) => arr.push(folder));
         apiSettings.forEach((apiSetting) => arr.push(apiSetting));
-        await writeSettingToDownload(arr);
+        await writeSettingToDownload(arr, name);
         message.info(i18nCollection("exportSettingsSuccess"));
       } catch (err) {
         showError(message, err);

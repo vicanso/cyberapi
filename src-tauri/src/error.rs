@@ -107,3 +107,12 @@ impl From<serde_json::Error> for CyberAPIError {
         }
     }
 }
+
+impl From<base64::DecodeError> for CyberAPIError {
+    fn from(error: base64::DecodeError) -> Self {
+        CyberAPIError {
+            message: error.to_string(),
+            category: "base64".to_string(),
+        }
+    }
+}

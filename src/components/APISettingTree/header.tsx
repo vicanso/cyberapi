@@ -129,7 +129,7 @@ export default defineComponent({
       apiFolderStore.apiFolders.forEach((folder) => arr.push(folder));
       apiSettingStore.apiSettings.forEach((apiSetting) => arr.push(apiSetting));
       try {
-        await writeSettingToDownload(arr);
+        await writeSettingToDownload(arr, "all");
         message.info(i18nCollection("exportSettingsSuccess"));
       } catch (err) {
         showError(message, err);

@@ -60,7 +60,15 @@ pub async fn request(
 ) -> Result<HTTPResponse, CyberAPIError> {
     let now = Instant::now();
 
-    let mut req = Request::new(Body::from(http_request.body));
+    let body = if http_request.content_type.starts_with("multipart/form-data") {
+        // 数据为base64
+        let buf = base64::decode(http_request.body)?;
+        Body::from(buf)
+    } else {
+        Body::from(http_request.body)
+    };
+
+    let mut req = Request::new(body);
 
     match http_request.method.to_uppercase().as_str() {
         "POST" => *req.method_mut() = Method::POST,
