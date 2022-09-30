@@ -4,7 +4,12 @@ import { get, has } from "lodash-es";
 import { appWindow } from "@tauri-apps/api/window";
 import { readText, writeText } from "@tauri-apps/api/clipboard";
 import { relaunch } from "@tauri-apps/api/process";
-import { BaseDirectory, writeTextFile, exists } from "@tauri-apps/api/fs";
+import {
+  BaseDirectory,
+  writeTextFile,
+  writeBinaryFile,
+  exists,
+} from "@tauri-apps/api/fs";
 import Debug from "debug";
 
 import { appName } from "../constants/common";
@@ -162,6 +167,17 @@ export function convertHTTPHeaderName(name: string) {
     .join("-");
 }
 
+function stringToArrayBuffer(data: string): Promise<ArrayBuffer> {
+  return new Promise((resolve) => {
+    const b = new Blob([data]);
+    const f = new FileReader();
+    f.onload = (e) => {
+      resolve(e.target?.result as ArrayBuffer);
+    };
+    f.readAsArrayBuffer(b);
+  });
+}
+
 export function isMatchTextOrPinYin(content: string, keyword: string) {
   const k = keyword.toLowerCase();
   if (content.toLowerCase().includes(k)) {
@@ -179,22 +195,33 @@ export function isMatchTextOrPinYin(content: string, keyword: string) {
   return false;
 }
 
-export async function writeSettingToDownload(arr: unknown, name: string) {
-  const data = JSON.stringify(arr, null, 2);
-  const baseFileName = `cyberapi-${name}`;
+export async function writeFileToDownload(file: string, data: ArrayBuffer) {
+  const arr = file.split(".");
+  let baseFileName = arr[0];
+  let ext = "";
+  if (arr.length >= 2) {
+    baseFileName = arr.slice(0, arr.length - 1).join(".");
+    ext = `.${arr[arr.length - 1]}`;
+  }
   const opt = {
     dir: BaseDirectory.Download,
   };
   // 如果有重名的，则数字+1
   for (let i = 0; i < 10; i++) {
-    const file = (i === 0 ? baseFileName : `${baseFileName}-${i}`) + ".json";
+    const file = (i === 0 ? baseFileName : `${baseFileName}-${i}`) + ext;
     const fileExists = await exists(file, opt);
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore
     if (!fileExists) {
-      await writeTextFile(file, data, opt);
+      await writeBinaryFile(file, data, opt);
       return;
     }
   }
-  throw new Error(`${baseFileName}.json exists`);
+  throw new Error(`file(${file}) exist`);
+}
+
+export async function writeSettingToDownload(arr: unknown, name: string) {
+  const data = JSON.stringify(arr, null, 2);
+  const buf = await stringToArrayBuffer(data);
+  await writeFileToDownload(`cyberapi-${name}.json`, buf);
 }

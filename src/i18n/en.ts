@@ -55,6 +55,7 @@ export default {
     settings: "Configurations",
     create: "Create",
     keywordFilterPlaceholder: "please enter a keyword",
+    saveToDownloadSuccess: "File is save to download successful",
   },
   dashboard: {
     newCollection: "Create API group",
@@ -78,7 +79,7 @@ export default {
     infoTitle: "Application Information",
     appVersion: "Version",
     platform: "Platform",
-    arch: "Framework",
+    arch: "Architecture",
     os: "OS",
     dir: "Directory",
     osVersion: "OS version",

@@ -39,15 +39,17 @@ import {
 import { useRoute } from "vue-router";
 import { padding } from "../../constants/style";
 import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
-import { i18nCollection } from "../../i18n";
+import { i18nCollection, i18nCommon } from "../../i18n";
 import { convertRequestToCURL, HTTPRequest } from "../../commands/http_request";
 import {
   convertHTTPHeaderName,
   showError,
+  writeFileToDownload,
   writeTextToClipboard,
 } from "../../helpers/util";
 import ExPreview, { isSupportPreview } from "../ExPreview";
 import ExTimer from "../ExTimer";
+import { toUint8Array } from "js-base64";
 
 const responseClass = css`
   margin-left: 5px;
@@ -146,8 +148,10 @@ export default defineComponent({
 
     const fillValues = async (resp: HTTPResponse) => {
       // 初始加载时，读取最近的响应
+      let isFromCache = false;
       if (!resp.status) {
         const tmp = await getLatestResponse(resp.api);
+        isFromCache = true;
         if (tmp) {
           resp = tmp;
         }
@@ -161,9 +165,22 @@ export default defineComponent({
       }
 
       let contentType = "";
+      let filename = "";
       resp.headers?.forEach((values, key) => {
-        if (key.toLowerCase() === "content-type") {
-          contentType = values[0];
+        const k = key.toLowerCase();
+        switch (k) {
+          case "content-type":
+            contentType = values[0];
+            break;
+          case "content-disposition":
+            {
+              const reg = /filename="([\s\S]*?)"/;
+              const result = reg.exec(values[0]);
+              if (result?.length === 2) {
+                filename = result[1];
+              }
+            }
+            break;
         }
       });
 
@@ -189,7 +206,17 @@ export default defineComponent({
       }
       curl.value = "";
       stats.value = resp.stats;
-      if (!previewMode.value) {
+      if (filename) {
+        if (!isFromCache) {
+          writeFileToDownload(filename, toUint8Array(body.data))
+            .then(() => {
+              message.info(i18nCommon("saveToDownloadSuccess"));
+            })
+            .catch((err) => {
+              showError(message, err);
+            });
+        }
+      } else if (!previewMode.value) {
         replaceContent(editor, body.data);
       }
     };

@@ -53,6 +53,7 @@ export default {
     settings: "设置",
     create: "创建",
     keywordFilterPlaceholder: "请输入关键字",
+    saveToDownloadSuccess: "文件已成功保存至下载目录",
   },
   dashboard: {
     newCollection: "创建API分组",
