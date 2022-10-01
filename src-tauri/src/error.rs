@@ -5,11 +5,12 @@ pub struct CyberAPIError {
     message: String,
     category: String,
 }
-impl From<rusqlite::Error> for CyberAPIError {
-    fn from(error: rusqlite::Error) -> Self {
+
+impl From<sea_orm::DbErr> for CyberAPIError {
+    fn from(error: sea_orm::DbErr) -> Self {
         CyberAPIError {
             message: error.to_string(),
-            category: "database".to_string(),
+            category: "seaOrm".to_string(),
         }
     }
 }

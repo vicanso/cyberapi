@@ -2,6 +2,8 @@ import { invoke, InvokeArgs } from "@tauri-apps/api/tauri";
 import Debug from "debug";
 import { isWebMode } from "../helpers/util";
 
+export const cmdInitTables = "init_tables";
+
 export const cmdAddAPISetting = "add_api_setting";
 export const cmdUpdateAPISetting = "update_api_setting";
 export const cmdListAPISetting = "list_api_setting";
@@ -40,7 +42,9 @@ export async function run<T>(cmd: string, args?: InvokeArgs): Promise<T> {
     return Promise.resolve(null);
   }
   try {
-    return await invoke<T>(cmd, args);
+    const result = await invoke<T>(cmd, args);
+    debug("invoke, result:%o", result);
+    return result;
   } catch (err) {
     // eslint-disable-next-line
     // @ts-ignore: mock

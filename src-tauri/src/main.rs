@@ -5,6 +5,7 @@
 
 mod commands;
 mod cookies;
+mod entities;
 mod error;
 mod http_request;
 mod schemas;
@@ -21,6 +22,7 @@ fn main() {
         .menu(tauri::Menu::os_default(&context.package_info().name))
         .invoke_handler(tauri::generate_handler![
             commands::close_splashscreen,
+            commands::init_tables,
             commands::add_api_setting,
             commands::update_api_setting,
             commands::list_api_setting,

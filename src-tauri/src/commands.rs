@@ -19,116 +19,123 @@ pub fn close_splashscreen(window: Window) {
 
 // 新增API配置
 #[command(async)]
-pub fn add_api_setting(setting: APISetting) -> CommandResult<()> {
-    schemas::add_or_update_api_setting(setting)?;
+pub async fn add_api_setting(setting: APISetting) -> CommandResult<()> {
+    schemas::add_api_setting(setting).await?;
     Ok(())
 }
 
 // 更新API配置
 #[command(async)]
-pub fn update_api_setting(setting: APISetting) -> CommandResult<()> {
-    schemas::add_or_update_api_setting(setting)?;
+pub async fn update_api_setting(setting: APISetting) -> CommandResult<()> {
+    schemas::update_api_setting(setting).await?;
+    Ok(())
+}
+
+// 初始化数据库
+#[command(async)]
+pub async fn init_tables() -> CommandResult<()> {
+    schemas::init_tables().await?;
     Ok(())
 }
 
 // 获取所有API配置
 #[command(async)]
-pub fn list_api_setting(collection: String) -> CommandResult<Vec<APISetting>> {
-    let result = schemas::list_api_setting(collection)?;
+pub async fn list_api_setting(collection: String) -> CommandResult<Vec<APISetting>> {
+    let result = schemas::list_api_setting(collection).await?;
     Ok(result)
 }
 
 // 删除API配置
 #[command(async)]
-pub fn delete_api_settings(ids: Vec<String>) -> CommandResult<()> {
-    schemas::delete_api_settings(ids)?;
+pub async fn delete_api_settings(ids: Vec<String>) -> CommandResult<()> {
+    schemas::delete_api_settings(ids).await?;
     Ok(())
 }
 
 // 新增collection
 #[command(async)]
-pub fn add_api_collection(collection: APICollection) -> CommandResult<()> {
-    schemas::add_or_update_api_collection(collection)?;
+pub async fn add_api_collection(collection: APICollection) -> CommandResult<()> {
+    schemas::add_api_collection(collection).await?;
     Ok(())
 }
 
 // 更新collection
 #[command(async)]
-pub fn update_api_collection(collection: APICollection) -> CommandResult<()> {
-    schemas::add_or_update_api_collection(collection)?;
+pub async fn update_api_collection(collection: APICollection) -> CommandResult<()> {
+    schemas::update_api_collection(collection).await?;
     Ok(())
 }
 
 // 获取所有collection
 #[command(async)]
-pub fn list_api_collection() -> CommandResult<Vec<APICollection>> {
-    let result = schemas::list_api_collection()?;
+pub async fn list_api_collection() -> CommandResult<Vec<APICollection>> {
+    let result = schemas::list_api_collection().await?;
     Ok(result)
 }
 
 #[command(async)]
-pub fn delete_api_collection(id: String) -> CommandResult<()> {
-    schemas::delete_api_setting_by_collection(id.clone())?;
-    schemas::delete_api_folder_by_collection(id.clone())?;
-    schemas::delete_api_collection(id)?;
+pub async fn delete_api_collection(id: String) -> CommandResult<()> {
+    schemas::delete_api_setting_by_collection(id.clone()).await?;
+    schemas::delete_api_folder_by_collection(id.clone()).await?;
+    schemas::delete_api_collection(id).await?;
     Ok(())
 }
 
 // 新增API目录
 #[command(async)]
-pub fn add_api_folder(folder: APIFolder) -> CommandResult<()> {
-    schemas::add_or_update_api_folder(folder)?;
+pub async fn add_api_folder(folder: APIFolder) -> CommandResult<()> {
+    schemas::add_api_folder(folder).await?;
     Ok(())
 }
 
 // 更新API目录
 #[command(async)]
-pub fn update_api_folder(folder: APIFolder) -> CommandResult<()> {
-    schemas::add_or_update_api_folder(folder)?;
+pub async fn update_api_folder(folder: APIFolder) -> CommandResult<()> {
+    schemas::update_api_folder(folder).await?;
     Ok(())
 }
 
 // 获取所有API目录
 #[command(async)]
-pub fn list_api_folder(collection: String) -> CommandResult<Vec<APIFolder>> {
-    let result = schemas::list_api_folder(collection)?;
+pub async fn list_api_folder(collection: String) -> CommandResult<Vec<APIFolder>> {
+    let result = schemas::list_api_folder(collection).await?;
     Ok(result)
 }
 
 // 删除API目录对应的所有子目录
 #[command(async)]
-pub fn delete_api_folder(id: String) -> CommandResult<schemas::APIFolderChildren> {
-    let mut result = schemas::list_api_folder_all_children(id.clone())?;
+pub async fn delete_api_folder(id: String) -> CommandResult<schemas::APIFolderChildren> {
+    let mut result = schemas::list_api_folder_all_children(id.clone()).await?;
     result.folders.push(id);
-    schemas::delete_api_folders(result.folders.clone())?;
-    schemas::delete_api_settings(result.settings.clone())?;
+    schemas::delete_api_folders(result.folders.clone()).await?;
+    schemas::delete_api_settings(result.settings.clone()).await?;
     Ok(result)
 }
 
 // 新增变量
 #[command(async)]
-pub fn add_variable(value: Variable) -> CommandResult<()> {
-    schemas::add_or_update_variable(value)?;
-    Ok(())
+pub async fn add_variable(value: Variable) -> CommandResult<Variable> {
+    let result = schemas::add_variable(value).await?;
+    Ok(result)
 }
 
 // 更新变量
 #[command(async)]
-pub fn update_variable(value: Variable) -> CommandResult<()> {
-    schemas::add_or_update_variable(value)?;
-    Ok(())
+pub async fn update_variable(value: Variable) -> CommandResult<Variable> {
+    let result = schemas::update_variable(value).await?;
+    Ok(result)
 }
 
 // 删除变量
 #[command(async)]
-pub fn delete_variable(ids: Vec<String>) -> CommandResult<()> {
-    schemas::delete_variable(ids)?;
-    Ok(())
+pub async fn delete_variable(ids: Vec<String>) -> CommandResult<u64> {
+    let count = schemas::delete_variable(ids).await?;
+    Ok(count)
 }
 // 获取所有变量
 #[command(async)]
-pub fn list_variable(collection: String, category: String) -> CommandResult<Vec<Variable>> {
-    let result = schemas::list_variable(collection, category)?;
+pub async fn list_variable(collection: String, category: String) -> CommandResult<Vec<Variable>> {
+    let result = schemas::list_variable(collection, category).await?;
     Ok(result)
 }
 
@@ -163,14 +170,14 @@ pub fn add_cookie(c: cookies::Cookie) -> CommandResult<()> {
 
 // 获取最新版本
 #[command(async)]
-pub fn get_latest_version() -> CommandResult<schemas::Version> {
-    let result = schemas::get_latest_version()?;
+pub async fn get_latest_version() -> CommandResult<schemas::Version> {
+    let result = schemas::get_latest_version().await?;
     Ok(result)
 }
 
 // 添加版本记录
 #[command(async)]
-pub fn add_version(version: schemas::Version) -> CommandResult<()> {
-    _ = schemas::add_version(version)?;
+pub async fn add_version(version: schemas::Version) -> CommandResult<()> {
+    schemas::add_version(version).await?;
     Ok(())
 }

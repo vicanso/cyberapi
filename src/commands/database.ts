@@ -4,7 +4,7 @@ import dayjs from "dayjs";
 import { ulid } from "ulid";
 
 import { isWebMode } from "../helpers/util";
-import { cmdAddVersion, cmdGetLatestVersion, run } from "./invoke";
+import { cmdAddVersion, cmdGetLatestVersion, cmdInitTables, run } from "./invoke";
 
 export interface Version {
   [key: string]: unknown;
@@ -27,8 +27,10 @@ export async function handleDatabaseCompatible() {
     return;
   }
   try {
+    await run(cmdInitTables);
     const version = await getVersion();
     const latestVersion = await getDatabaseLatestVersion();
+    console.dir(latestVersion);
     if (!latestVersion || latestVersion.version !== version) {
       await run(cmdAddVersion, {
         version: {

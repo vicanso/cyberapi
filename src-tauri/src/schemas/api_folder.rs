@@ -1,11 +1,10 @@
+use crate::entities::{api_folders, prelude::*};
 use chrono::Utc;
-use rusqlite::params;
+use sea_orm::{ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, vec};
+use std::collections::HashMap;
 
-use super::database::{
-    add_or_update_record, delete_by_ids, find_by_id, get_conn, list_condition_records, NewFromRow,
-};
+use super::database::get_database;
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -15,13 +14,40 @@ pub struct APIFolder {
     // collection ID
     pub collection: String,
     // 子目录ID或API ID，以,分割
-    pub children: String,
+    pub children: Option<String>,
     // 目录名称
-    pub name: String,
+    pub name: Option<String>,
     // 创建时间
-    pub created_at: String,
+    pub created_at: Option<String>,
     // 更新时间
-    pub updated_at: String,
+    pub updated_at: Option<String>,
+}
+
+impl From<api_folders::Model> for APIFolder {
+    fn from(model: api_folders::Model) -> Self {
+        APIFolder {
+            id: model.id,
+            collection: model.collection,
+            children: model.children,
+            name: model.name,
+            created_at: model.created_at,
+            updated_at: model.updated_at,
+        }
+    }
+}
+impl APIFolder {
+    fn into_active_model(self) -> api_folders::ActiveModel {
+        let created_at = self.created_at.or_else(|| Some(Utc::now().to_rfc3339()));
+        let updated_at = self.updated_at.or_else(|| Some(Utc::now().to_rfc3339()));
+        api_folders::ActiveModel {
+            id: Set(self.id),
+            collection: Set(self.collection),
+            children: Set(self.children),
+            name: Set(self.name),
+            created_at: Set(created_at),
+            updated_at: Set(updated_at),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -31,111 +57,85 @@ pub struct APIFolderChildren {
     pub settings: Vec<String>,
 }
 
-impl APIFolder {
-    fn keys() -> Vec<String> {
-        vec![
-            "id".to_string(),
-            "collection".to_string(),
-            "children".to_string(),
-            "name".to_string(),
-            "created_at".to_string(),
-            "updated_at".to_string(),
-        ]
-    }
-    fn values(&self) -> Vec<String> {
-        let mut created_at = self.created_at.clone();
-        if created_at.is_empty() {
-            created_at = Utc::now().to_rfc3339();
-        }
-        let mut updated_at = self.updated_at.clone();
-        if updated_at.is_empty() {
-            updated_at = Utc::now().to_rfc3339();
-        }
-        vec![
-            self.id.clone(),
-            self.collection.clone(),
-            self.children.clone(),
-            self.name.clone(),
-            created_at,
-            updated_at,
-        ]
-    }
-}
-
-impl NewFromRow<APIFolder> for APIFolder {
-    fn from_row(data: &rusqlite::Row) -> Result<APIFolder, rusqlite::Error> {
-        Ok(APIFolder {
-            id: data.get(0)?,
-            collection: data.get(1)?,
-            children: data.get(2)?,
-            name: data.get(3)?,
-            created_at: data.get(4)?,
-            updated_at: data.get(5)?,
-        })
-    }
-}
-
-static TABLE_NAME: &str = "api_folders";
-
-fn create_api_folders_if_not_exist() -> Result<usize, rusqlite::Error> {
-    let conn = get_conn();
-    let sql = format!(
-        "CREATE TABLE IF NOT EXISTS  {} (
+pub fn get_api_folders_create_sql() -> String {
+    "CREATE TABLE IF NOT EXISTS api_folders (
             id TEXT PRIMARY KEY NOT NULL check (id != ''),
             collection TEXT NOT NULL check (collection != ''),
             children TEXT DEFAULT '',
             name TEXT DEFAULT '',
             created_at TEXT DEFAULT '',
             updated_at TEXT DEFAULT ''
-        )",
-        TABLE_NAME
-    );
-    conn.execute(&sql, [])
+        )"
+    .to_string()
 }
 
-pub fn add_or_update_api_folder(folder: APIFolder) -> Result<usize, rusqlite::Error> {
-    create_api_folders_if_not_exist()?;
-
-    add_or_update_record(TABLE_NAME, APIFolder::keys(), folder.values())
+pub async fn add_api_folder(folder: APIFolder) -> Result<(), DbErr> {
+    let model = folder.into_active_model();
+    let db = get_database().await?;
+    model.insert(&db).await?;
+    Ok(())
 }
 
-pub fn list_api_folder(collection: String) -> Result<Vec<APIFolder>, rusqlite::Error> {
-    create_api_folders_if_not_exist()?;
-    let sql = format!(
-        "SELECT {} FROM {} WHERE collection = ?1",
-        APIFolder::keys().join(", "),
-        TABLE_NAME
-    );
-    list_condition_records::<APIFolder>(&sql, vec![collection])
+pub async fn update_api_folder(folder: APIFolder) -> Result<(), DbErr> {
+    let model = folder.into_active_model();
+    let db = get_database().await?;
+    model.update(&db).await?;
+    Ok(())
 }
 
-pub fn delete_api_folder_by_collection(collection: String) -> Result<usize, rusqlite::Error> {
-    // 有可能未有table，先创建
-    create_api_folders_if_not_exist()?;
-    let sql = format!("DELETE FROM {} WHERE collection = ?1", TABLE_NAME);
-    get_conn().execute(&sql, params![collection])
+pub async fn list_api_folder(collection: String) -> Result<Vec<APIFolder>, DbErr> {
+    let db = get_database().await?;
+    let result = ApiFolders::find()
+        .filter(api_folders::Column::Collection.eq(collection))
+        .all(&db)
+        .await?;
+    Ok(result.into_iter().map(APIFolder::from).collect())
 }
 
-pub fn delete_api_folders(ids: Vec<String>) -> Result<usize, rusqlite::Error> {
-    delete_by_ids(TABLE_NAME, ids)
+pub async fn delete_api_folder_by_collection(collection: String) -> Result<u64, DbErr> {
+    let db = get_database().await?;
+    let result = ApiFolders::delete_many()
+        .filter(api_folders::Column::Collection.eq(collection))
+        .exec(&db)
+        .await?;
+
+    Ok(result.rows_affected)
+}
+
+pub async fn delete_api_folders(ids: Vec<String>) -> Result<u64, DbErr> {
+    let db = get_database().await?;
+
+    let result = ApiFolders::delete_many()
+        .filter(api_folders::Column::Id.is_in(ids))
+        .exec(&db)
+        .await?;
+
+    Ok(result.rows_affected)
 }
 
 // 获取该目录的所有子元素（包括子元素以及子目录、子目录的子元素）
-pub fn list_api_folder_all_children(id: String) -> Result<APIFolderChildren, rusqlite::Error> {
+pub async fn list_api_folder_all_children(id: String) -> Result<APIFolderChildren, DbErr> {
     // 使用偷懒的方式，直接查询所有api folder再过滤
     let mut folder_children = HashMap::new();
     let mut folders = Vec::new();
     let mut settings = Vec::new();
     let mut children = "".to_string();
 
-    let current_folder = find_by_id::<APIFolder>(TABLE_NAME, id.clone(), APIFolder::keys())?;
-
-    // 记录所有folder与它的子目录
-    for ele in list_api_folder(current_folder.collection)? {
-        if ele.id == id {
-            children = ele.children.clone();
+    let db = get_database().await?;
+    let current_folder = ApiFolders::find()
+        .filter(api_folders::Column::Id.eq(id.clone()))
+        .one(&db)
+        .await?;
+    if let Some(folder) = current_folder {
+        // 记录所有folder与它的子目录
+        for ele in list_api_folder(folder.collection).await? {
+            if ele.id == id {
+                if let Some(data) = ele.children.clone() {
+                    children = data
+                }
+            }
+            folder_children.insert(ele.id, ele.children.clone());
         }
-        folder_children.insert(ele.id, ele.children.clone());
     }
     while !children.is_empty() {
         let arr = children.split(',');
@@ -148,9 +148,11 @@ pub fn list_api_folder_all_children(id: String) -> Result<APIFolderChildren, rus
                 // 目录
                 Some(str) => {
                     folders.push(id.to_string());
-                    // 记录子元素
-                    if !str.is_empty() {
-                        current_children.push(str.as_str());
+                    if let Some(value) = str {
+                        // 记录子元素
+                        if !value.is_empty() {
+                            current_children.push(value.as_str());
+                        }
                     }
                 }
                 None => {
