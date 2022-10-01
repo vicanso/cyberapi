@@ -39,7 +39,7 @@ pub fn get_versions_table_create_sql() -> String {
     .to_string()
 }
 
-pub async fn add_version(version: Version) -> Result<(), DbErr> {
+pub async fn add_version(version: Version) -> Result<Version, DbErr> {
     let created_at = version.created_at.or_else(|| Some(Utc::now().to_rfc3339()));
     let updated_at = version.updated_at.or_else(|| Some(Utc::now().to_rfc3339()));
     let model = versions::ActiveModel {
@@ -49,8 +49,8 @@ pub async fn add_version(version: Version) -> Result<(), DbErr> {
         updated_at: Set(updated_at),
     };
     let db = get_database().await?;
-    model.insert(&db).await?;
-    Ok(())
+    let result = model.insert(&db).await?;
+    Ok(result.into())
 }
 
 pub async fn get_latest_version() -> Result<Version, DbErr> {

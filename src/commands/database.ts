@@ -4,7 +4,12 @@ import dayjs from "dayjs";
 import { ulid } from "ulid";
 
 import { isWebMode } from "../helpers/util";
-import { cmdAddVersion, cmdGetLatestVersion, cmdInitTables, run } from "./invoke";
+import {
+  cmdAddVersion,
+  cmdGetLatestVersion,
+  cmdInitTables,
+  run,
+} from "./invoke";
 
 export interface Version {
   [key: string]: unknown;

@@ -19,16 +19,16 @@ pub fn close_splashscreen(window: Window) {
 
 // 新增API配置
 #[command(async)]
-pub async fn add_api_setting(setting: APISetting) -> CommandResult<()> {
-    schemas::add_api_setting(setting).await?;
-    Ok(())
+pub async fn add_api_setting(setting: APISetting) -> CommandResult<APISetting> {
+    let result = schemas::add_api_setting(setting).await?;
+    Ok(result)
 }
 
 // 更新API配置
 #[command(async)]
-pub async fn update_api_setting(setting: APISetting) -> CommandResult<()> {
-    schemas::update_api_setting(setting).await?;
-    Ok(())
+pub async fn update_api_setting(setting: APISetting) -> CommandResult<APISetting> {
+    let result = schemas::update_api_setting(setting).await?;
+    Ok(result)
 }
 
 // 初始化数据库
@@ -54,16 +54,16 @@ pub async fn delete_api_settings(ids: Vec<String>) -> CommandResult<()> {
 
 // 新增collection
 #[command(async)]
-pub async fn add_api_collection(collection: APICollection) -> CommandResult<()> {
-    schemas::add_api_collection(collection).await?;
-    Ok(())
+pub async fn add_api_collection(collection: APICollection) -> CommandResult<APICollection> {
+    let result = schemas::add_api_collection(collection).await?;
+    Ok(result)
 }
 
 // 更新collection
 #[command(async)]
-pub async fn update_api_collection(collection: APICollection) -> CommandResult<()> {
-    schemas::update_api_collection(collection).await?;
-    Ok(())
+pub async fn update_api_collection(collection: APICollection) -> CommandResult<APICollection> {
+    let result = schemas::update_api_collection(collection).await?;
+    Ok(result)
 }
 
 // 获取所有collection
@@ -74,25 +74,25 @@ pub async fn list_api_collection() -> CommandResult<Vec<APICollection>> {
 }
 
 #[command(async)]
-pub async fn delete_api_collection(id: String) -> CommandResult<()> {
+pub async fn delete_api_collection(id: String) -> CommandResult<u64> {
     schemas::delete_api_setting_by_collection(id.clone()).await?;
     schemas::delete_api_folder_by_collection(id.clone()).await?;
-    schemas::delete_api_collection(id).await?;
-    Ok(())
+    let count = schemas::delete_api_collection(id).await?;
+    Ok(count)
 }
 
 // 新增API目录
 #[command(async)]
-pub async fn add_api_folder(folder: APIFolder) -> CommandResult<()> {
-    schemas::add_api_folder(folder).await?;
-    Ok(())
+pub async fn add_api_folder(folder: APIFolder) -> CommandResult<APIFolder> {
+    let result = schemas::add_api_folder(folder).await?;
+    Ok(result)
 }
 
 // 更新API目录
 #[command(async)]
-pub async fn update_api_folder(folder: APIFolder) -> CommandResult<()> {
-    schemas::update_api_folder(folder).await?;
-    Ok(())
+pub async fn update_api_folder(folder: APIFolder) -> CommandResult<APIFolder> {
+    let result = schemas::update_api_folder(folder).await?;
+    Ok(result)
 }
 
 // 获取所有API目录

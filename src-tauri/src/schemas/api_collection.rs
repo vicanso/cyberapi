@@ -57,19 +57,19 @@ pub fn get_api_collections_create_sql() -> String {
     .to_string()
 }
 
-pub async fn add_api_collection(collection: APICollection) -> Result<(), DbErr> {
+pub async fn add_api_collection(collection: APICollection) -> Result<APICollection, DbErr> {
     let model: api_collections::ActiveModel = collection.into_active_model();
     let db = get_database().await?;
 
-    model.insert(&db).await?;
-    Ok(())
+    let result = model.insert(&db).await?;
+    Ok(result.into())
 }
-pub async fn update_api_collection(collection: APICollection) -> Result<(), DbErr> {
+pub async fn update_api_collection(collection: APICollection) -> Result<APICollection, DbErr> {
     let model: api_collections::ActiveModel = collection.into_active_model();
     let db = get_database().await?;
 
-    model.update(&db).await?;
-    Ok(())
+    let result = model.update(&db).await?;
+    Ok(result.into())
 }
 
 pub async fn list_api_collection() -> Result<Vec<APICollection>, DbErr> {

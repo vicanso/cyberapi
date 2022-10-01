@@ -24,6 +24,7 @@ import {
 import {
   hotKeyCreateFolder,
   hotKeyCreateHTTPSetting,
+  hotKeyMatchCreateFolder,
   hotKeyMatchCreateHTTPSetting,
 } from "../../helpers/hot_key";
 import {
@@ -93,6 +94,10 @@ export default defineComponent({
     const addFolder = inject(addFolderKey, addFolderDefaultValue);
 
     const handleKeydown = (e: KeyboardEvent) => {
+      if (hotKeyMatchCreateFolder(e)) {
+        addFolder("");
+        return;
+      }
       if (hotKeyMatchCreateHTTPSetting(e)) {
         addHTTPSetting("");
         return;
