@@ -3,7 +3,7 @@ use chrono::Utc;
 use sea_orm::{ActiveModelTrait, DbErr, EntityTrait, Set};
 use serde::{Deserialize, Serialize};
 
-use super::database::get_database;
+use super::database::{get_database, ExportData};
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -83,4 +83,13 @@ pub async fn delete_api_collection(id: String) -> Result<u64, DbErr> {
     let db = get_database().await?;
     let result = ApiCollections::delete_by_id(id).exec(&db).await?;
     Ok(result.rows_affected)
+}
+
+pub async fn export_api_collection() -> Result<ExportData, DbErr> {
+    let db = get_database().await?;
+    let data = ApiCollections::find().into_json().all(&db).await?;
+    Ok(ExportData {
+        name: "api_collections".to_string(),
+        data,
+    })
 }

@@ -95,6 +95,9 @@ export default {
     storeSetting: "Storage",
     appSetting: "Setting",
     envSetting: "ENV",
+    exportTables: "Backup",
+    exportTablesProcessing: "Backup is processing, please wait...",
+    exportTablesSuccess: "Backup save in download folder: %s",
     customizeVariableSetting: "Variable",
     langChangeSuccess:
       "language configuration is modified successfully, and the application will restart in 3 seconds",

@@ -1,4 +1,5 @@
 use serde::Serialize;
+use zip::result::ZipError;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CyberAPIError {
@@ -114,6 +115,15 @@ impl From<base64::DecodeError> for CyberAPIError {
         CyberAPIError {
             message: error.to_string(),
             category: "base64".to_string(),
+        }
+    }
+}
+
+impl From<ZipError> for CyberAPIError {
+    fn from(error: ZipError) -> Self {
+        CyberAPIError {
+            message: error.to_string(),
+            category: "zip".to_string(),
         }
     }
 }

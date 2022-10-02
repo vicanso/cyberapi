@@ -4,7 +4,7 @@ use sea_orm::{ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, QueryFilter, Se
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::database::get_database;
+use super::database::{get_database, ExportData};
 
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -165,4 +165,13 @@ pub async fn list_api_folder_all_children(id: String) -> Result<APIFolderChildre
         children = current_children.join(",")
     }
     Ok(APIFolderChildren { folders, settings })
+}
+
+pub async fn export_api_folder() -> Result<ExportData, DbErr> {
+    let db = get_database().await?;
+    let data = ApiFolders::find().into_json().all(&db).await?;
+    Ok(ExportData {
+        name: "api_folders".to_string(),
+        data,
+    })
 }

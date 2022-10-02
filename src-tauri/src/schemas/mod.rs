@@ -5,7 +5,7 @@ mod database;
 mod variable;
 mod version;
 
-pub use database::init_tables;
+pub use database::{export_tables, init_tables};
 
 pub use api_collection::{
     add_api_collection, delete_api_collection, list_api_collection, update_api_collection,

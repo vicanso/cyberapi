@@ -17,6 +17,7 @@ import {
   BowlingBallOutline,
   CodeSlashOutline,
   CodeWorkingOutline,
+  DownloadOutline,
   LanguageOutline,
   ServerOutline,
   SettingsOutline,
@@ -35,6 +36,7 @@ import { useAPISettingStore } from "../stores/api_setting";
 import { setLang } from "../stores/local";
 import { reload, showError } from "../helpers/util";
 import { logoIcon } from "../icons";
+import { exportTables } from "../commands/database";
 
 const logoWidth = 300;
 
@@ -89,6 +91,7 @@ enum FnKey {
   env = "env",
   customizeVariable = "customizeVariable",
   setting = "setting",
+  exportTables = "expxortTables",
 }
 
 export default defineComponent({
@@ -163,6 +166,20 @@ export default defineComponent({
       }
       pinRequestStore.remove(req.id);
     };
+
+    const handleBackup = async () => {
+      const d = message.loading(i18nSetting("exportTablesProcessing"), {
+        duration: 60 * 1000,
+      });
+      try {
+        const filename = await exportTables();
+        const msg = i18nSetting("exportTablesSuccess").replace("%s", filename);
+        message.info(msg);
+      } finally {
+        d.destroy();
+      }
+    };
+
     const handleFunction = (key: string) => {
       switch (key) {
         case FnKey.cookie:
@@ -179,6 +196,9 @@ export default defineComponent({
           break;
         case FnKey.customizeVariable:
           dialogStore.toggleCustomizeVariableDialog(true);
+          break;
+        case FnKey.exportTables:
+          handleBackup();
           break;
         default:
           break;
@@ -292,27 +312,47 @@ export default defineComponent({
         ),
       },
     ];
-    if (currentRoute == names.collection) {
-      options.unshift(
+    switch (currentRoute) {
+      case names.home:
         {
-          label: i18nSetting("envSetting"),
-          key: FnKey.env,
-          icon: () => (
-            <NIcon>
-              <CodeSlashOutline />
-            </NIcon>
-          ),
-        },
-        {
-          label: i18nSetting("customizeVariableSetting"),
-          key: FnKey.customizeVariable,
-          icon: () => (
-            <NIcon>
-              <CodeWorkingOutline />
-            </NIcon>
-          ),
+          options.push({
+            label: i18nSetting("exportTables"),
+            key: FnKey.exportTables,
+            icon: () => (
+              <NIcon>
+                <DownloadOutline />
+              </NIcon>
+            ),
+          });
         }
-      );
+        break;
+      case names.collection:
+        {
+          options.unshift(
+            {
+              label: i18nSetting("envSetting"),
+              key: FnKey.env,
+              icon: () => (
+                <NIcon>
+                  <CodeSlashOutline />
+                </NIcon>
+              ),
+            },
+            {
+              label: i18nSetting("customizeVariableSetting"),
+              key: FnKey.customizeVariable,
+              icon: () => (
+                <NIcon>
+                  <CodeWorkingOutline />
+                </NIcon>
+              ),
+            }
+          );
+        }
+        break;
+
+      default:
+        break;
     }
 
     const langs = [

@@ -559,7 +559,7 @@ export default defineComponent({
             <ExKeyValue
               key="header"
               class="keyValue"
-              spans={keyValueSpans}
+              spans={[12, 12]}
               params={keyValues}
               onHandleParam={(opt) => {
                 this.handleHeaders(opt);

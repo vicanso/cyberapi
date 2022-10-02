@@ -3,7 +3,7 @@ use chrono::Utc;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 
-use super::database::get_database;
+use super::database::{get_database, ExportData};
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct APISetting {
@@ -105,4 +105,13 @@ pub async fn delete_api_settings(ids: Vec<String>) -> Result<u64, DbErr> {
         .exec(&db)
         .await?;
     Ok(result.rows_affected)
+}
+
+pub async fn export_api_setting() -> Result<ExportData, DbErr> {
+    let db = get_database().await?;
+    let data = ApiSettings::find().into_json().all(&db).await?;
+    Ok(ExportData {
+        name: "api_settings".to_string(),
+        data,
+    })
 }

@@ -3,6 +3,7 @@ import Debug from "debug";
 import { isWebMode } from "../helpers/util";
 
 export const cmdInitTables = "init_tables";
+export const cmdExportTables = "export_tables";
 
 export const cmdAddAPISetting = "add_api_setting";
 export const cmdUpdateAPISetting = "update_api_setting";

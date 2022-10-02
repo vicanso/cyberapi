@@ -33,6 +33,7 @@ windows = "0.41.0"
 libflate = "1.2.0"
 brotli-decompressor = "2.3.2"
 sea-orm = { version = "0.9.2", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
+zip = { version = "0.6.2", features = ["deflate"] }
 
 
 [features]
@@ -42,3 +43,8 @@ default = [ "custom-protocol" ]
 # this feature is used used for production builds where `devPath` points to the filesystem
 # DO NOT remove this
 custom-protocol = [ "tauri/custom-protocol" ]
+
+[profile.release]
+strip = true 
+lto = true
+opt-level = "z"

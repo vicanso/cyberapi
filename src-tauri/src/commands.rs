@@ -38,6 +38,12 @@ pub async fn init_tables() -> CommandResult<()> {
     Ok(())
 }
 
+#[command(async)]
+pub async fn export_tables() -> CommandResult<String> {
+    let filename = schemas::export_tables().await?;
+    Ok(filename)
+}
+
 // 获取所有API配置
 #[command(async)]
 pub async fn list_api_setting(collection: String) -> CommandResult<Vec<APISetting>> {

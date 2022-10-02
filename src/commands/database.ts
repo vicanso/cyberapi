@@ -6,6 +6,7 @@ import { ulid } from "ulid";
 import { isWebMode } from "../helpers/util";
 import {
   cmdAddVersion,
+  cmdExportTables,
   cmdGetLatestVersion,
   cmdInitTables,
   run,
@@ -35,7 +36,6 @@ export async function handleDatabaseCompatible() {
     await run(cmdInitTables);
     const version = await getVersion();
     const latestVersion = await getDatabaseLatestVersion();
-    console.dir(latestVersion);
     if (!latestVersion || latestVersion.version !== version) {
       await run(cmdAddVersion, {
         version: {
@@ -53,4 +53,8 @@ export async function handleDatabaseCompatible() {
     }
     console.error(err);
   }
+}
+
+export async function exportTables(): Promise<string> {
+  return await run(cmdExportTables);
 }

@@ -23,6 +23,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::close_splashscreen,
             commands::init_tables,
+            commands::export_tables,
             commands::add_api_setting,
             commands::update_api_setting,
             commands::list_api_setting,
