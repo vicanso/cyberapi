@@ -8,6 +8,7 @@ import {
   cmdAddVersion,
   cmdExportTables,
   cmdGetLatestVersion,
+  cmdImportTables,
   cmdInitTables,
   run,
 } from "./invoke";
@@ -57,4 +58,10 @@ export async function handleDatabaseCompatible() {
 
 export async function exportTables(): Promise<string> {
   return await run(cmdExportTables);
+}
+
+export async function importTables(file: string) {
+  return await run(cmdImportTables, {
+    file,
+  });
 }

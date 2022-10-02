@@ -1,4 +1,7 @@
-use crate::entities::{api_collections, prelude::*};
+use crate::{
+    entities::{api_collections, prelude::*},
+    error::CyberAPIError,
+};
 use chrono::Utc;
 use sea_orm::{ActiveModelTrait, DbErr, EntityTrait, Set};
 use serde::{Deserialize, Serialize};
@@ -85,11 +88,33 @@ pub async fn delete_api_collection(id: String) -> Result<u64, DbErr> {
     Ok(result.rows_affected)
 }
 
+pub fn get_table_name_api_collection() -> String {
+    "api_collections".to_string()
+}
+
+pub async fn delete_all_api_collection() -> Result<(), DbErr> {
+    let db = get_database().await?;
+    ApiCollections::delete_many().exec(&db).await?;
+    Ok(())
+}
+
 pub async fn export_api_collection() -> Result<ExportData, DbErr> {
     let db = get_database().await?;
     let data = ApiCollections::find().into_json().all(&db).await?;
     Ok(ExportData {
-        name: "api_collections".to_string(),
+        name: get_table_name_api_collection(),
         data,
     })
+}
+
+pub async fn import_api_collection(data: Vec<serde_json::Value>) -> Result<(), CyberAPIError> {
+    let db = get_database().await?;
+
+    let mut records = Vec::new();
+    for ele in data {
+        let model = api_collections::ActiveModel::from_json(ele)?;
+        records.push(model);
+    }
+    ApiCollections::insert_many(records).exec(&db).await?;
+    Ok(())
 }

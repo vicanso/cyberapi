@@ -32,7 +32,7 @@ hyper-timeout = "0.4.1"
 windows = "0.41.0"
 libflate = "1.2.0"
 brotli-decompressor = "2.3.2"
-sea-orm = { version = "0.9.2", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
+sea-orm = { version = "0.9.2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "with-json"] }
 zip = { version = "0.6.2", features = ["deflate"] }
 
 

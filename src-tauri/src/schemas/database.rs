@@ -3,7 +3,7 @@ use chrono::Local;
 use once_cell::sync::OnceCell;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, Statement};
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::vec;
 use std::{fs, fs::File, path::Path};
 use tauri::api::path::download_dir;
@@ -11,10 +11,22 @@ use zip::write::FileOptions;
 
 use crate::util;
 
-use super::api_collection::{export_api_collection, get_api_collections_create_sql};
-use super::api_folder::{export_api_folder, get_api_folders_create_sql};
-use super::api_setting::{export_api_setting, get_api_settings_create_sql};
-use super::variable::{export_variable, get_variables_create_sql};
+use super::api_collection::{
+    delete_all_api_collection, export_api_collection, get_api_collections_create_sql,
+    get_table_name_api_collection, import_api_collection,
+};
+use super::api_folder::{
+    delete_all_api_folder, export_api_folder, get_api_folders_create_sql,
+    get_table_name_api_folder, import_api_folder,
+};
+use super::api_setting::{
+    delete_all_api_setting, export_api_setting, get_api_settings_create_sql,
+    get_table_name_api_setting, import_api_setting,
+};
+use super::variable::{
+    delete_all_variable, export_variable, get_table_name_variable, get_variables_create_sql,
+    import_variable,
+};
 use super::version::get_versions_table_create_sql;
 
 static CREATE_DB_FILE: OnceCell<bool> = OnceCell::new();
@@ -93,4 +105,38 @@ pub async fn export_tables() -> Result<String, CyberAPIError> {
     w.finish()?;
 
     Ok(filename)
+}
+
+pub async fn import_tables(filename: String) -> Result<(), CyberAPIError> {
+    let mut r = zip::ZipArchive::new(File::open(filename)?)?;
+
+    delete_all_api_collection().await?;
+    delete_all_api_folder().await?;
+    delete_all_api_setting().await?;
+    delete_all_variable().await?;
+
+    let names = vec![
+        get_table_name_api_collection(),
+        get_table_name_api_folder(),
+        get_table_name_api_setting(),
+        get_table_name_variable(),
+    ];
+    for i in 0..names.len() {
+        let name = names.get(i).unwrap();
+        let mut buf = Vec::new();
+        {
+            let mut file = r.by_name((name.to_owned() + ".json").as_str())?;
+            file.read_to_end(&mut buf)?;
+        }
+        let data: Vec<serde_json::Value> = serde_json::from_slice(&buf)?;
+        match i {
+            0 => import_api_collection(data).await?,
+            1 => import_api_folder(data).await?,
+            2 => import_api_setting(data).await?,
+            3 => import_variable(data).await?,
+            _ => (),
+        }
+    }
+
+    Ok(())
 }

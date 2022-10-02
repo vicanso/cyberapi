@@ -24,6 +24,7 @@ fn main() {
             commands::close_splashscreen,
             commands::init_tables,
             commands::export_tables,
+            commands::import_tables,
             commands::add_api_setting,
             commands::update_api_setting,
             commands::list_api_setting,

@@ -98,6 +98,11 @@ export default {
     exportTables: "Backup",
     exportTablesProcessing: "Backup is processing, please wait...",
     exportTablesSuccess: "Backup save in download folder: %s",
+    importTables: "Restore",
+    importTablesTips:
+      "Restore will remove the original data. Are you sure to restore?",
+    importTablesSuccess:
+      "Restore success, and the application will restart in 3 seconds",
     customizeVariableSetting: "Variable",
     langChangeSuccess:
       "language configuration is modified successfully, and the application will restart in 3 seconds",

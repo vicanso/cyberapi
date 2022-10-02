@@ -8,6 +8,7 @@ import {
   NDropdown,
   NSpace,
   useMessage,
+  useDialog,
 } from "naive-ui";
 import { css } from "@linaria/core";
 import { defineComponent, watch, ref, StyleValue, onBeforeUnmount } from "vue";
@@ -23,6 +24,7 @@ import {
   SettingsOutline,
 } from "@vicons/ionicons5";
 import { useRoute } from "vue-router";
+import { open } from "@tauri-apps/api/dialog";
 
 import { mainHeaderHeight } from "../constants/style";
 import { getCurrentLang, i18nCommon, i18nSetting, LANG } from "../i18n";
@@ -36,7 +38,8 @@ import { useAPISettingStore } from "../stores/api_setting";
 import { setLang } from "../stores/local";
 import { reload, showError } from "../helpers/util";
 import { logoIcon } from "../icons";
-import { exportTables } from "../commands/database";
+import { exportTables, importTables } from "../commands/database";
+import { resolve } from "bluebird";
 
 const logoWidth = 300;
 
@@ -92,12 +95,15 @@ enum FnKey {
   customizeVariable = "customizeVariable",
   setting = "setting",
   exportTables = "expxortTables",
+  importTables = "importTables",
+  none = "none",
 }
 
 export default defineComponent({
   name: "AppHeaderView",
   setup() {
     const message = useMessage();
+    const dialog = useDialog();
     const headerStore = useHeaderStore();
     const dialogStore = useDialogStore();
     const route = useRoute();
@@ -180,6 +186,38 @@ export default defineComponent({
       }
     };
 
+    const confirmRestore = async (file: string) => {
+      try {
+        await importTables(file);
+        message.info(i18nSetting("importTablesSuccess"));
+        setTimeout(reload, 3000);
+      } catch (err) {
+        showError(message, err);
+      }
+    };
+    const handleRestore = async () => {
+      try {
+        const selected = await open({
+          filters: [
+            {
+              name: "zip",
+              extensions: ["zip"],
+            },
+          ],
+        });
+          dialog.warning({
+            title: i18nSetting("importTables"),
+            content: i18nSetting("importTablesTips"),
+            onPositiveClick() {
+              confirmRestore(selected as string);
+            },
+            positiveText: i18nCommon("confirm"),
+          });
+      } catch (err) {
+        showError(message, err);
+      }
+    };
+
     const handleFunction = (key: string) => {
       switch (key) {
         case FnKey.cookie:
@@ -199,6 +237,9 @@ export default defineComponent({
           break;
         case FnKey.exportTables:
           handleBackup();
+          break;
+        case FnKey.importTables:
+          handleRestore();
           break;
         default:
           break;
@@ -287,6 +328,7 @@ export default defineComponent({
       {
         label: i18nSetting("cookieSetting"),
         key: FnKey.cookie,
+        type: "",
         icon: () => (
           <NIcon>
             <BowlingBallOutline />
@@ -315,15 +357,32 @@ export default defineComponent({
     switch (currentRoute) {
       case names.home:
         {
-          options.push({
-            label: i18nSetting("exportTables"),
-            key: FnKey.exportTables,
-            icon: () => (
-              <NIcon>
-                <DownloadOutline />
-              </NIcon>
-            ),
-          });
+          options.push(
+            {
+              label: "",
+              type: "divider",
+              key: FnKey.none,
+              icon: () => <NIcon />,
+            },
+            {
+              label: i18nSetting("exportTables"),
+              key: FnKey.exportTables,
+              icon: () => (
+                <NIcon>
+                  <DownloadOutline />
+                </NIcon>
+              ),
+            },
+            {
+              label: i18nSetting("importTables"),
+              key: FnKey.importTables,
+              icon: () => (
+                <NIcon>
+                  <DownloadOutline class="rotate180" />
+                </NIcon>
+              ),
+            }
+          );
         }
         break;
       case names.collection:

@@ -1,4 +1,7 @@
-use crate::entities::{api_folders, prelude::*};
+use crate::{
+    entities::{api_folders, prelude::*},
+    error::CyberAPIError,
+};
 use chrono::Utc;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
@@ -167,11 +170,33 @@ pub async fn list_api_folder_all_children(id: String) -> Result<APIFolderChildre
     Ok(APIFolderChildren { folders, settings })
 }
 
+pub fn get_table_name_api_folder() -> String {
+    "api_folders".to_string()
+}
+
+pub async fn delete_all_api_folder() -> Result<(), CyberAPIError> {
+    let db = get_database().await?;
+    ApiFolders::delete_many().exec(&db).await?;
+    Ok(())
+}
+
 pub async fn export_api_folder() -> Result<ExportData, DbErr> {
     let db = get_database().await?;
     let data = ApiFolders::find().into_json().all(&db).await?;
     Ok(ExportData {
-        name: "api_folders".to_string(),
+        name: get_table_name_api_folder(),
         data,
     })
+}
+
+pub async fn import_api_folder(data: Vec<serde_json::Value>) -> Result<(), CyberAPIError> {
+    let db = get_database().await?;
+
+    let mut records = Vec::new();
+    for ele in data {
+        let model = api_folders::ActiveModel::from_json(ele)?;
+        records.push(model);
+    }
+    ApiFolders::insert_many(records).exec(&db).await?;
+    Ok(())
 }
