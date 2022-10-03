@@ -76,20 +76,20 @@ pub fn get_variables_create_sql() -> String {
 
 pub async fn add_variable(value: Variable) -> Result<Variable, DbErr> {
     let model = value.into_active_model();
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = model.insert(&db).await?;
     Ok(result.into())
 }
 
 pub async fn update_variable(value: Variable) -> Result<Variable, DbErr> {
     let model = value.into_active_model();
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = model.update(&db).await?;
     Ok(result.into())
 }
 
 pub async fn list_variable(collection: String, category: String) -> Result<Vec<Variable>, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = Variables::find()
         .filter(variables::Column::Collection.eq(collection))
         .filter(variables::Column::Category.eq(category))
@@ -99,7 +99,7 @@ pub async fn list_variable(collection: String, category: String) -> Result<Vec<V
 }
 
 pub async fn delete_variable(ids: Vec<String>) -> Result<u64, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = Variables::delete_many()
         .filter(variables::Column::Id.is_in(ids))
         .exec(&db)
@@ -112,13 +112,13 @@ pub fn get_table_name_variable() -> String {
 }
 
 pub async fn delete_all_variable() -> Result<(), CyberAPIError> {
-    let db = get_database().await?;
+    let db = get_database().await;
     Variables::delete_many().exec(&db).await?;
     Ok(())
 }
 
 pub async fn export_variable() -> Result<ExportData, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let data = Variables::find().into_json().all(&db).await?;
     Ok(ExportData {
         name: get_table_name_variable(),
@@ -127,7 +127,7 @@ pub async fn export_variable() -> Result<ExportData, DbErr> {
 }
 
 pub async fn import_variable(data: Vec<serde_json::Value>) -> Result<(), CyberAPIError> {
-    let db = get_database().await?;
+    let db = get_database().await;
 
     let mut records = Vec::new();
     for ele in data {

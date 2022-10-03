@@ -5,6 +5,5 @@ pub mod prelude;
 pub mod api_collections;
 pub mod api_folders;
 pub mod api_settings;
-pub mod environments;
 pub mod variables;
 pub mod versions;

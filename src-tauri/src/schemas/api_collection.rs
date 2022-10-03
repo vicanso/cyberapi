@@ -62,28 +62,28 @@ pub fn get_api_collections_create_sql() -> String {
 
 pub async fn add_api_collection(collection: APICollection) -> Result<APICollection, DbErr> {
     let model: api_collections::ActiveModel = collection.into_active_model();
-    let db = get_database().await?;
+    let db = get_database().await;
 
     let result = model.insert(&db).await?;
     Ok(result.into())
 }
 pub async fn update_api_collection(collection: APICollection) -> Result<APICollection, DbErr> {
     let model: api_collections::ActiveModel = collection.into_active_model();
-    let db = get_database().await?;
+    let db = get_database().await;
 
     let result = model.update(&db).await?;
     Ok(result.into())
 }
 
 pub async fn list_api_collection() -> Result<Vec<APICollection>, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = ApiCollections::find().all(&db).await?;
 
     Ok(result.into_iter().map(APICollection::from).collect())
 }
 
 pub async fn delete_api_collection(id: String) -> Result<u64, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = ApiCollections::delete_by_id(id).exec(&db).await?;
     Ok(result.rows_affected)
 }
@@ -93,13 +93,13 @@ pub fn get_table_name_api_collection() -> String {
 }
 
 pub async fn delete_all_api_collection() -> Result<(), DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     ApiCollections::delete_many().exec(&db).await?;
     Ok(())
 }
 
 pub async fn export_api_collection() -> Result<ExportData, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let data = ApiCollections::find().into_json().all(&db).await?;
     Ok(ExportData {
         name: get_table_name_api_collection(),
@@ -108,7 +108,7 @@ pub async fn export_api_collection() -> Result<ExportData, DbErr> {
 }
 
 pub async fn import_api_collection(data: Vec<serde_json::Value>) -> Result<(), CyberAPIError> {
-    let db = get_database().await?;
+    let db = get_database().await;
 
     let mut records = Vec::new();
     for ele in data {

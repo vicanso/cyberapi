@@ -74,20 +74,20 @@ pub fn get_api_folders_create_sql() -> String {
 
 pub async fn add_api_folder(folder: APIFolder) -> Result<APIFolder, DbErr> {
     let model = folder.into_active_model();
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = model.insert(&db).await?;
     Ok(result.into())
 }
 
 pub async fn update_api_folder(folder: APIFolder) -> Result<APIFolder, DbErr> {
     let model = folder.into_active_model();
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = model.update(&db).await?;
     Ok(result.into())
 }
 
 pub async fn list_api_folder(collection: String) -> Result<Vec<APIFolder>, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = ApiFolders::find()
         .filter(api_folders::Column::Collection.eq(collection))
         .all(&db)
@@ -96,7 +96,7 @@ pub async fn list_api_folder(collection: String) -> Result<Vec<APIFolder>, DbErr
 }
 
 pub async fn delete_api_folder_by_collection(collection: String) -> Result<u64, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = ApiFolders::delete_many()
         .filter(api_folders::Column::Collection.eq(collection))
         .exec(&db)
@@ -106,7 +106,7 @@ pub async fn delete_api_folder_by_collection(collection: String) -> Result<u64, 
 }
 
 pub async fn delete_api_folders(ids: Vec<String>) -> Result<u64, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
 
     let result = ApiFolders::delete_many()
         .filter(api_folders::Column::Id.is_in(ids))
@@ -124,7 +124,7 @@ pub async fn list_api_folder_all_children(id: String) -> Result<APIFolderChildre
     let mut settings = Vec::new();
     let mut children = "".to_string();
 
-    let db = get_database().await?;
+    let db = get_database().await;
     let current_folder = ApiFolders::find()
         .filter(api_folders::Column::Id.eq(id.clone()))
         .one(&db)
@@ -175,13 +175,13 @@ pub fn get_table_name_api_folder() -> String {
 }
 
 pub async fn delete_all_api_folder() -> Result<(), CyberAPIError> {
-    let db = get_database().await?;
+    let db = get_database().await;
     ApiFolders::delete_many().exec(&db).await?;
     Ok(())
 }
 
 pub async fn export_api_folder() -> Result<ExportData, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let data = ApiFolders::find().into_json().all(&db).await?;
     Ok(ExportData {
         name: get_table_name_api_folder(),
@@ -190,7 +190,7 @@ pub async fn export_api_folder() -> Result<ExportData, DbErr> {
 }
 
 pub async fn import_api_folder(data: Vec<serde_json::Value>) -> Result<(), CyberAPIError> {
-    let db = get_database().await?;
+    let db = get_database().await;
 
     let mut records = Vec::new();
     for ele in data {

@@ -3,6 +3,5 @@
 pub use super::api_collections::Entity as ApiCollections;
 pub use super::api_folders::Entity as ApiFolders;
 pub use super::api_settings::Entity as ApiSettings;
-pub use super::environments::Entity as Environments;
 pub use super::variables::Entity as Variables;
 pub use super::versions::Entity as Versions;

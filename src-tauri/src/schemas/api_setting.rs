@@ -70,19 +70,19 @@ pub fn get_api_settings_create_sql() -> String {
 
 pub async fn add_api_setting(setting: APISetting) -> Result<APISetting, DbErr> {
     let model = setting.into_active_model();
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = model.insert(&db).await?;
     Ok(result.into())
 }
 pub async fn update_api_setting(setting: APISetting) -> Result<APISetting, DbErr> {
     let model = setting.into_active_model();
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = model.update(&db).await?;
     Ok(result.into())
 }
 
 pub async fn list_api_setting(collection: String) -> Result<Vec<APISetting>, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = ApiSettings::find()
         .filter(api_settings::Column::Collection.eq(collection))
         .all(&db)
@@ -92,7 +92,7 @@ pub async fn list_api_setting(collection: String) -> Result<Vec<APISetting>, DbE
 }
 
 pub async fn delete_api_setting_by_collection(collection: String) -> Result<u64, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = ApiSettings::delete_many()
         .filter(api_settings::Column::Collection.eq(collection))
         .exec(&db)
@@ -101,7 +101,7 @@ pub async fn delete_api_setting_by_collection(collection: String) -> Result<u64,
 }
 
 pub async fn delete_api_settings(ids: Vec<String>) -> Result<u64, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
 
     let result = ApiSettings::delete_many()
         .filter(api_settings::Column::Id.is_in(ids))
@@ -115,14 +115,14 @@ pub fn get_table_name_api_setting() -> String {
 }
 
 pub async fn delete_all_api_setting() -> Result<(), CyberAPIError> {
-    let db = get_database().await?;
+    let db = get_database().await;
 
     ApiSettings::delete_many().exec(&db).await?;
     Ok(())
 }
 
 pub async fn export_api_setting() -> Result<ExportData, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let data = ApiSettings::find().into_json().all(&db).await?;
     Ok(ExportData {
         name: get_table_name_api_setting(),
@@ -131,7 +131,7 @@ pub async fn export_api_setting() -> Result<ExportData, DbErr> {
 }
 
 pub async fn import_api_setting(data: Vec<serde_json::Value>) -> Result<(), CyberAPIError> {
-    let db = get_database().await?;
+    let db = get_database().await;
 
     let mut records = Vec::new();
     for ele in data {

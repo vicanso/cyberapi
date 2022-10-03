@@ -134,6 +134,7 @@ export default defineComponent({
       apiFolderStore.apiFolders.forEach((folder) => arr.push(folder));
       apiSettingStore.apiSettings.forEach((apiSetting) => arr.push(apiSetting));
       try {
+        // TODO 调整为collection的名称
         await writeSettingToDownload(arr, "all");
         message.info(i18nCollection("exportSettingsSuccess"));
       } catch (err) {

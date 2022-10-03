@@ -48,13 +48,13 @@ pub async fn add_version(version: Version) -> Result<Version, DbErr> {
         created_at: Set(created_at),
         updated_at: Set(updated_at),
     };
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = model.insert(&db).await?;
     Ok(result.into())
 }
 
 pub async fn get_latest_version() -> Result<Version, DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let result = Versions::find()
         .order_by_desc(versions::Column::CreatedAt)
         .one(&db)

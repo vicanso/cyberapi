@@ -1,12 +1,13 @@
 use crate::error::CyberAPIError;
 use chrono::Local;
-use once_cell::sync::OnceCell;
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, Statement};
+use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbErr, Statement};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
+use std::time::Duration;
 use std::vec;
 use std::{fs, fs::File, path::Path};
 use tauri::api::path::download_dir;
+use tokio::sync::OnceCell;
 use zip::write::FileOptions;
 
 use crate::util;
@@ -29,33 +30,43 @@ use super::variable::{
 };
 use super::version::get_versions_table_create_sql;
 
-static CREATE_DB_FILE: OnceCell<bool> = OnceCell::new();
+static DB: OnceCell<DatabaseConnection> = OnceCell::const_new();
 
 pub struct ExportData {
     pub name: String,
     pub data: Vec<serde_json::Value>,
 }
 
-pub async fn get_database() -> Result<DatabaseConnection, DbErr> {
+async fn get_conn() -> DatabaseConnection {
     let dir = Path::new(util::get_app_dir());
     let file = dir.join("my_db.db");
-    CREATE_DB_FILE.get_or_init(|| {
-        fs::create_dir_all(dir).unwrap();
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(file.clone())
-            .unwrap();
-        true
-    });
+    fs::create_dir_all(dir).unwrap();
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(file.clone())
+        .unwrap();
 
-    let opt = format!("sqlite://{}", file.into_os_string().into_string().unwrap());
-    Database::connect(opt).await
+    let conn_uri = format!("sqlite://{}", file.into_os_string().into_string().unwrap());
+
+    let mut opt = ConnectOptions::new(conn_uri);
+    opt.max_connections(10)
+        .min_connections(2)
+        .connect_timeout(Duration::from_secs(5))
+        .idle_timeout(Duration::from_secs(60));
+
+    let result = Database::connect(opt).await;
+    result.unwrap()
+}
+
+pub async fn get_database() -> DatabaseConnection {
+    let db = DB.get_or_init(get_conn).await;
+    db.to_owned()
 }
 
 pub async fn init_tables() -> Result<(), DbErr> {
-    let db = get_database().await?;
+    let db = get_database().await;
     let init_sql_list = vec![
         get_versions_table_create_sql(),
         get_api_collections_create_sql(),
