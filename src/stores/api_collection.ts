@@ -54,6 +54,9 @@ export const useAPICollectionStore = defineStore("apiCollections", {
     };
   },
   actions: {
+    findByID(id: string) {
+      return this.apiCollections.find((item) => item.id === id);
+    },
     async closeAllFolders(collection: string) {
       const items: string[] = [];
       await getExpandedSettingStore().setItem(collection, items);

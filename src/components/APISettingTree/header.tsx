@@ -135,7 +135,12 @@ export default defineComponent({
       apiSettingStore.apiSettings.forEach((apiSetting) => arr.push(apiSetting));
       try {
         // TODO 调整为collection的名称
-        await writeSettingToDownload(arr, "all");
+        let name = "unknown";
+        const result = collectionStore.findByID(collection);
+        if (result) {
+          name = result.name;
+        }
+        await writeSettingToDownload(arr, name);
         message.info(i18nCollection("exportSettingsSuccess"));
       } catch (err) {
         showError(message, err);

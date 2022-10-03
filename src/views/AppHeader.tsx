@@ -39,7 +39,6 @@ import { setLang } from "../stores/local";
 import { reload, showError } from "../helpers/util";
 import { logoIcon } from "../icons";
 import { exportTables, importTables } from "../commands/database";
-import { resolve } from "bluebird";
 
 const logoWidth = 300;
 
@@ -205,14 +204,14 @@ export default defineComponent({
             },
           ],
         });
-          dialog.warning({
-            title: i18nSetting("importTables"),
-            content: i18nSetting("importTablesTips"),
-            onPositiveClick() {
-              confirmRestore(selected as string);
-            },
-            positiveText: i18nCommon("confirm"),
-          });
+        dialog.warning({
+          title: i18nSetting("importTables"),
+          content: i18nSetting("importTablesTips"),
+          onPositiveClick() {
+            confirmRestore(selected as string);
+          },
+          positiveText: i18nCommon("confirm"),
+        });
       } catch (err) {
         showError(message, err);
       }

@@ -6,7 +6,6 @@ import { readText, writeText } from "@tauri-apps/api/clipboard";
 import { relaunch } from "@tauri-apps/api/process";
 import {
   BaseDirectory,
-  writeTextFile,
   writeBinaryFile,
   exists,
 } from "@tauri-apps/api/fs";
