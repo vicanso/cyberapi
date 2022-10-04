@@ -4,11 +4,7 @@ import { get, has } from "lodash-es";
 import { appWindow } from "@tauri-apps/api/window";
 import { readText, writeText } from "@tauri-apps/api/clipboard";
 import { relaunch } from "@tauri-apps/api/process";
-import {
-  BaseDirectory,
-  writeBinaryFile,
-  exists,
-} from "@tauri-apps/api/fs";
+import { BaseDirectory, writeBinaryFile, exists } from "@tauri-apps/api/fs";
 import Debug from "debug";
 
 import { appName } from "../constants/common";

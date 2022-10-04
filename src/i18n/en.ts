@@ -54,7 +54,7 @@ export default {
     duplicate: "Duplicate",
     settings: "Configurations",
     create: "Create",
-    keywordFilterPlaceholder: "please enter a keyword",
+    keywordFilterPlaceholder: "Please enter a keyword",
     saveToDownloadSuccess: "File is save to download successful",
   },
   dashboard: {
