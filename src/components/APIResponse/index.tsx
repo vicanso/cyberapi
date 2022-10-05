@@ -424,7 +424,8 @@ export default defineComponent({
     if (size > 0) {
       sizeDesc.push(prettyBytes(size));
       if (originalSize > 0 && Math.abs(size - originalSize) > 100) {
-        sizeDesc.push(prettyBytes(originalSize));
+        const percent = `${Math.ceil((originalSize * 100) / size)}%`;
+        sizeDesc.push(`${prettyBytes(originalSize)}(${percent})`);
       }
     }
 
