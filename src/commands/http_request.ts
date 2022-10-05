@@ -3,7 +3,7 @@ import { encode } from "js-base64";
 import { ulid } from "ulid";
 import { getVersion, getTauriVersion } from "@tauri-apps/api/app";
 import { arch, type, version } from "@tauri-apps/api/os";
-import { FormDataEncoder, FormDataEncoderHeaders } from "form-data-encoder";
+import { FormDataEncoder } from "form-data-encoder";
 import { fromUint8Array } from "js-base64";
 import { readBinaryFile } from "@tauri-apps/api/fs";
 
@@ -149,7 +149,10 @@ export async function convertKVParams(collection: string, params: KVParam[]) {
 export const abortRequestID = ulid();
 
 interface MultipartFormData {
-  headers: FormDataEncoderHeaders;
+  headers: {
+    "Content-Type": string;
+    "Content-Length"?: string;
+  };
   body: string;
 }
 
