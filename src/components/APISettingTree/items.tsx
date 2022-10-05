@@ -28,6 +28,7 @@ import {
 import APISettingTreeItemDropdown from "./item_dropdown";
 import { HTTPMethod } from "../../commands/http_request";
 import { openFolderIcon, closeFolderIcon } from "../../icons";
+import { key } from "localforage";
 
 const itemsWrapperClass = css`
   user-select: none;
@@ -252,9 +253,13 @@ function convertToTreeItems(params: {
     result.push(item);
   });
   if (keyword) {
+    const methodKeyword = keyword.toUpperCase();
     const shouldBeHide = (item: TreeItem) => {
       // 如果当前元素匹配，则其子元素展示
-      if (isMatchTextOrPinYin(item.name, keyword)) {
+      if (
+        item.method === methodKeyword ||
+        isMatchTextOrPinYin(item.name, keyword)
+      ) {
         return;
       }
       let hidden = true;

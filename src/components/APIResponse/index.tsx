@@ -480,6 +480,8 @@ export default defineComponent({
           {/* 占位 */}
           <span> </span>
           {sizeDesc.length !== 0 && sizeDesc.join(" / ")}
+          {/* 占位 */}
+          <span> </span>
           {latency > 0 && formatLatency(latency)}
         </NSpace>
         <NDivider />
