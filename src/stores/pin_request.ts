@@ -21,9 +21,7 @@ export const usePinRequestStore = defineStore("pinRequest", {
       this.fetching = true;
       try {
         const result = await getPinRequestStore().getItem(collection);
-        if (result) {
-          this.requests = result as LatestRequest[];
-        }
+        this.requests = (result || []) as LatestRequest[];
         this.currentCollection = collection;
       } finally {
         this.fetching = false;
