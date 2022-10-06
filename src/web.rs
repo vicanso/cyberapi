@@ -9,24 +9,27 @@ use axum::{
 use pulldown_cmark::{html, Options, Parser};
 use serde::Serialize;
 use std::{env, fs, io, path};
+use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 
 pub fn new_router() -> Router {
     let static_path = get_static_path();
     let r = Router::new();
+
+
     r.route("/", get(root))
         .route("/docs/:name", get(root))
         .route("/api/markdowns/v1/:name", get(markdown))
         .fallback_service(get_service(ServeDir::new(static_path)).handle_error(handle_error))
+        .layer(CompressionLayer::new())
 }
 
 fn get_static_path() -> String {
     if let Ok(static_path) = env::var("STATIC_PATH") {
-        return static_path
+        return static_path;
     }
     "/web".to_string()
 }
-    
 
 async fn handle_error(_err: io::Error) -> impl IntoResponse {
     (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong...")
