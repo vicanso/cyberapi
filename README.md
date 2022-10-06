@@ -10,11 +10,14 @@
 
 ## 功能点
 
-- 方便快捷的HTTP请求管理
-- 少于10MB的安装包，启动时间在1秒以内
-- 各类自定义的函数，提供各请求间相关关联数据
-- 可快速导入postman与insomnia的配置
-- 支持windows、macos以及linux三个主流桌面系统
+- 支持macos、windows以及linux平台，安装包均在10MB以下
+- 单个项目上千个接口秒级打开，内存占用较低
+- 支持Dark/Light主题以及中英语言
+- 简单易用的操作及配置方式(对我而言)
+- 可快速导入postman与insomnia的配置(拉新专用)
+- 关键字筛选支持中文拼音或者首字母
+- 可按接口、按功能、按项目导出配置，方便团队内共用
+- 各类自定义的函数，方便各请求间关联数据
 
 
 <p align="center">
@@ -35,13 +38,13 @@ CyberAPI暂时仅是开发版本，业余时间的个人项目，如果有BUG或
 项目依赖于rust与Nodejs，如果想自行编译或参与开发，可以先参考[这里](https://tauri.app/v1/guides/getting-started/prerequisites)的相关文档安装tauri的依赖，之后执行：
 
 ```shell
-npm install
+yarn
 ```
 
 仅调整前端界面时可直接使用浏览器的方式来测试(增加了各类mock的接口)，执行：
 
 ```shell
-npm run dev
+yarn dev
 ```
 
 如果以APP的形式运行，则执行：
@@ -58,7 +61,7 @@ make build
 
 ## 创建项目
 
-首次启动时，需要先创建项目，建议按不同的项目来创建，同一项目可共用环境变量的配置。
+首次启动后，需要先创建项目，建议按不同的项目来创建，同一项目可共用环境变量的配置。
 
 <p align="center">
     <img src="./asset/home.png" alt="home">
@@ -76,6 +79,14 @@ tiny配置了两个环境的ENV设置，其中`http://tiny.npmtrend.com`未生�
 
 <p align="center">
     <img src="./asset/env-editor.png" alt="env-editor">
+</p>
+
+## 创建项目的变量
+
+项目中使用的变量可用于各请求中的参数设置，通过`{{value(key)}}`函数引用。
+
+<p align="center">
+    <img src="./asset/variable.png" alt="variable">
 </p>
 
 ## 创建目录与请求
@@ -178,6 +189,10 @@ CyberAPI内置支持了部分函数，便于在请求中动态生成参数值，
 计算md5并以hex形式输出，使用方式：`{{md5(123123)`，sha256的使用方式一致。
 
 
+### value
+
+获取全局配置的值，使用方式`{{value(key)}}`，方便获取项目中配置的变量数据。
+
 ## Cookie设置
 
 Cookie的数据为应用共享，在HTTP响应头中有`Set-Cookie`则会自动保存，需要注意对于`Session`有效期的Cookie，在程序关闭之后会自动清除。用户可直接修改Cookie的有效期、值等信息或删除Cookie。
@@ -199,7 +214,3 @@ Cookie的数据为应用共享，在HTTP响应头中有`Set-Cookie`则会自动�
     <img src="./asset/import-editor.png" alt="import-editor">
 </p>
 
-
-<p align="center">
-    <img src="./asset/" alt="">
-</p>

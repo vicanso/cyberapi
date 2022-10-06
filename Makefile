@@ -5,7 +5,7 @@ lint:
 fmt:
 	cd src-tauri && cargo fmt --all --
 dev:
-	npm run tauri dev
+	yarn tauri dev
 icon:
 	cargo tauri icon ./cyberapi.png
 build:
