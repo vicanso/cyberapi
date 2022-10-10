@@ -28,7 +28,6 @@ import {
 import APISettingTreeItemDropdown from "./item_dropdown";
 import { HTTPMethod } from "../../commands/http_request";
 import { openFolderIcon, closeFolderIcon } from "../../icons";
-import { key } from "localforage";
 
 const itemsWrapperClass = css`
   user-select: none;

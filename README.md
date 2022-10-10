@@ -13,8 +13,8 @@
 - 支持macos、windows以及linux平台，安装包均在10MB以下
 - 单个项目上千个接口秒级打开，内存占用较低
 - 支持Dark/Light主题以及中英语言
-- 简单易用的操作及配置方式(对我而言)
-- 可快速导入postman与insomnia的配置(拉新专用)
+- 简单易用的操作及配置方式
+- 可快速导入postman与insomnia的配置
 - 关键字筛选支持中文拼音或者首字母
 - 可按接口、按功能、按项目导出配置，方便团队内共用
 - 各类自定义的函数，方便各请求间关联数据
@@ -32,6 +32,7 @@ CyberAPI暂时仅是开发版本，业余时间的个人项目，如果有BUG或
 安装程序可以通过[release](https://github.com/vicanso/cyberapi/releases)下载，包括windows、macos以及linux版本。
 
 需要注意如果是win7或者未安装Edge的windows，在安装时会提示需要执行MicrosoftEdgeUpdateSetup的程序，如果杀毒软件提示允许执行即可。
+如果是macos，由于系统的安全调整，打开应用时会提示"无法打开“CyberAPI”，因为Apple无法检查其是否包含恶意软件。"，在“系统设置” -> “安全性与隐私” -> “通用”面板选择继续打开即可。
 
 ## 开发者
 
