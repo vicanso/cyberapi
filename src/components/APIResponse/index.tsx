@@ -228,6 +228,8 @@ export default defineComponent({
         return;
       }
       try {
+        // 由于cookie会一直更新，因此此时再拉取
+        await cookieStore.fetch();
         const value = await convertRequestToCURL(
           collection,
           req,
@@ -266,7 +268,6 @@ export default defineComponent({
     };
 
     onMounted(() => {
-      cookieStore.fetch();
       initEditor();
     });
     onBeforeUnmount(() => {
