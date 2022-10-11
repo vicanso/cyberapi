@@ -12,6 +12,7 @@ import { KVParam } from "./interface";
 import { isWebMode, delay } from "../helpers/util";
 import { doFnHandler, parseFunctions } from "./fn";
 import { HTTPResponse, addLatestResponse } from "./http_response";
+import { Cookie } from "./cookies";
 
 export enum HTTPMethod {
   GET = "GET",
@@ -58,7 +59,8 @@ function convertKVListToURLValues(kvList: KVParam[]) {
 
 export async function convertRequestToCURL(
   collection: string,
-  req: HTTPRequest
+  req: HTTPRequest,
+  cookies: Cookie[]
 ) {
   await convertKVParams(collection, req.query);
   await convertKVParams(collection, req.headers);
@@ -72,7 +74,19 @@ export async function convertRequestToCURL(
       uri += `?${queryList.join("&")}`;
     }
   }
+
   const headerList: string[] = [];
+  const host = new URL(uri).host;
+  const cookieValues: string[] = [];
+  cookies.forEach((item) => {
+    if (host.includes(item.domain)) {
+      cookieValues.push(`${item.name}=${item.value}`);
+    }
+  });
+  if (cookieValues.length) {
+    headerList.push(`-H 'Cookie:${cookieValues.join("; ")}'`);
+  }
+
   let includeContentType = false;
   req.headers?.forEach((kv) => {
     if (!kv.enabled) {

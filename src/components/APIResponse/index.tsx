@@ -50,6 +50,7 @@ import {
 import ExPreview, { isSupportPreview } from "../ExPreview";
 import ExTimer from "../ExTimer";
 import { toUint8Array } from "js-base64";
+import { useCookieStore } from "../../stores/cookie";
 
 const responseClass = css`
   margin-left: 5px;
@@ -120,6 +121,7 @@ export default defineComponent({
     const route = useRoute();
     const message = useMessage();
     const settingStore = useSettingStore();
+    const cookieStore = useCookieStore();
     let editor: EditorView;
     const destroy = () => {
       if (editor) {
@@ -226,7 +228,11 @@ export default defineComponent({
         return;
       }
       try {
-        const value = await convertRequestToCURL(collection, req);
+        const value = await convertRequestToCURL(
+          collection,
+          req,
+          cookieStore.cookies
+        );
         if (value.length > showCurlLimitSize) {
           await writeTextToClipboard(value);
         }
@@ -260,6 +266,7 @@ export default defineComponent({
     };
 
     onMounted(() => {
+      cookieStore.fetch();
       initEditor();
     });
     onBeforeUnmount(() => {
