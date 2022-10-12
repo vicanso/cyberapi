@@ -19,4 +19,8 @@ jobs:
       with:
         toolchain: stable
     - name: install app dependencies and build it
-      run: yarn && yarn build && make build
+      run: |
+        yarn
+        yarn build
+        cargo install tauri-cli
+        make build
