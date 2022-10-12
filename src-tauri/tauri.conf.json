@@ -12,10 +12,28 @@
   },
   "tauri": {
     "allowlist": {
-      "all": true,
+      "all": false,
       "fs": {
         "all": true,
         "scope": ["$APP/*", "$DOWNLOAD/*", "$DESKTOP/*", "$DOCUMENT/*"]
+      },
+      "window": {
+        "all": true
+      },
+      "dialog": {
+        "all": true
+      },
+      "os": {
+        "all":true 
+      },
+      "path": {
+        "all": true 
+      },
+      "process": {
+        "all": true
+      },
+      "clipboard": {
+        "all": true
       }
     },
     "bundle": {

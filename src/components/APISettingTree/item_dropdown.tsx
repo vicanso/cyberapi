@@ -37,6 +37,7 @@ import { usePinRequestStore } from "../../stores/pin_request";
 import { convertRequestToCURL } from "../../commands/http_request";
 import { APISetting } from "../../commands/api_setting";
 import { APIFolder } from "../../commands/api_folder";
+import { useCookieStore } from "../../stores/cookie";
 
 const dropdownClass = css`
   .n-dropdown-option {
@@ -59,6 +60,7 @@ export default defineComponent({
   setup(props) {
     const dialog = useDialog();
     const message = useMessage();
+    const cookieStore = useCookieStore();
     const apiFolderStore = useAPIFolderStore();
     const pinRequestStore = usePinRequestStore();
     const apiSettingStore = useAPISettingStore();
@@ -197,7 +199,15 @@ export default defineComponent({
         case HandleKey.CopyAsCURL:
           {
             const req = apiSettingStore.getHTTPRequestFillENV(id);
-            convertRequestToCURL(collection, req)
+            cookieStore
+              .fetch()
+              .then(() => {
+                return convertRequestToCURL(
+                  collection,
+                  req,
+                  cookieStore.cookies
+                );
+              })
               .then(writeTextToClipboard)
               .then(() => {
                 message.success(i18nCollection("copyAsCURLSuccess"));
