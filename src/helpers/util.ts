@@ -183,7 +183,7 @@ export function isMatchTextOrPinYin(content: string, keyword: string) {
   debug("pinyin:%s", arr.join(","));
 
   for (let i = 0; i < arr.length; i++) {
-    if (arr[i].includes(k)) {
+    if (arr[i].toLowerCase().includes(k)) {
       return true;
     }
   }

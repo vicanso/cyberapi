@@ -14,6 +14,7 @@
 <a href="https://github.com/vicanso/cyberapi">CyberAPI</a>是基于<a href="https://github.com/tauri-apps/tauri">tauri</a>开发的跨平台API客户端
 </h3>
 
+[English](./README.md)|简体中文
 ## 功能点
 
 - 支持macos、windows以及linux平台，安装包均在10MB以下

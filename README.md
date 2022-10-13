@@ -10,12 +10,11 @@
     <img src="./cyberapi.png" alt="cyberapi" width="128">
 </p>
 
-[中文](./README_zh.md)
-
 <h3 align="center">
 <a href="https://github.com/vicanso/cyberapi">CyberAPI</a> is API tool based on <a href="https://github.com/tauri-apps/tauri">tauri</a>.
 </h3>
 
+English|[简体中文](./README_zh.md)
 ## Features
 
 - Support macos, windows and linux platforms, the installation package is below 10MB
