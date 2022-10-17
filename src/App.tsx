@@ -3,7 +3,6 @@ import { NLayout, NLayoutHeader, useLoadingBar, NModal } from "naive-ui";
 import { storeToRefs } from "pinia";
 
 import "./main.css";
-import { setLoadingEvent } from "./router";
 import AppHeader from "./views/AppHeader";
 import { useDialogStore } from "./stores/dialog";
 import AppSetting from "./views/AppSetting";
@@ -32,7 +31,6 @@ export default defineComponent({
       dialogStore.toggleStoreDialog(false);
       dialogStore.toggleCustomizeVariableDialog(false);
     };
-    setLoadingEvent(loadingBar.start, loadingBar.finish);
     onMounted(() => {
       loadingBar.finish();
     });

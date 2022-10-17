@@ -66,6 +66,9 @@ export default defineComponent({
       stop();
     });
 
+    onBeforeUnmount(() => {
+      usePinRequestStore().$reset();
+    });
     onBeforeMount(async () => {
       processing.value = true;
       try {
