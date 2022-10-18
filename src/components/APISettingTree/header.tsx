@@ -19,7 +19,6 @@ import {
   AnalyticsOutline,
   DownloadOutline,
   FolderOpenOutline,
-  FolderOutline,
 } from "@vicons/ionicons5";
 import {
   hotKeyCreateFolder,

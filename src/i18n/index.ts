@@ -58,5 +58,6 @@ export const i18nDashboard = newI18nGet("dashboard");
 export const i18nSetting = newI18nGet("setting");
 export const i18nCookie = newI18nGet("cookie");
 export const i18nEnvironment = newI18nGet("environment");
+export const i18nGlobalReqHeader = newI18nGet("globalReqHeader");
 export const i18nStore = newI18nGet("store");
 export const i18nCustomizeVariable = newI18nGet("customizeVariable");

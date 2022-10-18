@@ -22,6 +22,8 @@ export enum VariableCategory {
   Environment = "env",
   // 自定义
   Customize = "customize",
+  // 全局请求头
+  GlobalReqHeaders = "globalReqHeaders",
 }
 
 export interface Variable {

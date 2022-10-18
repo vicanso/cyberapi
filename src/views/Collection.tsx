@@ -21,6 +21,7 @@ import ExColumn from "../components/ExColumn";
 import APISettingTree from "../components/APISettingTree";
 import APISettingParams from "../components/APISettingParams";
 import { useEnvironmentStore } from "../stores/environment";
+import { useGlobalReqHeaderStore } from "../stores/global_req_header";
 import { useAPISettingStore } from "../stores/api_setting";
 import { abortRequestID, doHTTPRequest } from "../commands/http_request";
 import { HTTPResponse } from "../commands/http_response";
@@ -76,6 +77,7 @@ export default defineComponent({
         await apiFolderStore.fetch(collection);
         await apiSettingStore.fetch(collection);
         await useEnvironmentStore().fetch(collection);
+        await useGlobalReqHeaderStore().fetch(collection);
         const collectionStore = useAPICollectionStore();
         const result = await collectionStore.get(collection);
         if (result) {
@@ -117,17 +119,17 @@ export default defineComponent({
         showError(message, err);
       }
     };
-    let senddingRequestID = "";
+    let sendingRequestID = "";
 
-    const isCurrnetRequest = (reqID: string) => {
-      return senddingRequestID === reqID;
+    const isCurrentRequest = (reqID: string) => {
+      return sendingRequestID === reqID;
     };
 
     const handleSend = async (id: string) => {
       // 中断请求
       if (id === abortRequestID) {
         sending.value = false;
-        senddingRequestID = "";
+        sendingRequestID = "";
         response.value = {} as HTTPResponse;
         return;
       }
@@ -135,8 +137,8 @@ export default defineComponent({
         return;
       }
       const reqID = ulid();
-      senddingRequestID = reqID;
-      const req = apiSettingStore.getHTTPRequestFillENV(id);
+      sendingRequestID = reqID;
+      const req = apiSettingStore.getHTTPRequestFillValues(id);
 
       try {
         response.value = {
@@ -144,11 +146,11 @@ export default defineComponent({
         } as HTTPResponse;
         sending.value = true;
         const res = await doHTTPRequest(id, collection, req);
-        if (isCurrnetRequest(reqID)) {
+        if (isCurrentRequest(reqID)) {
           response.value = res;
         }
       } catch (err) {
-        if (isCurrnetRequest(reqID)) {
+        if (isCurrentRequest(reqID)) {
           response.value = {
             api: reqID,
             req,
@@ -156,7 +158,7 @@ export default defineComponent({
           showError(message, err);
         }
       } finally {
-        if (isCurrnetRequest(reqID)) {
+        if (isCurrentRequest(reqID)) {
           sending.value = false;
         }
       }

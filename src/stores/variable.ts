@@ -59,6 +59,11 @@ export function newVariableStore(name: string, category: string) {
           this.fetching = false;
         }
       },
+      listEnable(): Variable[] {
+        return this.variables.filter(
+          (item) => item.enabled === VariableStatus.Enabled
+        );
+      },
       async update(value: Variable) {
         if (this.updating) {
           return;

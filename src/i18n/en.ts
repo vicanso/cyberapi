@@ -95,6 +95,7 @@ export default {
     storeSetting: "Storage",
     appSetting: "Setting",
     envSetting: "ENV",
+    reqHeaderSetting: "Req Header",
     exportTables: "Backup",
     exportTablesProcessing: "Backup is processing, please wait...",
     exportTablesSuccess: "Backup save in download folder: %s",
@@ -127,14 +128,18 @@ export default {
   },
   environment: {
     title: "Environment",
-    tips: "Use current environment to facilitate switching between different environments",
+    tips: "Use current environment to facilitate switching between different environments(only for current project)",
     uriIsNil: "request address can not be blank",
     addNew: "Add environmental variable",
     clearCurrent: "Clear current value",
   },
   customizeVariable: {
     title: "Customize Variable",
-    tips: "Customize commonly used variables, get using value function",
+    tips: "Customize commonly used variables, get using value function(only for current project)",
+  },
+  globalReqHeader: {
+    title: "HTTP Request Header",
+    tips: "Customize http request header, they will be appended to request(only for current project)",
   },
   store: {
     title: "Storage",

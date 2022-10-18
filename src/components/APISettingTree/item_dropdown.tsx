@@ -198,7 +198,7 @@ export default defineComponent({
           break;
         case HandleKey.CopyAsCURL:
           {
-            const req = apiSettingStore.getHTTPRequestFillENV(id);
+            const req = apiSettingStore.getHTTPRequestFillValues(id);
             cookieStore
               .fetch()
               .then(() => {

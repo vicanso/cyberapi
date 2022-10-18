@@ -95,6 +95,7 @@ enum FnKey {
   setting = "setting",
   exportTables = "expxortTables",
   importTables = "importTables",
+  reqHeader = "reqHeader",
   none = "none",
 }
 
@@ -233,6 +234,9 @@ export default defineComponent({
           break;
         case FnKey.customizeVariable:
           dialogStore.toggleCustomizeVariableDialog(true);
+          break;
+        case FnKey.reqHeader:
+          dialogStore.toggleReqHeaderDialog(true);
           break;
         case FnKey.exportTables:
           handleBackup();
@@ -404,6 +408,17 @@ export default defineComponent({
                   <CodeWorkingOutline />
                 </NIcon>
               ),
+            },
+            {
+              label: i18nSetting("reqHeaderSetting"),
+              key: FnKey.reqHeader,
+              icon: () => <span>H</span>,
+            },
+            {
+              label: "",
+              type: "divider",
+              key: FnKey.none,
+              icon: () => <NIcon />,
             }
           );
         }

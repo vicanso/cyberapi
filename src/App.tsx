@@ -10,7 +10,11 @@ import CookieSetting from "./views/CookieSetting";
 import VariableSetting from "./views/VariableSetting";
 import StoreSetting from "./views/StoreSetting";
 import { VariableCategory } from "./commands/variable";
-import { i18nEnvironment, i18nCustomizeVariable } from "./i18n";
+import {
+  i18nEnvironment,
+  i18nCustomizeVariable,
+  i18nGlobalReqHeader,
+} from "./i18n";
 
 export default defineComponent({
   name: "App",
@@ -23,13 +27,10 @@ export default defineComponent({
       showEnvironment,
       showStore,
       showCustomizeVariableStore,
+      showReqHeader,
     } = storeToRefs(dialogStore);
     const closeDialog = () => {
-      dialogStore.toggleSettingDialog(false);
-      dialogStore.toggleCookieDialog(false);
-      dialogStore.toggleEnvironmentDialog(false);
-      dialogStore.toggleStoreDialog(false);
-      dialogStore.toggleCustomizeVariableDialog(false);
+      dialogStore.$reset();
     };
     onMounted(() => {
       loadingBar.finish();
@@ -41,6 +42,7 @@ export default defineComponent({
       showEnvironment,
       showStore,
       showCustomizeVariableStore,
+      showReqHeader,
     };
   },
   render() {
@@ -50,6 +52,7 @@ export default defineComponent({
       showEnvironment,
       showStore,
       showCustomizeVariableStore,
+      showReqHeader,
       closeDialog,
     } = this;
     const settingModal = (
@@ -121,6 +124,25 @@ export default defineComponent({
         />
       </NModal>
     );
+    const reqHeaderModal = (
+      <NModal
+        autoFocus={false}
+        show={showReqHeader}
+        closeOnEsc
+        onEsc={() => {
+          closeDialog();
+        }}
+        onMaskClick={() => {
+          closeDialog();
+        }}
+      >
+        <VariableSetting
+          category={VariableCategory.GlobalReqHeaders}
+          title={i18nGlobalReqHeader("title")}
+          tips={i18nGlobalReqHeader("tips")}
+        />
+      </NModal>
+    );
     const storeModal = (
       <NModal
         autoFocus={false}
@@ -142,6 +164,7 @@ export default defineComponent({
         {environmentModal}
         {storeModal}
         {customizeVariableModal}
+        {reqHeaderModal}
         <NLayoutHeader bordered>
           <AppHeader />
         </NLayoutHeader>
