@@ -92,6 +92,7 @@ export default {
     storeSetting: "存储设置",
     appSetting: "应用设置",
     envSetting: "环境变量设置",
+    reqHeaderSetting: "请求头设置",
     exportTables: "数据备份",
     exportTablesProcessing: "数据正在备份中，请稍候...",
     exportTablesSuccess: "数据成功备份至下载目录：%s",
@@ -121,14 +122,18 @@ export default {
   },
   environment: {
     title: "环境变量设置",
-    tips: "使用当前各环境变量，方便不同环境的切换",
+    tips: "使用当前各环境变量，方便不同环境的切换(仅用于当前项目)",
     uriIsNil: "请求地址不能为空",
     addNew: "添加环境变量",
     clearCurrent: "清除当前值",
   },
   customizeVariable: {
     title: "自定义变量",
-    tips: "自定义变量，可存储常用的变量值，通过value函数获取变量值",
+    tips: "自定义变量，可存储常用的变量值，通过value函数获取变量值(仅用于当前项目)",
+  },
+  globalReqHeader: {
+    title: "HTTP请求头",
+    tips: "自定义的HTTP请求头，用于全局添加至所有请求(仅用于当前项目)",
   },
   store: {
     title: "应用相关存储",

@@ -12,6 +12,7 @@ import { HTTPRequest } from "../commands/http_request";
 import { getAPISettingStore } from "./local";
 import { useEnvironmentStore, ENVRegexp } from "./environment";
 import { isWebMode, setAppTitle } from "../helpers/util";
+import { useGlobalReqHeaderStore } from "./global_req_header";
 
 const selectedIDKey = "selectedID";
 
@@ -56,7 +57,7 @@ export const useAPISettingStore = defineStore("apiSettings", {
       }
       return JSON.parse(setting.setting || "{}") as HTTPRequest;
     },
-    getHTTPRequestFillENV(id: string) {
+    getHTTPRequestFillValues(id: string) {
       const req = this.getHTTPRequest(id);
       if (!req.uri) {
         return req;
@@ -68,6 +69,17 @@ export const useAPISettingStore = defineStore("apiSettings", {
           req.uri = req.uri.replace(arr[0], envValue);
         }
       }
+      const variables = useGlobalReqHeaderStore().listEnable();
+      if (variables) {
+        variables.forEach((item) => {
+          req.headers.push({
+            key: item.name,
+            value: item.value,
+            enabled: true,
+          });
+        });
+      }
+
       return req;
     },
     findByID(id: string): APISetting {

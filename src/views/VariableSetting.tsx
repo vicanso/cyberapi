@@ -19,6 +19,7 @@ import {
   VariableCategory,
   VariableStatus,
 } from "../commands/variable";
+import { useGlobalReqHeaderStore } from "../stores/global_req_header";
 
 const variableClass = css`
   .n-card__content {
@@ -63,8 +64,15 @@ export default defineComponent({
     const route = useRoute();
     const collection = route.query.collection as string;
     let variableStore = useCustomizeStore();
-    if (props.category === VariableCategory.Environment) {
-      variableStore = useEnvironmentStore();
+    switch (props.category) {
+      case VariableCategory.Environment:
+        variableStore = useEnvironmentStore();
+        break;
+      case VariableCategory.GlobalReqHeaders:
+        variableStore = useGlobalReqHeaderStore();
+        break;
+      default:
+        break;
     }
     const { fetching, variables } = storeToRefs(variableStore);
     onBeforeMount(async () => {

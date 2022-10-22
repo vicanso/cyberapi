@@ -120,7 +120,7 @@ export async function convertRequestToCURL(
     body = ` -d '${body}' `;
   }
   const method = req.method || "GET";
-  return `curl -X${method.toUpperCase()}${body}${headerList.join(
+  return `curl -v -X${method.toUpperCase()}${body}${headerList.join(
     " "
   )} '${uri}'`;
 }

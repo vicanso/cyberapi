@@ -4,8 +4,8 @@ import { createPinia } from "pinia";
 import { message } from "@tauri-apps/api/dialog";
 
 import Debug from "debug";
-import Root from "./root";
 import router, { goTo } from "./router";
+import Root from "./root";
 import { isWebMode } from "./helpers/util";
 import { changeI18nLocale, LANG } from "./i18n";
 import { getAppLatestRoute } from "./stores/setting";
