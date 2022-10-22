@@ -2,9 +2,7 @@ name: "publish"
 on:
   push:
     branches:
-      - main
-    tags: 
-      - '*'
+      - release
 
 jobs:
   publish-tauri:
@@ -33,7 +31,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
       with:
-        tagName: CyberAPI-v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version
+        tagName: v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version
         releaseName: "CyberAPI v__VERSION__"
         releaseBody: "See the assets to download this version and install."
         prerelease: false
