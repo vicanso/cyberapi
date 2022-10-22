@@ -205,14 +205,16 @@ export default defineComponent({
             },
           ],
         });
-        dialog.warning({
-          title: i18nSetting("importTables"),
-          content: i18nSetting("importTablesTips"),
-          onPositiveClick() {
-            confirmRestore(selected as string);
-          },
-          positiveText: i18nCommon("confirm"),
-        });
+        if (selected) {
+          dialog.warning({
+            title: i18nSetting("importTables"),
+            content: i18nSetting("importTablesTips"),
+            onPositiveClick() {
+              confirmRestore(selected as string);
+            },
+            positiveText: i18nCommon("confirm"),
+          });
+        }
       } catch (err) {
         showError(message, err);
       }
