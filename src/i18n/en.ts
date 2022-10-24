@@ -32,6 +32,10 @@ export default {
       "CURL data is too large, and the content has been copied to the clipboard",
     apiID: "Request ID",
     remoteAddr: "Remote Addr",
+    dns: "DNS",
+    connect: "Connect",
+    serverProcessing: "Server Processing",
+    contentTransfer: "Content Transfer",
   },
   common: {
     app: "CyberAPI",

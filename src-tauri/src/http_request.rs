@@ -10,10 +10,14 @@ use hyper::{
 use hyper_timeout::TimeoutConnector;
 use hyper_tls::HttpsConnector;
 use libflate::gzip::Decoder;
+use once_cell::sync::OnceCell;
+use tracing_subscriber::Layer;
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io::Read, time::Duration, vec};
-use time::Instant;
+use std::{
+    collections::BTreeMap, collections::HashMap, io::Read, sync::atomic::AtomicU64,
+    sync::atomic::Ordering, time::Duration, vec,
+};
 use url::Url;
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -39,9 +43,153 @@ pub struct HTTPRequest {
 #[serde(rename_all = "camelCase")]
 pub struct HTTPStats {
     pub remote_addr: String,
-    pub got_first_response_byte: u32,
-    pub done: u32,
+    pub dns_lookup: u32,
+    pub connect: u32,
+    pub server_processing: u32,
+    pub content_transfer: u32,
+    pub total: u32,
 }
+
+impl HTTPStats {
+    fn new() -> Self {
+        HTTPStats {
+            ..Default::default()
+        }
+    }
+}
+
+impl From<&HTTPTrace> for HTTPStats {
+    fn from(trace: &HTTPTrace) -> Self {
+        let mut stats = HTTPStats::new();
+        stats.dns_lookup = trace.dns_consuming();
+        stats.connect = trace.connect_consuming();
+        stats.server_processing = trace.server_processing_consuming();
+        stats.content_transfer = trace.content_transfer_consuming();
+        stats.total = trace.consuming();
+        stats
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Default)]
+struct HTTPTrace {
+    start_value: AtomicU64,
+    get_conn_value: AtomicU64,
+    dns_start_value: AtomicU64,
+    dns_done_value: AtomicU64,
+    connect_start_value: AtomicU64,
+    connected_value: AtomicU64,
+    // tls_handshake_start: AtomicU64,
+    // tls_handshake_done: AtomicU64,
+    got_first_response_byte_value: AtomicU64,
+    done_value: AtomicU64,
+}
+
+// get conn from pool
+// http connect start
+// dns start
+// dns done
+// conn start
+// connected
+// first byte
+// done
+impl HTTPTrace {
+    fn now(&self) -> u64 {
+        chrono::Utc::now().timestamp_millis() as u64
+    }
+    fn new() -> Self {
+        HTTPTrace {
+            ..Default::default()
+        }
+    }
+    fn reset(&self) {
+        self.start_value.store(0, Ordering::Relaxed);
+        self.get_conn_value.store(0, Ordering::Relaxed);
+        self.dns_start_value.store(0, Ordering::Relaxed);
+        self.dns_done_value.store(0, Ordering::Relaxed);
+        self.connect_start_value.store(0, Ordering::Relaxed);
+        self.connected_value.store(0, Ordering::Relaxed);
+        self.got_first_response_byte_value
+            .store(0, Ordering::Relaxed);
+        self.done_value.store(0, Ordering::Relaxed);
+    }
+    fn get_conn_from_pool(&self) {
+        self.start_value.store(self.now(), Ordering::Relaxed)
+    }
+    fn get_conn(&self) {
+        self.get_conn_value.store(self.now(), Ordering::Relaxed)
+    }
+    fn dns_start(&self) {
+        self.dns_start_value.store(self.now(), Ordering::Relaxed)
+    }
+    fn dns_done(&self) {
+        self.dns_done_value.store(self.now(), Ordering::Relaxed);
+    }
+    fn connect_start(&self) {
+        self.connect_start_value
+            .store(self.now(), Ordering::Relaxed);
+    }
+    fn connected(&self) {
+        self.connected_value.store(self.now(), Ordering::Relaxed);
+    }
+    fn got_first_response_byte(&self) {
+        self.got_first_response_byte_value
+            .store(self.now(), Ordering::Relaxed);
+    }
+    fn done(&self) {
+        self.done_value.store(self.now(), Ordering::Relaxed);
+    }
+    fn dns_consuming(&self) -> u32 {
+        let dns_start_value = self.dns_start_value.load(Ordering::Relaxed);
+        let dns_done_value = self.dns_done_value.load(Ordering::Relaxed);
+        if dns_start_value == 0 || dns_done_value == 0 {
+            return 0;
+        }
+        (dns_done_value - dns_start_value) as u32
+    }
+    fn connect_consuming(&self) -> u32 {
+        let connect_start_value = self.connect_start_value.load(Ordering::Relaxed);
+        let connected_value = self.connected_value.load(Ordering::Relaxed);
+        if connect_start_value == 0 || connected_value == 0 {
+            return 0;
+        }
+
+        (connected_value - connect_start_value) as u32
+    }
+    fn server_processing_consuming(&self) -> u32 {
+        let connected_value = self.connected_value.load(Ordering::Relaxed);
+        let got_first_response_byte_value =
+            self.got_first_response_byte_value.load(Ordering::Relaxed);
+        if connected_value == 0 || got_first_response_byte_value == 0 {
+            return 0;
+        }
+
+        (got_first_response_byte_value - connected_value) as u32
+    }
+    fn content_transfer_consuming(&self) -> u32 {
+        let got_first_response_byte_value =
+            self.got_first_response_byte_value.load(Ordering::Relaxed);
+        let done_value = self.done_value.load(Ordering::Relaxed);
+        if got_first_response_byte_value == 0 || done_value == 0 {
+            return 0;
+        }
+        (done_value - got_first_response_byte_value) as u32
+    }
+    fn consuming(&self) -> u32 {
+        let start_value = self.start_value.load(Ordering::Relaxed);
+        let done_value = self.done_value.load(Ordering::Relaxed);
+        if start_value == 0 || done_value == 0 {
+            return 0;
+        }
+        (done_value - start_value) as u32
+    }
+}
+
+static HTTP_TRACE: OnceCell<HTTPTrace> = OnceCell::new();
+
+fn get_http_trace() -> &'static HTTPTrace {
+    HTTP_TRACE.get_or_init(HTTPTrace::new)
+}
+
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct HTTPResponse {
@@ -54,11 +202,90 @@ pub struct HTTPResponse {
     pub body_size: u32,
 }
 
+struct JsonVisitor<'a>(&'a mut BTreeMap<String, String>);
+
+impl<'a> tracing::field::Visit for JsonVisitor<'a> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0
+            .insert(field.name().to_string(), format!("{:?}", value));
+    }
+}
+
+pub struct HTTPTraceLayer;
+impl<S> Layer<S> for HTTPTraceLayer
+where
+    S: tracing::Subscriber,
+    // Scary! But there's no need to even understand it. We just need it.
+    S: for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let target = event.metadata().target();
+        if !target.starts_with("hyper::") {
+            return;
+        }
+
+        let mut fields = BTreeMap::new();
+        let mut visitor = JsonVisitor(&mut fields);
+
+        event.record(&mut visitor);
+        let message = fields.get("message");
+        if message.is_none() {
+            return;
+        }
+        let message = message.unwrap();
+        // 暂时不会使用tracing span，使用比较简陋的处理方法
+        let trace = get_http_trace();
+        match target {
+            "hyper::client::pool" => {
+                // 从连接池中获取
+                if message.contains("checkout waiting for idle connection") {
+                    trace.get_conn_from_pool();
+                }
+            }
+            "hyper::client::connect::http" => {
+                // HTTP 开始连接
+                if message.starts_with("Http::connect;") {
+                    trace.get_conn();
+                } else if message.starts_with("connecting to") {
+                    trace.dns_done();
+                }
+            }
+            "hyper::client::connect::dns" => {
+                if message.starts_with("resolving host") {
+                    trace.dns_start();
+                }
+            }
+            "hyper::client::conn" => {
+                // 开始连接
+                if message.starts_with("client handshake") {
+                    trace.connect_start();
+                }
+            }
+            "hyper::client::client" => {
+                // 如果是https，包括tls
+                if message.starts_with("handshake complete") {
+                    trace.connected();
+                }
+            }
+            "hyper::proto::h1::conn" => {
+                // 获取首字节
+                if message.starts_with("Conn::read_head") {
+                    trace.got_first_response_byte();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub async fn request(
     api: String,
     http_request: HTTPRequest,
 ) -> Result<HTTPResponse, CyberAPIError> {
-    let now = Instant::now();
+    // 暂时使用单个实例，后续调整
+    // 如果多个请求并发，有可能数据不精确，暂时忽略
+    let trace = get_http_trace();
+    trace.reset();
 
     let body = if http_request.content_type.starts_with("multipart/form-data") {
         // 数据为base64
@@ -139,9 +366,6 @@ pub async fn request(
     let write_timeout = Duration::from_secs(5);
     // TODO 设置超时由参数指定
     let read_timeout = Duration::from_secs(60);
-    let mut stats = HTTPStats {
-        ..Default::default()
-    };
 
     // TODO 后续增加各阶段耗时
     // https://docs.rs/tower-http/latest/tower_http/
@@ -168,8 +392,6 @@ pub async fn request(
             .request(req)
             .await?
     };
-
-    stats.got_first_response_byte = (Instant::now() - now).whole_milliseconds() as u32;
 
     let status = resp.status().as_u16();
     let mut headers = HashMap::new();
@@ -214,10 +436,13 @@ pub async fn request(
         cookies::save_cookie_store(set_cookies, &current_url)?;
     }
 
+    let mut remote_addr = "".to_string();
     if let Some(info) = resp.extensions().get::<HttpInfo>() {
-        stats.remote_addr = info.remote_addr().to_string();
+        remote_addr = info.remote_addr().to_string();
     }
     let mut buf = hyper::body::to_bytes(resp).await?;
+    // 主动触发done，不计算解压数据耗时
+    trace.done();
     let body_size = buf.len();
     // 解压gzip
     if is_gzip {
@@ -234,12 +459,13 @@ pub async fn request(
         buf = Bytes::copy_from_slice(&decode_data);
     }
 
-    stats.done = (Instant::now() - now).whole_milliseconds() as u32;
+    let mut stats: HTTPStats = trace.into();
+    stats.remote_addr = remote_addr;
 
     let resp = HTTPResponse {
         api,
         body_size: body_size as u32,
-        latency: stats.done,
+        latency: stats.total,
         status,
         headers,
         body: base64::encode(buf),

@@ -374,6 +374,33 @@ export default defineComponent({
         value: stats.remoteAddr,
       });
     }
+    if (stats?.dnsLookup) {
+      descriptionItemOptions.push({
+        label: i18nCollection("dns"),
+        key: "dns",
+        value: `${stats.dnsLookup} ms`,
+      });
+    }
+    if (stats) {
+      descriptionItemOptions.push(
+        {
+          label: i18nCollection("connect"),
+          key: "connect",
+          value: `${stats.connect} ms`,
+        },
+        {
+          label: i18nCollection("serverProcessing"),
+          key: "serverProcessing",
+          value: `${stats.serverProcessing} ms`,
+        },
+        {
+          label: i18nCollection("contentTransfer"),
+          key: "contentTransfer",
+          value: `${stats.contentTransfer} ms`,
+        }
+      );
+    }
+
     const headerDescriptionItems: JSX.Element[] = [];
     const cookieDescriptionItems: JSX.Element[] = [];
     const setCookieKey = "set-cookie";

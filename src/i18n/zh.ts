@@ -30,6 +30,10 @@ export default {
     curlTooLargeTips: "curl数据太大，内容已复制至粘贴板",
     apiID: "该请求配置ID",
     remoteAddr: "请求地址",
+    dns: "DNS",
+    connect: "连接",
+    serverProcessing: "服务器处理",
+    contentTransfer: "数据传输",
   },
   common: {
     app: "CyberAPI",

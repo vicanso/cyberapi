@@ -282,8 +282,11 @@ export async function doHTTPRequest(
       body: encode(JSON.stringify(params)),
       stats: {
         remoteAddr: "127.0.0.1:80",
-        gotFirstResponseByte: 20,
-        done: 30,
+        dnsLookup: 1,
+        connect: 2,
+        serverProcessing: 3,
+        contentTransfer: 4,
+        total: 5,
       },
     };
 

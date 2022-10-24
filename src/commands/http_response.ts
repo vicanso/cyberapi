@@ -8,8 +8,11 @@ const applicationJSON = "application/json";
 
 export interface HTTPStats {
   remoteAddr: string;
-  gotFirstResponseByte: number;
-  done: number;
+  dnsLookup: number;
+  connect: number;
+  serverProcessing: number;
+  contentTransfer: number;
+  total: number;
 }
 
 export interface HTTPResponse {
