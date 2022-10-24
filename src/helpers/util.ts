@@ -26,7 +26,7 @@ export async function setAppTitle(title: string) {
   await appWindow.setTitle(title);
 }
 
-function formatError(err: Error | unknown): string {
+export function formatError(err: Error | unknown): string {
   let message = "";
   if (err instanceof Error) {
     message = err.message;

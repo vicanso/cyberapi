@@ -9,6 +9,7 @@ import {
   NNotificationProvider,
 } from "naive-ui";
 import { storeToRefs } from "pinia";
+import { message } from "@tauri-apps/api/dialog";
 
 import { closeSplashscreen } from "./commands/window";
 import { useSettingStore } from "./stores/setting";
@@ -16,6 +17,7 @@ import App from "./App";
 import ExLoading from "./components/ExLoading";
 import { useAppStore } from "./stores/app";
 import { getLocale } from "./i18n";
+import { formatError } from "./helpers/util";
 
 export default defineComponent({
   name: "RootView",
@@ -36,7 +38,7 @@ export default defineComponent({
         await settingStore.fetch();
         await settingStore.resize();
       } catch (err) {
-        // TODO 初始化基本不会出错，是否有其它方法提示
+        message(formatError(err), "Error");
         console.error(err);
       } finally {
         processing.value = false;

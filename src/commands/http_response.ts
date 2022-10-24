@@ -176,8 +176,6 @@ interface Response {
 
 const limit = 10;
 
-// TODO 如何定期清除相关数据
-
 export async function addLatestResponse(resp: HTTPResponse) {
   const id = resp.api;
   const store = getLatestResponseStore();

@@ -222,7 +222,6 @@ export default defineComponent({
           width={width}
           showDivider={index !== 0}
           onResize={(value) => {
-            // TODO 是否设置为百分比更合理
             updateCollectionColumnWidths({
               restWidth,
               value,

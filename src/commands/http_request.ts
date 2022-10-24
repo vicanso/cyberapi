@@ -100,7 +100,6 @@ export async function convertRequestToCURL(
   if (!includeContentType && req.contentType) {
     headerList.push(`-H 'Content-Type:${req.contentType}'`);
   }
-  // TODO body
   let body = " ";
   if (req.body) {
     body = await convertBody(collection, req.body);

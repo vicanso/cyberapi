@@ -115,7 +115,7 @@ export default defineComponent({
       }
     };
 
-    const hanldeImport = async () => {
+    const handleImport = async () => {
       try {
         const data = (await readTextFromClipboard()) || "";
         newImportDialog({
@@ -133,7 +133,6 @@ export default defineComponent({
       apiFolderStore.apiFolders.forEach((folder) => arr.push(folder));
       apiSettingStore.apiSettings.forEach((apiSetting) => arr.push(apiSetting));
       try {
-        // TODO 调整为collection的名称
         let name = "unknown";
         const result = collectionStore.findByID(collection);
         if (result) {
@@ -147,7 +146,7 @@ export default defineComponent({
     };
 
     return {
-      hanldeImport,
+      handleImport,
       handleExport,
       addHTTPSetting,
       addFolder,
@@ -249,7 +248,7 @@ export default defineComponent({
                     this.addFolder("");
                     break;
                   case HandleKey.ImportSettings:
-                    this.hanldeImport();
+                    this.handleImport();
                     break;
                   case HandleKey.ExportSettings:
                     this.handleExport();

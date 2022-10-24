@@ -367,8 +367,6 @@ pub async fn request(
     // TODO 设置超时由参数指定
     let read_timeout = Duration::from_secs(60);
 
-    // TODO 后续增加各阶段耗时
-    // https://docs.rs/tower-http/latest/tower_http/
 
     // http 与 https使用不同的connector
     let resp = if current_url.scheme() == "https" {
