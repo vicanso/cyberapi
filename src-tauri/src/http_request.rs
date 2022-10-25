@@ -53,6 +53,7 @@ pub struct HTTPStats {
     pub remote_addr: String,
     pub dns_lookup: u32,
     pub connect: u32,
+    pub send: u32,
     pub server_processing: u32,
     pub content_transfer: u32,
     pub total: u32,
@@ -72,6 +73,7 @@ impl From<&HTTPTrace> for HTTPStats {
         stats.dns_lookup = trace.dns_consuming();
         stats.connect = trace.connect_consuming();
         stats.server_processing = trace.server_processing_consuming();
+        stats.send = trace.send_consuming();
         stats.content_transfer = trace.content_transfer_consuming();
         stats.total = trace.consuming();
         stats
@@ -86,6 +88,7 @@ struct HTTPTrace {
     dns_done_value: AtomicU64,
     connect_start_value: AtomicU64,
     connected_value: AtomicU64,
+    written_value: AtomicU64,
     // tls_handshake_start: AtomicU64,
     // tls_handshake_done: AtomicU64,
     got_first_response_byte_value: AtomicU64,
@@ -116,6 +119,7 @@ impl HTTPTrace {
         self.dns_done_value.store(0, Ordering::Relaxed);
         self.connect_start_value.store(0, Ordering::Relaxed);
         self.connected_value.store(0, Ordering::Relaxed);
+        self.written_value.store(0, Ordering::Relaxed);
         self.got_first_response_byte_value
             .store(0, Ordering::Relaxed);
         self.done_value.store(0, Ordering::Relaxed);
@@ -143,8 +147,19 @@ impl HTTPTrace {
         self.got_first_response_byte_value
             .store(self.now(), Ordering::Relaxed);
     }
+    fn written(&self) {
+        self.written_value.store(self.now(), Ordering::Relaxed);
+    }
     fn done(&self) {
         self.done_value.store(self.now(), Ordering::Relaxed);
+    }
+    fn send_consuming(&self) -> u32 {
+        let connected_value = self.connected_value.load(Ordering::Relaxed);
+        let written_value = self.written_value.load(Ordering::Relaxed);
+        if connected_value == 0 || written_value == 0 {
+            return 0;
+        }
+        return (written_value - connected_value) as u32;
     }
     fn dns_consuming(&self) -> u32 {
         let dns_start_value = self.dns_start_value.load(Ordering::Relaxed);
@@ -275,10 +290,14 @@ where
                     trace.connected();
                 }
             }
-            "hyper::proto::h1::conn" => {
+            "hyper::proto::h1::io" => {
                 // 获取首字节
-                if message.starts_with("Conn::read_head") {
-                    trace.got_first_response_byte();
+                if message.starts_with("received ") {
+                    if trace.got_first_response_byte_value.load(Ordering::Relaxed) == 0 {
+                        trace.got_first_response_byte();
+                    }
+                } else if message.starts_with("flushed ") {
+                    trace.written();
                 }
             }
             _ => {}

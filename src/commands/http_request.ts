@@ -291,6 +291,7 @@ export async function doHTTPRequest(
         remoteAddr: "127.0.0.1:80",
         dnsLookup: 1,
         connect: 2,
+        send: 0,
         serverProcessing: 3,
         contentTransfer: 4,
         total: 5,

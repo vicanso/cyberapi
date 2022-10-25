@@ -389,6 +389,11 @@ export default defineComponent({
           value: `${stats.connect} ms`,
         },
         {
+          label: i18nCollection("send"),
+          key: "send",
+          value: `${stats.send} ms`,
+        },
+        {
           label: i18nCollection("serverProcessing"),
           key: "serverProcessing",
           value: `${stats.serverProcessing} ms`,

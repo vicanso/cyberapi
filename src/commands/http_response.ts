@@ -10,6 +10,7 @@ export interface HTTPStats {
   remoteAddr: string;
   dnsLookup: number;
   connect: number;
+  send: number;
   serverProcessing: number;
   contentTransfer: number;
   total: number;
