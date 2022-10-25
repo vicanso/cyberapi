@@ -145,7 +145,8 @@ export default defineComponent({
           status: -1,
         } as HTTPResponse;
         sending.value = true;
-        const res = await doHTTPRequest(id, collection, req);
+        const timeout = settingStore.getRequestTimeout();
+        const res = await doHTTPRequest(id, collection, req, timeout);
         if (isCurrentRequest(reqID)) {
           response.value = res;
         }

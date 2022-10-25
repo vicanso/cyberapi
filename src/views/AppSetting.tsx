@@ -17,7 +17,7 @@ import {
 
 import { getNormalDialogStyle, showError } from "../helpers/util";
 import { i18nSetting } from "../i18n";
-import { useSettingStore, ResizeType } from "../stores/setting";
+import { useSettingStore, ResizeType, Timeout } from "../stores/setting";
 import { storeToRefs } from "pinia";
 import { useAppStore } from "../stores/app";
 
@@ -27,7 +27,7 @@ export default defineComponent({
     const settingStore = useSettingStore();
     const appStore = useAppStore();
     const message = useMessage();
-    const { theme, size, resizeType } = storeToRefs(settingStore);
+    const { theme, size, resizeType, timeout } = storeToRefs(settingStore);
     const updateTheme = async (value: string) => {
       try {
         await settingStore.updateTheme(value);
@@ -65,7 +65,29 @@ export default defineComponent({
         showError(message, err);
       }
     };
+    const updateTimeout = async (category: string, value: number) => {
+      try {
+        const timeout = Object.assign({}, settingStore.timeout);
+        switch (category) {
+          case "connect":
+            timeout.connect = value;
+            break;
+          case "write":
+            timeout.write = value;
+            break;
+          case "read":
+            timeout.read = value;
+            break;
+          default:
+            break;
+        }
+        await settingStore.updateRequestTimeout(timeout);
+      } catch (err) {
+        showError(message, err);
+      }
+    };
     return {
+      timeout,
       theme,
       size,
       resizeType,
@@ -108,11 +130,13 @@ export default defineComponent({
       updateSize,
       updateTheme,
       updateResizeType,
+      updateTimeout,
     };
   },
   render() {
     const modalStyle = getNormalDialogStyle();
-    const { theme, size, resizeType, updateSize, updateResizeType } = this;
+    const { theme, size, resizeType, updateSize, updateResizeType, timeout } =
+      this;
     const descriptionItems = this.infos.map((item) => {
       return (
         <NDescriptionsItem label={item.name} key={item.name} span={item.span}>
@@ -175,6 +199,46 @@ export default defineComponent({
                 defaultValue={size?.height || null}
                 onUpdateValue={(value) => {
                   updateSize(value || 0, "height");
+                }}
+              />
+            </NFormItem>
+          </NGi>
+        </NGrid>
+        <NDivider />
+        <NP>{i18nSetting("timeoutSetting")}</NP>
+        <NGrid xGap={20}>
+          <NGi span={8}>
+            <NFormItem label={i18nSetting("timeoutConnect")}>
+              <NInputNumber
+                class="widthFull"
+                min={0}
+                defaultValue={timeout?.connect || null}
+                onUpdateValue={(value) => {
+                  this.updateTimeout("connect", value || 0);
+                }}
+              />
+            </NFormItem>
+          </NGi>
+          <NGi span={8}>
+            <NFormItem label={i18nSetting("timeoutRead")}>
+              <NInputNumber
+                class="widthFull"
+                min={0}
+                defaultValue={timeout?.read || null}
+                onUpdateValue={(value) => {
+                  this.updateTimeout("read", value || 0);
+                }}
+              />
+            </NFormItem>
+          </NGi>
+          <NGi span={8}>
+            <NFormItem label={i18nSetting("timeoutWrite")}>
+              <NInputNumber
+                class="widthFull"
+                min={0}
+                defaultValue={timeout?.write || null}
+                onUpdateValue={(value) => {
+                  this.updateTimeout("write", value || 0);
                 }}
               />
             </NFormItem>

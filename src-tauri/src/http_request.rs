@@ -39,6 +39,14 @@ pub struct HTTPRequest {
     pub query: Vec<HTTPRequestKVParam>,
 }
 
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestTimeout {
+    pub connect: u64,
+    pub write: u64,
+    pub read: u64,
+}
+
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct HTTPStats {
@@ -281,6 +289,7 @@ where
 pub async fn request(
     api: String,
     http_request: HTTPRequest,
+    timeout: RequestTimeout,
 ) -> Result<HTTPResponse, CyberAPIError> {
     // 暂时使用单个实例，后续调整
     // 如果多个请求并发，有可能数据不精确，暂时忽略
@@ -362,11 +371,9 @@ pub async fn request(
             );
         }
     }
-    let connect_timeout = Duration::from_secs(10);
-    let write_timeout = Duration::from_secs(5);
-    // TODO 设置超时由参数指定
-    let read_timeout = Duration::from_secs(60);
-
+    let connect_timeout = Duration::from_secs(timeout.connect);
+    let write_timeout = Duration::from_secs(timeout.write);
+    let read_timeout = Duration::from_secs(timeout.read);
 
     // http 与 https使用不同的connector
     let resp = if current_url.scheme() == "https" {

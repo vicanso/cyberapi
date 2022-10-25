@@ -112,6 +112,10 @@ export default {
     langChangeSuccess:
       "Language configuration is modified successfully, and the application will restart in 3 seconds",
     browser: "Browser",
+    timeoutSetting: "Request Timeout",
+    timeoutConnect: "Connect Timeout(s)",
+    timeoutRead: "Read Timeout(s)",
+    timeoutWrite: "Write Timeout(s)",
   },
   cookie: {
     title: "Cookie",

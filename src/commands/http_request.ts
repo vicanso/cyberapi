@@ -32,6 +32,13 @@ export enum ContentType {
   Plain = "text/plain",
 }
 
+export interface RequestTimeout {
+  [key: string]: unknown;
+  connect: number;
+  write: number;
+  read: number;
+}
+
 export interface HTTPRequest {
   [key: string]: unknown;
   method: string;
@@ -211,7 +218,8 @@ let userAgent = "";
 export async function doHTTPRequest(
   id: string,
   collection: string,
-  req: HTTPRequest
+  req: HTTPRequest,
+  timeout: RequestTimeout
 ): Promise<HTTPResponse> {
   if (!req.headers) {
     req.headers = [];
@@ -318,9 +326,25 @@ export async function doHTTPRequest(
     });
   }
 
+  const requestTimeout = {
+    connect: 10,
+    write: 10,
+    read: 60,
+  };
+  if (timeout.connect && timeout.connect > 0) {
+    requestTimeout.connect = timeout.connect;
+  }
+  if (timeout.write && timeout.write > 0) {
+    requestTimeout.write = timeout.write;
+  }
+  if (timeout.read && timeout.read > 0) {
+    requestTimeout.read = timeout.read;
+  }
+
   const resp = await run<HTTPResponse>(cmdDoHTTPRequest, {
     req: params,
     api: id,
+    timeout: requestTimeout,
   });
   if (resp.latency <= 0) {
     resp.latency = 1;

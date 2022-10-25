@@ -7,6 +7,12 @@ import { isWebMode } from "../helpers/util";
 import { LocationQuery, RouteParams } from "vue-router";
 import { getSettingStore } from "./local";
 
+export interface Timeout {
+  connect: number;
+  write: number;
+  read: number;
+}
+
 interface AppSetting {
   theme: string;
   collectionSortType: string;
@@ -21,6 +27,7 @@ interface AppSetting {
     params: RouteParams;
     query: LocationQuery;
   };
+  timeout: Timeout;
 }
 
 export enum ResizeType {
@@ -77,6 +84,11 @@ export const useSettingStore = defineStore("common", {
         width: 0,
         height: 0,
       },
+      timeout: {
+        connect: 0,
+        read: 0,
+        write: 0,
+      },
     };
   },
   actions: {
@@ -114,6 +126,14 @@ export const useSettingStore = defineStore("common", {
           this.size = setting.size;
         }
         this.resizeType = setting.resizeType || ResizeType.Max;
+        this.timeout = Object.assign(
+          {
+            connect: 0,
+            write: 0,
+            read: 0,
+          },
+          setting.timeout
+        );
       } catch (err) {
         // 获取失败则忽略
       } finally {
@@ -165,6 +185,15 @@ export const useSettingStore = defineStore("common", {
       } else if (width > 0 && height > 0) {
         await setWindowSize(width, height);
       }
+    },
+    getRequestTimeout() {
+      return this.timeout;
+    },
+    async updateRequestTimeout(params: Timeout) {
+      const setting = await getAppSetting();
+      setting.timeout = params;
+      await updateAppSetting(setting);
+      this.timeout = setting.timeout;
     },
   },
 });

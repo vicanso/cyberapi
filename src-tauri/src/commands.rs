@@ -156,8 +156,9 @@ pub async fn list_variable(collection: String, category: String) -> CommandResul
 pub async fn do_http_request(
     api: String,
     req: http_request::HTTPRequest,
+    timeout: http_request::RequestTimeout,
 ) -> CommandResult<http_request::HTTPResponse> {
-    http_request::request(api, req).await
+    http_request::request(api, req, timeout).await
 }
 
 // 获取所有cookie

@@ -106,6 +106,10 @@ export default {
     customizeVariableSetting: "变量设置",
     langChangeSuccess: "修改语言配置成功，应用将在3秒后重启",
     browser: "浏览器",
+    timeoutSetting: "请求超时设置",
+    timeoutConnect: "连接超时(秒)",
+    timeoutRead: "读超时(秒)",
+    timeoutWrite: "写超时(秒)",
   },
   cookie: {
     title: "Cookie设置",
