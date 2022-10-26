@@ -94,15 +94,16 @@
         "title": "Cyber API",
         "width": 1200,
         "center": true,
-        "visible": false
+        "visible": false 
       },
       {
         "theme": "Dark",
-        "width": 400,
-        "height": 200,
+        "width": 500,
+        "height": 288,
         "resizable": false,
         "decorations": false,
         "center": true,
+        "visible": false,
         "url": "splashscreen.html",
         "label": "splashscreen"
       }

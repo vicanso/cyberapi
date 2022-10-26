@@ -1,9 +1,20 @@
 import { run } from "./invoke";
-import { appWindow, LogicalSize } from "@tauri-apps/api/window";
+import { appWindow, LogicalSize, getAll } from "@tauri-apps/api/window";
 import { isWebMode } from "../helpers/util";
 
 export function closeSplashscreen() {
   run("close_splashscreen");
+}
+
+export function showSplashscreen() {
+  if (isWebMode()) {
+    return;
+  }
+  getAll().forEach((item) => {
+    if (item.label === "splashscreen") {
+      item.show();
+    }
+  });
 }
 
 export async function setWindowSize(width: number, height: number) {
