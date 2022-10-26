@@ -343,7 +343,7 @@ export default defineComponent({
       </NGrid>
     );
 
-    let collecitons = <ExLoading />;
+    let collections = <ExLoading />;
     if (!fetching) {
       const options = [
         {
@@ -413,7 +413,7 @@ export default defineComponent({
           </NGi>
         );
       });
-      collecitons = (
+      collections = (
         <NGrid
           cols={"2 s:3 m:4 l:5 xl:6 2xl:7"}
           responsive={"screen"}
@@ -428,7 +428,7 @@ export default defineComponent({
     return (
       <div class={dashboardClass}>
         {header}
-        <div>{collecitons}</div>
+        <div>{collections}</div>
       </div>
     );
   },

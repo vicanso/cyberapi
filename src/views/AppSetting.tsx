@@ -17,7 +17,7 @@ import {
 
 import { getNormalDialogStyle, showError } from "../helpers/util";
 import { i18nSetting } from "../i18n";
-import { useSettingStore, ResizeType, Timeout } from "../stores/setting";
+import { useSettingStore, ResizeType } from "../stores/setting";
 import { storeToRefs } from "pinia";
 import { useAppStore } from "../stores/app";
 

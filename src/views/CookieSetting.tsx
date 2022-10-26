@@ -85,13 +85,27 @@ export default defineComponent({
   },
   render() {
     const { cookies, removeCookie, editCookie, mode, updatedCookie } = this;
-    const modalStyle = getNormalDialogStyle();
+    const modalStyle = getNormalDialogStyle(0.8);
+    let cookieNameMaxWidth = 0;
+    let domainNameMaxWidth = 0;
+    const fontWidth = 8;
+    cookies.forEach((item) => {
+      const cookieWidth = item.name.length * fontWidth;
+      const domainWidth = item.domain.length * fontWidth;
+      if (cookieWidth > cookieNameMaxWidth) {
+        cookieNameMaxWidth = cookieWidth;
+      }
+      if (domainWidth > domainNameMaxWidth) {
+        domainNameMaxWidth = domainWidth;
+      }
+    });
+    const tablePadding = 20;
 
     const columns: DataTableColumns = [
       {
         title: i18nCookie("name"),
         key: "name",
-        minWidth: 120,
+        minWidth: cookieNameMaxWidth + tablePadding,
       },
       {
         title: i18nCookie("value"),
@@ -105,7 +119,7 @@ export default defineComponent({
       {
         title: i18nCookie("domain"),
         key: "domain",
-        width: 130,
+        width: domainNameMaxWidth + tablePadding,
       },
       {
         title: i18nCookie("expires"),

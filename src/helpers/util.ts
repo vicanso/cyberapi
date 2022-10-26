@@ -68,9 +68,9 @@ export function getBodyWidth(): number {
   return window.innerWidth || 800;
 }
 
-export function getNormalDialogStyle() {
+export function getNormalDialogStyle(percent = 0.7) {
   const bodyWidth = getBodyWidth();
-  const modalWidth = bodyWidth >= 1000 ? bodyWidth * 0.7 : bodyWidth - 200;
+  const modalWidth = bodyWidth >= 1000 ? bodyWidth * percent : bodyWidth - 200;
   const modalStyle = {
     width: `${modalWidth}px`,
   };
