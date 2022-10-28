@@ -88,7 +88,7 @@ export default defineComponent({
     const modalStyle = getNormalDialogStyle(0.8);
     let cookieNameMaxWidth = 0;
     let domainNameMaxWidth = 0;
-    const fontWidth = 8;
+    const fontWidth = 7;
     cookies.forEach((item) => {
       const cookieWidth = item.name.length * fontWidth;
       const domainWidth = item.domain.length * fontWidth;
@@ -99,13 +99,16 @@ export default defineComponent({
         domainNameMaxWidth = domainWidth;
       }
     });
-    const tablePadding = 20;
+    const tablePadding = 10;
 
     const columns: DataTableColumns = [
       {
         title: i18nCookie("name"),
         key: "name",
         minWidth: cookieNameMaxWidth + tablePadding,
+        ellipsis: {
+          tooltip: true,
+        },
       },
       {
         title: i18nCookie("value"),

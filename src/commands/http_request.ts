@@ -278,7 +278,8 @@ export async function doHTTPRequest(
     const ms = Math.random() * 2000;
     await delay(ms);
     const headers = new Map<string, string[]>();
-    headers.set("Content-Type", ["application/json"]);
+    headers.set("content-type", ["application/json"]);
+    headers.set("set-cookie", ["uid=ZHGG9VYP; path=/; httponly"]);
     const resp = {
       api: id,
       req: req,

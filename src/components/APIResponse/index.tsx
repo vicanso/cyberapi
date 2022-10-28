@@ -76,6 +76,10 @@ const responseClass = css`
     float: left;
     margin-top: 15px;
     font-size: 16px;
+    font-weight: 600;
+  }
+  .cookie {
+    margin-top: 16px;
   }
   .header {
     cursor: pointer;
@@ -322,7 +326,7 @@ export default defineComponent({
 
     const apiIDSlots = {
       trigger: () => (
-        <NIcon class="info">
+        <NIcon class="info" size={18}>
           <InformationCircleOutline />
         </NIcon>
       ),
@@ -342,7 +346,7 @@ export default defineComponent({
 
     const cookieSlots = {
       trigger: () => (
-        <NIcon class="info">
+        <NIcon class="info cookie" size={15}>
           <BowlingBallOutline />
         </NIcon>
       ),
