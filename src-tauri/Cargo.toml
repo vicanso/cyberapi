@@ -24,7 +24,6 @@ strum = "0.24"
 strum_macros = "0.24"
 hyper = { version = "0.14.19", features = ["client", "http1"] }
 base64 = "0.20.0-alpha.1"
-hyper-tls = "0.5.0"
 cookie_store = "0.16.1"
 url = "2.2.2"
 time = "0.3.13"
@@ -37,7 +36,7 @@ zip = { version = "0.6.2", features = ["deflate"] }
 tokio = { version = "1.21.2", features = ["parking_lot"] }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
-
+hyper-rustls = "0.23.0"
 
 [features]
 # by default Tauri runs in production mode

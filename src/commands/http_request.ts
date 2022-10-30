@@ -289,13 +289,16 @@ export async function doHTTPRequest(
       headers,
       body: encode(JSON.stringify(params)),
       stats: {
+        isHttps: false,
+        cipher: "",
         remoteAddr: "127.0.0.1:80",
         dnsLookup: 1,
-        connect: 2,
+        tcp: 2,
+        tls: 3,
         send: 0,
-        serverProcessing: 3,
-        contentTransfer: 4,
-        total: 5,
+        serverProcessing: 4,
+        contentTransfer: 5,
+        total: 20,
       },
     };
 

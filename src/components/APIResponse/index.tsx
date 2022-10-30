@@ -378,6 +378,13 @@ export default defineComponent({
         value: stats.remoteAddr,
       });
     }
+    if (stats?.cipher) {
+      descriptionItemOptions.push({
+        label: i18nCollection("cipher"),
+        key: "cipher",
+        value: `${stats.cipher}`,
+      });
+    }
     if (stats?.dnsLookup) {
       descriptionItemOptions.push({
         label: i18nCollection("dns"),
@@ -386,12 +393,19 @@ export default defineComponent({
       });
     }
     if (stats) {
+      descriptionItemOptions.push({
+        label: i18nCollection("tcp"),
+        key: "tcp",
+        value: `${stats.tcp} ms`,
+      });
+      if (stats.isHttps) {
+        descriptionItemOptions.push({
+          label: i18nCollection("tls"),
+          key: "tls",
+          value: `${stats.tls} ms`,
+        });
+      }
       descriptionItemOptions.push(
-        {
-          label: i18nCollection("connect"),
-          key: "connect",
-          value: `${stats.connect} ms`,
-        },
         {
           label: i18nCollection("send"),
           key: "send",

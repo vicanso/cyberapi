@@ -7,16 +7,21 @@ use hyper::{
     header::{HeaderName, HeaderValue},
     Body, Client, Method, Request, Uri,
 };
+use hyper_rustls::HttpsConnectorBuilder;
 use hyper_timeout::TimeoutConnector;
-use hyper_tls::HttpsConnector;
 use libflate::gzip::Decoder;
 use once_cell::sync::OnceCell;
 use tracing_subscriber::Layer;
 
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap, collections::HashMap, io::Read, sync::atomic::AtomicU64,
-    sync::atomic::Ordering, time::Duration, vec,
+    collections::BTreeMap,
+    collections::HashMap,
+    io::Read,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::Mutex,
+    time::Duration,
+    vec,
 };
 use url::Url;
 
@@ -51,8 +56,11 @@ pub struct RequestTimeout {
 #[serde(rename_all = "camelCase")]
 pub struct HTTPStats {
     pub remote_addr: String,
+    pub is_https: bool,
+    pub cipher: String,
     pub dns_lookup: u32,
-    pub connect: u32,
+    pub tcp: u32,
+    pub tls: u32,
     pub send: u32,
     pub server_processing: u32,
     pub content_transfer: u32,
@@ -70,8 +78,11 @@ impl HTTPStats {
 impl From<&HTTPTrace> for HTTPStats {
     fn from(trace: &HTTPTrace) -> Self {
         let mut stats = HTTPStats::new();
+        stats.is_https = trace.is_tls();
+        stats.cipher = trace.get_cipher();
         stats.dns_lookup = trace.dns_consuming();
-        stats.connect = trace.connect_consuming();
+        stats.tcp = trace.tcp_consuming();
+        stats.tls = trace.tls_consuming();
         stats.server_processing = trace.server_processing_consuming();
         stats.send = trace.send_consuming();
         stats.content_transfer = trace.content_transfer_consuming();
@@ -80,17 +91,20 @@ impl From<&HTTPTrace> for HTTPStats {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Default)]
+#[derive(Default)]
 struct HTTPTrace {
+    is_tls_value: AtomicBool,
+    cipher_value: Mutex<String>,
     start_value: AtomicU64,
     get_conn_value: AtomicU64,
     dns_start_value: AtomicU64,
     dns_done_value: AtomicU64,
-    connect_start_value: AtomicU64,
-    connected_value: AtomicU64,
+    tcp_start_value: AtomicU64,
+    tcp_done_value: AtomicU64,
+    tls_start_value: AtomicU64,
+    tls_done_value: AtomicU64,
+    http_start_value: AtomicU64,
     written_value: AtomicU64,
-    // tls_handshake_start: AtomicU64,
-    // tls_handshake_done: AtomicU64,
     got_first_response_byte_value: AtomicU64,
     done_value: AtomicU64,
 }
@@ -100,7 +114,11 @@ struct HTTPTrace {
 // dns start
 // dns done
 // conn start
-// connected
+// tcp start
+// tcp done
+// tls start
+// tls done
+// http start
 // first byte
 // done
 impl HTTPTrace {
@@ -113,16 +131,51 @@ impl HTTPTrace {
         }
     }
     fn reset(&self) {
+        self.set_cipher("".to_string());
+        self.is_tls_value.store(false, Ordering::Relaxed);
         self.start_value.store(0, Ordering::Relaxed);
         self.get_conn_value.store(0, Ordering::Relaxed);
         self.dns_start_value.store(0, Ordering::Relaxed);
         self.dns_done_value.store(0, Ordering::Relaxed);
-        self.connect_start_value.store(0, Ordering::Relaxed);
-        self.connected_value.store(0, Ordering::Relaxed);
+        self.tcp_start_value.store(0, Ordering::Relaxed);
+        self.tcp_done_value.store(0, Ordering::Relaxed);
+        self.tls_start_value.store(0, Ordering::Relaxed);
+        self.tls_done_value.store(0, Ordering::Relaxed);
+        self.http_start_value.store(0, Ordering::Relaxed);
         self.written_value.store(0, Ordering::Relaxed);
         self.got_first_response_byte_value
             .store(0, Ordering::Relaxed);
         self.done_value.store(0, Ordering::Relaxed);
+    }
+    fn set_cipher(&self, value: String) {
+        if let Ok(mut cipher) = self.cipher_value.lock() {
+            *cipher = value;
+        }
+        // let mut cipher = value;
+        // let value = self.cipher_value.lock();
+        // value.
+        // self.cipher_value.store(&mut cipher, Ordering::Relaxed);
+    }
+    fn get_cipher(&self) -> String {
+        if let Ok(cipher) = self.cipher_value.lock() {
+            return cipher.to_string();
+        }
+        "".to_string()
+        // let value = self.cipher_value.load(Ordering::Relaxed);
+        // if value.is_null() {
+        //     return "".to_string();
+        // }
+        // // value.
+        // format!("{:?}", value.as_str())
+        // value.to_owned().to_string()
+        // return "".to_string();
+        // return value.into();
+    }
+    fn is_tls(&self) -> bool {
+        self.is_tls_value.load(Ordering::Relaxed)
+    }
+    fn tls(&self) {
+        self.is_tls_value.store(true, Ordering::Relaxed);
     }
     fn get_conn_from_pool(&self) {
         self.start_value.store(self.now(), Ordering::Relaxed)
@@ -136,13 +189,22 @@ impl HTTPTrace {
     fn dns_done(&self) {
         self.dns_done_value.store(self.now(), Ordering::Relaxed);
     }
-    fn connect_start(&self) {
-        self.connect_start_value
-            .store(self.now(), Ordering::Relaxed);
+    fn tcp_start(&self) {
+        self.tcp_start_value.store(self.now(), Ordering::Relaxed);
     }
-    fn connected(&self) {
-        self.connected_value.store(self.now(), Ordering::Relaxed);
+    fn tcp_done(&self) {
+        self.tcp_done_value.store(self.now(), Ordering::Relaxed);
     }
+    fn tls_start(&self) {
+        self.tls_start_value.store(self.now(), Ordering::Relaxed);
+    }
+    fn tls_done(&self) {
+        self.tls_done_value.store(self.now(), Ordering::Relaxed);
+    }
+    fn http_start(&self) {
+        self.http_start_value.store(self.now(), Ordering::Relaxed);
+    }
+
     fn got_first_response_byte(&self) {
         self.got_first_response_byte_value
             .store(self.now(), Ordering::Relaxed);
@@ -154,12 +216,12 @@ impl HTTPTrace {
         self.done_value.store(self.now(), Ordering::Relaxed);
     }
     fn send_consuming(&self) -> u32 {
-        let connected_value = self.connected_value.load(Ordering::Relaxed);
+        let http_start_value = self.http_start_value.load(Ordering::Relaxed);
         let written_value = self.written_value.load(Ordering::Relaxed);
-        if connected_value == 0 || written_value == 0 {
+        if http_start_value == 0 || written_value == 0 {
             return 0;
         }
-        return (written_value - connected_value) as u32;
+        (written_value - http_start_value) as u32
     }
     fn dns_consuming(&self) -> u32 {
         let dns_start_value = self.dns_start_value.load(Ordering::Relaxed);
@@ -169,24 +231,32 @@ impl HTTPTrace {
         }
         (dns_done_value - dns_start_value) as u32
     }
-    fn connect_consuming(&self) -> u32 {
-        let connect_start_value = self.connect_start_value.load(Ordering::Relaxed);
-        let connected_value = self.connected_value.load(Ordering::Relaxed);
-        if connect_start_value == 0 || connected_value == 0 {
+    fn tcp_consuming(&self) -> u32 {
+        let tcp_start_value = self.tcp_start_value.load(Ordering::Relaxed);
+        let tcp_done_value = self.tcp_done_value.load(Ordering::Relaxed);
+        if tcp_start_value == 0 || tcp_done_value == 0 {
             return 0;
         }
-
-        (connected_value - connect_start_value) as u32
+        (tcp_done_value - tcp_start_value) as u32
     }
+    fn tls_consuming(&self) -> u32 {
+        let tls_start_value = self.tls_start_value.load(Ordering::Relaxed);
+        let tls_done_value = self.tls_done_value.load(Ordering::Relaxed);
+        if tls_start_value == 0 || tls_done_value == 0 {
+            return 0;
+        }
+        (tls_done_value - tls_start_value) as u32
+    }
+
     fn server_processing_consuming(&self) -> u32 {
-        let connected_value = self.connected_value.load(Ordering::Relaxed);
+        let written_value = self.written_value.load(Ordering::Relaxed);
         let got_first_response_byte_value =
             self.got_first_response_byte_value.load(Ordering::Relaxed);
-        if connected_value == 0 || got_first_response_byte_value == 0 {
+        if written_value == 0 || got_first_response_byte_value == 0 {
             return 0;
         }
 
-        (got_first_response_byte_value - connected_value) as u32
+        (got_first_response_byte_value - written_value) as u32
     }
     fn content_transfer_consuming(&self) -> u32 {
         let got_first_response_byte_value =
@@ -242,8 +312,9 @@ where
     S: for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
 {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let trace = get_http_trace();
         let target = event.metadata().target();
-        if !target.starts_with("hyper::") {
+        if !target.starts_with("hyper::") && !trace.is_tls() {
             return;
         }
 
@@ -257,7 +328,23 @@ where
         }
         let message = message.unwrap();
         // 暂时不会使用tracing span，使用比较简陋的处理方法
-        let trace = get_http_trace();
+        if trace.is_tls() {
+            // tls 开始： Sending ClientHello Message
+            // tls算法： Using ciphersuite TLS13_AES_256_GCM_SHA384
+            // 获取到的服务器证书 Server cert is
+            // 开始http client handshake Http1
+            if message.starts_with("Sending ClientHello Message") {
+                trace.tls_start();
+            } else if message.starts_with("Server cert is") {
+                trace.tls_done();
+            } else if message.starts_with("Using ciphersuite ") {
+                let cipher = message.replace("Using ciphersuite ", "");
+                trace.set_cipher(cipher);
+                // let p = AtomicPtr::new(&mut cipher);
+                // trace.cipher.store(&mut cipher, Ordering::Relaxed);
+            }
+        }
+
         match target {
             "hyper::client::pool" => {
                 // 从连接池中获取
@@ -271,6 +358,11 @@ where
                     trace.get_conn();
                 } else if message.starts_with("connecting to") {
                     trace.dns_done();
+                    trace.tcp_start();
+                    // 开始TCP连接
+                } else if message.starts_with("connected to") {
+                    // TCP连接成功
+                    trace.tcp_done();
                 }
             }
             "hyper::client::connect::dns" => {
@@ -281,13 +373,15 @@ where
             "hyper::client::conn" => {
                 // 开始连接
                 if message.starts_with("client handshake") {
-                    trace.connect_start();
+                    // http开始
+                    trace.http_start();
                 }
             }
             "hyper::client::client" => {
                 // 如果是https，包括tls
                 if message.starts_with("handshake complete") {
-                    trace.connected();
+                    // http 请求完成，开始发送数据
+                    trace.written();
                 }
             }
             "hyper::proto::h1::io" => {
@@ -396,7 +490,12 @@ pub async fn request(
 
     // http 与 https使用不同的connector
     let resp = if current_url.scheme() == "https" {
-        let h = HttpsConnector::new();
+        trace.tls();
+        let h = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_only()
+            .enable_http1()
+            .build();
         let mut connector = TimeoutConnector::new(h);
         connector.set_connect_timeout(Some(connect_timeout));
         connector.set_read_timeout(Some(read_timeout));

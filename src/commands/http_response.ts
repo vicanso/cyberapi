@@ -8,8 +8,11 @@ const applicationJSON = "application/json";
 
 export interface HTTPStats {
   remoteAddr: string;
+  isHttps: boolean;
+  cipher: string;
   dnsLookup: number;
-  connect: number;
+  tcp: number;
+  tls: number;
   send: number;
   serverProcessing: number;
   contentTransfer: number;
