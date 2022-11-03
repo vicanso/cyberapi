@@ -54,6 +54,14 @@ body {
 .rotate270 {
   rotate: 270deg;
 }
+.disableUserSelect {
+  -moz-user-select: none;
+  -o-user-select:none;
+  -khtml-user-select:none;
+  -webkit-user-select:none;
+  -ms-user-select:none;
+  user-select:none;
+}
 
 
 /* 滚动条会一直存在，暂时先不使用 */

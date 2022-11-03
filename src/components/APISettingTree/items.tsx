@@ -37,6 +37,7 @@ const itemsWrapperClass = css`
   right: 5px;
   bottom: 5px;
   overflow-y: auto;
+  overflow-x: hidden;
   &.dragging {
     li:hover {
       background-color: rgba(255, 255, 255, 0) !important;
@@ -420,6 +421,7 @@ export default defineComponent({
     const draggingClass = "dragging";
     let listItems = [] as HTMLCollection[];
     let mousedownFiredAt = 0;
+    let maxMoveOffsetX = 0;
     const handleMousemove = (e: MouseEvent) => {
       // 每移动两个点再处理
       if (isDragging && e.clientY % 2 !== 0) {
@@ -434,6 +436,7 @@ export default defineComponent({
       ) {
         isDragging = true;
         nodeAddClass(wrapper.value, draggingClass);
+        nodeAddClass(document.body, "disableUserSelect");
 
         // 提交公共方法至html无法复制(TODO确认原因)
         // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -441,12 +444,14 @@ export default defineComponent({
         moveTarget = target.cloneNode(true);
         nodeSetStyle(moveTarget, {
           position: "absolute",
-          width: "100%",
+          left: "0px",
+          right: "0px",
         });
         nodeAddClass(moveTarget, "dragItem");
 
         nodeInsertAt(wrapper.value, moveTarget, 0);
       }
+
       if (isDragging) {
         const top = offset + originOffset + nodGetScrollTop(wrapper.value);
         const index = Math.round(top / targetHeight);
@@ -469,6 +474,7 @@ export default defineComponent({
     const handleMouseup = (e: MouseEvent) => {
       document.removeEventListener("mousemove", handleMousemove);
       document.removeEventListener("mouseup", handleMouseup);
+      nodeRemoveClass(document.body, "disableUserSelect");
       if (!isDragging) {
         return;
       }
@@ -496,6 +502,10 @@ export default defineComponent({
       nodeRemoveClass(listItems[currentInsertIndex], "insertBefore");
       nodeRemoveClass(wrapper.value, draggingClass);
 
+      if (maxMoveOffsetX && e.clientX > maxMoveOffsetX) {
+        return;
+      }
+
       handleMove(moveItemIndex, targetItemIndex, overType);
     };
     const handleMousedown = (e: MouseEvent) => {
@@ -518,6 +528,11 @@ export default defineComponent({
       originClientY = e.clientY;
       document.addEventListener("mousemove", handleMousemove);
       document.addEventListener("mouseup", handleMouseup);
+      if (wrapper.value) {
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        maxMoveOffsetX = wrapper.value.clientWidth as number;
+      }
     };
 
     const resetRename = () => {
