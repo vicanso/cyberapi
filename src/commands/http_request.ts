@@ -9,7 +9,7 @@ import { readBinaryFile } from "@tauri-apps/api/fs";
 
 import { run, cmdDoHTTPRequest } from "./invoke";
 import { KVParam } from "./interface";
-import { isWebMode, delay } from "../helpers/util";
+import { isWebMode, delay, formatError } from "../helpers/util";
 import { doFnHandler, parseFunctions } from "./fn";
 import { HTTPResponse, addLatestResponse } from "./http_response";
 import { Cookie } from "./cookies";
@@ -345,12 +345,21 @@ export async function doHTTPRequest(
   if (timeout.read && timeout.read > 0) {
     requestTimeout.read = timeout.read;
   }
+  // eslint-disable-next-line
+  // @ts-ignore
+  let resp: HTTPResponse = {};
 
-  const resp = await run<HTTPResponse>(cmdDoHTTPRequest, {
-    req: params,
-    api: id,
-    timeout: requestTimeout,
-  });
+  const startedAt = Date.now();
+  try {
+    resp = await run<HTTPResponse>(cmdDoHTTPRequest, {
+      req: params,
+      api: id,
+      timeout: requestTimeout,
+    });
+  } catch (err) {
+    resp.body = formatError(err);
+    resp.latency = Date.now() - startedAt;
+  }
   if (resp.latency <= 0) {
     resp.latency = 1;
   }
