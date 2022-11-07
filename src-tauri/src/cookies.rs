@@ -92,6 +92,13 @@ pub fn delete_cookie_from_store(c: Cookie) -> Result<(), CyberAPIError> {
     Ok(())
 }
 
+pub fn clear_cookie_from_store() -> Result<(), CyberAPIError> {
+    let mut store = get_cookie_store();
+    store.clear();
+    save_store(store)?;
+    Ok(())
+}
+
 pub fn save_cookie_store(set_cookies: Vec<String>, current_url: &Url) -> Result<(), CyberAPIError> {
     let mut store = get_cookie_store();
     for ele in set_cookies {

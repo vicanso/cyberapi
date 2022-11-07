@@ -56,6 +56,7 @@ fn main() {
             commands::list_cookie,
             commands::delete_cookie,
             commands::add_cookie,
+            commands::clear_cookie,
             commands::add_variable,
             commands::update_variable,
             commands::delete_variable,

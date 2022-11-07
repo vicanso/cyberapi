@@ -129,6 +129,8 @@ export default {
     deleteCookie: "删除Cookie",
     deleteCookieContent: "确认要删除Cookie吗？",
     neverExpired: "永久有效",
+    clearCookieTips: "请确认是否清除所有的Cookie？",
+    clearCookie: "清除Cookie",
   },
   environment: {
     title: "环境变量设置",

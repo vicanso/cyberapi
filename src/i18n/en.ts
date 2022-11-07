@@ -135,6 +135,8 @@ export default {
     deleteCookie: "Delete cookie",
     deleteCookieContent: "Please confirm the deletion of cookie",
     neverExpired: "Never Expired",
+    clearCookieTips: "Are you sure to clear all cookie?",
+    clearCookie: "Clear Cookie",
   },
   environment: {
     title: "Environment",

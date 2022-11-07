@@ -5,6 +5,7 @@ import {
   listCookie,
   Cookie,
   deleteCookie,
+  clearCookie,
   addOrUpdate,
 } from "../commands/cookies";
 
@@ -45,6 +46,18 @@ export const useCookieStore = defineStore("cookie", {
           return !isSameCookie(item, c);
         });
         this.cookies = cookies;
+      } finally {
+        this.removing = false;
+      }
+    },
+    async clear() {
+      if (this.removing) {
+        return;
+      }
+      this.removing = true;
+      try {
+        await clearCookie();
+        this.cookies = [];
       } finally {
         this.removing = false;
       }

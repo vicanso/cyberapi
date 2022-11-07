@@ -1,6 +1,12 @@
 import { get, values } from "lodash-es";
 import { isWebMode } from "../helpers/util";
-import { cmdAddCookie, cmdDeleteCookie, cmdListCookie, run } from "./invoke";
+import {
+  cmdAddCookie,
+  cmdClearCookie,
+  cmdDeleteCookie,
+  cmdListCookie,
+  run,
+} from "./invoke";
 
 export interface Cookie {
   [key: string]: unknown;
@@ -69,6 +75,13 @@ export async function deleteCookie(c: Cookie) {
   await run(cmdDeleteCookie, {
     c,
   });
+}
+
+export async function clearCookie() {
+  if (isWebMode()) {
+    return;
+  }
+  await run(cmdClearCookie, {});
 }
 
 export async function addOrUpdate(c: Cookie) {

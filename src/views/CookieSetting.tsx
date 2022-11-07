@@ -9,6 +9,7 @@ import {
   NIcon,
   NSpace,
   useDialog,
+  NPopconfirm,
 } from "naive-ui";
 import { css } from "@linaria/core";
 
@@ -73,6 +74,13 @@ export default defineComponent({
       updatedCookie.value = {} as Cookie;
       mode.value = Mode.Edit;
     };
+    const clearCookie = async () => {
+      try {
+        await cookieStore.clear();
+      } catch (err) {
+        showError(message, err);
+      }
+    };
 
     return {
       mode,
@@ -80,6 +88,7 @@ export default defineComponent({
       removeCookie,
       editCookie,
       addCookie,
+      clearCookie,
       updatedCookie,
     };
   },
@@ -160,8 +169,25 @@ export default defineComponent({
       },
     ];
 
+    const popConfirmSlots = {
+      trigger: () => <NButton text>{i18nCookie("clearCookie")}</NButton>,
+    };
+
+    const slots = {
+      "header-extra": () => (
+        <NPopconfirm
+          v-slots={popConfirmSlots}
+          onPositiveClick={() => {
+            this.clearCookie();
+          }}
+        >
+          {i18nCookie("clearCookieTips")}
+        </NPopconfirm>
+      ),
+    };
+
     return (
-      <NCard title={i18nCookie("title")} style={modalStyle}>
+      <NCard title={i18nCookie("title")} style={modalStyle} v-slots={slots}>
         {mode === Mode.List && (
           <div>
             <NDataTable data={cookies} columns={columns} />

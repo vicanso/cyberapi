@@ -181,6 +181,13 @@ pub fn add_cookie(c: cookies::Cookie) -> CommandResult<()> {
     Ok(())
 }
 
+// 清除cookie
+#[command(async)]
+pub fn clear_cookie() -> CommandResult<()> {
+    cookies::clear_cookie_from_store()?;
+    Ok(())
+}
+
 // 获取最新版本
 #[command(async)]
 pub async fn get_latest_version() -> CommandResult<schemas::Version> {
