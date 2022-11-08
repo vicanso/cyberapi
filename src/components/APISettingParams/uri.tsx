@@ -278,7 +278,7 @@ export default defineComponent({
                 this.handleUpdate();
               }}
               onUpdateValue={(value) => {
-                this.currentURI = value;
+                this.currentURI = value?.trim();
               }}
               onKeydown={(e) => {
                 if (e.key.toLowerCase() === "enter" && this.currentURI) {

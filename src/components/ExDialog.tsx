@@ -123,6 +123,21 @@ const ImportEditor = defineComponent({
       editor.dispatch({});
       const data = isJSON(props.data) ? props.data : "";
       replaceContent(editor, data);
+
+      let checkCount = 0;
+      const setFocus = () => {
+        // 如果超过
+        if (checkCount > 10) {
+          return;
+        }
+        checkCount++;
+        editor?.focus();
+        if (editor?.hasFocus) {
+          return;
+        }
+        setTimeout(setFocus, 50);
+      };
+      setTimeout(setFocus, 50);
     };
     const processing = ref(false);
     const handleImport = async () => {
