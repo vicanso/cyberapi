@@ -178,6 +178,7 @@ interface Response {
   createdAt: string;
 }
 
+// 每个响应保存的记录限制数
 const limit = 10;
 
 export async function addLatestResponse(resp: HTTPResponse) {
@@ -200,8 +201,7 @@ export async function addLatestResponse(resp: HTTPResponse) {
 
 export async function getLatestResponse(id: string) {
   const arr = (await getLatestResponseStore().getItem<Response[]>(id)) || [];
-  const result = arr.find((item) => item.resp.api === id);
-  if (result) {
-    return result.resp;
+  if (arr && arr.length) {
+    return arr[0].resp;
   }
 }

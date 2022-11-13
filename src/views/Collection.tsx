@@ -24,7 +24,7 @@ import { useEnvironmentStore } from "../stores/environment";
 import { useGlobalReqHeaderStore } from "../stores/global_req_header";
 import { useAPISettingStore } from "../stores/api_setting";
 import { abortRequestID, doHTTPRequest } from "../commands/http_request";
-import { HTTPResponse } from "../commands/http_response";
+import { HTTPResponse, getLatestResponse } from "../commands/http_response";
 import APIResponse from "../components/APIResponse";
 import { usePinRequestStore } from "../stores/pin_request";
 import { useAPIFolderStore } from "../stores/api_folder";
@@ -89,6 +89,13 @@ export default defineComponent({
         await collectionStore.fetchExpandedFolders(collection);
         await collectionStore.fetchTopTreeItems(collection);
         await collectionStore.fetchActiveTabs();
+
+        if (apiSettingStore.selectedID) {
+          const data = await getLatestResponse(apiSettingStore.selectedID);
+          if (data) {
+            response.value = data;
+          }
+        }
       } catch (err) {
         showError(message, err);
       } finally {

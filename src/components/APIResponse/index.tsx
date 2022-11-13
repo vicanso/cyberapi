@@ -273,6 +273,9 @@ export default defineComponent({
 
     onMounted(() => {
       initEditor();
+      if (props.response.api) {
+        fillValues(props.response);
+      }
     });
     onBeforeUnmount(() => {
       destroy();
