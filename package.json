@@ -28,6 +28,7 @@
     "js-base64": "^3.7.2",
     "localforage": "^1.10.0",
     "lodash-es": "^4.17.21",
+    "mitt": "^3.0.0",
     "naive-ui": "^2.33.5",
     "pinia": "^2.0.23",
     "pretty-bytes": "^6.0.0",

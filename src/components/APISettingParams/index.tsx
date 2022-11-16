@@ -9,7 +9,7 @@ import {
 import { css } from "@linaria/core";
 import { NDivider, useMessage } from "naive-ui";
 import { storeToRefs } from "pinia";
-import { debounce } from "lodash-es";
+import { cloneDeep, debounce } from "lodash-es";
 
 import { useAPISettingStore } from "../../stores/api_setting";
 import { abortRequestID, HTTPRequest } from "../../commands/http_request";
@@ -18,6 +18,7 @@ import { i18nCollection } from "../../i18n";
 import APISettingParamsURI, { RequestURI } from "./uri";
 import APISettingParamsReqParams from "./req_params";
 import { KVParam } from "../../commands/interface";
+import { onSelectResponse } from "../../commands/http_response";
 
 const wrapperClass = css`
   height: 100%;
@@ -38,8 +39,10 @@ export default defineComponent({
   },
   setup() {
     const message = useMessage();
-    const settingStore = useAPISettingStore();
-    const { selectedID } = storeToRefs(settingStore);
+    const apiSettingStore = useAPISettingStore();
+    const { selectedID } = storeToRefs(apiSettingStore);
+
+    const componentKey = ref(selectedID.value);
     const reqParams = ref({} as HTTPRequest);
     const reqParamsStyle = ref({
       height: "0px",
@@ -64,7 +67,7 @@ export default defineComponent({
         return;
       }
       try {
-        reqParams.value = settingStore.getHTTPRequest(id);
+        reqParams.value = apiSettingStore.getHTTPRequest(id);
       } catch (err) {
         console.error(err);
       } finally {
@@ -72,19 +75,32 @@ export default defineComponent({
       }
     };
 
-    const stop = watch(selectedID, updateReqParams);
+    const stop = watch(selectedID, (id) => {
+      componentKey.value = id;
+      updateReqParams(id);
+    });
     if (selectedID.value) {
       updateReqParams(selectedID.value);
     }
 
-    onBeforeUnmount(stop);
+    const offListen = onSelectResponse((resp) => {
+      reqParams.value = cloneDeep(resp.req);
+      caclWrapperHeight();
+      const id = resp.id || `${Date.now()}`;
+      componentKey.value = `${selectedID.value}-${id}`;
+    });
+
+    onBeforeUnmount(() => {
+      offListen();
+      stop();
+    });
     const update = async () => {
       const id = selectedID.value;
       if (!id) {
         message.warning(i18nCollection("shouldSelectAPISettingFirst"));
         return;
       }
-      const data = settingStore.findByID(id);
+      const data = apiSettingStore.findByID(id);
       if (!data) {
         return;
       }
@@ -94,7 +110,7 @@ export default defineComponent({
           value = JSON.stringify(reqParams.value);
         }
         data.setting = value;
-        await settingStore.updateByID(id, data);
+        await apiSettingStore.updateByID(id, data);
       } catch (err) {
         showError(message, err);
       }
@@ -140,6 +156,7 @@ export default defineComponent({
     const handleUpdateHeaders = debounce(newHandleUpdate("headers"), 300);
 
     return {
+      componentKey,
       reqParamsStyle,
       updateURINodeHeight,
       wrapper,
@@ -155,10 +172,10 @@ export default defineComponent({
     };
   },
   render() {
-    const { reqParams, selectedID } = this;
+    const { reqParams, selectedID, componentKey } = this;
 
     return (
-      <div class={wrapperClass} key={selectedID} ref="wrapper">
+      <div class={wrapperClass} key={`uri-${componentKey}`} ref="wrapper">
         <APISettingParamsURI
           onVnodeMounted={(node) => {
             this.updateURINodeHeight(node);
@@ -179,6 +196,7 @@ export default defineComponent({
         />
         <NDivider />
         <APISettingParamsReqParams
+          key={`params-${componentKey}`}
           style={this.reqParamsStyle}
           id={selectedID}
           params={reqParams}

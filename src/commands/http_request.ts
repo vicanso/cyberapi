@@ -215,12 +215,14 @@ async function convertMultipartForm(body: string): Promise<MultipartFormData> {
 // Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)
 let userAgent = "";
 
-export async function doHTTPRequest(
-  id: string,
-  collection: string,
-  req: HTTPRequest,
-  timeout: RequestTimeout
-): Promise<HTTPResponse> {
+export async function doHTTPRequest(options: {
+  id: string;
+  collection: string;
+  req: HTTPRequest;
+  originalReq: HTTPRequest;
+  timeout: RequestTimeout;
+}): Promise<HTTPResponse> {
+  const { id, collection, req, originalReq, timeout } = options;
   if (!req.headers) {
     req.headers = [];
   }
@@ -374,7 +376,7 @@ export async function doHTTPRequest(
     }
   });
 
-  resp.req = req;
+  resp.req = originalReq;
   resp.headers = headers;
   addLatestResponse(resp);
   return resp;
