@@ -17,6 +17,11 @@
         "all": true,
         "scope": ["$APP/*", "$DOWNLOAD/*", "$DESKTOP/*", "$DOCUMENT/*"]
       },
+      "app": {
+        "all": false,
+        "hide": true,
+        "show": false
+      },
       "window": {
         "all": true
       },

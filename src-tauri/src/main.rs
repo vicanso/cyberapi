@@ -30,7 +30,7 @@ fn main() {
     let context = tauri::generate_context!();
     tauri::Builder::default()
         .setup(|app| {
-            let dir = app.path_resolver().app_dir().unwrap();
+            let dir = app.path_resolver().app_data_dir().unwrap();
             util::set_app_dir(dir.to_str().unwrap().to_string());
             Ok(())
         })

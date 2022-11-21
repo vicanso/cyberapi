@@ -14,7 +14,7 @@ import { ListOutline } from "@vicons/ionicons5";
 
 const showMoreClass = css`
   cursor: pointer;
-  margin: 18px 10px 0 0;
+  margin: 15px 10px 0 0;
   padding: 0 5px;
 `;
 
@@ -82,8 +82,9 @@ export default defineComponent({
           }
         }}
         options={options}
+        showArrow={true}
       >
-        <NIcon class={showMoreClass}>
+        <NIcon class={showMoreClass} size={20}>
           <ListOutline />
         </NIcon>
       </NDropdown>
