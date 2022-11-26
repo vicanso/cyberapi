@@ -38,7 +38,7 @@
     "vue-router": "^4.1.6"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^1.2.0",
+    "@tauri-apps/cli": "^1.2.1",
     "@types/bluebird": "^3.5.37",
     "@types/crypto-js": "^4.1.1",
     "@types/debug": "^4.1.7",

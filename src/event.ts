@@ -6,9 +6,8 @@ export async function initWindowEvent() {
   if (!(await isMacOS())) {
     return;
   }
-  // appWindow.onCloseRequested((e) => {
-  //   e.preventDefault();
-  //   // TODO allowlist app.all 设置无效
-  //   hide();
-  // });
+  appWindow.onCloseRequested((e) => {
+    e.preventDefault();
+    hide();
+  });
 }
