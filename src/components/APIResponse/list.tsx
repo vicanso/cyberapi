@@ -1,16 +1,30 @@
-import { NDropdown, NIcon, NSpace, useMessage } from "naive-ui";
+import {
+  NButton,
+  NDivider,
+  NDropdown,
+  NIcon,
+  NP,
+  NSpace,
+  useMessage,
+} from "naive-ui";
 import { css } from "@linaria/core";
 import prettyBytes from "pretty-bytes";
 import { isNumber } from "lodash-es";
 
 import { defineComponent, ref } from "vue";
 import {
+  clearLatestResponseList,
   getLatestResponseList,
   Response,
   selectResponse,
 } from "../../commands/http_response";
 import { formatSimpleDate, showError } from "../../helpers/util";
-import { ListOutline } from "@vicons/ionicons5";
+import {
+  ListOutline,
+  TrashOutline,
+} from "@vicons/ionicons5";
+import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
+import { i18nStore } from "../../i18n";
 
 const showMoreClass = css`
   cursor: pointer;
@@ -45,15 +59,25 @@ export default defineComponent({
         selectResponse(resp.resp);
       }
     };
+    const handleClearHistory = async () => {
+      try {
+        await clearLatestResponseList(props.id);
+        message.info(i18nStore("clearHistorySuccess"));
+        responseList.value.length = 0;
+      } catch (err) {
+        showError(message, err);
+      }
+    };
     return {
       responseList,
       handleFetch,
       handleSelect,
+      handleClearHistory,
     };
   },
   render() {
     const { responseList } = this;
-    const options = responseList.map((item, index) => {
+    const options: DropdownMixedOption[] = responseList.map((item, index) => {
       let bodySize = "--";
       if (item.resp && isNumber(item.resp.bodySize)) {
         bodySize = prettyBytes(item.resp.bodySize);
@@ -68,6 +92,55 @@ export default defineComponent({
         ),
         key: index,
       };
+    });
+    const clearHistorySlots = {
+      icon: () => (
+        <NIcon>
+          <TrashOutline />
+        </NIcon>
+      ),
+    };
+
+    const clearBtn = responseList?.length !== 0 && (
+      <NButton
+        class="widthFull"
+        v-slots={clearHistorySlots}
+        quaternary
+        onClick={() => {
+          this.handleClearHistory();
+        }}
+      >
+        {i18nStore("clearHistory")}
+      </NButton>
+    );
+
+    const tips = responseList?.length === 0 && (
+      <NP
+        style={{
+          margin: "5px 15px",
+        }}
+      >
+        {i18nStore("noHistory")}
+      </NP>
+    );
+    options.unshift({
+      key: "header",
+      type: "render",
+      render: () => (
+        <div>
+          {clearBtn}
+          <NDivider
+            titlePlacement="left"
+            style={{
+              margin: "5px 0",
+              "font-size": "12px",
+            }}
+          >
+            {i18nStore("responseList")}
+          </NDivider>
+          {tips}
+        </div>
+      ),
     });
     return (
       <NDropdown

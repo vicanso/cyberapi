@@ -216,6 +216,14 @@ export async function getLatestResponseList(id: string) {
   return arr;
 }
 
+export async function clearLatestResponseList(id: string) {
+  const store = getLatestResponseStore();
+  if (!id || !store) {
+    return;
+  }
+  await store.setItem(id, []);
+}
+
 export async function getLatestResponse(id: string) {
   const arr = await getLatestResponseList(id);
   if (arr && arr.length) {
