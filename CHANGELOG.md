@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.3] - 2022-11-26
+
+### Features
+
+- Support select latest response
+- Support hide application for mac
+- Support clear history of response
+- Support hide application of macos
+
+### Refactor
+
+- Show response of http request
+
 ## [0.1.2] - 2022-11-08
 
 ### Bug Fixes

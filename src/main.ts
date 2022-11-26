@@ -12,6 +12,7 @@ import { getAppLatestRoute } from "./stores/setting";
 import { getLang } from "./stores/local";
 import { handleDatabaseCompatible } from "./commands/database";
 import { showSplashscreen } from "./commands/window";
+import { initWindowEvent } from "./event";
 
 // web mode enable debug:*
 if (isWebMode()) {
@@ -21,6 +22,7 @@ if (isWebMode()) {
 const app = createApp(Root);
 
 async function init() {
+  initWindowEvent();
   showSplashscreen();
   // TODO 校验数据库版本
   // 判断是否需要升级级别

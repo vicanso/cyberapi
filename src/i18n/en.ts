@@ -169,5 +169,9 @@ export default {
       "Please confirm the clearing (%s) of all data, which can not be recovered after clearing",
     clearSuccess:
       "The stored data has been cleared, and the application will restart in 3 seconds",
+    responseList: "Response List",
+    noHistory: "There is no history response",
+    clearHistory: "Clear History",
+    clearHistorySuccess: "The history of request has been cleared",
   },
 };

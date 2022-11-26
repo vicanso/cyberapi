@@ -1,8 +1,11 @@
 import { decode } from "js-base64";
 import dayjs from "dayjs";
 import { forEach } from "lodash-es";
+import mitt, { Emitter } from "mitt";
+
 import { getLatestResponseStore } from "../stores/local";
 import { HTTPRequest } from "./http_request";
+import { ulid } from "ulid";
 
 const applicationJSON = "application/json";
 
@@ -21,6 +24,8 @@ export interface HTTPStats {
 
 export interface HTTPResponse {
   [key: string]: unknown;
+  // response id
+  id?: string;
   // api id
   api: string;
   req: HTTPRequest;
@@ -33,6 +38,12 @@ export interface HTTPResponse {
   body: string;
   stats: HTTPStats;
 }
+
+const selectEvent = "select";
+type Events = {
+  [selectEvent]: HTTPResponse;
+};
+const emitter: Emitter<Events> = mitt<Events>();
 
 export enum ResponseBodyCategory {
   JSON = "json",
@@ -173,14 +184,16 @@ export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
 }
 
 // 缓存的response数据
-interface Response {
+export interface Response {
   resp: HTTPResponse;
   createdAt: string;
 }
 
+// 每个响应保存的记录限制数
 const limit = 10;
 
 export async function addLatestResponse(resp: HTTPResponse) {
+  resp.id = ulid();
   const id = resp.api;
   const store = getLatestResponseStore();
   if (!id || !store) {
@@ -198,10 +211,37 @@ export async function addLatestResponse(resp: HTTPResponse) {
   await store.setItem(id, arr);
 }
 
-export async function getLatestResponse(id: string) {
+export async function getLatestResponseList(id: string) {
   const arr = (await getLatestResponseStore().getItem<Response[]>(id)) || [];
-  const result = arr.find((item) => item.resp.api === id);
-  if (result) {
-    return result.resp;
+  return arr;
+}
+
+export async function clearLatestResponseList(id: string) {
+  const store = getLatestResponseStore();
+  if (!id || !store) {
+    return;
   }
+  await store.setItem(id, []);
+}
+
+export async function getLatestResponse(id: string) {
+  const arr = await getLatestResponseList(id);
+  if (arr && arr.length) {
+    return arr[0].resp;
+  }
+}
+
+export function onSelectResponse(ln: (resp: HTTPResponse) => void) {
+  const fn = (resp: HTTPResponse) => {
+    ln(resp);
+  };
+
+  emitter.on(selectEvent, fn);
+  return () => {
+    emitter.off(selectEvent, fn);
+  };
+}
+
+export function selectResponse(resp: HTTPResponse) {
+  emitter.emit(selectEvent, resp);
 }

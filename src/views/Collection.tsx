@@ -24,7 +24,11 @@ import { useEnvironmentStore } from "../stores/environment";
 import { useGlobalReqHeaderStore } from "../stores/global_req_header";
 import { useAPISettingStore } from "../stores/api_setting";
 import { abortRequestID, doHTTPRequest } from "../commands/http_request";
-import { HTTPResponse } from "../commands/http_response";
+import {
+  HTTPResponse,
+  getLatestResponse,
+  onSelectResponse,
+} from "../commands/http_response";
 import APIResponse from "../components/APIResponse";
 import { usePinRequestStore } from "../stores/pin_request";
 import { useAPIFolderStore } from "../stores/api_folder";
@@ -49,27 +53,23 @@ export default defineComponent({
     const apiSettingStore = useAPISettingStore();
     const { collectionColumnWidths } = storeToRefs(settingStore);
 
+    const { selectedID } = storeToRefs(apiSettingStore);
     const processing = ref(false);
     const sending = ref(false);
     const response = ref({} as HTTPResponse);
 
-    const stop = watch(
-      () => apiSettingStore.selectedID,
-      (id) => {
+    const stop = watch(selectedID, async (id) => {
+      const resp = await getLatestResponse(id);
+      if (resp) {
+        response.value = resp;
+      } else {
         // 如果选择新的api，则重置数据
         response.value = {
           api: id,
         } as HTTPResponse;
       }
-    );
-
-    onBeforeUnmount(() => {
-      stop();
     });
 
-    onBeforeUnmount(() => {
-      usePinRequestStore().$reset();
-    });
     onBeforeMount(async () => {
       processing.value = true;
       try {
@@ -89,6 +89,13 @@ export default defineComponent({
         await collectionStore.fetchExpandedFolders(collection);
         await collectionStore.fetchTopTreeItems(collection);
         await collectionStore.fetchActiveTabs();
+
+        if (apiSettingStore.selectedID) {
+          const data = await getLatestResponse(apiSettingStore.selectedID);
+          if (data) {
+            response.value = data;
+          }
+        }
       } catch (err) {
         showError(message, err);
       } finally {
@@ -138,7 +145,7 @@ export default defineComponent({
       }
       const reqID = ulid();
       sendingRequestID = reqID;
-      const req = apiSettingStore.getHTTPRequestFillValues(id);
+      const { req, originalReq } = apiSettingStore.getHTTPRequestFillValues(id);
 
       try {
         response.value = {
@@ -146,7 +153,13 @@ export default defineComponent({
         } as HTTPResponse;
         sending.value = true;
         const timeout = settingStore.getRequestTimeout();
-        const res = await doHTTPRequest(id, collection, req, timeout);
+        const res = await doHTTPRequest({
+          id,
+          collection,
+          req,
+          originalReq,
+          timeout,
+        });
         if (isCurrentRequest(reqID)) {
           response.value = res;
         }
@@ -164,6 +177,16 @@ export default defineComponent({
         }
       }
     };
+
+    const offListen = onSelectResponse((resp) => {
+      response.value = resp;
+    });
+
+    onBeforeUnmount(() => {
+      stop();
+      offListen();
+      usePinRequestStore().$reset();
+    });
 
     return {
       response,

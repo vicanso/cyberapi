@@ -1,6 +1,8 @@
 import { FormRules, MessageApi } from "naive-ui";
 import dayjs from "dayjs";
-import { get, has } from "lodash-es";
+import { get, has, isNil } from "lodash-es";
+import { platform } from "@tauri-apps/api/os";
+
 import { appWindow } from "@tauri-apps/api/window";
 import { readText, writeText } from "@tauri-apps/api/clipboard";
 import { relaunch } from "@tauri-apps/api/process";
@@ -126,6 +128,16 @@ export async function delay(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export function formatLatency(ms: number) {
+  if (isNil(ms)) {
+    return "--";
+  }
+  if (ms < 1000) {
+    return `${ms.toLocaleString()} ms`;
+  }
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
 export function isJSON(data: string) {
   if (!data || data.length < 2) {
     return false;
@@ -219,4 +231,9 @@ export async function writeSettingToDownload(arr: unknown, name: string) {
   const data = JSON.stringify(arr, null, 2);
   const buf = await stringToArrayBuffer(data);
   await writeFileToDownload(`cyberapi-${name}.json`, buf);
+}
+
+export async function isMacOS() {
+  const platformName = await platform();
+  return platformName === "darwin";
 }

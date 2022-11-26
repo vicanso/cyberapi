@@ -160,5 +160,9 @@ export default {
     latestResponseStoreDesc: "保存最新的请求响应",
     clearTips: "确认清除(%s)的所有数据吗？清除后无法恢复！",
     clearSuccess: "存储数据已清除，应用将在3秒后重启",
+    noHistory: "该请求无历史响应记录",
+    responseList: "响应记录",
+    clearHistory: "清除历史响应",
+    clearHistorySuccess: "已成功清除历史响应",
   },
 };

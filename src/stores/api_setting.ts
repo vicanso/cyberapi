@@ -13,6 +13,7 @@ import { getAPISettingStore } from "./local";
 import { useEnvironmentStore, ENVRegexp } from "./environment";
 import { isWebMode, setAppTitle } from "../helpers/util";
 import { useGlobalReqHeaderStore } from "./global_req_header";
+import { cloneDeep } from "lodash-es";
 
 const selectedIDKey = "selectedID";
 
@@ -59,8 +60,12 @@ export const useAPISettingStore = defineStore("apiSettings", {
     },
     getHTTPRequestFillValues(id: string) {
       const req = this.getHTTPRequest(id);
+      const originalReq = cloneDeep(req);
       if (!req.uri) {
-        return req;
+        return {
+          originalReq,
+          req,
+        };
       }
       const arr = ENVRegexp.exec(req.uri);
       if (arr?.length === 2) {
@@ -80,7 +85,10 @@ export const useAPISettingStore = defineStore("apiSettings", {
         });
       }
 
-      return req;
+      return {
+        originalReq,
+        req,
+      };
     },
     findByID(id: string): APISetting {
       const index = this.apiSettings.findIndex((item) => item.id === id);

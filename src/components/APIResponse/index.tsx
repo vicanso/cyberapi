@@ -20,7 +20,6 @@ import {
 import {
   HTTPResponse,
   ResponseBodyResult,
-  getStatusText,
   getLatestResponse,
   getResponseBody,
   HTTPStats,
@@ -30,7 +29,6 @@ import {
   NDescriptions,
   NDescriptionsItem,
   NDivider,
-  NGradientText,
   NIcon,
   NPopover,
   NSpace,
@@ -46,9 +44,12 @@ import {
   showError,
   writeFileToDownload,
   writeTextToClipboard,
+  formatLatency,
 } from "../../helpers/util";
 import ExPreview, { isSupportPreview } from "../ExPreview";
 import ExTimer from "../ExTimer";
+import APIResponseList from "./list";
+import APIResponseStatusText from "./status_text";
 import { toUint8Array } from "js-base64";
 import { useCookieStore } from "../../stores/cookie";
 
@@ -56,8 +57,8 @@ const responseClass = css`
   margin-left: 5px;
   margin-right: 2px;
   .infos {
-    height: 46px;
-    line-height: 46px;
+    height: 48px;
+    line-height: 48px;
     padding: 0 ${padding}px;
   }
   .codeEditor {
@@ -75,36 +76,25 @@ const responseClass = css`
     cursor: pointer;
     float: left;
     margin-top: 15px;
-    font-size: 16px;
+    padding: 0 2px;
+    font-size: 20px;
     font-weight: 600;
   }
   .cookie {
     margin-top: 16px;
   }
   .header {
+    padding: 0 5px;
     cursor: pointer;
+    font-size: 16px;
   }
   .hidden {
     display: none;
   }
+  .responseList {
+    float: right;
+  }
 `;
-
-function getStatusType(statusCode: number) {
-  if (statusCode >= 500) {
-    return "error";
-  }
-  if (statusCode >= 400) {
-    return "warning";
-  }
-  return "success";
-}
-
-function formatLatency(ms: number) {
-  if (ms < 1000) {
-    return `${ms.toLocaleString()} ms`;
-  }
-  return `${(ms / 1000).toFixed(2)} s`;
-}
 
 const showCurlLimitSize = 2 * 1024;
 export default defineComponent({
@@ -273,6 +263,9 @@ export default defineComponent({
 
     onMounted(() => {
       initEditor();
+      if (props.response.api) {
+        fillValues(props.response);
+      }
     });
     onBeforeUnmount(() => {
       destroy();
@@ -317,16 +310,12 @@ export default defineComponent({
         </span>
       );
     } else if (statusCode) {
-      statusCodeInfo = (
-        <NGradientText type={getStatusType(statusCode)}>
-          {statusCode} {getStatusText(statusCode)}
-        </NGradientText>
-      );
+      statusCodeInfo = <APIResponseStatusText statusCode={statusCode} />;
     }
 
     const apiIDSlots = {
       trigger: () => (
-        <NIcon class="info" size={18}>
+        <NIcon class="info" size={20}>
           <InformationCircleOutline />
         </NIcon>
       ),
@@ -338,7 +327,7 @@ export default defineComponent({
 
     const curlSlots = {
       trigger: () => (
-        <NIcon class="info">
+        <NIcon class="info" size={20}>
           <LinkOutline />
         </NIcon>
       ),
@@ -346,7 +335,7 @@ export default defineComponent({
 
     const cookieSlots = {
       trigger: () => (
-        <NIcon class="info cookie" size={15}>
+        <NIcon class="info cookie" size={17}>
           <BowlingBallOutline />
         </NIcon>
       ),
@@ -385,41 +374,42 @@ export default defineComponent({
         value: `${stats.cipher}`,
       });
     }
+
     if (stats?.dnsLookup) {
       descriptionItemOptions.push({
         label: i18nCollection("dns"),
         key: "dns",
-        value: `${stats.dnsLookup} ms`,
+        value: formatLatency(stats.dnsLookup),
       });
     }
     if (stats) {
       descriptionItemOptions.push({
         label: i18nCollection("tcp"),
         key: "tcp",
-        value: `${stats.tcp} ms`,
+        value: formatLatency(stats.tcp),
       });
       if (stats.isHttps) {
         descriptionItemOptions.push({
           label: i18nCollection("tls"),
           key: "tls",
-          value: `${stats.tls} ms`,
+          value: formatLatency(stats.tls),
         });
       }
       descriptionItemOptions.push(
         {
           label: i18nCollection("send"),
           key: "send",
-          value: `${stats.send} ms`,
+          value: formatLatency(stats.send),
         },
         {
           label: i18nCollection("serverProcessing"),
           key: "serverProcessing",
-          value: `${stats.serverProcessing} ms`,
+          value: formatLatency(stats.serverProcessing),
         },
         {
           label: i18nCollection("contentTransfer"),
           key: "contentTransfer",
-          value: `${stats.contentTransfer} ms`,
+          value: formatLatency(stats.contentTransfer),
         }
       );
     }
@@ -489,6 +479,12 @@ export default defineComponent({
 
     return (
       <div class={responseClass}>
+        {apiID && (
+          <div class="responseList">
+            {" "}
+            <APIResponseList id={apiID} />{" "}
+          </div>
+        )}
         <NSpace class="infos">
           {apiID && (
             <NPopover v-slots={apiIDSlots} trigger="click" placement="bottom">
