@@ -49,6 +49,12 @@ CyberAPI暂时仅是开发版本，业余时间的个人项目，如果有BUG或
 yarn
 ```
 
+安装tauri-clie:
+
+```shell
+cargo install tauri-cli
+```
+
 仅调整前端界面时可直接使用浏览器的方式来测试(增加了各类mock的接口)，执行：
 
 ```shell
