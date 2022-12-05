@@ -52,6 +52,7 @@ import APIResponseList from "./list";
 import APIResponseStatusText from "./status_text";
 import { toUint8Array } from "js-base64";
 import { useCookieStore } from "../../stores/cookie";
+import { useAPISettingStore } from "../../stores/api_setting";
 
 const responseClass = css`
   margin-left: 5px;
@@ -116,6 +117,7 @@ export default defineComponent({
     const message = useMessage();
     const settingStore = useSettingStore();
     const cookieStore = useCookieStore();
+    const apiSettingStore = useAPISettingStore();
     let editor: EditorView;
     const destroy = () => {
       if (editor) {
@@ -224,6 +226,8 @@ export default defineComponent({
       try {
         // 由于cookie会一直更新，因此此时再拉取
         await cookieStore.fetch();
+        // req 对象为未调用uri部分，需要先调整
+        apiSettingStore.fillValues(req);
         const value = await convertRequestToCURL(
           collection,
           req,
@@ -344,6 +348,9 @@ export default defineComponent({
     let curlText = i18nCollection("curlTooLargeTips");
     if (!isTooLarge) {
       curlText = curl;
+    }
+    if (curl.length === 0) {
+      curlText = i18nCollection("curlGenerateFail");
     }
     const curlStyle: StyleValue = isTooLarge
       ? {}

@@ -28,6 +28,7 @@ export default {
     importFromJSONFile: "导入CyberAPI的配置",
     exportSettingsSuccess: "配置已成功导出至下载目录",
     curlTooLargeTips: "curl数据太大，内容已复制至粘贴板",
+    curlGenerateFail: "curl生成失败",
     apiID: "该请求配置ID",
     remoteAddr: "请求地址",
     dns: "域名解析",
