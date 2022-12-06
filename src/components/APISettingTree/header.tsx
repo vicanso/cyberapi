@@ -92,7 +92,15 @@ export default defineComponent({
     );
     const addFolder = inject(addFolderKey, addFolderDefaultValue);
 
+    let prevTimeStamp = 0;
     const handleKeydown = (e: KeyboardEvent) => {
+      // https://github.com/tauri-apps/tauri/issues/5741
+      // 由于tauri会导致事件触发两次，因此暂时使用此处理
+      if (prevTimeStamp === e.timeStamp) {
+        prevTimeStamp = e.timeStamp;
+        return;
+      }
+      prevTimeStamp = e.timeStamp;
       if (hotKeyMatchCreateFolder(e)) {
         addFolder("");
         return;
