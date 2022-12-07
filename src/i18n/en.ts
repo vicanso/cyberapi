@@ -29,7 +29,8 @@ export default {
     exportSettingsSuccess:
       "The configurations are successfully exported to the download directory",
     curlTooLargeTips:
-      "CURL data is too large, and the content has been copied to the clipboard",
+      "The curl data is too large, and the content has been copied to the clipboard",
+    curlGenerateFail: "Generate curl fail",
     apiID: "Request ID",
     remoteAddr: "Remote Addr",
     dns: "DNS",

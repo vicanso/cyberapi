@@ -58,15 +58,7 @@ export const useAPISettingStore = defineStore("apiSettings", {
       }
       return JSON.parse(setting.setting || "{}") as HTTPRequest;
     },
-    getHTTPRequestFillValues(id: string) {
-      const req = this.getHTTPRequest(id);
-      const originalReq = cloneDeep(req);
-      if (!req.uri) {
-        return {
-          originalReq,
-          req,
-        };
-      }
+    fillValues(req: HTTPRequest) {
       const arr = ENVRegexp.exec(req.uri);
       if (arr?.length === 2) {
         const envValue = useEnvironmentStore().getValue(arr[1]);
@@ -84,7 +76,17 @@ export const useAPISettingStore = defineStore("apiSettings", {
           });
         });
       }
-
+    },
+    getHTTPRequestFillValues(id: string) {
+      const req = this.getHTTPRequest(id);
+      const originalReq = cloneDeep(req);
+      if (!req.uri) {
+        return {
+          originalReq,
+          req,
+        };
+      }
+      this.fillValues(req);
       return {
         originalReq,
         req,

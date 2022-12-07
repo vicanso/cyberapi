@@ -46,6 +46,12 @@ The project depends on rust and Nodejs. If you want to compile or participate in
 yarn
 ```
 
+Install tauri-cli:
+
+```shell
+cargo install tauri-cli
+```
+
 Running in browser mode, the data is mock:
 
 ```shell

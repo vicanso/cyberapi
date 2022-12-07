@@ -19,10 +19,7 @@ import {
   selectResponse,
 } from "../../commands/http_response";
 import { formatSimpleDate, showError } from "../../helpers/util";
-import {
-  ListOutline,
-  TrashOutline,
-} from "@vicons/ionicons5";
+import { ListOutline, TrashOutline } from "@vicons/ionicons5";
 import { DropdownMixedOption } from "naive-ui/es/dropdown/src/interface";
 import { i18nStore } from "../../i18n";
 
