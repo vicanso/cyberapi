@@ -23,7 +23,7 @@ chrono = "0.4"
 strum = "0.24"
 strum_macros = "0.24"
 hyper = { version = "0.14.19", features = ["client", "http1"] }
-base64 = "0.20.0-alpha.1"
+base64 = "0.20.0"
 cookie_store = "0.16.1"
 url = "2.2.2"
 time = "0.3.13"

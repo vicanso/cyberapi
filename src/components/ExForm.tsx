@@ -62,6 +62,9 @@ export default defineComponent({
     const formValue = ref(data);
     const submitting = ref(false);
     const submit = async () => {
+      if (submitting.value) {
+        return;
+      }
       submitting.value = true;
       try {
         await formRef.value?.validate();
