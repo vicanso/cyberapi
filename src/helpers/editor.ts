@@ -2,17 +2,33 @@ import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import { json } from "@codemirror/lang-json";
-import { indentWithTab } from "@codemirror/commands";
+import { get } from "lodash-es";
+import { indentWithTab, toggleComment } from "@codemirror/commands";
 import { oneDark } from "@codemirror/theme-one-dark";
 
 export function getDefaultExtensions(params: {
   isDark: boolean;
   readonly?: boolean;
 }) {
+  const lang = json();
+  // TODO 后续确认如何修改
+  if (get(lang, "extension[0].data.default[0]")) {
+    // eslint-disable-next-line
+    // @ts-ignore
+    lang.extension[0].data.default[0].commentTokens = {
+      line: "//",
+    };
+  }
   const extensions = [
     basicSetup,
-    keymap.of([indentWithTab]),
-    json(),
+    keymap.of([
+      indentWithTab,
+      {
+        key: "Mod-/",
+        run: toggleComment,
+      },
+    ]),
+    lang,
     EditorState.tabSize.of(2),
     EditorView.lineWrapping,
   ];

@@ -131,7 +131,28 @@ export async function convertRequestToCURL(
   )} '${uri}'`;
 }
 
-async function convertBody(collection: string, body: string) {
+function is_json(str: string) {
+  const value = str.trim();
+  if (value.length < 2) {
+    return false;
+  }
+  const key = value[0] + value[value.length - 1];
+  return key === "{}" || key === "[]";
+}
+
+async function convertBody(collection: string, data: string) {
+  let body = data;
+  // 注释的处理
+  if (is_json(body)) {
+    const arr = body.split("\n").filter((item) => {
+      if (item.trim().startsWith("//")) {
+        return false;
+      }
+      return true;
+    });
+    body = arr.join("\n");
+  }
+
   const handlers = parseFunctions(collection, body);
   if (handlers.length === 0) {
     return body;

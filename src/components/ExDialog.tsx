@@ -20,7 +20,12 @@ import {
 } from "naive-ui";
 import { useAPISettingStore } from "../stores/api_setting";
 import { useAPIFolderStore } from "../stores/api_folder";
-import { getNormalDialogStyle, isJSON, showError } from "../helpers/util";
+import {
+  getNormalDialogStyle,
+  isJSON,
+  showError,
+  delay,
+} from "../helpers/util";
 import { CloudUploadOutline } from "@vicons/ionicons5";
 import { importAPI, ImportCategory } from "../commands/import_api";
 
@@ -54,6 +59,8 @@ export default function newDialog(option: DialogOption) {
         onSubmit={async (data) => {
           await option.onConfirm(data);
           d.destroy();
+          // 增加延时，否则快速点击时会触发两次
+          await delay(100);
         }}
       />
     ),

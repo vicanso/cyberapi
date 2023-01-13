@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.5] - 2023-01-13
+
+### Bug Fixes
+
+- Fix double click
+- Update tauri fix repeat keydown event
+
+### Features
+
+- Support toggle comment for json editor
+
 ## [0.1.4] - 2022-12-06
 
 ### Bug Fixes
