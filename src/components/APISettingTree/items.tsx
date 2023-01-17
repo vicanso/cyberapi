@@ -141,6 +141,7 @@ interface TreeItem {
   name: string;
   settingType: string;
   method: string;
+  uri: string;
   children: TreeItem[];
   expanded: boolean;
   parent: string;
@@ -177,17 +178,24 @@ function convertToTreeItems(params: {
 
   const keyword = params.keyword.toLowerCase();
 
-  const reg = /"method":"(\S+?)"/;
+  const methodReg = /"method":"(\S+?)"/;
+  const uriReg = /"uri":"(\S+?)"/;
   apiSettings.forEach((item) => {
     let method = "";
+    let uri = "";
     if (item.setting) {
-      const result = reg.exec(item.setting);
+      let result = methodReg.exec(item.setting);
       if (result?.length === 2) {
         method = result[1];
+      }
+      result = uriReg.exec(item.setting);
+      if (result?.length === 2) {
+        uri = result[1].replace(/{{\S+}}/, "");
       }
     }
     map.set(item.id, {
       method,
+      uri,
       id: item.id,
       name: item.name,
       settingType: SettingType.HTTP,
@@ -203,6 +211,7 @@ function convertToTreeItems(params: {
   apiFolders.forEach((item) => {
     map.set(item.id, {
       id: item.id,
+      uri: "",
       name: item.name,
       settingType: SettingType.Folder,
       children: [],
@@ -255,9 +264,12 @@ function convertToTreeItems(params: {
   if (keyword) {
     const methodKeyword = keyword.toUpperCase();
     const shouldBeHide = (item: TreeItem) => {
+      // 匹配method
+      // 匹配url
       // 如果当前元素匹配，则其子元素展示
       if (
         item.method === methodKeyword ||
+        item.uri.toLowerCase().includes(keyword) ||
         isMatchTextOrPinYin(item.name, keyword)
       ) {
         return;
