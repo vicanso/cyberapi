@@ -91,7 +91,7 @@ export async function convertRequestToCURL(
     }
   });
   if (cookieValues.length) {
-    headerList.push(`-H 'Cookie:${cookieValues.join("; ")}'`);
+    headerList.push(`-H 'Cookie: ${cookieValues.join("; ")}'`);
   }
 
   let includeContentType = false;
@@ -102,10 +102,10 @@ export async function convertRequestToCURL(
     if (kv.key.toLowerCase() === "content-type") {
       includeContentType = true;
     }
-    headerList.push(`-H '${kv.key}:${kv.value}'`);
+    headerList.push(`-H '${kv.key}: ${kv.value}'`);
   });
   if (!includeContentType && req.contentType) {
-    headerList.push(`-H 'Content-Type:${req.contentType}'`);
+    headerList.push(`-H 'Content-Type: ${req.contentType}'`);
   }
   let body = " ";
   if (req.body) {
