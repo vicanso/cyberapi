@@ -435,7 +435,7 @@ export default defineComponent({
             const arr = cookie.split("=");
             cookieDescriptionItems.push(
               <NDescriptionsItem label={arr[0]} key={`${arr[0]}`} span={3}>
-                {arr[1]}
+                {arr.slice(1).join("=")}
               </NDescriptionsItem>
             );
             return;
