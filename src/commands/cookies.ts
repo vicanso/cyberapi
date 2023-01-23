@@ -48,7 +48,7 @@ export async function listCookie(): Promise<Cookie[]> {
       return;
     }
     const cookieValues = (cookie as string).split(";");
-    const [name, value] = cookieValues[0].split("=");
+    const [name, ...value] = cookieValues[0].split("=");
     const path = (get(item, "path.0") || "/") as string;
 
     const domainValues = values(get(item, "domain"));
@@ -59,7 +59,7 @@ export async function listCookie(): Promise<Cookie[]> {
     const expires = get(item, "expires.AtUtc") as string;
     cookies.push({
       name,
-      value,
+      value: value.join("="),
       path: path || "",
       domain: domain || "",
       expires: expires || "",
