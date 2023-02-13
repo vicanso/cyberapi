@@ -356,8 +356,8 @@ export async function doHTTPRequest(options: {
 
   const requestTimeout = {
     connect: 10,
-    write: 10,
-    read: 60,
+    write: 120,
+    read: 300,
   };
   if (timeout.connect && timeout.connect > 0) {
     requestTimeout.connect = timeout.connect;
