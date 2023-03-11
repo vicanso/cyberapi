@@ -14,7 +14,9 @@
     "allowlist": {
       "all": false,
       "fs": {
-        "all": true,
+        "readDir": true,
+        "readFile": true,
+        "exists": true,
         "scope": ["$APP/*", "$DOWNLOAD/*", "$DESKTOP/*", "$DOCUMENT/*"]
       },
       "app": {

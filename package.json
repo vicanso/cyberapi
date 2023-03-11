@@ -17,6 +17,7 @@
     "@codemirror/theme-one-dark": "^6.1.0",
     "@codemirror/view": "^6.3.0",
     "@linaria/core": "3.0.0-beta.22",
+    "@tauri-apps/cli": "^1.2.3",
     "@tauri-apps/api": "^1.2.0",
     "@vicons/ionicons5": "^0.12.0",
     "bluebird": "^3.7.2",
