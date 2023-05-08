@@ -233,6 +233,15 @@ async function convertMultipartForm(body: string): Promise<MultipartFormData> {
   };
 }
 
+export async function getUserAgent() {
+  const appVersion = await getVersion();
+  const appOS = await type();
+  const appOSVersion = await version();
+  const appArch = await arch();
+  const tauriVersion = await getTauriVersion();
+  return `CyberAPI/${appVersion} (${appOS}; tauri/${tauriVersion}; ${appOSVersion}; ${appArch})`;
+}
+
 // Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)
 let userAgent = "";
 
@@ -330,12 +339,7 @@ export async function doHTTPRequest(options: {
   }
 
   if (!userAgent) {
-    const appVersion = await getVersion();
-    const appOS = await type();
-    const appOSVersion = await version();
-    const appArch = await arch();
-    const tauriVersion = await getTauriVersion();
-    userAgent = `CyberAPI/${appVersion} (${appOS}; tauri/${tauriVersion}; ${appOSVersion}; ${appArch})`;
+    userAgent = await getUserAgent();
   }
 
   params.headers.push({

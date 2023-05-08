@@ -4,6 +4,7 @@ import { arch, platform, type, version } from "@tauri-apps/api/os";
 import { appDataDir } from "@tauri-apps/api/path";
 
 import { isWebMode } from "../helpers/util";
+import { getUserAgent } from "../commands/http_request";
 
 export const useAppStore = defineStore("app", {
   state: () => {
@@ -15,6 +16,7 @@ export const useAppStore = defineStore("app", {
       os: "--",
       osVersion: "--",
       dir: "--",
+      userAgent: "--",
     };
   },
   actions: {
@@ -27,6 +29,7 @@ export const useAppStore = defineStore("app", {
         this.os = await type();
         this.osVersion = await version();
         this.dir = await appDataDir();
+        this.userAgent = await getUserAgent();
       }
     },
   },
