@@ -234,6 +234,9 @@ export async function writeSettingToDownload(arr: unknown, name: string) {
 }
 
 export async function isMacOS() {
+  if (isWebMode()) {
+    return Promise.resolve(false);
+  }
   const platformName = await platform();
   return platformName === "darwin";
 }
