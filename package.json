@@ -1,7 +1,7 @@
 {
   "name": "cyberapi",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "scripts": {
     "format": "prettier --write src/*.ts src/*.tsx src/**/*.ts src/**/*.tsx src/**/**/*.tsx",
     "lint": "eslint . --ext .js,.tsx,.ts --fix && vue-tsc --noEmit",
