@@ -88,6 +88,7 @@ export default {
     platform: "Platform",
     arch: "Architecture",
     os: "OS",
+    userAgent: "User Agent",
     dir: "Directory",
     osVersion: "OS version",
     windowSize: "Application Window",

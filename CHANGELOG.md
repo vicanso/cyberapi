@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.6] - 2023-05-09
+
+### Bug Fixes
+
+- Fix value of cookie includes "="
+- Fix get set cookie value of response header
+
+### Features
+
+- Support url keyword filter
+- Show user agent of cyberapi
+
+### Miscellaneous Tasks
+
+- Update dependencies
+- Update dependencies
+- Update modules
+
+### Refactor
+
+- Add space before header value
+- Adjust http timeout option
+- Update modules
+
 ## [0.1.5] - 2023-01-13
 
 ### Bug Fixes

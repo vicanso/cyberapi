@@ -49,7 +49,7 @@ CyberAPI暂时仅是开发版本，业余时间的个人项目，如果有BUG或
 yarn
 ```
 
-安装tauri-clie:
+安装tauri-cli:
 
 ```shell
 cargo install tauri-cli

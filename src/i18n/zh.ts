@@ -85,6 +85,7 @@ export default {
     platform: "平台",
     arch: "架构",
     os: "系统",
+    userAgent: "User Agent",
     dir: "应用目录",
     osVersion: "系统版本",
     windowSize: "应用窗口设置",

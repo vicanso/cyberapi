@@ -117,6 +117,11 @@ export default defineComponent({
           value: appStore.arch,
         },
         {
+          name: i18nSetting("userAgent"),
+          value: appStore.userAgent,
+          span: 3,
+        },
+        {
           name: i18nSetting("dir"),
           value: appStore.dir,
           span: 3,
