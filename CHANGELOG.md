@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.7] - 2023-05-23
+
+### Miscellaneous Tasks
+
+- Update tauri action
+
+### Refactor
+
+- Adjust fs scope
+
 ## [0.1.6] - 2023-05-09
 
 ### Bug Fixes

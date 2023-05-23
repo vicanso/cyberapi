@@ -8,7 +8,7 @@
   },
   "package": {
     "productName": "CyberAPI",
-    "version": "0.1.6"
+    "version": "0.1.7"
   },
   "tauri": {
     "allowlist": {
@@ -17,7 +17,16 @@
         "readDir": true,
         "readFile": true,
         "exists": true,
-        "scope": ["$APP/*", "$DOWNLOAD/*", "$DESKTOP/*", "$DOCUMENT/*"]
+        "scope": [
+          "$APP/*",
+          "$APP/*/*",
+          "$DOWNLOAD/*",
+          "$DOWNLOAD/*/*",
+          "$DESKTOP/*",
+          "$DESKTOP/*/*",
+          "$DOCUMENT/*",
+          "$DOCUMENT/*/*"
+        ]
       },
       "app": {
         "all": false,
