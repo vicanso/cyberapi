@@ -17,7 +17,16 @@
         "readDir": true,
         "readFile": true,
         "exists": true,
-        "scope": ["$APP/*", "$DOWNLOAD/*", "$DESKTOP/*", "$DOCUMENT/*"]
+        "scope": [
+          "$APP/*",
+          "$APP/*/*",
+          "$DOWNLOAD/*",
+          "$DOWNLOAD/*/*",
+          "$DESKTOP/*",
+          "$DESKTOP/*/*",
+          "$DOCUMENT/*",
+          "$DOCUMENT/*/*"
+        ]
       },
       "app": {
         "all": false,
