@@ -753,7 +753,7 @@ checksum = "b365fabc795046672053e29c954733ec3b05e4be654ab130fe8f1f94d7051f35"
 
 [[package]]
 name = "cyberapi"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64 0.20.0",
  "brotli-decompressor",
