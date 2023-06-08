@@ -1,11 +1,10 @@
-import { EditorState } from "@codemirror/state";
-import { EditorView } from "codemirror";
+import { editor } from "monaco-editor/esm/vs/editor/editor.api";
 import { DialogApiInjection } from "naive-ui/es/dialog/src/DialogProvider";
 import { defineComponent, onBeforeUnmount, ref, PropType } from "vue";
 import { i18nCollection, i18nCommon } from "../i18n";
 import { useSettingStore } from "../stores/setting";
 import ExForm, { ExFormItem, ExUpdateData } from "./ExForm";
-import { getDefaultExtensions, replaceContent } from "../helpers/editor";
+import { createEditor } from "../helpers/editor";
 import { css } from "@linaria/core";
 import {
   NButton,
@@ -23,6 +22,7 @@ import { useAPIFolderStore } from "../stores/api_folder";
 import {
   getNormalDialogStyle,
   isJSON,
+  jsonFormat,
   showError,
   delay,
 } from "../helpers/util";
@@ -104,45 +104,32 @@ const ImportEditor = defineComponent({
     const currentTab = ref(ImportCategory.Text);
     const fileData = ref("");
 
-    let editor: EditorView | null;
+    let editorIns: editor.IStandaloneCodeEditor | null;
     const destroyEditor = () => {
-      if (editor) {
-        editor.destroy();
-        editor = null;
+      if (editorIns) {
+        editorIns = null;
       }
     };
 
-    const codeEditor = ref<Element>();
-    const extensions = getDefaultExtensions({
-      isDark: settingStore.isDark,
-    });
+    const codeEditor = ref<HTMLElement>();
     const initEditor = () => {
-      if (editor) {
+      if (editorIns) {
         return;
       }
-      const state = EditorState.create({
-        extensions,
-      });
-      editor = new EditorView({
-        state,
-        parent: codeEditor.value,
-      });
-      editor.dispatch({});
-      const data = isJSON(props.data) ? props.data : "";
-      replaceContent(editor, data);
+      if (codeEditor.value) {
+        editorIns = createEditor({
+          dom: codeEditor.value,
+          isDark: settingStore.isDark,
+        });
+      }
+      if (!editorIns) {
+        return;
+      }
+      const data = isJSON(props.data) ? jsonFormat(props.data) : "";
+      editorIns.setValue(data);
 
-      let checkCount = 0;
       const setFocus = () => {
-        // 如果超过
-        if (checkCount > 10) {
-          return;
-        }
-        checkCount++;
-        editor?.focus();
-        if (editor?.hasFocus) {
-          return;
-        }
-        setTimeout(setFocus, 50);
+        editorIns?.focus();
       };
       setTimeout(setFocus, 50);
     };
@@ -154,8 +141,8 @@ const ImportEditor = defineComponent({
       processing.value = true;
       try {
         if (currentTab.value === ImportCategory.Text) {
-          if (editor) {
-            fileData.value = editor.state.doc.toString();
+          if (editorIns) {
+            fileData.value = editorIns.getValue();
           } else {
             fileData.value = "";
           }

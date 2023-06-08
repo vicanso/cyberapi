@@ -8,14 +8,13 @@ import {
   watch,
 } from "vue";
 import { css } from "@linaria/core";
-import { EditorView } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
 import prettyBytes from "pretty-bytes";
 import {
   BowlingBallOutline,
   InformationCircleOutline,
   LinkOutline,
 } from "@vicons/ionicons5";
+import { editor } from "monaco-editor/esm/vs/editor/editor.api";
 
 import {
   HTTPResponse,
@@ -36,7 +35,7 @@ import {
 } from "naive-ui";
 import { useRoute } from "vue-router";
 import { padding } from "../../constants/style";
-import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
+import { replaceContent, createEditor } from "../../helpers/editor";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { convertRequestToCURL, HTTPRequest } from "../../commands/http_request";
 import {
@@ -118,10 +117,10 @@ export default defineComponent({
     const settingStore = useSettingStore();
     const cookieStore = useCookieStore();
     const apiSettingStore = useAPISettingStore();
-    let editor: EditorView;
+    let editorIns: editor.IStandaloneCodeEditor | null;
     const destroy = () => {
-      if (editor) {
-        editor.destroy();
+      if (editorIns) {
+        editorIns = null;
       }
     };
     const statusCode = ref(0);
@@ -215,7 +214,7 @@ export default defineComponent({
             });
         }
       } else if (!previewMode.value) {
-        replaceContent(editor, body.data);
+        replaceContent(editorIns, body.data);
       }
     };
 
@@ -249,20 +248,15 @@ export default defineComponent({
       }
     );
 
-    const codeEditor = ref<Element>();
-    const extensions = getDefaultExtensions({
-      isDark: settingStore.isDark,
-      readonly: true,
-    });
+    const codeEditor = ref<HTMLElement>();
     const initEditor = () => {
-      const state = EditorState.create({
-        extensions,
-      });
-      editor = new EditorView({
-        state,
-        parent: codeEditor.value,
-      });
-      editor.dispatch({});
+      if (codeEditor.value) {
+        editorIns = createEditor({
+          readonly: true,
+          dom: codeEditor.value,
+          isDark: settingStore.isDark,
+        });
+      }
     };
 
     onMounted(() => {

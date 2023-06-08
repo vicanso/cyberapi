@@ -52,6 +52,9 @@ export const useAPIFolderStore = defineStore("apiFolders", {
       try {
         const arr = await listAPIFolder(collection);
         arr.forEach((item) => {
+          if (!item.children) {
+            return;
+          }
           item.children = uniq(item.children.split(",")).join(",");
         });
         this.apiFolders = arr;

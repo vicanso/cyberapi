@@ -16,6 +16,7 @@
       "fs": {
         "readDir": true,
         "readFile": true,
+        "writeFile": true,
         "exists": true,
         "scope": [
           "$APP/*",

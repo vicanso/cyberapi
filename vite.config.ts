@@ -35,9 +35,11 @@ export default defineConfig({
             "bluebird",
             "js-base64",
             "pretty-bytes",
-            "codemirror",
             "crypto-js",
             "form-data-encoder"
+          ],
+          editor: [
+            "monaco-editor",
           ],
           ui: [
             "vue",
