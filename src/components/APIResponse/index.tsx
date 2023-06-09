@@ -245,6 +245,7 @@ export default defineComponent({
       () => props.response,
       (resp) => {
         fillValues(resp);
+        editorIns?.setScrollTop(0);
       }
     );
 

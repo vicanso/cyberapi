@@ -13,6 +13,7 @@ export function createEditor(params: {
   });
   e.updateOptions({
     fontSize: 14,
+    lineNumbersMinChars: 4,
     wordWrap: "on",
   });
   return e;

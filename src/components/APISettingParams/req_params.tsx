@@ -212,17 +212,7 @@ export default defineComponent({
       }
     };
 
-    const handleFormat = () => {
-      const data = editorIns?.getValue();
-      try {
-        const result = jsonFormat(data || "");
-        if (result !== data) {
-          replaceContent(editorIns, result);
-        }
-      } catch (err) {
-        showError(message, err);
-      }
-    };
+
     const handleChangeContentType = (newContentType: string) => {
       // 如果无数据，直接切换
       const changeContentType = () => {
@@ -332,7 +322,6 @@ export default defineComponent({
       handleHeaders,
       handleAuth,
       handleChangeContentType,
-      handleFormat,
       handleUpdateActiveTab,
       activeTab,
       codeEditor,
@@ -520,20 +509,6 @@ export default defineComponent({
             ref="codeEditor"
             class={codeEditorClass}
           ></div>
-          {activeTab === TabItem.Body && contentType === ContentType.JSON && (
-            <NButton
-              class="format"
-              quaternary
-              onClick={() => {
-                this.handleFormat();
-              }}
-            >
-              <NIcon>
-                <CodeSlashOutline />
-              </NIcon>
-              {i18nCollection("format")}
-            </NButton>
-          )}
           {/* body form/multipart */}
           {showBodyKeyValue && (
             <ExKeyValue
