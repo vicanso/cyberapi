@@ -61,13 +61,17 @@ const responseClass = css`
     line-height: 48px;
     padding: 0 ${padding}px;
   }
-  .codeEditor {
+  .codeEditor,
+  .previewWrapper {
     position: absolute;
     top: 50px;
     left: 5px;
     right: 2px;
     bottom: 0;
     overflow: auto;
+  }
+  .previewWrapper {
+    z-index: 99;
   }
   .n-divider {
     margin: 0;
@@ -87,9 +91,6 @@ const responseClass = css`
     padding: 0 5px;
     cursor: pointer;
     font-size: 16px;
-  }
-  .hidden {
-    display: none;
   }
   .responseList {
     float: right;
@@ -187,6 +188,7 @@ export default defineComponent({
           contentType,
           data: body.data,
         };
+        editorIns?.setValue("");
       } else {
         previewMode.value = false;
       }
@@ -457,7 +459,6 @@ export default defineComponent({
     });
 
     const codeEditorCls = {
-      codeEditor: true,
       hidden: false,
     };
     if (previewMode) {
@@ -541,13 +542,15 @@ export default defineComponent({
           {latency > 0 && formatLatency(latency)}
         </NSpace>
         <NDivider />
-        <div ref="codeEditor" class={codeEditorCls}></div>
         {codeEditorCls.hidden && (
-          <ExPreview
-            contentType={previewData.contentType}
-            data={previewData.data}
-          />
+          <div class="previewWrapper">
+            <ExPreview
+              contentType={previewData.contentType}
+              data={previewData.data}
+            />
+          </div>
         )}
+        <div ref="codeEditor" class="codeEditor"></div>
       </div>
     );
   },

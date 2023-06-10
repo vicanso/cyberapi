@@ -212,7 +212,6 @@ export default defineComponent({
       }
     };
 
-
     const handleChangeContentType = (newContentType: string) => {
       // 如果无数据，直接切换
       const changeContentType = () => {
