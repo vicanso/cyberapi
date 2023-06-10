@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.8] - 2023-06-10
+
+### Bug Fixes
+
+- Fix image preview for response
+
+### Refactor
+
+- Ignore short interval of send request
+- Use monaco instead of codemirror
+- Adjust editor functions
+
 ## [0.1.7] - 2023-05-23
 
 ### Miscellaneous Tasks
