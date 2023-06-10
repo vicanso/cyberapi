@@ -72,7 +72,12 @@ const responseClass = css`
   }
   .previewWrapper {
     z-index: 99;
+    background-color: rgb(255, 255, 255);
   }
+  .previewWrapper.isDark {
+    background-color: rgb(30, 30, 30);
+  }
+
   .n-divider {
     margin: 0;
   }
@@ -287,6 +292,7 @@ export default defineComponent({
       previewData,
       codeEditor,
       handleToCURL,
+      isDark: settingStore.isDark,
     };
   },
   render() {
@@ -464,6 +470,13 @@ export default defineComponent({
     if (previewMode) {
       codeEditorCls.hidden = true;
     }
+    const previewWrapperCls = {
+      previewWrapper: true,
+      isDark: false,
+    };
+    if (this.isDark) {
+      previewWrapperCls.isDark = true;
+    }
 
     const popupContentStyle: StyleValue = {
       maxWidth: "600px",
@@ -543,7 +556,7 @@ export default defineComponent({
         </NSpace>
         <NDivider />
         {codeEditorCls.hidden && (
-          <div class="previewWrapper">
+          <div class={previewWrapperCls}>
             <ExPreview
               contentType={previewData.contentType}
               data={previewData.data}
