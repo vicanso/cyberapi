@@ -13,6 +13,7 @@ import { getLang } from "./stores/local";
 import { handleDatabaseCompatible } from "./commands/database";
 import { showSplashscreen } from "./commands/window";
 import { initWindowEvent } from "./event";
+import "./userWorker";
 
 // web mode enable debug:*
 if (isWebMode()) {

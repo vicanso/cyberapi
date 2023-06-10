@@ -17,8 +17,7 @@ import {
   ref,
   watch,
 } from "vue";
-import { EditorView, ViewUpdate } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
+import { editor } from "monaco-editor/esm/vs/editor/editor.api";
 
 import {
   HTTPMethod,
@@ -33,7 +32,7 @@ import ExKeyValue, { HandleOption } from "../ExKeyValue";
 import { KVParam } from "../../commands/interface";
 import { padding } from "../../constants/style";
 import { useAPICollectionStore } from "../../stores/api_collection";
-import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
+import { replaceContent, createEditor } from "../../helpers/editor";
 
 enum TabItem {
   Body = "Body",
@@ -170,11 +169,11 @@ export default defineComponent({
     const settingStore = useSettingStore();
     const message = useMessage();
     const dialog = useDialog();
-    const collecitonStore = useAPICollectionStore();
-    const codeEditor = ref<Element>();
+    const collectionStore = useAPICollectionStore();
+    const codeEditor = ref<HTMLElement>();
     const contentType = ref(props.params.contentType || ContentType.JSON);
 
-    let tab = collecitonStore.getActiveTab(props.id);
+    let tab = collectionStore.getActiveTab(props.id);
     if (!tab) {
       if (shouldHaveBody(props.params.method)) {
         tab = TabItem.Body;
@@ -184,51 +183,40 @@ export default defineComponent({
     }
     const activeTab = ref(tab as TabItem);
 
-    let editor: EditorView;
+    let editorIns: editor.IStandaloneCodeEditor | null;
     const destroy = () => {
-      if (editor) {
-        editor.destroy();
+      if (editorIns) {
+        editorIns = null;
       }
     };
-    const handleEditorUpdate = (v: ViewUpdate) => {
-      if (v.docChanged && props.onUpdateBody) {
+    const handleEditorUpdate = () => {
+      if (props.onUpdateBody && editorIns) {
         props.onUpdateBody({
-          body: editor.state.doc.toString().trim(),
+          body: editorIns.getValue().trim(),
           contentType: contentType.value,
         });
       }
     };
-    const extensions = getDefaultExtensions({
-      isDark: settingStore.isDark,
-    });
-    extensions.push(EditorView.updateListener.of(handleEditorUpdate));
     const initEditor = () => {
-      const state = EditorState.create({
-        doc: props.params.body,
-        extensions,
-      });
-      editor = new EditorView({
-        state,
-        parent: codeEditor.value,
-      });
-    };
-
-    const handleFormat = () => {
-      const data = editor.state.doc.toString();
-      try {
-        const result = jsonFormat(data);
-        if (result !== data) {
-          replaceContent(editor, result);
-        }
-      } catch (err) {
-        showError(message, err);
+      if (editorIns) {
+        editorIns.setValue(props.params.body);
+        return;
+      }
+      if (codeEditor.value) {
+        editorIns = createEditor({
+          dom: codeEditor.value,
+          isDark: settingStore.isDark,
+        });
+        editorIns.setValue(props.params.body || "");
+        editorIns.onDidChangeModelContent(handleEditorUpdate);
       }
     };
+
     const handleChangeContentType = (newContentType: string) => {
       // 如果无数据，直接切换
       const changeContentType = () => {
         // 清空
-        replaceContent(editor, "");
+        replaceContent(editorIns, "");
         if (props.onUpdateBody) {
           props.onUpdateBody({
             body: "",
@@ -310,7 +298,7 @@ export default defineComponent({
     );
     const handleUpdateActiveTab = async (activeTab: string) => {
       try {
-        await collecitonStore.updateActiveTab({
+        await collectionStore.updateActiveTab({
           id: props.id,
           activeTab,
         });
@@ -333,7 +321,6 @@ export default defineComponent({
       handleHeaders,
       handleAuth,
       handleChangeContentType,
-      handleFormat,
       handleUpdateActiveTab,
       activeTab,
       codeEditor,
@@ -516,21 +503,11 @@ export default defineComponent({
         </NTabs>
         <div class="content">
           {/* json, xml, text */}
-          <div ref="codeEditor" class={codeEditorClass}></div>
-          {activeTab === TabItem.Body && contentType === ContentType.JSON && (
-            <NButton
-              class="format"
-              quaternary
-              onClick={() => {
-                this.handleFormat();
-              }}
-            >
-              <NIcon>
-                <CodeSlashOutline />
-              </NIcon>
-              {i18nCollection("format")}
-            </NButton>
-          )}
+          <div
+            style="height: 100vh"
+            ref="codeEditor"
+            class={codeEditorClass}
+          ></div>
           {/* body form/multipart */}
           {showBodyKeyValue && (
             <ExKeyValue

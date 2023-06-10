@@ -1,61 +1,31 @@
-import { basicSetup } from "codemirror";
-import { EditorView, keymap } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
-import { json } from "@codemirror/lang-json";
-import { get } from "lodash-es";
-import { indentWithTab, toggleComment } from "@codemirror/commands";
-import { oneDark } from "@codemirror/theme-one-dark";
+import { editor } from "monaco-editor/esm/vs/editor/editor.api";
 
-export function getDefaultExtensions(params: {
+export function createEditor(params: {
   isDark: boolean;
   readonly?: boolean;
+  dom: HTMLElement;
 }) {
-  const lang = json();
-  // TODO 后续确认如何修改
-  if (get(lang, "extension[0].data.default[0]")) {
-    // eslint-disable-next-line
-    // @ts-ignore
-    lang.extension[0].data.default[0].commentTokens = {
-      line: "//",
-    };
-  }
-  const extensions = [
-    basicSetup,
-    keymap.of([
-      indentWithTab,
-      {
-        key: "Mod-/",
-        run: toggleComment,
-      },
-    ]),
-    lang,
-    EditorState.tabSize.of(2),
-    EditorView.lineWrapping,
-  ];
-  if (params.isDark) {
-    extensions.push(oneDark);
-  }
-  if (params.readonly) {
-    extensions.push(EditorState.readOnly.of(true));
-  }
-
-  return extensions;
+  // * The current out-of-the-box available themes are: 'vs' (default), 'vs-dark', 'hc-black', 'hc-light.
+  const e = editor.create(params.dom, {
+    readOnly: params.readonly || false,
+    language: "json",
+    theme: params.isDark ? "vs-dark" : "vs",
+  });
+  e.updateOptions({
+    fontSize: 14,
+    lineNumbersMinChars: 4,
+    wordWrap: "on",
+  });
+  return e;
 }
 
 // 替换内容
-export function replaceContent(editor: EditorView, content: string) {
+export function replaceContent(
+  editor: editor.IStandaloneCodeEditor | null,
+  content: string
+) {
   if (!editor) {
     return;
   }
-  const data = editor.state.doc.toString();
-  if (content !== data) {
-    const trans = editor.state.update({
-      changes: {
-        from: 0,
-        to: data.length,
-        insert: content,
-      },
-    });
-    editor.update([trans]);
-  }
+  editor.setValue(content || "");
 }

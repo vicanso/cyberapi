@@ -137,10 +137,19 @@ export default defineComponent({
     const isCurrent = (id: string) => {
       return id === currentID;
     };
+    let lastHandleSendAt = 0;
     const handleSend = async () => {
       if (!props.onSubmit) {
         return;
       }
+      const now = Date.now();
+      // 如果快速点击
+      // 直接忽略第二次点击
+      if (now - lastHandleSendAt < 200) {
+        return;
+      }
+      lastHandleSendAt = now;
+
       // 如果发送中，则中止请求
       if (sending.value) {
         sending.value = false;

@@ -8,14 +8,13 @@ import {
   watch,
 } from "vue";
 import { css } from "@linaria/core";
-import { EditorView } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
 import prettyBytes from "pretty-bytes";
 import {
   BowlingBallOutline,
   InformationCircleOutline,
   LinkOutline,
 } from "@vicons/ionicons5";
+import { editor } from "monaco-editor/esm/vs/editor/editor.api";
 
 import {
   HTTPResponse,
@@ -36,7 +35,7 @@ import {
 } from "naive-ui";
 import { useRoute } from "vue-router";
 import { padding } from "../../constants/style";
-import { getDefaultExtensions, replaceContent } from "../../helpers/editor";
+import { replaceContent, createEditor } from "../../helpers/editor";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { convertRequestToCURL, HTTPRequest } from "../../commands/http_request";
 import {
@@ -62,7 +61,8 @@ const responseClass = css`
     line-height: 48px;
     padding: 0 ${padding}px;
   }
-  .codeEditor {
+  .codeEditor,
+  .previewWrapper {
     position: absolute;
     top: 50px;
     left: 5px;
@@ -70,6 +70,14 @@ const responseClass = css`
     bottom: 0;
     overflow: auto;
   }
+  .previewWrapper {
+    z-index: 99;
+    background-color: rgb(255, 255, 255);
+  }
+  .previewWrapper.isDark {
+    background-color: rgb(30, 30, 30);
+  }
+
   .n-divider {
     margin: 0;
   }
@@ -88,9 +96,6 @@ const responseClass = css`
     padding: 0 5px;
     cursor: pointer;
     font-size: 16px;
-  }
-  .hidden {
-    display: none;
   }
   .responseList {
     float: right;
@@ -118,10 +123,10 @@ export default defineComponent({
     const settingStore = useSettingStore();
     const cookieStore = useCookieStore();
     const apiSettingStore = useAPISettingStore();
-    let editor: EditorView;
+    let editorIns: editor.IStandaloneCodeEditor | null;
     const destroy = () => {
-      if (editor) {
-        editor.destroy();
+      if (editorIns) {
+        editorIns = null;
       }
     };
     const statusCode = ref(0);
@@ -188,6 +193,7 @@ export default defineComponent({
           contentType,
           data: body.data,
         };
+        editorIns?.setValue("");
       } else {
         previewMode.value = false;
       }
@@ -215,7 +221,7 @@ export default defineComponent({
             });
         }
       } else if (!previewMode.value) {
-        replaceContent(editor, body.data);
+        replaceContent(editorIns, body.data);
       }
     };
 
@@ -246,23 +252,19 @@ export default defineComponent({
       () => props.response,
       (resp) => {
         fillValues(resp);
+        editorIns?.setScrollTop(0);
       }
     );
 
-    const codeEditor = ref<Element>();
-    const extensions = getDefaultExtensions({
-      isDark: settingStore.isDark,
-      readonly: true,
-    });
+    const codeEditor = ref<HTMLElement>();
     const initEditor = () => {
-      const state = EditorState.create({
-        extensions,
-      });
-      editor = new EditorView({
-        state,
-        parent: codeEditor.value,
-      });
-      editor.dispatch({});
+      if (codeEditor.value) {
+        editorIns = createEditor({
+          readonly: true,
+          dom: codeEditor.value,
+          isDark: settingStore.isDark,
+        });
+      }
     };
 
     onMounted(() => {
@@ -290,6 +292,7 @@ export default defineComponent({
       previewData,
       codeEditor,
       handleToCURL,
+      isDark: settingStore.isDark,
     };
   },
   render() {
@@ -462,11 +465,17 @@ export default defineComponent({
     });
 
     const codeEditorCls = {
-      codeEditor: true,
       hidden: false,
     };
     if (previewMode) {
       codeEditorCls.hidden = true;
+    }
+    const previewWrapperCls = {
+      previewWrapper: true,
+      isDark: false,
+    };
+    if (this.isDark) {
+      previewWrapperCls.isDark = true;
     }
 
     const popupContentStyle: StyleValue = {
@@ -546,13 +555,15 @@ export default defineComponent({
           {latency > 0 && formatLatency(latency)}
         </NSpace>
         <NDivider />
-        <div ref="codeEditor" class={codeEditorCls}></div>
         {codeEditorCls.hidden && (
-          <ExPreview
-            contentType={previewData.contentType}
-            data={previewData.data}
-          />
+          <div class={previewWrapperCls}>
+            <ExPreview
+              contentType={previewData.contentType}
+              data={previewData.data}
+            />
+          </div>
         )}
+        <div ref="codeEditor" class="codeEditor"></div>
       </div>
     );
   },

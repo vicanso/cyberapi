@@ -1,5 +1,6 @@
 use crate::cookies;
 use crate::error::CyberAPIError;
+use base64::{engine::general_purpose, Engine as _};
 use hyper::{
     body::{Buf, Bytes},
     client::connect::HttpInfo,
@@ -411,7 +412,7 @@ pub async fn request(
 
     let body = if http_request.content_type.starts_with("multipart/form-data") {
         // 数据为base64
-        let buf = base64::decode(http_request.body)?;
+        let buf = general_purpose::STANDARD_NO_PAD.decode(http_request.body)?;
         Body::from(buf)
     } else {
         Body::from(http_request.body)
@@ -591,7 +592,7 @@ pub async fn request(
         latency: stats.total,
         status,
         headers,
-        body: base64::encode(buf),
+        body: general_purpose::STANDARD_NO_PAD.encode(buf),
         stats,
     };
 
