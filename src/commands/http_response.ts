@@ -151,7 +151,7 @@ export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
             json = JSON.parse(data);
             isJSON = true;
             // format
-            data = JSON.stringify(json, null, 2);
+            data = JSON.stringify(json, null, 4);
           } else if (value.includes("text")) {
             category = ResponseBodyCategory.Text;
             data = decode(data);
