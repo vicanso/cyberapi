@@ -12,8 +12,8 @@ export enum LANG {
 }
 
 const i18n = createI18n({
-  locale: "uk",
-  fallbackLocale: "uk",
+  locale: "en",
+  fallbackLocale: "en",
   messages: {
     en,
     zh,
