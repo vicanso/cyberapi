@@ -460,6 +460,7 @@ pub async fn request(
             HeaderValue::from_str(h.value.as_str())?,
         );
     }
+    header.insert("Accept-Encoding", HeaderValue::from_str("gzip, br")?);
     // 如果未设置content type
     // 设置content type
     if !set_content_type && !http_request.content_type.is_empty() {

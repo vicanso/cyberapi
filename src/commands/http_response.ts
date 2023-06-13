@@ -132,6 +132,9 @@ export function getStatusText(code: number) {
   return statusTextMap.get(code.toString()) || "";
 }
 
+
+const mimeTextReg = /text|javascript/gi;
+
 export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
   const { headers, body } = resp;
   let category = ResponseBodyCategory.Binary;
@@ -152,7 +155,7 @@ export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
             isJSON = true;
             // format
             data = JSON.stringify(json, null, 4);
-          } else if (value.includes("text")) {
+          } else if (mimeTextReg.test(value)) {
             category = ResponseBodyCategory.Text;
             data = decode(data);
           }
