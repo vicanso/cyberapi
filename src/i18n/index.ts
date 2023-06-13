@@ -1,20 +1,23 @@
 import { createI18n } from "vue-i18n";
-import { enUS, zhCN } from "naive-ui";
+import { enUS, zhCN, ukUA } from "naive-ui";
 
 import en from "./en";
 import zh from "./zh";
+import uk from "./uk";
 
 export enum LANG {
   en = "en",
   zh = "zh",
+  uk = "uk"
 }
 
 const i18n = createI18n({
-  locale: "en",
-  fallbackLocale: "en",
+  locale: "uk",
+  fallbackLocale: "uk",
   messages: {
     en,
     zh,
+    uk
   },
 });
 export default i18n;
@@ -22,6 +25,9 @@ export default i18n;
 export function getLocale() {
   if (i18n.global.locale === LANG.zh) {
     return zhCN;
+  }
+  if (i18n.global.locale === LANG.uk) {
+    return ukUA;
   }
   return enUS;
 }
@@ -31,7 +37,7 @@ export function getCurrentLang() {
 }
 
 export function changeI18nLocale(locale: string) {
-  if (locale === LANG.zh || locale === LANG.en) {
+  if (locale === LANG.zh || locale === LANG.en || locale === LANG.uk) {
     i18n.global.locale = locale;
   }
 }
