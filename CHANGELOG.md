@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.9] - 2023-06-13
+
+### Features
+
+- Add accept-encoding and support text content preview
+
+### Refactor
+
+- Adjust json format
+
 ## [0.1.8] - 2023-06-10
 
 ### Bug Fixes
