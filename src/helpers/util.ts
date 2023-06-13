@@ -161,7 +161,7 @@ export function jsonFormat(data: string) {
         if (!isJSON(item)) {
           return item;
         }
-        return JSON.stringify(JSON.parse(item), null, 2);
+        return JSON.stringify(JSON.parse(item), null, 4);
       })
       .join("\n");
   }
@@ -228,7 +228,7 @@ export async function writeFileToDownload(file: string, data: ArrayBuffer) {
 }
 
 export async function writeSettingToDownload(arr: unknown, name: string) {
-  const data = JSON.stringify(arr, null, 2);
+  const data = JSON.stringify(arr, null, 4);
   const buf = await stringToArrayBuffer(data);
   await writeFileToDownload(`cyberapi-${name}.json`, buf);
 }

@@ -27,7 +27,7 @@ import {
 import { useSettingStore } from "../../stores/setting";
 import { i18nCollection, i18nCommon } from "../../i18n";
 import { CaretDownOutline, CodeSlashOutline } from "@vicons/ionicons5";
-import { jsonFormat, showError, tryToParseArray } from "../../helpers/util";
+import { showError, tryToParseArray } from "../../helpers/util";
 import ExKeyValue, { HandleOption } from "../ExKeyValue";
 import { KVParam } from "../../commands/interface";
 import { padding } from "../../constants/style";
@@ -306,6 +306,11 @@ export default defineComponent({
         showError(message, err);
       }
     };
+    const handleFormat = () => {
+      if (editorIns) {
+        editorIns.getAction("editor.action.formatDocument")?.run();
+      }
+    };
 
     onMounted(() => {
       initEditor();
@@ -322,6 +327,7 @@ export default defineComponent({
       handleAuth,
       handleChangeContentType,
       handleUpdateActiveTab,
+      handleFormat,
       activeTab,
       codeEditor,
     };
@@ -508,6 +514,20 @@ export default defineComponent({
             ref="codeEditor"
             class={codeEditorClass}
           ></div>
+          {activeTab === TabItem.Body && contentType === ContentType.JSON && (
+            <NButton
+              class="format"
+              quaternary
+              onClick={() => {
+                this.handleFormat();
+              }}
+            >
+              <NIcon>
+                <CodeSlashOutline />
+              </NIcon>
+              {i18nCollection("format")}
+            </NButton>
+          )}
           {/* body form/multipart */}
           {showBodyKeyValue && (
             <ExKeyValue
