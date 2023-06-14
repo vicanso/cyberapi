@@ -439,6 +439,10 @@ export default defineComponent({
         label: "English",
         key: LANG.en,
       },
+      {
+        label: "Українська",
+        key: LANG.uk,
+      },
     ];
 
     return (
