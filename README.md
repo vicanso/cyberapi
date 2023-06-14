@@ -4,7 +4,6 @@
 [![test library](https://img.shields.io/github/workflow/status/vicanso/cyberapi/test?label=test)](https://github.com/vicanso/cyberapi/actions?query=workflow%3A%22test%22)
 [![License](https://img.shields.io/badge/License-Apache%202-green.svg)](https://github.com/vicanso/cyberapi)
 [![donwnload](https://img.shields.io/github/downloads/vicanso/cyberapi/total?label=Downloads&logoColor=fff&logo=GitHub)](https://github.com/vicanso/cyberapi/releases)
-[![website](https://img.shields.io/badge/website-cyberapi.app-purple.svg)](https://cyberapi.app)
 
 
 <p align="center">
