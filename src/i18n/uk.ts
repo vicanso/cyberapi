@@ -7,8 +7,7 @@ export default {
     deleteSettingContent: "Підтвердіть видалення (%s)",
     modifySetting: "Налаштування",
     copySetting: "Скопіювати HTTP-запит",
-    copySettingSuccess:
-      "Успішно скопійовано до буферу обміну",
+    copySettingSuccess: "Успішно скопійовано до буферу обміну",
     shouldSelectAPISettingFirst: "Спочатку виберіть запит до API",
     send: "Відправити",
     abort: "Перервати",
@@ -25,9 +24,9 @@ export default {
     importSettings: "Імпорт HTTP-запита",
     importSuccess: "Імпортовано успішно",
     exportSettings: "Експорт HTTP-запита",
-    dragUploadTips: "Натисніть або перетягніть файл до цієї області, щоб завантажити його",
-    exportSettingsSuccess:
-      "Успішно експортовано до каталогу для завантаження",
+    dragUploadTips:
+      "Натисніть або перетягніть файл до цієї області, щоб завантажити його",
+    exportSettingsSuccess: "Успішно експортовано до каталогу для завантаження",
     curlTooLargeTips:
       "Дані curl занадто великі, тому вміст було скопійовано до буфера обміну",
     curlGenerateFail: "Невдала спроба генерування curl",
@@ -105,7 +104,8 @@ export default {
     envSetting: "ENV",
     reqHeaderSetting: "Заголовок запиту",
     exportTables: "Резервна копія",
-    exportTablesProcessing: "Резервна копія обробляється, будь ласка, зачекайте...",
+    exportTablesProcessing:
+      "Резервна копія обробляється, будь ласка, зачекайте...",
     exportTablesSuccess: "Збереження резервної копії в папці: %s",
     importTables: "Відновити",
     importTablesTips:
@@ -164,7 +164,8 @@ export default {
     settingStoreDesc:
       "Збереження налаштувань, таких як вікно програми, тема тощо.",
     pinRequestsStore: "Закріпити",
-    pinRequestsStoreDesc: "Збережіть відповідну інформацію про HTTP запит для додавання",
+    pinRequestsStoreDesc:
+      "Збережіть відповідну інформацію про HTTP запит для додавання",
     latestResponseStore: "Останній HTTP запит",
     latestResponseStoreDesc: "Збережіть останню відповідь на HTTP запит",
     clearTips:

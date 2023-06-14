@@ -115,10 +115,14 @@ export default defineComponent({
       const widths = settingStore.collectionColumnWidths.slice(0);
 
       // 第一行绝对值，其它记录百分比
+      const widthIndex = index - 1;
       if (index === 1) {
-        widths[index - 1] += value;
+        widths[widthIndex] += value;
       } else {
-        widths[index - 1] += value / restWidth;
+        widths[widthIndex] += value / restWidth;
+        if (widths[widthIndex] > 1.0) {
+          widths[widthIndex] = 0.5;
+        }
       }
       try {
         await settingStore.updateCollectionColumnWidths(widths);

@@ -8,7 +8,7 @@ import uk from "./uk";
 export enum LANG {
   en = "en",
   zh = "zh",
-  uk = "uk"
+  uk = "uk",
 }
 
 const i18n = createI18n({
@@ -17,7 +17,7 @@ const i18n = createI18n({
   messages: {
     en,
     zh,
-    uk
+    uk,
   },
 });
 export default i18n;
