@@ -10,6 +10,7 @@ export function createEditor(params: {
     readOnly: params.readonly || false,
     language: "json",
     theme: params.isDark ? "vs-dark" : "vs",
+    automaticLayout: true,
   });
   e.updateOptions({
     fontSize: 14,

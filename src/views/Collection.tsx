@@ -10,6 +10,7 @@ import { useRoute } from "vue-router";
 import { storeToRefs } from "pinia";
 import { css } from "@linaria/core";
 import { ulid } from "ulid";
+import { debounce } from "lodash-es";
 
 import { getBodyWidth, showError } from "../helpers/util";
 import { useAPICollectionStore } from "../stores/api_collection";
@@ -57,6 +58,7 @@ export default defineComponent({
     const processing = ref(false);
     const sending = ref(false);
     const response = ref({} as HTTPResponse);
+    const maxWidth = ref(window.innerWidth);
 
     const stop = watch(selectedID, async (id) => {
       const resp = await getLatestResponse(id);
@@ -69,6 +71,20 @@ export default defineComponent({
         } as HTTPResponse;
       }
     });
+
+    const handleResize = debounce(
+      () => {
+        // 如果调整过少，则不触发
+        if (Math.abs(maxWidth.value - window.innerWidth) >= 30) {
+          maxWidth.value = window.innerWidth;
+        }
+      },
+      100,
+      {
+        leading: false,
+        trailing: true,
+      }
+    );
 
     onBeforeMount(async () => {
       processing.value = true;
@@ -96,6 +112,7 @@ export default defineComponent({
             response.value = data;
           }
         }
+        window.addEventListener("resize", handleResize);
       } catch (err) {
         showError(message, err);
       } finally {
@@ -190,6 +207,7 @@ export default defineComponent({
       stop();
       offListen();
       usePinRequestStore().$reset();
+      window.removeEventListener("resize", handleResize);
     });
 
     return {
@@ -199,6 +217,7 @@ export default defineComponent({
       processing,
       updateCollectionColumnWidths,
       handleSend,
+      maxWidth,
     };
   },
   render() {
@@ -207,6 +226,7 @@ export default defineComponent({
       collectionColumnWidths,
       updateCollectionColumnWidths,
       response,
+      maxWidth,
     } = this;
     if (processing) {
       return <ExLoading />;
@@ -246,6 +266,7 @@ export default defineComponent({
       }
       const column = (
         <ExColumn
+          x-max-width={maxWidth}
           left={currentWidth}
           width={width}
           showDivider={index !== 0}
