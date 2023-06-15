@@ -3,7 +3,6 @@
 
 [![test library](https://img.shields.io/github/workflow/status/vicanso/cyberapi/test?label=test)](https://github.com/vicanso/cyberapi/actions?query=workflow%3A%22test%22)
 [![License](https://img.shields.io/badge/License-Apache%202-green.svg)](https://github.com/vicanso/cyberapi)
-[![website](https://img.shields.io/badge/website-cyberapi.app-purple.svg)](https://cyberapi.app)
 
 
 <p align="center">
@@ -14,7 +13,7 @@
 <a href="https://github.com/vicanso/cyberapi">CyberAPI</a>是基于<a href="https://github.com/tauri-apps/tauri">tauri</a>开发的跨平台API客户端
 </h3>
 
-[English](./README.md)|简体中文
+[English](./README.md)|简体中文|[Українська](./README_uk.md)
 ## 功能点
 
 - 支持macos、windows以及linux平台，安装包均在10MB以下

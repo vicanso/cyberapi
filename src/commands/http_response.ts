@@ -132,7 +132,6 @@ export function getStatusText(code: number) {
   return statusTextMap.get(code.toString()) || "";
 }
 
-
 const mimeTextReg = /text|javascript/gi;
 
 export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {

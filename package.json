@@ -1,7 +1,7 @@
 {
   "name": "cyberapi",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.1.10",
   "scripts": {
     "format": "prettier --write src/*.ts src/*.tsx src/**/*.ts src/**/*.tsx src/**/**/*.tsx",
     "lint": "eslint . --ext .js,.tsx,.ts --fix && vue-tsc --noEmit",
@@ -12,8 +12,8 @@
   },
   "dependencies": {
     "@linaria/core": "3.0.0-beta.22",
-    "@tauri-apps/api": "^1.3.0",
-    "@tauri-apps/cli": "^1.3.1",
+    "@tauri-apps/api": "^1.4.0",
+    "@tauri-apps/cli": "^1.4.0",
     "@vicons/ionicons5": "^0.12.0",
     "bluebird": "^3.7.2",
     "crypto-js": "^4.1.1",

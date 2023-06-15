@@ -4,7 +4,6 @@
 [![test library](https://img.shields.io/github/workflow/status/vicanso/cyberapi/test?label=test)](https://github.com/vicanso/cyberapi/actions?query=workflow%3A%22test%22)
 [![License](https://img.shields.io/badge/License-Apache%202-green.svg)](https://github.com/vicanso/cyberapi)
 [![donwnload](https://img.shields.io/github/downloads/vicanso/cyberapi/total?label=Downloads&logoColor=fff&logo=GitHub)](https://github.com/vicanso/cyberapi/releases)
-[![website](https://img.shields.io/badge/website-cyberapi.app-purple.svg)](https://cyberapi.app)
 
 
 <p align="center">
@@ -15,12 +14,12 @@
 <a href="https://github.com/vicanso/cyberapi">CyberAPI</a> is API tool based on <a href="https://github.com/tauri-apps/tauri">tauri</a>.
 </h3>
 
-English|[简体中文](./README_zh.md)
+English|[简体中文](./README_zh.md)|[Українська](./README_uk.md)
 ## Features
 
 - Support macos, windows and linux platforms, the installation package is below 10MB
 - Thousands of interfaces for a single project are opened in seconds, with low memory usage
-- Support dark/light theme and chinese/english
+- Support dark/light theme and chinese/english/ukrainian
 - Operation and configuration is simple
 - Support importing configuration from postman or insonmia
 - The configuration can be exported by interface, function and project, which is convenient for sharing
