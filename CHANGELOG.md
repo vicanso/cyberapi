@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.10] - 2023-06-15
+
+### Bug Fixes
+
+- Fix column resize function
+
+### Documentation
+
+- Update readme
+
+### Features
+
+- Support automatic layout for editor
+
+### Miscellaneous Tasks
+
+- Update tauri version to 1.4.0
+
 ## [0.1.9] - 2023-06-13
 
 ### Features
