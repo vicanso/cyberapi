@@ -1,6 +1,7 @@
 import {
   NBadge,
   NButton,
+  NButtonGroup,
   NDropdown,
   NIcon,
   NTab,
@@ -43,6 +44,12 @@ enum TabItem {
 
 const tabClass = css`
   position: relative;
+  .expandSelect {
+    visibility: hidden;
+  }
+  .n-tabs:hover .expandSelect {
+    visibility: visible;
+  }
   .n-tabs-tab__label {
     .n-icon {
       margin-left: 5px;
@@ -284,6 +291,9 @@ export default defineComponent({
         props.onUpdateAuth(arr);
       }
     };
+    const updateParamsColumnWidth = (width: number) => {
+      settingStore.updateParamsColumnWidth(width);
+    };
 
     // method变化时要选定对应的tab
     const stop = watch(
@@ -330,6 +340,7 @@ export default defineComponent({
       handleFormat,
       activeTab,
       codeEditor,
+      updateParamsColumnWidth,
     };
   },
   render() {
@@ -483,9 +494,38 @@ export default defineComponent({
 
     const keyValueSpans = [8, 16];
 
+    const tabSlots = {
+      suffix: () => (
+        <NButtonGroup class="expandSelect">
+          <NButton
+            onClick={() => {
+              this.updateParamsColumnWidth(0.3);
+            }}
+          >
+            30%
+          </NButton>
+          <NButton
+            onClick={() => {
+              this.updateParamsColumnWidth(0.5);
+            }}
+          >
+            50%
+          </NButton>
+          <NButton
+            onClick={() => {
+              this.updateParamsColumnWidth(0.7);
+            }}
+          >
+            70%
+          </NButton>
+        </NButtonGroup>
+      ),
+    };
+
     return (
       <div class={tabClass}>
         <NTabs
+          v-slots={tabSlots}
           tabsPadding={15}
           key={method}
           type="line"

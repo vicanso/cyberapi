@@ -160,6 +160,15 @@ export const useSettingStore = defineStore("common", {
       await updateAppSetting(setting);
       this.collectionColumnWidths = widths;
     },
+    async updateParamsColumnWidth(width: number) {
+      if (width < 0.2 || width > 0.8) {
+        return;
+      }
+      const setting = await getAppSetting();
+      const widths = setting.collectionColumnWidths.slice(0);
+      widths[1] = width;
+      return this.updateCollectionColumnWidths(widths);
+    },
     async updateSize(width: number, height: number) {
       const setting = await getAppSetting();
       setting.size = {
