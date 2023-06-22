@@ -36,6 +36,11 @@ English|[简体中文](./README_zh.md)|[Українська](./README_uk.md)
 The installer can be downloaded through [release](https://github.com/vicanso/cyberapi/releases), including windows, macos and linux versions.
 
 Windows may need to install webview2.
+
+## macos
+
+> If you can't open it after installation, exec the following command then reopen:<br>`sudo xattr -rd com.apple.quarantine /Applications/CyberAPI.app`
+
 ## Development
 
 
