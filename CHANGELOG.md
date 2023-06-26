@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.11] - 2023-06-26
+
+### Bug Fixes
+
+- Fix set variable for req header
+
+### Documentation
+
+- Update readme
+
+### Features
+
+- Support expand view editor
+
 ## [0.1.10] - 2023-06-15
 
 ### Bug Fixes
