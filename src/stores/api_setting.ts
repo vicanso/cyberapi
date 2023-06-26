@@ -68,6 +68,9 @@ export const useAPISettingStore = defineStore("apiSettings", {
       }
       const variables = useGlobalReqHeaderStore().listEnable();
       if (variables) {
+        if (!req.headers) {
+          req.headers = [];
+        }
         variables.forEach((item) => {
           req.headers.push({
             key: item.name,
