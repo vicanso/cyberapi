@@ -38,7 +38,7 @@ CyberAPI暂时仅是开发版本，业余时间的个人项目，如果有BUG或
 安装程序可以通过[release](https://github.com/vicanso/cyberapi/releases)下载，包括windows、macos以及linux版本。
 
 需要注意如果是win7或者未安装Edge的windows，在安装时会提示需要执行MicrosoftEdgeUpdateSetup的程序，如果杀毒软件提示允许执行即可。
-如果是macos，由于系统的安全调整，打开应用时会提示"无法打开“CyberAPI”，因为Apple无法检查其是否包含恶意软件。"，在“系统设置” -> “安全性与隐私” -> “通用”面板选择继续打开即可。
+如果是macos，由于系统的安全调整，打开应用时会提示"无法打开“CyberAPI”，因为Apple无法检查其是否包含恶意软件。"，在“系统设置” -> “安全性与隐私” -> “通用”面板选择继续打开即可。或者执行以下命令：`sudo xattr -rd com.apple.quarantine /Applications/CyberAPI.app`
 
 ## 开发者
 
