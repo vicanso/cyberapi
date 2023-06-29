@@ -10,6 +10,7 @@ import { fromUint8Array } from "js-base64";
 import sha256 from "crypto-js/sha256";
 import md5 from "crypto-js/md5";
 
+import { i18nCommon } from "../i18n";
 import { getLatestResponse, getResponseBody } from "./http_response";
 import { listVariable, VariableCategory, VariableStatus } from "./variable";
 interface FnHandler {
@@ -154,7 +155,9 @@ export async function doFnHandler(handler: FnHandler): Promise<string> {
       case Fn.openFile:
       case Fn.of:
         {
-          const selected = await open();
+          const selected = await open({
+            title: i18nCommon("selectFile"),
+          });
           if (selected) {
             p = selected as string;
           }

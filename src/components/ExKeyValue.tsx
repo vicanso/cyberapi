@@ -157,7 +157,6 @@ export default defineComponent({
       try {
         const selected = await open({
           title: i18nCommon("selectFile"),
-          directory: true,
           multiple: false,
           defaultPath: await downloadDir(),
         });
