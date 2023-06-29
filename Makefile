@@ -19,4 +19,4 @@ orm:
     -u "sqlite:///~/Library/Application Support/com.bigtree.cyberapi/my_db.db" \
     -o src/entities
 version:
-	git cliff --unreleased --tag 0.1.11 --prepend CHANGELOG.md
+	git cliff --unreleased --tag 0.1.12 --prepend CHANGELOG.md
