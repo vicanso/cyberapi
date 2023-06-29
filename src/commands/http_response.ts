@@ -132,7 +132,6 @@ export function getStatusText(code: number) {
   return statusTextMap.get(code.toString()) || "";
 }
 
-const mimeTextReg = /text|javascript/gi;
 
 export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
   const { headers, body } = resp;
@@ -146,6 +145,7 @@ export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
     switch (k) {
       case "content-type":
         {
+          const mimeTextReg = /text|javascript/gi;
           const value = values.join(" ");
           if (value.includes(applicationJSON)) {
             category = ResponseBodyCategory.JSON;
