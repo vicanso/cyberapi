@@ -132,7 +132,6 @@ export function getStatusText(code: number) {
   return statusTextMap.get(code.toString()) || "";
 }
 
-
 export function getResponseBody(resp: HTTPResponse): ResponseBodyResult {
   const { headers, body } = resp;
   let category = ResponseBodyCategory.Binary;

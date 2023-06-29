@@ -9,10 +9,11 @@ import {
 } from "@vicons/ionicons5";
 import { debounce } from "lodash-es";
 import { open } from "@tauri-apps/api/dialog";
+import { downloadDir } from "@tauri-apps/api/path";
 
 import ExDeleteCheck from "./ExDeleteCheck";
 import { KVParam } from "../commands/interface";
-import { i18nCollection } from "../i18n";
+import { i18nCollection, i18nCommon } from "../i18n";
 import { padding } from "../constants/style";
 import { showError } from "../helpers/util";
 
@@ -154,7 +155,12 @@ export default defineComponent({
         return;
       }
       try {
-        const selected = await open();
+        const selected = await open({
+          title: i18nCommon("selectFile"),
+          directory: true,
+          multiple: false,
+          defaultPath: await downloadDir(),
+        });
         if (selected) {
           const item = kvList.value[index];
           item.value = ("file://" + selected) as string;

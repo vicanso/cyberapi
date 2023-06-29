@@ -60,6 +60,7 @@ export default {
     settings: "设置",
     create: "创建",
     keywordFilterPlaceholder: "请输入关键字",
+    selectFile: "请选择文件",
     saveToDownloadSuccess: "文件已成功保存至下载目录",
   },
   dashboard: {
