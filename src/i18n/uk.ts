@@ -61,6 +61,7 @@ export default {
     settings: "Налаштування",
     create: "Створити",
     keywordFilterPlaceholder: "Введіть ключове слово",
+    selectFile: "Виберіть файл",
     saveToDownloadSuccess: "Файл збережено для успішного завантаження",
   },
   dashboard: {

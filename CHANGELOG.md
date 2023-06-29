@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.12] - 2023-06-29
+
+### Bug Fixes
+
+- Fix base64 encode, #23
+
+### Refactor
+
+- Improve the performance of select file
+- Improve the performance of select file
+
 ## [0.1.11] - 2023-06-26
 
 ### Bug Fixes

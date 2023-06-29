@@ -226,7 +226,6 @@ async function convertMultipartForm(body: string): Promise<MultipartFormData> {
     type: encoder.contentType,
   });
   const buf = await b.arrayBuffer();
-  encoder.headers;
   return {
     headers: encoder.headers,
     body: fromUint8Array(new Uint8Array(buf)),

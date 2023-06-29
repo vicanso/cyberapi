@@ -198,6 +198,7 @@ export default defineComponent({
     const handleRestore = async () => {
       try {
         const selected = await open({
+          title: i18nCommon("selectFile"),
           filters: [
             {
               name: "zip",

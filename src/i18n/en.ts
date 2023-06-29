@@ -62,6 +62,7 @@ export default {
     settings: "Configurations",
     create: "Create",
     keywordFilterPlaceholder: "Please enter a keyword",
+    selectFile: "Please select a file",
     saveToDownloadSuccess: "File is save to download successful",
   },
   dashboard: {
