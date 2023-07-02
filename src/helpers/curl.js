@@ -148,7 +148,7 @@ function rewrite(args) {
  */
 
 function parseField(s) {
-  return s.split(/: (.+)/)
+  return s.split(/: ?(.+)/)
 }
 
 /**
