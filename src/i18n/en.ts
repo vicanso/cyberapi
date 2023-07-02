@@ -64,6 +64,7 @@ export default {
     keywordFilterPlaceholder: "Please enter a keyword",
     selectFile: "Please select a file",
     saveToDownloadSuccess: "File is save to download successful",
+    untitled: "Untitled",
   },
   dashboard: {
     newCollection: "Create API group",

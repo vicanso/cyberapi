@@ -63,6 +63,7 @@ export default {
     keywordFilterPlaceholder: "Введіть ключове слово",
     selectFile: "Виберіть файл",
     saveToDownloadSuccess: "Файл збережено для успішного завантаження",
+    untitled: "Без назви",
   },
   dashboard: {
     newCollection: "Створити групу API",

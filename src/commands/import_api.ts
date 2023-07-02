@@ -1,6 +1,7 @@
 import { Promise } from "bluebird";
 import { get, uniq, forEach, has } from "lodash-es";
-
+import dayjs from "dayjs";
+import { ulid } from "ulid";
 import { SettingType } from "../stores/api_setting";
 import { APIFolder, createAPIFolder, newDefaultAPIFolder } from "./api_folder";
 import {
@@ -16,6 +17,10 @@ import {
   Variable,
   VariableCategory,
 } from "./variable";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore
+import parseCurl from "../helpers/curl";
+import { i18nCommon } from "../i18n";
 
 interface PostManSetting {
   name: string;
@@ -266,6 +271,21 @@ export async function importAPI(params: {
     settings: [],
     folders: [],
   };
+  if (params.fileData.startsWith("curl")) {
+    const req = parseCurl(params.fileData);
+    const id = ulid();
+
+    await createAPISetting({
+      category: SettingType.HTTP,
+      collection: params.collection,
+      name: i18nCommon("untitled"),
+      id,
+      setting: JSON.stringify(req),
+      createdAt: dayjs().format(),
+      updatedAt: dayjs().format(),
+    });
+    return [id];
+  }
   const json = JSON.parse(params.fileData);
   const environments: Variable[] = [];
   if (has(json, "item")) {
