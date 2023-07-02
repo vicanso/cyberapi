@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.13] - 2023-07-02
+
+### Bug Fixes
+
+- Fix parse file of header
+
+### Features
+
+- Support import from curl command
+
+### Miscellaneous Tasks
+
+- Update install cli script
+
+### Refactor
+
+- Enhance query string format
+
 ## [0.1.12] - 2023-06-29
 
 ### Bug Fixes

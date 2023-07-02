@@ -62,6 +62,7 @@ export default {
     keywordFilterPlaceholder: "请输入关键字",
     selectFile: "请选择文件",
     saveToDownloadSuccess: "文件已成功保存至下载目录",
+    untitled: "未命名",
   },
   dashboard: {
     newCollection: "创建API分组",

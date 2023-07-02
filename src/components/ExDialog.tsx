@@ -150,7 +150,7 @@ const ImportEditor = defineComponent({
         const topIDList = await importAPI({
           category: currentTab.value,
           collection: props.collection,
-          fileData: fileData.value,
+          fileData: fileData.value.trim(),
         });
         // 如果指定了目录
         if (props.folder && topIDList.length) {
@@ -239,7 +239,7 @@ const ImportEditor = defineComponent({
         >
           <NTabPane
             name={ImportCategory.Text}
-            tab="JSON"
+            tab="JSON / curl"
             onVnodeMounted={() => {
               this.initEditor();
             }}

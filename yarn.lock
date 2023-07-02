@@ -3368,6 +3368,11 @@ shebang-regex@^3.0.0:
   resolved "https://registry.yarnpkg.com/shebang-regex/-/shebang-regex-3.0.0.tgz#ae16f1644d873ecad843b0307b143362d4c42172"
   integrity sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==
 
+shellwords@^1.0.1:
+  version "1.0.1"
+  resolved "https://registry.yarnpkg.com/shellwords/-/shellwords-1.0.1.tgz#c00c509665368b249382121d9eb257cbe3af123e"
+  integrity sha512-Fd5KAbmR0kf6GL4bYJTeHdSKW1mCu6rMxdZcZ4l/hD9wRpBB6RxA01TdmegXWzIhJARyYDFs8EAdnpAsRaDGWw==
+
 slash@^3.0.0:
   version "3.0.0"
   resolved "https://registry.yarnpkg.com/slash/-/slash-3.0.0.tgz#6539be870c165adbd5240220dbe361f1bc4d4634"
