@@ -20,12 +20,26 @@ export default function(s) {
   if (!contentType && isJSON(params.body)) {
     contentType = "application/json";
   }
+  const index = contentType.indexOf(";");
+  if (index !== -1) {
+    contentType = contentType.substring(0, index);
+  }
+  const result = new URL(params.url);
+  const query = [];
+  result.searchParams.forEach((value, key) => {
+    query.push({
+      key,
+      value,
+      enabled: true,
+    });
+  });
   return {
     method: params.method,
-    uri: params.url,
+    uri: `${result.origin}${result.pathname}`,
     body: params.body,
     contentType,
     headers,
+    query,
   }
 }
 
