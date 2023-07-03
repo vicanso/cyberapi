@@ -165,6 +165,10 @@ export const useAPISettingStore = defineStore("apiSettings", {
       try {
         await deleteAPISettings([id]);
         this.apiSettings = this.apiSettings.filter((item) => item.id !== id);
+        // 如果删除了该id，则清空
+        if (id === this.selectedID) {
+          this.select("");
+        }
       } finally {
         this.removing = false;
       }

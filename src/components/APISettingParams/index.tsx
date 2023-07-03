@@ -63,11 +63,12 @@ export default defineComponent({
       caclWrapperHeight();
     };
     const updateReqParams = (id: string) => {
-      if (!id) {
-        return;
-      }
       try {
-        reqParams.value = apiSettingStore.getHTTPRequest(id);
+        if (id) {
+          reqParams.value = apiSettingStore.getHTTPRequest(id);
+        } else {
+          reqParams.value = {} as HTTPRequest;
+        }
       } catch (err) {
         console.error(err);
       } finally {
