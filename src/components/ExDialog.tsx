@@ -3,6 +3,7 @@ import { DialogApiInjection } from "naive-ui/es/dialog/src/DialogProvider";
 import { defineComponent, onBeforeUnmount, ref, PropType } from "vue";
 import { i18nCollection, i18nCommon } from "../i18n";
 import { useSettingStore } from "../stores/setting";
+import { useEnvironmentStore } from "../stores/environment";
 import ExForm, { ExFormItem, ExUpdateData } from "./ExForm";
 import { createEditor } from "../helpers/editor";
 import { css } from "@linaria/core";
@@ -163,6 +164,7 @@ const ImportEditor = defineComponent({
         // 重新加载数据，触发页面刷新
         await apiFolderStore.fetch(props.collection);
         await apiSettingStore.fetch(props.collection);
+        await useEnvironmentStore().fetch(props.collection);
         message.info(i18nCollection("importSuccess"));
         // 如果只有一个，则选中导入的配置
         if (topIDList.length === 1) {
@@ -255,7 +257,10 @@ const ImportEditor = defineComponent({
               <div ref="codeEditor" class="codeEditor"></div>
             </div>
           </NTabPane>
-          <NTabPane name={ImportCategory.File} tab="File/Postman/Insonmia">
+          <NTabPane
+            name={ImportCategory.File}
+            tab="File/Postman/Insonmia/Swagger"
+          >
             {uploadWrapper}
           </NTabPane>
         </NTabs>

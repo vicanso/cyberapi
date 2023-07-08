@@ -72,6 +72,7 @@ interface ImportData {
 export enum ImportCategory {
   PostMan = "postMan",
   Insomnia = "insomnia",
+  Swagger = "swagger",
   File = "file",
   Text = "text",
 }
@@ -125,6 +126,92 @@ function convertPostManAPISetting(item: PostManSetting, collection: string) {
   };
   setting.setting = JSON.stringify(req);
   return setting;
+}
+
+function convertSwaggerSetting(params: {
+  result: ImportData;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/ban-types
+  json: any;
+  collection: string;
+  environments: Variable[];
+}) {
+  const { result, json, collection, environments } = params;
+  const name = get(json, "info.title") || "basePath";
+  const basePathENV = newDefaultVariable();
+  basePathENV.category = VariableCategory.Environment;
+  basePathENV.name = name.replace(/ /g, "");
+  basePathENV.value = `${get(json, "schemes.0")}://${get(json, "host")}${get(
+    json,
+    "basePath"
+  )}`;
+  environments.push(basePathENV);
+  const folderDict = new Map<string, APIFolder>();
+  forEach(json.paths, (value, uri) => {
+    forEach(value, (data, method) => {
+      const setting = newDefaultAPISetting();
+      setting.collection = collection;
+      setting.category = SettingType.HTTP;
+      setting.name = get(data, "summary") || get(data, "operationId");
+      const query: KVParam[] = [];
+      const headers: KVParam[] = [];
+      let contentType = "";
+      let body = "";
+
+      forEach(get(data, "parameters"), (param) => {
+        if (param.in === "query") {
+          query.push({
+            key: param.name,
+            value: get(param, "example") || "",
+            enabled: true,
+          });
+        } else if (param.in === "body") {
+          contentType = ContentType.JSON;
+          const defineKey: string = param.schema?.$ref?.substring(2);
+          const bodyData: Record<string, unknown> = {};
+          forEach(
+            get(json, defineKey.replace(/\//g, ".") + ".properties"),
+            (value, key) => {
+              const v = value.example;
+              if (value.type === "boolean") {
+                bodyData[key] = v === "true";
+              } else if (value.type !== "string") {
+                bodyData[key] = Number(v || 0);
+              } else {
+                bodyData[key] = v || "";
+              }
+            }
+          );
+          body = JSON.stringify(bodyData, null, 4);
+        }
+      });
+      const req: HTTPRequest = {
+        headers,
+        method: method.toUpperCase(),
+        uri: `{{${basePathENV.name}}}${uri}`,
+        contentType,
+        query,
+        body,
+        auth: [],
+      };
+      setting.setting = JSON.stringify(req);
+      result.settings.push(setting);
+
+      const tag = get(data, "tags.0");
+      if (tag) {
+        let folder = folderDict.get(tag);
+        if (!folder) {
+          folder = newDefaultAPIFolder();
+          folder.collection = collection;
+          folder.name = tag;
+          folderDict.set(tag, folder);
+          result.folders.push(folder);
+        }
+        const children = folder.children.split(",");
+        children.push(setting.id);
+        folder.children = children.join(",");
+      }
+    });
+  });
 }
 
 function convertPostManSetting(params: {
@@ -288,13 +375,24 @@ export async function importAPI(params: {
   }
   const json = JSON.parse(params.fileData);
   const environments: Variable[] = [];
-  if (has(json, "item")) {
+  if (has(json, "swagger")) {
+    category = ImportCategory.Swagger;
+  } else if (has(json, "item")) {
     category = ImportCategory.PostMan;
   } else if (has(json, "resources")) {
     category = ImportCategory.Insomnia;
   }
 
   switch (category) {
+    case ImportCategory.Swagger: {
+      convertSwaggerSetting({
+        result,
+        json,
+        collection,
+        environments,
+      });
+      break;
+    }
     case ImportCategory.PostMan:
       {
         if (!Array.isArray(json.item)) {
