@@ -5,6 +5,20 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CyberAPI</title>
+    <script>
+      // safari旧版本MediaQueryList未支持addEventListener
+      if (typeof matchMedia !== "undefined" && !matchMedia("all").addEventListener) {
+        console.log('installing polyfill: MediaQueryList.prototype.addEventListener');
+        const originalMatchMedia = matchMedia;
+        self.matchMedia = function matchMedia(mediaQuery) {
+          const mql = originalMatchMedia(mediaQuery);
+          mql.addEventListener = function (event, listener) {
+            this.addListener(listener);
+          };
+          return mql;
+        };
+      }
+    </script>
   </head>
   <body>
     <div id="app"></div>
