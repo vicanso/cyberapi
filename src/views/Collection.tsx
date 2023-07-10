@@ -208,6 +208,8 @@ export default defineComponent({
       offListen();
       usePinRequestStore().$reset();
       window.removeEventListener("resize", handleResize);
+      // 清空选中id
+      apiSettingStore.select("");
     });
 
     return {
