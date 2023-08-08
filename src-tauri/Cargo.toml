@@ -15,8 +15,8 @@ rust-version = "1.64"
 tauri-build = { version = "1.4.0", features = [] }
 
 [dependencies]
-serde_json = "1.0.103"
-serde = { version = "1.0.175", features = ["derive"] }
+serde_json = "1.0.104"
+serde = { version = "1.0.183", features = ["derive"] }
 tauri = { version = "1.4.1", features = ["app-hide", "clipboard-all", "dialog-all", "fs-exists", "fs-read-dir", "fs-read-file", "fs-write-file", "os-all", "path-all", "process-all", "window-all"] }
 once_cell = "1.18.0"
 chrono = "0.4.26"
@@ -26,12 +26,12 @@ hyper = { version = "0.14.27", features = ["client", "http1"] }
 base64 = "0.21.2"
 cookie_store = "0.20.0"
 url = "2.4.0"
-time = "0.3.23"
+time = "0.3.25"
 hyper-timeout = "0.4.1"
 windows = "0.48.0"
 libflate = "2.0.0"
 brotli-decompressor = "2.3.4"
-sea-orm = { version = "0.11.3", features = ["sqlx-sqlite", "runtime-tokio-rustls", "with-json"] }
+sea-orm = { version = "0.12.2", features = ["sqlx-sqlite", "runtime-tokio-rustls", "with-json"] }
 zip = { version = "0.6.4", default-features = false, features = ["deflate"] }
 tokio = { version = "1.29.1", features = ["parking_lot"] }
 tracing = "0.1.37"
