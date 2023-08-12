@@ -21,7 +21,7 @@ English|[简体中文](./README_zh.md)|[Українська](./README_uk.md)
 - Thousands of interfaces for a single project are opened in seconds, with low memory usage
 - Support dark/light theme and chinese/english/ukrainian
 - Operation and configuration is simple
-- Support importing configuration from postman or insonmia
+- Support importing configuration from postman, insonmia or swagger.
 - The configuration can be exported by interface, function and project, which is convenient for sharing
 - Support many custom functions
 

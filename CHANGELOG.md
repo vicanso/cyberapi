@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.15] - 2023-08-12
+
+### Bug Fixes
+
+- Fix dashboard scroll
+- Fix content type of multipart form
+
+### Miscellaneous Tasks
+
+- Update dependencies
+- Update dependencies
+
 ## [0.1.14] - 2023-07-10
 
 ### Bug Fixes
