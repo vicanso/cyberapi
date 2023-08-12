@@ -14,9 +14,11 @@ clean:
 	cd src-tauri && cargo clean
 install-cli:
 	cargo install tauri-cli --version 1.4.0
+install-orm-cli:
+	cargo install sea-orm-cli
 orm:
 	cd src-tauri && sea-orm-cli generate entity --with-serde=both \
     -u "sqlite:///~/Library/Application Support/com.bigtree.cyberapi/my_db.db" \
     -o src/entities
 version:
-	git cliff --unreleased --tag 0.1.14 --prepend CHANGELOG.md
+	git cliff --unreleased --tag 0.1.15 --prepend CHANGELOG.md

@@ -168,9 +168,9 @@ export default defineComponent({
         enterTriggerSubmit: true,
         onConfirm: async (data) => {
           try {
-            const colleciton = newDefaultAPICollection();
-            Object.assign(colleciton, data);
-            await store.add(colleciton);
+            const collection = newDefaultAPICollection();
+            Object.assign(collection, data);
+            await store.add(collection);
           } catch (err) {
             showError(message, err);
           }

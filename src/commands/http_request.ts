@@ -13,6 +13,7 @@ import { isWebMode, delay, formatError } from "../helpers/util";
 import { doFnHandler, parseFunctions } from "./fn";
 import { HTTPResponse, addLatestResponse } from "./http_response";
 import { Cookie } from "./cookies";
+import * as mime from "mime";
 
 export enum HTTPMethod {
   GET = "GET",
@@ -211,7 +212,9 @@ async function convertMultipartForm(body: string): Promise<MultipartFormData> {
     if (item.value.startsWith(fileProtocol)) {
       const file = item.value.substring(fileProtocol.length);
       const fileData = await readBinaryFile(file);
-      form.append(item.key, new Blob([fileData]), file);
+      form.append(item.key, new Blob([fileData], {
+        type: mime.getType(file) || "",
+      }), file);
       continue;
     }
 
