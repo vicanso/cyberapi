@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.16] - 2023-09-18
+
+### Documentation
+
+- Update document
+
+### Refactor
+
+- Update dependencies
+
 ## [0.1.15] - 2023-08-12
 
 ### Bug Fixes
