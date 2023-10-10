@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.17] - 2023-10-10
+
+### Bug Fixes
+
+- Fix expired cookie for cookie store
+
+### Miscellaneous Tasks
+
+- Update dependencies
+
 ## [0.1.16] - 2023-09-18
 
 ### Documentation
