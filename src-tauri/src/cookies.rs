@@ -101,8 +101,24 @@ pub fn clear_cookie_from_store() -> Result<(), CyberAPIError> {
 
 pub fn save_cookie_store(set_cookies: Vec<String>, current_url: &Url) -> Result<(), CyberAPIError> {
     let mut store = get_cookie_store();
+    let now = chrono::Local::now().timestamp();
     for ele in set_cookies {
-        store.parse(ele.as_str(), current_url)?;
+        let c = cookie::Cookie::parse(&ele)?;
+        let mut expired = false;
+        if let Some(expires) = c.expires() {
+            if let Some(expired_time) = expires.datetime() {
+                expired = expired_time.unix_timestamp() < now;
+            }
+        }
+        if expired {
+            store.remove(
+                c.domain().unwrap_or_default(),
+                c.path().unwrap_or_default(),
+                c.name(),
+            );
+        } else {
+            store.parse(ele.as_str(), current_url)?;
+        }
     }
 
     save_store(store)?;
