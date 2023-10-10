@@ -127,3 +127,11 @@ impl From<ZipError> for CyberAPIError {
         }
     }
 }
+impl From<cookie::ParseError> for CyberAPIError {
+    fn from(error: cookie::ParseError) -> Self {
+        CyberAPIError {
+            message: error.to_string(),
+            category: "cookie".to_string(),
+        }
+    }
+}

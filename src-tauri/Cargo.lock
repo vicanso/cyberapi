@@ -559,12 +559,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cookie"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3cd91cf61412820176e137621345ee43b3f4423e589e7ae4e50d601d93e35ef8"
+dependencies = [
+ "time",
+ "version_check",
+]
+
+[[package]]
 name = "cookie_store"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "387461abbc748185c3a6e1673d826918b450b87ff22639429c694619a83b6cf6"
 dependencies = [
- "cookie",
+ "cookie 0.17.0",
  "idna 0.3.0",
  "log",
  "publicsuffix",
@@ -740,6 +750,7 @@ dependencies = [
  "base64 0.21.4",
  "brotli-decompressor",
  "chrono",
+ "cookie 0.18.0",
  "cookie_store",
  "hyper",
  "hyper-rustls",
