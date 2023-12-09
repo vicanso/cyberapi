@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.18] - 2023-12-09
+
+### Bug Fixes
+
+- Fix select api item
+
+### Miscellaneous Tasks
+
+- Update dependencies
+- Update dependencies
+
+### Refactor
+
+- Adjust menu of windows
+
 ## [0.1.17] - 2023-10-10
 
 ### Bug Fixes

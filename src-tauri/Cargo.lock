@@ -765,7 +765,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "base64 0.21.5",
  "brotli-decompressor",
