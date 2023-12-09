@@ -28,13 +28,19 @@ fn main() {
     // tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let context = tauri::generate_context!();
+    let menu = if cfg!(windows) {
+        tauri::Menu::new()
+    } else {
+        tauri::Menu::os_default(&context.package_info().name)
+    };
+
     tauri::Builder::default()
         .setup(|app| {
             let dir = app.path_resolver().app_data_dir().unwrap();
             util::set_app_dir(dir.to_str().unwrap().to_string());
             Ok(())
         })
-        .menu(tauri::Menu::os_default(&context.package_info().name))
+        .menu(menu)
         .invoke_handler(tauri::generate_handler![
             commands::close_splashscreen,
             commands::init_tables,
