@@ -161,15 +161,15 @@ const ImportEditor = defineComponent({
           });
         }
 
+        // 如果只有一个，则选中导入的配置
+        if (topIDList.length === 1) {
+          apiSettingStore.select(topIDList[0]);
+        }
         // 重新加载数据，触发页面刷新
         await apiFolderStore.fetch(props.collection);
         await apiSettingStore.fetch(props.collection);
         await useEnvironmentStore().fetch(props.collection);
         message.info(i18nCollection("importSuccess"));
-        // 如果只有一个，则选中导入的配置
-        if (topIDList.length === 1) {
-          apiSettingStore.select(topIDList[0]);
-        }
 
         if (props.onConfirm) {
           props.onConfirm();
