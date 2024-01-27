@@ -237,7 +237,7 @@ export default defineComponent({
         const value = await convertRequestToCURL(
           collection,
           req,
-          cookieStore.cookies
+          cookieStore.cookies,
         );
         if (value.length > showCurlLimitSize) {
           await writeTextToClipboard(value);
@@ -253,7 +253,7 @@ export default defineComponent({
       (resp) => {
         fillValues(resp);
         editorIns?.setScrollTop(0);
-      }
+      },
     );
 
     const codeEditor = ref<HTMLElement>();
@@ -420,7 +420,7 @@ export default defineComponent({
           label: i18nCollection("contentTransfer"),
           key: "contentTransfer",
           value: formatLatency(stats.contentTransfer),
-        }
+        },
       );
     }
 
@@ -439,7 +439,7 @@ export default defineComponent({
             cookieDescriptionItems.push(
               <NDescriptionsItem label={arr[0]} key={`${arr[0]}`} span={3}>
                 {arr.slice(1).join("=")}
-              </NDescriptionsItem>
+              </NDescriptionsItem>,
             );
             return;
           }
@@ -450,7 +450,7 @@ export default defineComponent({
               span={3}
             >
               {value}
-            </NDescriptionsItem>
+            </NDescriptionsItem>,
           );
         });
       });

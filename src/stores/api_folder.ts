@@ -86,7 +86,7 @@ export const useAPIFolderStore = defineStore("apiFolders", {
       const addChild = (
         children: string,
         child: string,
-        beforeItem: string
+        beforeItem: string,
       ) => {
         const arr = compact(children.split(","));
         const index = arr.indexOf(beforeItem);
@@ -113,7 +113,7 @@ export const useAPIFolderStore = defineStore("apiFolders", {
           currentFolder.children = addChild(
             currentFolder.children,
             child,
-            params.before || ""
+            params.before || "",
           );
           updateData.set(currentFolder.id, currentFolder);
         }
@@ -160,7 +160,7 @@ export const useAPIFolderStore = defineStore("apiFolders", {
         const folderIds = result.folders || [];
         const settingIds = result.settings || [];
         this.apiFolders = this.apiFolders.filter(
-          (item) => !folderIds.includes(item.id)
+          (item) => !folderIds.includes(item.id),
         );
         settingStore.apiSettings = settingStore.apiSettings.filter((item) => {
           return !settingIds.includes(item.id);

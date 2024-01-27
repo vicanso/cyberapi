@@ -69,7 +69,7 @@ export default defineComponent({
 
     const addHTTPSetting = inject(
       addHTTPSettingKey,
-      addHTTPSettingDefaultValue
+      addHTTPSettingDefaultValue,
     );
     const addFolder = inject(addFolderKey, addFolderDefaultValue);
 
@@ -133,7 +133,7 @@ export default defineComponent({
           {
             const content = i18nCollection("deleteSettingContent").replace(
               "%s",
-              name
+              name,
             );
             const d = dialog.warning({
               title: i18nCollection("deleteSetting"),
@@ -205,7 +205,7 @@ export default defineComponent({
                 return convertRequestToCURL(
                   collection,
                   req,
-                  cookieStore.cookies
+                  cookieStore.cookies,
                 );
               })
               .then(writeTextToClipboard)
@@ -286,7 +286,7 @@ export default defineComponent({
               <FolderOpenOutline />
             </NIcon>
           ),
-        }
+        },
       );
       options.push(
         {
@@ -306,7 +306,7 @@ export default defineComponent({
               <DownloadOutline class="rotate270" />
             </NIcon>
           ),
-        }
+        },
       );
     } else {
       options.push(
@@ -337,7 +337,7 @@ export default defineComponent({
               <CopyOutline />
             </NIcon>
           ),
-        }
+        },
       );
     }
     options.push(
@@ -353,7 +353,7 @@ export default defineComponent({
             <TrashOutline />
           </NIcon>
         ),
-      }
+      },
     );
     return (
       <NDropdown

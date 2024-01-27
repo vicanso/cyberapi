@@ -19,7 +19,7 @@ export function goTo(
   params?: {
     replace?: boolean;
     query?: LocationQueryRaw;
-  }
+  },
 ): void {
   router.push({
     name,
@@ -39,7 +39,7 @@ let finishEvent = noop;
 
 export function setLoadingEvent(
   start: loadingEvent,
-  finish: loadingEvent
+  finish: loadingEvent,
 ): void {
   startEvent = start;
   finishEvent = finish;

@@ -44,7 +44,7 @@ export function changeI18nLocale(locale: string) {
 
 export function i18nGet(
   key: string,
-  named: Record<string, unknown> = {}
+  named: Record<string, unknown> = {},
 ): string {
   return i18n.global.t(key, named);
 }

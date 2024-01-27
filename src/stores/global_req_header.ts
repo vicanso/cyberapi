@@ -3,5 +3,5 @@ import { newVariableStore } from "./variable";
 
 export const useGlobalReqHeaderStore = newVariableStore(
   "globalReqHeaders",
-  VariableCategory.GlobalReqHeaders
+  VariableCategory.GlobalReqHeaders,
 );

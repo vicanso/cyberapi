@@ -38,7 +38,7 @@ export function newDefaultAPICollection(): APICollection {
 }
 
 export async function createAPICollection(
-  collection: APICollection
+  collection: APICollection,
 ): Promise<void> {
   if (isWebMode()) {
     await fakeAdd<APICollection>(store, collection);

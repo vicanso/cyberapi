@@ -132,7 +132,7 @@ export const useSettingStore = defineStore("common", {
             write: 0,
             read: 0,
           },
-          setting.timeout
+          setting.timeout,
         );
       } catch (err) {
         // 获取失败则忽略

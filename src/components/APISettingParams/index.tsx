@@ -126,7 +126,7 @@ export default defineComponent({
       params: {
         body: string;
         contentType: string;
-      }
+      },
     ) => {
       // 因为是延时执行，如果已经切换，则不更新
       // 避免更新了其它接口的数据

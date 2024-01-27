@@ -13,7 +13,7 @@ import {
 
 export const useCustomizeStore = newVariableStore(
   "customizeVariables",
-  VariableCategory.Customize
+  VariableCategory.Customize,
 );
 
 export function newVariableStore(name: string, category: string) {
@@ -61,7 +61,7 @@ export function newVariableStore(name: string, category: string) {
       },
       listEnable(): Variable[] {
         return this.variables.filter(
-          (item) => item.enabled === VariableStatus.Enabled
+          (item) => item.enabled === VariableStatus.Enabled,
         );
       },
       async update(value: Variable) {

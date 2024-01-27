@@ -92,7 +92,7 @@ export default defineComponent({
           id: ulid(),
           isNew: false,
         },
-        item
+        item,
       );
     });
     const kvList = ref(arr as KVItem[]);

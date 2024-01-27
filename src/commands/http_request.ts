@@ -68,7 +68,7 @@ function convertKVListToURLValues(kvList: KVParam[]) {
 export async function convertRequestToCURL(
   collection: string,
   req: HTTPRequest,
-  cookies: Cookie[]
+  cookies: Cookie[],
 ) {
   await convertKVParams(collection, req.query);
   await convertKVParams(collection, req.headers);
@@ -128,7 +128,7 @@ export async function convertRequestToCURL(
   }
   const method = req.method || "GET";
   return `curl -v -X${method.toUpperCase()}${body}${headerList.join(
-    " "
+    " ",
   )} '${uri}'`;
 }
 
@@ -212,9 +212,13 @@ async function convertMultipartForm(body: string): Promise<MultipartFormData> {
     if (item.value.startsWith(fileProtocol)) {
       const file = item.value.substring(fileProtocol.length);
       const fileData = await readBinaryFile(file);
-      form.append(item.key, new Blob([fileData], {
-        type: mime.getType(file) || "",
-      }), file);
+      form.append(
+        item.key,
+        new Blob([fileData], {
+          type: mime.getType(file) || "",
+        }),
+        file,
+      );
       continue;
     }
 
@@ -270,7 +274,7 @@ export async function doHTTPRequest(options: {
   // 非此类请求，将body设置为空
   if (
     ![HTTPMethod.POST, HTTPMethod.PATCH, HTTPMethod.PUT].includes(
-      method as HTTPMethod
+      method as HTTPMethod,
     )
   ) {
     body = "";
@@ -287,8 +291,8 @@ export async function doHTTPRequest(options: {
       }
       result.push(
         `${window.encodeURIComponent(item.key)}=${window.encodeURIComponent(
-          item.value
-        )}`
+          item.value,
+        )}`,
       );
     });
     body = result.join("&");

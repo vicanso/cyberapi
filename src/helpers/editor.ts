@@ -23,7 +23,7 @@ export function createEditor(params: {
 // 替换内容
 export function replaceContent(
   editor: editor.IStandaloneCodeEditor | null,
-  content: string
+  content: string,
 ) {
   if (!editor) {
     return;

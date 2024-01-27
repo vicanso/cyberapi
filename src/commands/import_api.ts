@@ -142,7 +142,7 @@ function convertSwaggerSetting(params: {
   basePathENV.name = name.replace(/ /g, "");
   basePathENV.value = `${get(json, "schemes.0")}://${get(json, "host")}${get(
     json,
-    "basePath"
+    "basePath",
   )}`;
   environments.push(basePathENV);
   const folderDict = new Map<string, APIFolder>();
@@ -179,7 +179,7 @@ function convertSwaggerSetting(params: {
               } else {
                 bodyData[key] = v || "";
               }
-            }
+            },
           );
           body = JSON.stringify(bodyData, null, 4);
         }
@@ -444,7 +444,7 @@ export async function importAPI(params: {
           }
         });
         arr = arr.filter((item) =>
-          ["request", "request_group"].includes(item._type)
+          ["request", "request_group"].includes(item._type),
         );
 
         arr.sort((item1, item2) => {

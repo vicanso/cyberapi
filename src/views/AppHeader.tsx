@@ -124,7 +124,7 @@ export default defineComponent({
       () => route.name,
       (value) => {
         currentRoute.value = value;
-      }
+      },
     );
 
     const { breadcrumbs } = storeToRefs(headerStore);
@@ -144,7 +144,7 @@ export default defineComponent({
             }
           });
         }
-      }
+      },
     );
     onBeforeUnmount(() => {
       stop();
@@ -387,7 +387,7 @@ export default defineComponent({
                   <DownloadOutline class="rotate180" />
                 </NIcon>
               ),
-            }
+            },
           );
         }
         break;
@@ -422,7 +422,7 @@ export default defineComponent({
               type: "divider",
               key: FnKey.none,
               icon: () => <NIcon />,
-            }
+            },
           );
         }
         break;

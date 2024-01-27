@@ -4,5 +4,5 @@ export const ENVRegexp = /\{\{([\S\s]+)\}\}/;
 
 export const useEnvironmentStore = newVariableStore(
   "environments",
-  VariableCategory.Environment
+  VariableCategory.Environment,
 );
