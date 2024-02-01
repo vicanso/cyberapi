@@ -91,12 +91,16 @@ export default defineComponent({
         const apiSettings: APISetting[] = [];
         const folders: APIFolder[] = [];
         const name = apiFolderStore.findByID(id).name;
+        const folderIdList:string[] = [];
         const appendChildren = (folderId: string) => {
+          if (folderIdList.includes(folderId)) {
+            return;
+          }
+          folderIdList.push(folderId);
           const folder = apiFolderStore.findByID(folderId);
           if (!folder) {
             return;
           }
-          folders.push(folder);
           folder.children.split(",").forEach((child) => {
             const apiSetting = apiSettingStore.findByID(child);
             if (apiSetting) {
