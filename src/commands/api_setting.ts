@@ -47,13 +47,33 @@ export async function createAPISetting(setting: APISetting): Promise<void> {
     await fakeAdd<APISetting>(store, setting);
     return;
   }
-  await run(cmdAddAPISetting, {
-    setting,
-  });
+  if (!setting.id) {
+    setting.id = ulid();
+  }
+  try {
+    await run(cmdAddAPISetting, {
+      setting,
+    });
+  } catch (err) {
+    let catchError = false;
+    if (err instanceof Error) {
+      const message = err.message;
+      if (message.includes("seaOrm") && message.includes("UNIQUE constraint failed")) {
+        catchError = true;
+        setting.id = ulid();
+        await run(cmdAddAPISetting, {
+          setting,
+        }); 
+      }
+    }
+    if (!catchError) {
+      throw err;
+    }
+  }
 }
 
 export async function listAPISetting(
-  collection: string
+  collection: string,
 ): Promise<APISetting[]> {
   if (isWebMode()) {
     const settings = await fakeList<APISetting>(store);

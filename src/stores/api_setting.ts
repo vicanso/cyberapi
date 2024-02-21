@@ -127,7 +127,7 @@ export const useAPISettingStore = defineStore("apiSettings", {
         // 先获取所有api setting，再获取选中id
         this.apiSettings = await listAPISetting(collection);
         this.selectedID = (await getAPISettingStore().getItem(
-          selectedIDKey
+          selectedIDKey,
         )) as string;
         this.setWindowTitle(this.selectedID);
       } finally {

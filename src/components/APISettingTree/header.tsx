@@ -88,7 +88,7 @@ export default defineComponent({
     const collection = route.query.collection as string;
     const addHTTPSetting = inject(
       addHTTPSettingKey,
-      addHTTPSettingDefaultValue
+      addHTTPSettingDefaultValue,
     );
     const addFolder = inject(addFolderKey, addFolderDefaultValue);
 
@@ -161,7 +161,7 @@ export default defineComponent({
     const options: DropdownMixedOption[] = [
       {
         label: `${i18nCollection(
-          "newHTTPRequest"
+          "newHTTPRequest",
         )} | ${hotKeyCreateHTTPSetting()}`,
         key: SettingType.HTTP,
         icon: () => (

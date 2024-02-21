@@ -68,7 +68,7 @@ export async function createVariable(value: Variable) {
 
 export async function listVariable(
   collection: string,
-  category: string
+  category: string,
 ): Promise<Variable[]> {
   if (isWebMode()) {
     return await fakeList<Variable>(store);

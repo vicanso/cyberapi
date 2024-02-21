@@ -188,11 +188,11 @@ export async function doFnHandler(handler: FnHandler): Promise<string> {
           const name = toString(p);
           const arr = await listVariable(
             collection,
-            VariableCategory.Customize
+            VariableCategory.Customize,
           );
           const found = arr.find(
             (item) =>
-              item.enabled === VariableStatus.Enabled && item.name === name
+              item.enabled === VariableStatus.Enabled && item.name === name,
           );
           if (found) {
             p = found.value;

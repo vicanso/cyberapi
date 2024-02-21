@@ -96,7 +96,7 @@ const getFormItems = (): ExFormItem[] => {
 function filterAndSort(
   apiCollections: APICollection[],
   keyword: string,
-  sortOrder: string
+  sortOrder: string,
 ): APICollection[] {
   const collections = apiCollections.filter((item) => {
     if (!keyword) {
@@ -157,7 +157,7 @@ export default defineComponent({
 
     const keyword = ref("");
     const sortOrder = ref(
-      settingStore.collectionSortType || SortType.LastModified
+      settingStore.collectionSortType || SortType.LastModified,
     );
 
     const createCollection = () => {

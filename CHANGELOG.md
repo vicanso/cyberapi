@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.19] - 2024-02-19
+
+### Bug Fixes
+
+- Fix export settings
+
+### Refactor
+
+- Adjust import api setting
+
 ## [0.1.18] - 2023-12-09
 
 ### Bug Fixes

@@ -83,7 +83,7 @@ export default defineComponent({
       {
         leading: false,
         trailing: true,
-      }
+      },
     );
 
     onBeforeMount(async () => {

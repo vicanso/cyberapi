@@ -355,7 +355,7 @@ export default defineComponent({
     const handleMove = async (
       moveIndex: number,
       targetIndex: number,
-      overType: OverType
+      overType: OverType,
     ) => {
       // TODO 如果是最后一个元素的处理
       // isOver move 与 target 是否重叠
@@ -415,7 +415,7 @@ export default defineComponent({
           }
           await collectionStore.updateTopTreeItems(
             collection,
-            uniq(topTreeItemIDList)
+            uniq(topTreeItemIDList),
           );
         }
       } catch (err) {
@@ -504,10 +504,10 @@ export default defineComponent({
       isDragging = false;
 
       const moveItemIndex = Number.parseInt(
-        nodeGetDataValue(moveTarget, "index")
+        nodeGetDataValue(moveTarget, "index"),
       );
       const targetItemIndex = Number.parseInt(
-        nodeGetDataValue(listItems[currentInsertIndex], "index")
+        nodeGetDataValue(listItems[currentInsertIndex], "index"),
       );
 
       nodeRemove(moveTarget);
@@ -740,7 +740,7 @@ export default defineComponent({
               />
             )}
             {item.id !== renameItem.id && <span class="name">{item.name}</span>}
-          </li>
+          </li>,
         );
         treeItemIndex++;
         // 未展开的则不需要展示子元素

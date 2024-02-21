@@ -49,7 +49,7 @@ export async function fakeUpdate<T extends WithID>(storeName: string, data: T) {
 
 export async function fakeDeleteAPICollection<T extends WithID>(
   storeName: string,
-  id: string
+  id: string,
 ) {
   // 暂时简单删除collection
   const result = await fakeList<T>(storeName);
@@ -67,7 +67,7 @@ export async function fakeDeleteAPICollection<T extends WithID>(
 
 export async function fakeDeleteItems<T extends WithID>(
   storeName: string,
-  ids: string[]
+  ids: string[],
 ) {
   const result = await fakeList<T>(storeName);
   const arr = [] as unknown[];

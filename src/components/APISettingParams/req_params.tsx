@@ -98,13 +98,13 @@ const tabClass = css`
 
 function shouldHaveBody(method: string) {
   return [HTTPMethod.POST, HTTPMethod.PUT, HTTPMethod.PATCH].includes(
-    method as HTTPMethod
+    method as HTTPMethod,
   );
 }
 
 function shouldShowEditor(contentType: string) {
   return [ContentType.JSON, ContentType.XML, ContentType.Plain].includes(
-    contentType as ContentType
+    contentType as ContentType,
   );
 }
 
@@ -130,7 +130,7 @@ function createBodyBadge(params: { contentType: string; body: string }) {
   const { contentType, body } = params;
   if (
     ![ContentType.Multipart, ContentType.Form].includes(
-      contentType as ContentType
+      contentType as ContentType,
     )
   ) {
     return;
@@ -304,7 +304,7 @@ export default defineComponent({
         } else {
           activeTab.value = TabItem.Query;
         }
-      }
+      },
     );
     const handleUpdateActiveTab = async (activeTab: string) => {
       try {
@@ -383,7 +383,7 @@ export default defineComponent({
         case TabItem.Body:
           {
             const label = contentTypeOptions.find(
-              (opt) => opt.key === contentType
+              (opt) => opt.key === contentType,
             );
             if (activeTab !== TabItem.Body) {
               const badge = createBodyBadge({

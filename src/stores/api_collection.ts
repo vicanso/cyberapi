@@ -24,7 +24,7 @@ interface TabActiveData {
 async function toggleFolderExpanded(
   collection: string,
   folder: string,
-  expanded: boolean
+  expanded: boolean,
 ) {
   let items = await getExpandedSettingStore().getItem<string[]>(collection);
   if (!items) {
@@ -63,9 +63,8 @@ export const useAPICollectionStore = defineStore("apiCollections", {
       this.expandedFolders = items;
     },
     async fetchExpandedFolders(collection: string) {
-      const items = await getExpandedSettingStore().getItem<string[]>(
-        collection
-      );
+      const items =
+        await getExpandedSettingStore().getItem<string[]>(collection);
       if (items) {
         this.expandedFolders = items;
       }
@@ -77,9 +76,8 @@ export const useAPICollectionStore = defineStore("apiCollections", {
       }
     },
     async fetchActiveTabs() {
-      const data = await getTabActiveStore().getItem<TabActiveData>(
-        tabActiveKey
-      );
+      const data =
+        await getTabActiveStore().getItem<TabActiveData>(tabActiveKey);
       this.activeTabs = data || {};
     },
     getActiveTab(id: string) {
@@ -98,7 +96,7 @@ export const useAPICollectionStore = defineStore("apiCollections", {
       }
       await getTabActiveStore().setItem(
         tabActiveKey,
-        Object.assign({}, this.activeTabs)
+        Object.assign({}, this.activeTabs),
       );
     },
     async updateTopTreeItems(collection: string, idList: string[]) {
