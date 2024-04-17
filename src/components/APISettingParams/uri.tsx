@@ -47,6 +47,7 @@ const wrapperClass = css`
   .n-input,
   .n-base-selection-label {
     background-color: transparent !important;
+    line-break: anywhere;
   }
 `;
 
