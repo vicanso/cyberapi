@@ -13,7 +13,7 @@ import { isWebMode, delay, formatError } from "../helpers/util";
 import { doFnHandler, parseFunctions } from "./fn";
 import { HTTPResponse, addLatestResponse } from "./http_response";
 import { Cookie } from "./cookies";
-import * as mime from "mime";
+import mime from "mime";
 
 export enum HTTPMethod {
   GET = "GET",
