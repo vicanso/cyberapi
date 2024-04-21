@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.20] - 2024-04-21
+
+### Bug Fixes
+
+- Fix url input symbols line break
+
+### Miscellaneous Tasks
+
+- Update dependencies
+
+### Refactor
+
+- Set overflow hidden for editor
+
 ## [0.1.19] - 2024-02-19
 
 ### Bug Fixes

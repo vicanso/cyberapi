@@ -1,6 +1,6 @@
 [package]
 name = "cyberapi"
-version = "0.1.19"
+version = "0.1.20"
 description = "API tool based on tauri, it is smaller and faster."
 authors = ["tree.xie@outlook.com"]
 license = "Apache License 2.0"
