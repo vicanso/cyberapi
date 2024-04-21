@@ -89,7 +89,7 @@ const tabClass = css`
     left: 0;
     right: 0;
     bottom: 0;
-    overflow: auto;
+    overflow: hidden;
   }
   .keyValue {
     margin: ${padding}px;
