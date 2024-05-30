@@ -116,15 +116,17 @@ export default defineComponent({
     };
 
     const handleImport = async () => {
+      let data = "";
       try {
-        const data = (await readTextFromClipboard()) || "";
+        data = (await readTextFromClipboard()) || "";
+      } catch (err) {
+        showError(message, err);
+      } finally {
         newImportDialog({
           dialog,
           collection,
           data,
         });
-      } catch (err) {
-        showError(message, err);
       }
     };
 
