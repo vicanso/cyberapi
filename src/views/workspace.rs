@@ -25,7 +25,7 @@ use gpui_kit::{
     IntoElement, KeyBinding, ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, px,
 };
 pub use pins::PinsBar;
-use request_editor::RequestEditor;
+use request_editor::{RequestEditor, RequestEditorEvent};
 use response_panel::ResponsePanel;
 use rust_i18n::t;
 use tree_panel::TreePanel;
@@ -160,6 +160,7 @@ struct Selected {
     api: EntityId,
     editor: Entity<RequestEditor>,
     response: Entity<ResponsePanel>,
+    _editor_events: Subscription,
 }
 
 pub struct WorkspaceView {
@@ -224,10 +225,14 @@ impl WorkspaceView {
                 let state = self.state.clone();
                 let editor = cx.new(|cx| RequestEditor::new(state, api.clone(), window, cx));
                 let response = cx.new(|cx| ResponsePanel::new(api.clone(), window, cx));
+                let editor_events = cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
+                    RequestEditorEvent::EditorShare(share) => this.set_editor_share(*share, window, cx),
+                });
                 self.selected = Some(Selected {
                     api: api.entity_id(),
                     editor,
                     response,
+                    _editor_events: editor_events,
                 });
             }
             Some(_) => {}
@@ -252,6 +257,19 @@ impl WorkspaceView {
         };
         let app = AppStore::global(cx).state().clone();
         app.update(cx, |app, cx| app.set_columns(widths, cx));
+    }
+
+    /// F4.14: the editor column at `share` of what the tree leaves, kept
+    /// as a drag would keep it.
+    fn set_editor_share(&mut self, share: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let sizes = self.columns.read(cx).sizes().clone();
+        let [_, editor, response] = sizes[..] else {
+            return;
+        };
+        let width = (f32::from(editor) + f32::from(response)) * share;
+        let columns = self.columns.clone();
+        columns.update(cx, |columns, cx| columns.resize_panel(1, px(width), window, cx));
+        self.columns_resized(&columns, cx);
     }
 
     pub fn collection_id(&self) -> &CollectionId {

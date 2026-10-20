@@ -3,7 +3,7 @@
 //! everything it edits goes to the API's `ApiState`.
 
 use super::method_color;
-use crate::states::{ApiEvent, ApiState, WorkspaceState};
+use crate::states::{ApiEvent, ApiState, AppStore, WorkspaceState};
 use crate::this_build;
 use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::open_variables_dialog;
@@ -16,14 +16,27 @@ use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, AnyElement, AppContext as _, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions, Render,
-    Styled as _, Subscription, Task, Window, div, px,
+    Anchor, AnyElement, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _,
+    PathPromptOptions, Render, Styled as _, Subscription, Task, Window, div, px,
 };
 use rust_i18n::t;
 use std::time::Duration;
+
+/// The editor column's share of what the tree leaves, as the presets set
+/// it (F4.14).
+pub const EDITOR_SHARES: [f32; 3] = [0.3, 0.5, 0.7];
+
+pub enum RequestEditorEvent {
+    /// A preset asks for the editor column at this share (F4.14).
+    EditorShare(f32),
+}
+
+impl EventEmitter<RequestEditorEvent> for RequestEditor {}
 
 pub struct RequestEditor {
     workspace: Entity<WorkspaceState>,
@@ -493,12 +506,26 @@ impl RequestEditor {
         };
         let workspace = self.workspace.downgrade();
         let owned: Vec<RequestTab> = tabs.to_vec();
+        // F4.14: the column at 30%, 50% or 70% of what the tree leaves.
+        let share = AppStore::global(cx).state().read(cx).prefs().columns.editor_ratio;
+        let presets = h_flex()
+            .gap_0p5()
+            .children(EDITOR_SHARES.iter().enumerate().map(|(index, preset)| {
+                let preset = *preset;
+                Button::new(("editor-share", index))
+                    .ghost()
+                    .xsmall()
+                    .selected((share - preset).abs() < 0.01)
+                    .label(format!("{:.0}%", preset * 100.))
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(RequestEditorEvent::EditorShare(preset))))
+            }));
         TabBar::new("request-tabs")
             .underline()
             .small()
             .px_2()
             .selected_index(tabs.iter().position(|t| *t == tab).unwrap_or(0))
             .children(tabs.iter().map(|tab| Tab::new().label(label(tab))))
+            .suffix(presets)
             .on_click(move |index, _, cx| {
                 if let Some(tab) = owned.get(*index) {
                     let _ = workspace.update(cx, |workspace, cx| workspace.set_tab(*tab, cx));
