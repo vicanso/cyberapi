@@ -24,18 +24,20 @@ mod error;
 mod memory;
 pub mod rules;
 
-pub use error::{Entity, StoreError};
+pub use error::{Entity, Refusal, StoreError};
 #[cfg(not(target_family = "wasm"))]
 pub use memory::MemoryStore;
 
+use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
+use cyberapi_core::directory::{AccountInfo, Grant, Me, Member, Team};
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{CollectionId, ItemId, TeamId, VariableId};
+use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
@@ -216,6 +218,66 @@ pub trait BackupStore: Send + Sync {
 /// The order cookies are listed in (F9.4).
 pub fn sort_cookies(cookies: &mut [Cookie]) {
     cookies.sort_by(|a, b| (&a.name, &a.domain, &a.path).cmp(&(&b.name, &b.domain, &b.path)));
+}
+
+/// An account an administrator makes (§9.5). The password is sent once, to
+/// be hashed by the store; it is never read back.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountInvite {
+    pub name: String,
+    pub display_name: String,
+    pub password: String,
+    pub admin: bool,
+}
+
+/// What an administrator may change about an account.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountEdit {
+    pub display_name: String,
+    pub admin: bool,
+    pub disabled: bool,
+}
+
+/// Accounts, teams and who has which project (`docs/architecture.md` §9.4):
+/// the browser build's only — the bridge's `SqlStore` answers it, for the
+/// signed-in reader, and the page's `BridgeStore` asks. Not in [`Storage`]:
+/// the desktop has no accounts.
+///
+/// A team the reader is not in is "not found", as a project is; a change
+/// the reader's place does not allow is [`StoreError::Refused`].
+pub trait DirectoryStore: Send + Sync {
+    fn me(&self) -> StoreFuture<Me>;
+    /// Every account, by name: whom a team or a project can be given to.
+    fn accounts(&self) -> StoreFuture<Vec<AccountInfo>>;
+    /// A team, with the reader as its owner.
+    fn create_team(&self, name: String) -> StoreFuture<Team>;
+    /// Its owners and admins; not a personal space.
+    fn rename_team(&self, team: TeamId, name: String) -> StoreFuture<()>;
+    /// Its owners, once it owns no project.
+    fn delete_team(&self, team: TeamId) -> StoreFuture<()>;
+    /// The reader must be in it.
+    fn members(&self, team: TeamId) -> StoreFuture<Vec<Member>>;
+    /// Adds, changes or (`None`) removes a member: the team's owners and
+    /// admins, though only an owner makes or touches an owner, and anyone
+    /// may leave. The last owner stays.
+    fn set_member(&self, team: TeamId, account: AccountId, role: Option<TeamRole>) -> StoreFuture<()>;
+    /// The project's grants, for its managers.
+    fn grants(&self, collection: CollectionId) -> StoreFuture<Vec<Grant>>;
+    /// Gives the project to an account or a team, or (`None`) takes it back;
+    /// its managers.
+    fn set_grant(&self, collection: CollectionId, grantee: Grantee, role: Option<CollectionRole>) -> StoreFuture<()>;
+    /// Moves the project to another team the reader is in; its managers.
+    fn transfer(&self, collection: CollectionId, team: TeamId) -> StoreFuture<()>;
+    /// Administrators: a new account, with its own space.
+    fn create_account(&self, invite: AccountInvite) -> StoreFuture<AccountInfo>;
+    /// Administrators. Disabling signs the account out.
+    fn update_account(&self, account: AccountId, edit: AccountEdit) -> StoreFuture<AccountInfo>;
+    /// Administrators; signs the account out.
+    fn reset_password(&self, account: AccountId, password: String) -> StoreFuture<()>;
+    /// The reader's own, given the one it has now.
+    fn change_password(&self, current: String, password: String) -> StoreFuture<()>;
 }
 
 /// One backend's stores, as the layers above hold them.

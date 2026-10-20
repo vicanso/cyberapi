@@ -5,8 +5,9 @@
 //! components' own strings (dialog buttons, input menus) along with ours. The
 //! components spell Simplified Chinese `zh-CN`, so this app does too.
 
+use cyberapi_core::access::TeamRole;
 use cyberapi_service::backup::BackupFailure;
-use cyberapi_store::StoreError;
+use cyberapi_store::{Refusal, StoreError};
 use rust_i18n::t;
 
 /// The languages this build has strings for. English is the fallback.
@@ -47,12 +48,34 @@ pub fn store_error(error: &StoreError) -> String {
             Entity::Folder | Entity::Api | Entity::Item => t!("errors.item_not_found").into(),
             Entity::Variable => t!("errors.variable_not_found").into(),
             Entity::Team => t!("errors.team_not_found").into(),
+            Entity::Account => t!("errors.account_not_found").into(),
+        },
+        StoreError::Refused { reason } => match reason {
+            Refusal::AdminOnly => t!("errors.refused_admin_only").into(),
+            Refusal::TeamRole { needed } => t!("errors.refused_team_role", role = team_role(*needed)).into(),
+            Refusal::PersonalSpace => t!("errors.refused_personal_space").into(),
+            Refusal::LastOwner => t!("errors.refused_last_owner").into(),
+            Refusal::TeamHasProjects => t!("errors.refused_team_has_projects").into(),
+            Refusal::NameTaken => t!("errors.refused_name_taken").into(),
+            Refusal::BadAccountName => t!("errors.refused_bad_account_name").into(),
+            Refusal::PasswordTooShort => t!("errors.refused_password_too_short").into(),
+            Refusal::WrongPassword => t!("errors.refused_wrong_password").into(),
+            Refusal::NotYourself => t!("errors.refused_not_yourself").into(),
         },
         StoreError::Forbidden { .. } => t!("errors.forbidden").into(),
         StoreError::NameRequired => t!("errors.name_required").into(),
         StoreError::Tree { source } => t!("errors.tree", reason = source.to_string()).into(),
         StoreError::Backend { message } => t!("errors.backend", message = message).into(),
     }
+}
+
+pub fn team_role(role: TeamRole) -> String {
+    match role {
+        TeamRole::Owner => t!("roles.owner"),
+        TeamRole::Admin => t!("roles.admin"),
+        TeamRole::Member => t!("roles.member"),
+    }
+    .into()
 }
 
 /// What to tell the reader about a backup or restore that failed.

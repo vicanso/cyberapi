@@ -5,18 +5,22 @@
 //! of it, and every call through that view is checked against what the
 //! account may do — a project it cannot see is "not found", a change its role
 //! does not allow is "forbidden". The traits never name an account, so the
-//! desktop and the bridge speak the same ones.
+//! desktop and the bridge speak the same ones. [`SqlStore::directory`] is the
+//! account's view of the accounts and teams themselves (§9.4).
 
+mod directory;
 mod rows;
 mod scoped;
 mod sql;
 
+pub use directory::Passwords;
 pub use sql::Dialect;
 
 use chrono::Utc;
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::{AccountId, CollectionId, TeamId, Timestamp};
-use cyberapi_store::{Storage, StoreError};
+use cyberapi_store::{DirectoryStore, Storage, StoreError};
+use directory::NoPasswords;
 use scoped::Scoped;
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
 use sqlx::migrate::MigrateError;
@@ -77,6 +81,7 @@ fn account(row: &sqlx::any::AnyRow) -> Result<Account, StoreError> {
 pub struct SqlStore {
     pool: AnyPool,
     dialect: Dialect,
+    passwords: Arc<dyn Passwords>,
 }
 
 impl SqlStore {
@@ -99,7 +104,11 @@ impl SqlStore {
                 ))
             })?
         };
-        let store = Self { pool, dialect };
+        let store = Self {
+            pool,
+            dialect,
+            passwords: Arc::new(NoPasswords),
+        };
         store.migrate().await?;
         Ok(store)
     }
@@ -132,9 +141,20 @@ impl SqlStore {
         self.dialect
     }
 
+    /// How the directory sets and checks passwords; until this, it does
+    /// neither.
+    pub fn with_passwords(self, passwords: Arc<dyn Passwords>) -> Self {
+        Self { passwords, ..self }
+    }
+
     /// One account's stores. Each call checks what the account may do.
     pub fn scoped(&self, account: AccountId) -> Storage {
         Storage::from_backend(Arc::new(Scoped::new(self.clone(), account)))
+    }
+
+    /// One account's view of the accounts and teams (§9.4).
+    pub fn directory(&self, account: AccountId) -> Arc<dyn DirectoryStore> {
+        Arc::new(Scoped::new(self.clone(), account))
     }
 
     /// Creates an account with its personal space (§9.1), whose only member

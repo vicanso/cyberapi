@@ -36,9 +36,10 @@ const APP_SCOPE: &str = "app";
 
 #[derive(Clone)]
 pub(crate) struct Scoped {
-    pool: AnyPool,
-    dialect: Dialect,
-    account: AccountId,
+    pub(crate) store: SqlStore,
+    pub(crate) pool: AnyPool,
+    pub(crate) dialect: Dialect,
+    pub(crate) account: AccountId,
 }
 
 /// The ways an account reaches a project, as `(kind, role)` rows of
@@ -59,13 +60,14 @@ fn fold_roles<'a>(reached: impl IntoIterator<Item = (&'a str, &'a str)>) -> Opti
 impl Scoped {
     pub(crate) fn new(store: SqlStore, account: AccountId) -> Self {
         Self {
-            pool: store.pool,
+            pool: store.pool.clone(),
             dialect: store.dialect,
+            store,
             account,
         }
     }
 
-    fn run<T, F>(&self, work: impl FnOnce(Self) -> F) -> StoreFuture<T>
+    pub(crate) fn run<T, F>(&self, work: impl FnOnce(Self) -> F) -> StoreFuture<T>
     where
         F: Future<Output = Result<T, StoreError>> + Send + 'static,
         T: Send + 'static,
@@ -73,7 +75,7 @@ impl Scoped {
         Box::pin(work(self.clone()))
     }
 
-    fn account(&self) -> String {
+    pub(crate) fn account(&self) -> String {
         self.account.as_str().to_string()
     }
 
@@ -103,7 +105,7 @@ impl Scoped {
     }
 
     /// The account's role on the project, when it is at least `needed`.
-    async fn require(
+    pub(crate) async fn require(
         &self,
         conn: &mut AnyConnection,
         collection: &CollectionId,

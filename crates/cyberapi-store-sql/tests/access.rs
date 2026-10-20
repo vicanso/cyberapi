@@ -7,8 +7,11 @@ use cyberapi_core::model::{HttpRequest, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, ThemeMode, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::{AccountId, CollectionId};
-use cyberapi_store::{CollectionEdit, Entity, NewCollection, NewVariable, Storage, StoreError};
+use cyberapi_store::{
+    AccountEdit, AccountInvite, CollectionEdit, Entity, NewCollection, NewVariable, Refusal, Storage, StoreError,
+};
 use cyberapi_store_sql::{NewAccount, SqlStore};
+use std::sync::Arc;
 
 async fn account(store: &SqlStore, name: &str) -> AccountId {
     store
@@ -376,4 +379,285 @@ async fn postgres_sign_ins() {
 #[tokio::test]
 async fn mysql_sign_ins() {
     sign_ins("CYBERAPI_TEST_MYSQL").await;
+}
+
+/// Passwords kept as they are: what is checked is the rules, not Argon2.
+struct Plain;
+
+impl cyberapi_store_sql::Passwords for Plain {
+    fn hash(&self, password: &str) -> Result<String, String> {
+        Ok(format!("plain:{password}"))
+    }
+
+    fn verify(&self, hash: &str, password: &str) -> bool {
+        hash == format!("plain:{password}")
+    }
+}
+
+fn refused<T: std::fmt::Debug>(result: Result<T, StoreError>, reason: Refusal) {
+    match result {
+        Err(StoreError::Refused { reason: found }) if found == reason => {}
+        other => panic!("expected {reason:?}, got {other:?}"),
+    }
+}
+
+/// Teams, members, grants and accounts (§9.4): who may change what.
+async fn directory(variable: &str) {
+    let Ok(url) = std::env::var(variable) else {
+        eprintln!("skipped: {variable} is not set");
+        return;
+    };
+    let store = SqlStore::connect(&url)
+        .await
+        .expect("connect")
+        .with_passwords(Arc::new(Plain));
+    let root_id = store
+        .create_account(NewAccount {
+            name: format!("root-{}", ulid::Ulid::generate()),
+            display_name: "Root".into(),
+            password_hash: "plain:rootpass".into(),
+            admin: true,
+        })
+        .await
+        .expect("an administrator");
+    let (alice_id, bob_id, carol_id) = (
+        account(&store, "alice").await,
+        account(&store, "bob").await,
+        account(&store, "carol").await,
+    );
+    let (root, alice, bob, carol) = (
+        store.directory(root_id.clone()),
+        store.directory(alice_id.clone()),
+        store.directory(bob_id.clone()),
+        store.directory(carol_id.clone()),
+    );
+
+    // Everyone starts with their own space.
+    let me = alice.me().await.expect("me");
+    assert_eq!((me.account.label(), me.teams.len()), ("alice", 1));
+    assert!(me.teams[0].personal && me.teams[0].role == TeamRole::Owner);
+    let space = me.teams[0].id.clone();
+    refused(
+        alice.rename_team(space.clone(), "mine".into()).await,
+        Refusal::PersonalSpace,
+    );
+    refused(
+        alice
+            .set_member(space.clone(), bob_id.clone(), Some(TeamRole::Member))
+            .await,
+        Refusal::PersonalSpace,
+    );
+
+    // A team: its owner adds; an admin adds members but not owners.
+    let team = alice.create_team("backend".into()).await.expect("team");
+    assert_eq!(alice.me().await.expect("me").teams.len(), 2);
+    not_found(bob.members(team.id.clone()).await, Entity::Team);
+    alice
+        .set_member(team.id.clone(), bob_id.clone(), Some(TeamRole::Admin))
+        .await
+        .expect("bob as admin");
+    bob.set_member(team.id.clone(), carol_id.clone(), Some(TeamRole::Member))
+        .await
+        .expect("carol as member");
+    refused(
+        bob.set_member(team.id.clone(), carol_id.clone(), Some(TeamRole::Owner))
+            .await,
+        Refusal::TeamRole {
+            needed: TeamRole::Owner,
+        },
+    );
+    refused(
+        bob.set_member(team.id.clone(), alice_id.clone(), None).await,
+        Refusal::TeamRole {
+            needed: TeamRole::Owner,
+        },
+    );
+    refused(
+        carol.rename_team(team.id.clone(), "ours".into()).await,
+        Refusal::TeamRole {
+            needed: TeamRole::Admin,
+        },
+    );
+    bob.rename_team(team.id.clone(), "platform".into())
+        .await
+        .expect("rename");
+    let members = carol.members(team.id.clone()).await.expect("members");
+    let roles: Vec<TeamRole> = members.iter().map(|member| member.role).collect();
+    assert_eq!(roles, [TeamRole::Owner, TeamRole::Admin, TeamRole::Member]);
+    not_found(
+        alice
+            .set_member(team.id.clone(), AccountId::new("nobody"), Some(TeamRole::Member))
+            .await,
+        Entity::Account,
+    );
+
+    // Anyone may leave, but the last owner stays.
+    carol
+        .set_member(team.id.clone(), carol_id.clone(), None)
+        .await
+        .expect("carol leaves");
+    refused(
+        alice.set_member(team.id.clone(), alice_id.clone(), None).await,
+        Refusal::LastOwner,
+    );
+
+    // Grants are for a project's managers; a grant gives what it says.
+    let project = store
+        .scoped(alice_id.clone())
+        .collections()
+        .create(NewCollection {
+            name: "shop".into(),
+            owner: Some(team.id.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect("a project in the team");
+    not_found(carol.grants(project.id.clone()).await, Entity::Collection);
+    alice
+        .set_grant(
+            project.id.clone(),
+            Grantee::Account(carol_id.clone()),
+            Some(CollectionRole::Viewer),
+        )
+        .await
+        .expect("grant");
+    let grants = bob.grants(project.id.clone()).await.expect("grants");
+    assert_eq!(grants.len(), 1);
+    assert_eq!(
+        (grants[0].name.as_str(), grants[0].role),
+        ("carol", CollectionRole::Viewer)
+    );
+    forbidden(carol.grants(project.id.clone()).await, CollectionRole::Manager);
+    not_found(
+        alice
+            .set_grant(
+                project.id.clone(),
+                Grantee::Team(cyberapi_core::TeamId::new("nowhere")),
+                Some(CollectionRole::Viewer),
+            )
+            .await,
+        Entity::Team,
+    );
+
+    // A team with projects stays; moved away, it can go.
+    refused(alice.delete_team(team.id.clone()).await, Refusal::TeamHasProjects);
+    refused(
+        bob.delete_team(team.id.clone()).await,
+        Refusal::TeamRole {
+            needed: TeamRole::Owner,
+        },
+    );
+    not_found(bob.transfer(project.id.clone(), space.clone()).await, Entity::Team);
+    alice
+        .transfer(project.id.clone(), space.clone())
+        .await
+        .expect("transfer");
+    alice.delete_team(team.id.clone()).await.expect("delete");
+    assert_eq!(alice.me().await.expect("me").teams.len(), 1);
+    // Bob was a member of the team that owned it: no longer.
+    assert_eq!(role(&store.scoped(bob_id.clone()), &project.id).await, None);
+
+    // Accounts are the administrators'.
+    let invite = |name: &str, password: &str| AccountInvite {
+        name: name.into(),
+        display_name: String::new(),
+        password: password.into(),
+        admin: false,
+    };
+    let dave_name = format!("dave-{}", ulid::Ulid::generate());
+    refused(
+        alice.create_account(invite(&dave_name, "long enough")).await,
+        Refusal::AdminOnly,
+    );
+    refused(
+        root.create_account(invite("a b", "long enough")).await,
+        Refusal::BadAccountName,
+    );
+    refused(
+        root.create_account(invite(&dave_name, "short")).await,
+        Refusal::PasswordTooShort,
+    );
+    let dave = root
+        .create_account(invite(&dave_name, "long enough"))
+        .await
+        .expect("dave");
+    refused(
+        root.create_account(invite(&dave_name, "long enough")).await,
+        Refusal::NameTaken,
+    );
+    let (_, hash) = store
+        .find_login(&dave_name)
+        .await
+        .expect("find")
+        .expect("dave signs in");
+    assert_eq!(hash, "plain:long enough");
+    assert!(
+        root.accounts()
+            .await
+            .expect("accounts")
+            .iter()
+            .any(|account| account.id == dave.id)
+    );
+
+    store
+        .create_session("dave-session", &dave.id, i64::MAX)
+        .await
+        .expect("a session");
+    let edit = |disabled: bool| AccountEdit {
+        display_name: "Dave".into(),
+        admin: false,
+        disabled,
+    };
+    refused(
+        alice.update_account(dave.id.clone(), edit(true)).await,
+        Refusal::AdminOnly,
+    );
+    refused(
+        root.update_account(
+            root_id.clone(),
+            AccountEdit {
+                admin: true,
+                disabled: true,
+                ..Default::default()
+            },
+        )
+        .await,
+        Refusal::NotYourself,
+    );
+    let disabled = root.update_account(dave.id.clone(), edit(true)).await.expect("disable");
+    assert!(disabled.disabled && disabled.display_name == "Dave");
+    assert_eq!(store.session_account("dave-session", 0).await.expect("session"), None);
+    assert_eq!(
+        store.find_login(&dave_name).await.expect("find"),
+        None,
+        "no sign-in while disabled"
+    );
+    root.update_account(dave.id.clone(), edit(false)).await.expect("enable");
+
+    root.reset_password(dave.id.clone(), "brand new pass".into())
+        .await
+        .expect("reset");
+    let dave_directory = store.directory(dave.id.clone());
+    refused(
+        dave_directory
+            .change_password("long enough".into(), "another pass".into())
+            .await,
+        Refusal::WrongPassword,
+    );
+    dave_directory
+        .change_password("brand new pass".into(), "another pass".into())
+        .await
+        .expect("change");
+    let (_, hash) = store.find_login(&dave_name).await.expect("find").expect("dave");
+    assert_eq!(hash, "plain:another pass");
+}
+
+#[tokio::test]
+async fn postgres_directory() {
+    directory("CYBERAPI_TEST_POSTGRES").await;
+}
+
+#[tokio::test]
+async fn mysql_directory() {
+    directory("CYBERAPI_TEST_MYSQL").await;
 }

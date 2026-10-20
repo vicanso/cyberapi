@@ -47,6 +47,19 @@ pub fn verify_password(hash: &str, password: &str) -> bool {
     hasher().verify_password(password.as_bytes(), hash).is_ok()
 }
 
+/// The store's directory hashes and checks passwords this way too.
+pub struct Argon2Passwords;
+
+impl cyberapi_store_sql::Passwords for Argon2Passwords {
+    fn hash(&self, password: &str) -> Result<String, String> {
+        hash_password(password)
+    }
+
+    fn verify(&self, hash: &str, password: &str) -> bool {
+        verify_password(hash, password)
+    }
+}
+
 /// A session token: 32 random bytes, hex.
 pub fn new_token() -> Result<String, String> {
     let mut bytes = [0u8; 32];

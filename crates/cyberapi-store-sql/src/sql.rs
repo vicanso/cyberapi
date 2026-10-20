@@ -151,6 +151,40 @@ pub const GRANT_UPSERT: Pair = Pair {
 pub const GRANT_DELETE: &str =
     "DELETE FROM collection_grants WHERE collection = $1 AND grantee_kind = $2 AND grantee = $3";
 
+// ---- the directory (§9.4) -----------------------------------------------------
+
+pub const ACCOUNT_INFO: &str = "SELECT id, name, display_name, admin, disabled FROM accounts WHERE id = $1";
+pub const ACCOUNTS_ALL: &str = "SELECT id, name, display_name, admin, disabled FROM accounts";
+pub const ACCOUNT_NAME_COUNT: &str = "SELECT COUNT(*) FROM accounts WHERE name = $1";
+pub const ACCOUNT_UPDATE: &str = "UPDATE accounts SET display_name = $1, admin = $2, disabled = $3 WHERE id = $4";
+pub const ACCOUNT_PASSWORD: &str = "SELECT password_hash FROM accounts WHERE id = $1";
+pub const ACCOUNT_SET_PASSWORD: &str = "UPDATE accounts SET password_hash = $1 WHERE id = $2";
+pub const SESSIONS_OF_DELETE: &str = "DELETE FROM sessions WHERE account = $1";
+/// The teams an account is in, with its place in each.
+pub const TEAMS_OF: &str = "SELECT t.id, t.name, t.personal_of, tm.role \
+    FROM teams t JOIN team_members tm ON tm.team = t.id WHERE tm.account = $1";
+/// A team and the account's place in it, if it is in it.
+pub const TEAM_OF: &str = "SELECT t.id, t.name, t.personal_of, tm.role \
+    FROM teams t JOIN team_members tm ON tm.team = t.id WHERE t.id = $1 AND tm.account = $2";
+pub const TEAM_EXISTS: &str = "SELECT COUNT(*) FROM teams WHERE id = $1";
+/// Holds a team's members still while one change to them is checked and
+/// made: two owners cannot each step down, leaving none.
+pub const TEAM_LOCK: &str = "SELECT id FROM teams WHERE id = $1 FOR UPDATE";
+pub const TEAM_RENAME: &str = "UPDATE teams SET name = $1 WHERE id = $2";
+pub const TEAM_DELETE: &str = "DELETE FROM teams WHERE id = $1";
+pub const TEAM_GRANTS_DELETE: &str = "DELETE FROM collection_grants WHERE grantee_kind = 'team' AND grantee = $1";
+pub const TEAM_PROJECT_COUNT: &str = "SELECT COUNT(*) FROM collections WHERE owner_team = $1";
+pub const TEAM_OWNER_COUNT: &str = "SELECT COUNT(*) FROM team_members WHERE team = $1 AND role = 'owner'";
+pub const TEAM_MEMBERS: &str = "SELECT a.id, a.name, a.display_name, a.admin, a.disabled, tm.role \
+    FROM team_members tm JOIN accounts a ON a.id = tm.account WHERE tm.team = $1";
+/// A project's grants, with what each grantee is called.
+pub const GRANTS_OF: &str = "SELECT g.grantee_kind, g.grantee, g.role, a.name, a.display_name, t.name \
+    FROM collection_grants g \
+    LEFT JOIN accounts a ON g.grantee_kind = 'account' AND a.id = g.grantee \
+    LEFT JOIN teams t ON g.grantee_kind = 'team' AND t.id = g.grantee \
+    WHERE g.collection = $1";
+pub const COLLECTION_TRANSFER: &str = "UPDATE collections SET owner_team = $1 WHERE id = $2";
+
 // ---- the tree ----------------------------------------------------------------
 
 pub const FOLDERS_OF: &str = "SELECT id, collection, children, name, created_at, updated_at \
@@ -269,6 +303,25 @@ mod tests {
         TEAM_ROLE,
         MEMBER_DELETE,
         GRANT_DELETE,
+        ACCOUNT_INFO,
+        ACCOUNTS_ALL,
+        ACCOUNT_NAME_COUNT,
+        ACCOUNT_UPDATE,
+        ACCOUNT_PASSWORD,
+        ACCOUNT_SET_PASSWORD,
+        SESSIONS_OF_DELETE,
+        TEAMS_OF,
+        TEAM_OF,
+        TEAM_EXISTS,
+        TEAM_LOCK,
+        TEAM_RENAME,
+        TEAM_DELETE,
+        TEAM_GRANTS_DELETE,
+        TEAM_PROJECT_COUNT,
+        TEAM_OWNER_COUNT,
+        TEAM_MEMBERS,
+        GRANTS_OF,
+        COLLECTION_TRANSFER,
         FOLDERS_OF,
         APIS_OF,
         API_GET,

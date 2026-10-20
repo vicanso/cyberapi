@@ -27,6 +27,7 @@ use axum::extract::{ConnectInfo, DefaultBodyLimit, Json, State};
 use axum::http::{Extensions, HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use cyberapi_core::directory::{valid_account_name, valid_password};
 use cyberapi_http::{HttpEngine, PreparedRequest};
 use cyberapi_store_bridge::{Call, SEND_PATH, STORE_PATH, SendReply, dispatch};
 use cyberapi_store_sql::{Account, NewAccount, SqlStore};
@@ -40,8 +41,6 @@ use tower_http::services::ServeDir;
 
 /// How long a login lasts.
 pub const SESSION_DAYS: i64 = 30;
-const MIN_PASSWORD_CHARS: usize = 8;
-const MAX_NAME_CHARS: usize = 64;
 /// A request body or a kept response, base64 in JSON.
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// How often the logins that ran out are forgotten.
@@ -66,10 +65,11 @@ struct Inner {
 }
 
 impl Bridge {
+    /// The store's directory sets and checks passwords as sign-in does.
     pub fn new(store: SqlStore, engine: Arc<dyn HttpEngine>, setup_token: String, secure_cookie: bool) -> Self {
         Self {
             inner: Arc::new(Inner {
-                store,
+                store: store.with_passwords(Arc::new(auth::Argon2Passwords)),
                 engine,
                 setup_token,
                 secure_cookie,
@@ -249,10 +249,10 @@ async fn setup(State(bridge): State<Bridge>, extensions: Extensions, Json(form):
 }
 
 fn check_new_account(name: &str, password: &str) -> Result<(), &'static str> {
-    if name.trim().is_empty() || name.chars().count() > MAX_NAME_CHARS || name.chars().any(char::is_whitespace) {
+    if !valid_account_name(name) {
         return Err("a name is 1 to 64 characters, with no spaces");
     }
-    if password.chars().count() < MIN_PASSWORD_CHARS {
+    if !valid_password(password) {
         return Err("a password has at least 8 characters");
     }
     Ok(())
@@ -325,8 +325,9 @@ async fn store_call(State(bridge): State<Bridge>, headers: HeaderMap, Json(call)
         Ok(account) => account,
         Err(status) => return status.into_response(),
     };
-    let storage = bridge.inner.store.scoped(account.id);
-    Json(dispatch(&storage, call).await).into_response()
+    let storage = bridge.inner.store.scoped(account.id.clone());
+    let directory = bridge.inner.store.directory(account.id);
+    Json(dispatch(&storage, directory.as_ref(), call).await).into_response()
 }
 
 /// Sends for a signed-in account. A request the engine refuses or that

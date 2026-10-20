@@ -11,23 +11,28 @@
 //!
 //! The protocol grows with the traits and with nothing else: a new method is
 //! a new variant here, matched in [`dispatch`] and made in [`BridgeStore`].
+//! The directory of accounts and teams (`DirectoryStore`) rides the same
+//! way, its calls prefixed `directory`.
 //!
 //! Sending a request is the other half (`docs/architecture.md` §5, D5): the
 //! page prepares it with the shared pipeline and [`BridgeHttpEngine`] posts
 //! it to [`SEND_PATH`], where the bridge's engine sends it and answers with a
 //! [`SendReply`].
 
+use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::cookie::Cookie;
+use cyberapi_core::directory::{AccountInfo, Grant, Me, Member, Team};
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{CollectionId, ItemId, VariableId};
+use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
 use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, SendError, SendFuture};
 use cyberapi_store::{
-    CollectionEdit, CollectionStore, CookieStore, HistoryStore, Imported, Inserted, NewCollection, NewVariable,
-    PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
+    AccountEdit, AccountInvite, CollectionEdit, CollectionStore, CookieStore, DirectoryStore, HistoryStore, Imported,
+    Inserted, NewCollection, NewVariable, PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit,
+    VariableStore,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -156,6 +161,53 @@ pub enum Call {
         name: String,
     },
     CookiesClear,
+    DirectoryMe,
+    DirectoryAccounts,
+    DirectoryCreateTeam {
+        name: String,
+    },
+    DirectoryRenameTeam {
+        team: TeamId,
+        name: String,
+    },
+    DirectoryDeleteTeam {
+        team: TeamId,
+    },
+    DirectoryMembers {
+        team: TeamId,
+    },
+    DirectorySetMember {
+        team: TeamId,
+        account: AccountId,
+        role: Option<TeamRole>,
+    },
+    DirectoryGrants {
+        collection: CollectionId,
+    },
+    DirectorySetGrant {
+        collection: CollectionId,
+        grantee: Grantee,
+        role: Option<CollectionRole>,
+    },
+    DirectoryTransfer {
+        collection: CollectionId,
+        team: TeamId,
+    },
+    DirectoryCreateAccount {
+        invite: AccountInvite,
+    },
+    DirectoryUpdateAccount {
+        account: AccountId,
+        edit: AccountEdit,
+    },
+    DirectoryResetPassword {
+        account: AccountId,
+        password: String,
+    },
+    DirectoryChangePassword {
+        current: String,
+        password: String,
+    },
 }
 
 /// What a call answers: the method's value, or the store's refusal.
@@ -166,8 +218,9 @@ pub enum Reply {
     Err(StoreError),
 }
 
-/// Runs `call` on `storage` — the bridge's side.
-pub async fn dispatch(storage: &Storage, call: Call) -> Reply {
+/// Runs `call` on `storage`, or on `directory` for the directory's calls —
+/// the bridge's side.
+pub async fn dispatch(storage: &Storage, directory: &dyn DirectoryStore, call: Call) -> Reply {
     fn reply<T: Serialize>(result: Result<T, StoreError>) -> Reply {
         match result.and_then(|value| serde_json::to_value(value).map_err(StoreError::backend)) {
             Ok(value) => Reply::Ok(value),
@@ -231,6 +284,26 @@ pub async fn dispatch(storage: &Storage, call: Call) -> Reply {
         Call::CookiesPut { cookies: put } => reply(cookies.put(put).await),
         Call::CookiesDelete { domain, path, name } => reply(cookies.delete(domain, path, name).await),
         Call::CookiesClear => reply(cookies.clear().await),
+        Call::DirectoryMe => reply(directory.me().await),
+        Call::DirectoryAccounts => reply(directory.accounts().await),
+        Call::DirectoryCreateTeam { name } => reply(directory.create_team(name).await),
+        Call::DirectoryRenameTeam { team, name } => reply(directory.rename_team(team, name).await),
+        Call::DirectoryDeleteTeam { team } => reply(directory.delete_team(team).await),
+        Call::DirectoryMembers { team } => reply(directory.members(team).await),
+        Call::DirectorySetMember { team, account, role } => reply(directory.set_member(team, account, role).await),
+        Call::DirectoryGrants { collection } => reply(directory.grants(collection).await),
+        Call::DirectorySetGrant {
+            collection,
+            grantee,
+            role,
+        } => reply(directory.set_grant(collection, grantee, role).await),
+        Call::DirectoryTransfer { collection, team } => reply(directory.transfer(collection, team).await),
+        Call::DirectoryCreateAccount { invite } => reply(directory.create_account(invite).await),
+        Call::DirectoryUpdateAccount { account, edit } => reply(directory.update_account(account, edit).await),
+        Call::DirectoryResetPassword { account, password } => reply(directory.reset_password(account, password).await),
+        Call::DirectoryChangePassword { current, password } => {
+            reply(directory.change_password(current, password).await)
+        }
     }
 }
 
@@ -264,6 +337,11 @@ impl BridgeStore {
         Storage::from_backend(Arc::new(self.clone()))
     }
 
+    /// The accounts and teams, through the same transport.
+    pub fn directory(&self) -> Arc<dyn DirectoryStore> {
+        Arc::new(self.clone())
+    }
+
     fn call<T: DeserializeOwned + Send + 'static>(&self, call: Call) -> StoreFuture<T> {
         let transport = self.transport.clone();
         Box::pin(async move {
@@ -284,6 +362,68 @@ impl BridgeStore {
                 Reply::Err(error) => Err(error),
             }
         })
+    }
+}
+
+impl DirectoryStore for BridgeStore {
+    fn me(&self) -> StoreFuture<Me> {
+        self.call(Call::DirectoryMe)
+    }
+
+    fn accounts(&self) -> StoreFuture<Vec<AccountInfo>> {
+        self.call(Call::DirectoryAccounts)
+    }
+
+    fn create_team(&self, name: String) -> StoreFuture<Team> {
+        self.call(Call::DirectoryCreateTeam { name })
+    }
+
+    fn rename_team(&self, team: TeamId, name: String) -> StoreFuture<()> {
+        self.call(Call::DirectoryRenameTeam { team, name })
+    }
+
+    fn delete_team(&self, team: TeamId) -> StoreFuture<()> {
+        self.call(Call::DirectoryDeleteTeam { team })
+    }
+
+    fn members(&self, team: TeamId) -> StoreFuture<Vec<Member>> {
+        self.call(Call::DirectoryMembers { team })
+    }
+
+    fn set_member(&self, team: TeamId, account: AccountId, role: Option<TeamRole>) -> StoreFuture<()> {
+        self.call(Call::DirectorySetMember { team, account, role })
+    }
+
+    fn grants(&self, collection: CollectionId) -> StoreFuture<Vec<Grant>> {
+        self.call(Call::DirectoryGrants { collection })
+    }
+
+    fn set_grant(&self, collection: CollectionId, grantee: Grantee, role: Option<CollectionRole>) -> StoreFuture<()> {
+        self.call(Call::DirectorySetGrant {
+            collection,
+            grantee,
+            role,
+        })
+    }
+
+    fn transfer(&self, collection: CollectionId, team: TeamId) -> StoreFuture<()> {
+        self.call(Call::DirectoryTransfer { collection, team })
+    }
+
+    fn create_account(&self, invite: AccountInvite) -> StoreFuture<AccountInfo> {
+        self.call(Call::DirectoryCreateAccount { invite })
+    }
+
+    fn update_account(&self, account: AccountId, edit: AccountEdit) -> StoreFuture<AccountInfo> {
+        self.call(Call::DirectoryUpdateAccount { account, edit })
+    }
+
+    fn reset_password(&self, account: AccountId, password: String) -> StoreFuture<()> {
+        self.call(Call::DirectoryResetPassword { account, password })
+    }
+
+    fn change_password(&self, current: String, password: String) -> StoreFuture<()> {
+        self.call(Call::DirectoryChangePassword { current, password })
     }
 }
 

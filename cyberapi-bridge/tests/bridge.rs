@@ -10,7 +10,7 @@ use cyberapi_bridge::Bridge;
 use cyberapi_core::model::HttpMethod;
 use cyberapi_core::prefs::Timeouts;
 use cyberapi_http::{HttpEngine, NativeEngine, PreparedRequest, SendError, TargetPolicy};
-use cyberapi_store::conformance;
+use cyberapi_store::{AccountInvite, Refusal, StoreError, conformance};
 use cyberapi_store_bridge::{BridgeHttpEngine, BridgeStore, Response, STORE_PATH, Transport};
 use cyberapi_store_sql::SqlStore;
 use http_body_util::BodyExt;
@@ -352,4 +352,46 @@ async fn requests_are_sent_by_the_bridge() {
     assert_eq!(exchange.status, 200);
     assert_eq!(exchange.body, b"pong");
     assert_eq!(exchange.stats.remote_addr, target.to_string());
+}
+
+/// The directory through the page's store: an administrator makes an
+/// account, which then signs in with its password, and sees its own space.
+#[tokio::test]
+async fn the_directory_over_the_bridge() {
+    let Some(bridge) = fresh_bridge().await else { return };
+    let (router, cookie) = signed_in_router(&bridge).await;
+    let admin = BridgeStore::new(Arc::new(RouterTransport {
+        router: router.clone(),
+        cookie,
+    }))
+    .directory();
+    let me = admin.me().await.expect("me");
+    assert!(me.account.admin && me.teams.len() == 1 && me.teams[0].personal);
+    let made = admin
+        .create_account(AccountInvite {
+            name: "erin".into(),
+            display_name: "Erin".into(),
+            password: "erins password".into(),
+            admin: false,
+        })
+        .await
+        .expect("an account");
+    assert_eq!(made.label(), "Erin");
+
+    let login = json!({"name": "erin", "password": "erins password"});
+    let (status, set_cookie, body) = send(&router, "POST", "/v1/login", None, Some(login)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let erin = BridgeStore::new(Arc::new(RouterTransport {
+        router,
+        cookie: cookie_pair(&set_cookie.expect("a cookie")),
+    }))
+    .directory();
+    let me = erin.me().await.expect("me");
+    assert_eq!((me.account.id, me.teams.len()), (made.id, 1));
+    assert_eq!(
+        erin.create_account(AccountInvite::default()).await,
+        Err(StoreError::Refused {
+            reason: Refusal::AdminOnly
+        })
+    );
 }

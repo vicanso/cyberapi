@@ -22,6 +22,8 @@ serde_json = { workspace = true }
 # A cookie's key: its domain, path and name, hashed to fit an index.
 sha2 = { workspace = true }
 sqlx = { workspace = true }
+# Hashing a password is slow on purpose: it runs on a blocking thread.
+tokio = { workspace = true }
 tracing = { workspace = true }
 ulid = { workspace = true }
 

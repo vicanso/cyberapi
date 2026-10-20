@@ -8,6 +8,7 @@ pub mod backup;
 pub mod collection;
 pub mod cookie;
 pub mod curl;
+pub mod directory;
 pub mod format;
 mod id;
 pub mod import;
