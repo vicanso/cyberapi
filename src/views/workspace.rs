@@ -1,29 +1,35 @@
-//! A project's workspace: the tree on the left, the selected API on the
-//! right (its editor comes with step 7 of `docs/architecture.md`), and the
-//! pins the title bar shows.
+//! A project's workspace: the tree, the selected API's request editor and
+//! its response side by side in resizable columns (F14.5), and the pins the
+//! title bar shows.
 
 mod pins;
+mod request_editor;
+mod response_panel;
 mod tree_panel;
 
 use crate::i18n;
-use crate::states::{AppStore, WorkspaceEvent, WorkspaceState};
+use crate::states::{ApiState, AppStore, WorkspaceEvent, WorkspaceState};
 use crate::views::name_dialog::open_name_dialog;
 use cyberapi_core::model::{Collection, HttpMethod};
+use cyberapi_core::prefs::ColumnWidths;
 use cyberapi_core::tree::ItemKind;
 use cyberapi_core::{CollectionId, ItemId};
 use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement,
-    KeyBinding, ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, div, px,
+    App, AppContext as _, Context, Entity, EntityId, FocusHandle, Focusable, Hsla, InteractiveElement as _,
+    IntoElement, KeyBinding, ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, px,
 };
 pub use pins::PinsBar;
+use request_editor::RequestEditor;
+use response_panel::ResponsePanel;
 use rust_i18n::t;
 use tree_panel::TreePanel;
 
-gpui_kit::actions!(workspace, [NewApi, NewFolder]);
+gpui_kit::actions!(workspace, [NewApi, NewFolder, Send]);
 
 const KEY_CONTEXT: &str = "Workspace";
 
@@ -33,6 +39,11 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-n", NewApi, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-n", NewFolder, Some(KEY_CONTEXT)),
+        // F5.1 from the keyboard, wherever focus is in the workspace — in
+        // a field too, ahead of the field's own Cmd/Ctrl-Enter (bound later,
+        // so it wins over the kit's).
+        KeyBinding::new("secondary-enter", Send, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-enter", Send, Some("Workspace > Input")),
     ]);
 }
 
@@ -113,11 +124,20 @@ fn confirm_delete(
     });
 }
 
+/// The selected API's two columns, made for its `ApiState`.
+struct Selected {
+    api: EntityId,
+    editor: Entity<RequestEditor>,
+    response: Entity<ResponsePanel>,
+}
+
 pub struct WorkspaceView {
     id: CollectionId,
     state: Entity<WorkspaceState>,
     tree: Entity<TreePanel>,
     pins: Entity<PinsBar>,
+    selected: Option<Selected>,
+    columns: Entity<ResizableState>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -125,12 +145,15 @@ pub struct WorkspaceView {
 impl WorkspaceView {
     pub fn new(collection: Collection, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let id = collection.id.clone();
-        let storage = AppStore::global(cx).storage().clone();
-        let state = cx.new(|cx| WorkspaceState::new(storage, collection, cx));
+        let sender = AppStore::global(cx).sender(cx);
+        let state = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
         let tree = cx.new(|cx| TreePanel::new(state.clone(), window, cx));
         let pins = cx.new(|cx| PinsBar::new(state.clone(), cx));
         let subscriptions = vec![
-            cx.observe(&state, |_, _, cx| cx.notify()),
+            cx.observe_in(&state, window, |this, _, window, cx| {
+                this.follow_selection(window, cx);
+                cx.notify();
+            }),
             cx.subscribe_in(&state, window, |_, _, event, window, cx| match event {
                 WorkspaceEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);
@@ -140,14 +163,58 @@ impl WorkspaceView {
         // The shortcuts reach the workspace from wherever focus is inside it.
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        Self {
+        let columns = cx.new(|_| ResizableState::default());
+        let mut view = Self {
             id,
             state,
             tree,
             pins,
+            selected: None,
+            columns,
             focus,
             _subscriptions: subscriptions,
+        };
+        view.follow_selection(window, cx);
+        view
+    }
+
+    /// Makes the editor and response columns of the selected API's state, or
+    /// drops them when nothing is selected.
+    fn follow_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let api: Option<Entity<ApiState>> = self.state.read(cx).api().cloned();
+        match api {
+            Some(api) if self.selected.as_ref().map(|s| s.api) != Some(api.entity_id()) => {
+                let state = self.state.clone();
+                let editor = cx.new(|cx| RequestEditor::new(state, api.clone(), window, cx));
+                let response = cx.new(|cx| ResponsePanel::new(api.clone(), window, cx));
+                self.selected = Some(Selected {
+                    api: api.entity_id(),
+                    editor,
+                    response,
+                });
+            }
+            Some(_) => {}
+            None => self.selected = None,
         }
+    }
+
+    /// F14.5: the widths kept — the tree in pixels, the editor as its share
+    /// of the rest.
+    fn columns_resized(&mut self, columns: &Entity<ResizableState>, cx: &mut Context<Self>) {
+        let sizes = columns.read(cx).sizes().clone();
+        let [tree, editor, response] = sizes[..] else {
+            return;
+        };
+        let rest = f32::from(editor) + f32::from(response);
+        if rest <= 0. {
+            return;
+        }
+        let widths = ColumnWidths {
+            tree: f32::from(tree),
+            editor_ratio: (f32::from(editor) / rest).clamp(0.2, 0.8),
+        };
+        let app = AppStore::global(cx).state().clone();
+        app.update(cx, |app, cx| app.set_columns(widths, cx));
     }
 
     pub fn collection_id(&self) -> &CollectionId {
@@ -159,48 +226,19 @@ impl WorkspaceView {
         &self.pins
     }
 
-    fn render_detail(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read(cx);
-        let muted = cx.theme().muted_foreground;
-        match state.selected_api() {
-            Some(api) => v_flex()
-                .flex_1()
-                .h_full()
-                .p_6()
-                .gap_3()
-                .child(div().text_lg().font_semibold().child(api.name.clone()))
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .text_sm()
-                        .child(
-                            div()
-                                .font_semibold()
-                                .text_color(method_color(api.request.method, cx))
-                                .child(api.request.method.as_str()),
-                        )
-                        .child(div().text_color(muted).child(api.request.uri.clone())),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(muted)
-                        .child(t!("workspace.editor_pending").to_string()),
-                ),
-            None => v_flex().flex_1().h_full().justify_center().items_center().child(
-                Empty::new().header(
-                    EmptyHeader::new()
-                        .media(
-                            EmptyMedia::new()
-                                .with_variant(EmptyMediaVariant::Icon)
-                                .child(Icon::new(IconName::FileText)),
-                        )
-                        .title(EmptyTitle::new().child(t!("workspace.nothing_selected").to_string()))
-                        .description(EmptyDescription::new().child(t!("workspace.editor_pending").to_string())),
-                ),
+    fn render_nothing_selected(&self) -> impl IntoElement {
+        v_flex().size_full().justify_center().items_center().child(
+            Empty::new().header(
+                EmptyHeader::new()
+                    .media(
+                        EmptyMedia::new()
+                            .with_variant(EmptyMediaVariant::Icon)
+                            .child(Icon::new(IconName::FileText)),
+                    )
+                    .title(EmptyTitle::new().child(t!("workspace.nothing_selected").to_string()))
+                    .description(EmptyDescription::new().child(t!("workspace.select_hint").to_string())),
             ),
-        }
+        )
     }
 }
 
@@ -211,25 +249,48 @@ impl Focusable for WorkspaceView {
 }
 
 impl Render for WorkspaceView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tree_width = AppStore::global(cx).state().read(cx).prefs().columns.tree;
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let columns = AppStore::global(cx).state().read(cx).prefs().columns;
         let state = self.state.downgrade();
         let folder_state = state.clone();
+        // The editor's first width: its share of what the tree leaves.
+        let rest = (f32::from(window.viewport_size().width) - columns.tree).max(400.);
+        let editor_width = rest * columns.editor_ratio.clamp(0.2, 0.8);
+        let group = h_resizable("workspace-columns").with_state(&self.columns).child(
+            resizable_panel()
+                .size(px(columns.tree))
+                .size_range(px(180.)..px(640.))
+                .child(self.tree.clone()),
+        );
+        let group = match &self.selected {
+            Some(selected) => group
+                .child(
+                    resizable_panel()
+                        .size(px(editor_width))
+                        .size_range(px(280.)..px(4000.))
+                        .child(selected.editor.clone()),
+                )
+                .child(
+                    resizable_panel()
+                        .size_range(px(240.)..px(4000.))
+                        .child(selected.response.clone()),
+                ),
+            None => group.child(resizable_panel().child(self.render_nothing_selected())),
+        };
+        let editor = self.selected.as_ref().map(|selected| selected.editor.downgrade());
         h_flex()
             .size_full()
             .track_focus(&self.focus)
             .key_context(KEY_CONTEXT)
             .on_action(move |_: &NewApi, window, cx| new_item(&state, None, ItemKind::Api, window, cx))
             .on_action(move |_: &NewFolder, window, cx| new_item(&folder_state, None, ItemKind::Folder, window, cx))
-            .child(
-                div()
-                    .h_full()
-                    .w(px(tree_width))
-                    .flex_none()
-                    .border_r_1()
-                    .border_color(cx.theme().border)
-                    .child(self.tree.clone()),
-            )
-            .child(self.render_detail(cx))
+            .on_action(move |_: &Send, window, cx| {
+                if let Some(editor) = &editor {
+                    let _ = editor.update(cx, |editor, cx| editor.send(window, cx));
+                }
+            })
+            .child(group.on_resize(
+                cx.listener(|this, columns: &Entity<ResizableState>, _, cx| this.columns_resized(columns, cx)),
+            ))
     }
 }

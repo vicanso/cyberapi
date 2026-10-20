@@ -21,7 +21,7 @@ mod transport;
 #[cfg(target_family = "wasm")]
 use cyberapi_core::prefs::AppPrefs;
 #[cfg(target_family = "wasm")]
-use cyberapi_store_bridge::BridgeStore;
+use cyberapi_store_bridge::{BridgeHttpEngine, BridgeStore};
 #[cfg(target_family = "wasm")]
 use gpui_kit::web::{CanvasFontFallback, WebBackendPreference, WebPlatform};
 #[cfg(target_family = "wasm")]
@@ -81,11 +81,10 @@ pub fn run(origin: String, ui_font: Vec<u8>, prefs: String) {
         CanvasFontFallback::EmojiAndCjk,
     ));
     let http_client = Arc::new(platform.fetch_http_client());
-    let storage = BridgeStore::new(Arc::new(transport::FetchTransport::new(
-        http_client.clone(),
-        origin.clone(),
-    )))
-    .storage();
+    let transport = Arc::new(transport::FetchTransport::new(http_client.clone(), origin.clone()));
+    let storage = BridgeStore::new(transport.clone()).storage();
+    // Requests go out from the bridge (`docs/architecture.md` §5, D5).
+    let engine = Arc::new(BridgeHttpEngine::new(transport));
     let prefs: AppPrefs = serde_json::from_str(&prefs).unwrap_or_default();
     let web_assets = assets::WebAssets::new(&origin);
     let icon_watch = web_assets.take_watch();
@@ -108,7 +107,7 @@ pub fn run(origin: String, ui_font: Vec<u8>, prefs: String) {
         if let Some(icon_watch) = icon_watch {
             assets::repaint_when_icons_land(icon_watch, cx);
         }
-        cyberapi_gui::launch(cx, storage, prefs);
+        cyberapi_gui::launch(cx, storage, engine, prefs);
     });
     APP.with(|slot| *slot.borrow_mut() = Some(handle));
 }

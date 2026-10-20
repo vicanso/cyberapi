@@ -4,8 +4,10 @@
 //! account from inside its own network, so by default it refuses the
 //! addresses that would turn it into a way in: loopback, private and
 //! link-local ranges (the cloud metadata address among them), carrier-grade
-//! NAT, unspecified, multicast and broadcast, IPv6 unique-local, and IPv4
-//! inside IPv6. An administrator can allow ranges back.
+//! NAT, the benchmarking range (where fake-IP proxies answer), unspecified,
+//! multicast and broadcast, IPv6 unique-local; an IPv4 address inside IPv6
+//! (mapped or translated) is judged as itself. An administrator can allow
+//! ranges back.
 //!
 //! The check is on the resolved address at connect time, so a name that
 //! resolves to an inner address — or starts to (DNS rebinding) — is refused
@@ -57,9 +59,13 @@ fn is_public_v4(v4: Ipv4Addr) -> bool {
 }
 
 fn is_public_v6(v6: Ipv6Addr) -> bool {
-    // An IPv4 address wrapped in IPv6 is judged as itself.
+    // An IPv4 address wrapped in IPv6 is judged as itself: mapped
+    // (::ffff:a.b.c.d) or translated (::ffff:0:a.b.c.d).
     if let Some(v4) = v6.to_ipv4_mapped() {
         return is_public_v4(v4);
+    }
+    if let [0, 0, 0, 0, 0xffff, 0, high, low] = v6.segments() {
+        return is_public_v4(Ipv4Addr::from((u32::from(high) << 16) | u32::from(low)));
     }
     let first = v6.segments()[0];
     !(v6.is_unspecified()
@@ -100,6 +106,8 @@ mod tests {
             "fe80::1",
             "::ffff:127.0.0.1",
             "::ffff:169.254.169.254",
+            "198.18.4.114",
+            "::ffff:0:c612:472",
         ] {
             assert!(!policy.permits(ip(inner)), "{inner} must be refused");
         }

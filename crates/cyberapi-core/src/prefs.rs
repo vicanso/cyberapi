@@ -6,6 +6,7 @@
 
 use crate::ItemId;
 use crate::collection::SortOrder;
+use crate::model::HttpMethod;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -100,6 +101,71 @@ pub struct WorkspacePrefs {
     pub tabs: BTreeMap<ItemId, String>,
 }
 
+/// The request editor's tabs (F4.12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RequestTab {
+    Body,
+    Query,
+    Headers,
+    Auth,
+}
+
+impl RequestTab {
+    /// In the editor's order; Body only for the methods that send one.
+    pub fn for_method(method: HttpMethod) -> &'static [Self] {
+        if method.has_body() {
+            &[Self::Body, Self::Query, Self::Headers, Self::Auth]
+        } else {
+            &[Self::Query, Self::Headers, Self::Auth]
+        }
+    }
+
+    /// Body for the methods that send one, Query otherwise.
+    pub fn default_for(method: HttpMethod) -> Self {
+        if method.has_body() { Self::Body } else { Self::Query }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Body => "body",
+            Self::Query => "query",
+            Self::Headers => "header",
+            Self::Auth => "auth",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "body" => Some(Self::Body),
+            "query" => Some(Self::Query),
+            "header" => Some(Self::Headers),
+            "auth" => Some(Self::Auth),
+            _ => None,
+        }
+    }
+}
+
+impl WorkspacePrefs {
+    /// The tab `api` shows: the one kept, if the method has it, or the
+    /// method's default.
+    pub fn tab(&self, api: &ItemId, method: HttpMethod) -> RequestTab {
+        self.tabs
+            .get(api)
+            .and_then(|tab| RequestTab::parse(tab))
+            .filter(|tab| RequestTab::for_method(method).contains(tab))
+            .unwrap_or(RequestTab::default_for(method))
+    }
+
+    /// Keeps `tab` for `api`; the method's default is kept as nothing.
+    pub fn set_tab(&mut self, api: &ItemId, method: HttpMethod, tab: RequestTab) {
+        if tab == RequestTab::default_for(method) {
+            self.tabs.remove(api);
+        } else {
+            self.tabs.insert(api.clone(), tab.as_str().to_string());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +177,22 @@ mod tests {
         assert_eq!(prefs.columns.tree, 300.);
         let workspace: WorkspacePrefs = serde_json::from_str(r#"{"pinned":["a"],"gone":1}"#).expect("defaults");
         assert_eq!(workspace.pinned, vec![ItemId::from("a")]);
+    }
+
+    #[test]
+    fn tabs_default_by_method_and_keep_only_the_others() {
+        let api = ItemId::from("a");
+        let mut prefs = WorkspacePrefs::default();
+        assert_eq!(prefs.tab(&api, HttpMethod::Get), RequestTab::Query);
+        assert_eq!(prefs.tab(&api, HttpMethod::Post), RequestTab::Body);
+        prefs.set_tab(&api, HttpMethod::Post, RequestTab::Headers);
+        assert_eq!(prefs.tabs.get(&api).map(String::as_str), Some("header"));
+        assert_eq!(prefs.tab(&api, HttpMethod::Post), RequestTab::Headers);
+        prefs.set_tab(&api, HttpMethod::Post, RequestTab::Body);
+        assert!(prefs.tabs.is_empty(), "the default is kept as nothing");
+        // A kept Body tab on a method without one falls back to Query.
+        prefs.tabs.insert(api.clone(), "body".into());
+        assert_eq!(prefs.tab(&api, HttpMethod::Get), RequestTab::Query);
     }
 
     #[test]

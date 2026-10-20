@@ -9,12 +9,15 @@
 // gpui-component, and set by `i18n::apply`.
 rust_i18n::i18n!("locales", fallback = "en");
 
+#[cfg(not(target_family = "wasm"))]
+mod assets;
 mod i18n;
 mod pacing;
 #[cfg(not(target_family = "wasm"))]
 mod paths;
 mod root;
 pub mod states;
+mod this_build;
 mod views;
 
 pub use crate::pacing::set_page_visible;
@@ -22,9 +25,11 @@ use crate::root::CyberApi;
 use crate::states::AppStore;
 use crate::views::StartupError;
 use cyberapi_core::prefs::AppPrefs;
+use cyberapi_http::HttpEngine;
 use cyberapi_store::Storage;
 use gpui_kit::component::TitleBar;
 use gpui_kit::{App, AppContext as _, Bounds, Entity, Render, Window, WindowBounds, WindowOptions, px, size};
+use std::sync::Arc;
 use tracing::error;
 
 pub const APP_NAME: &str = "Cyber API";
@@ -42,16 +47,25 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(version = VERSION, "cyberapi launch");
     // Before the platform starts: the first window needs the settings.
     let opened = open_desktop_storage();
-    gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
-        .run(move |cx| {
-            // Must come before anything that uses a component.
-            gpui_kit::init(cx);
-            match opened {
-                Ok((storage, prefs)) => launch(cx, storage, prefs),
-                Err(message) => launch_failed(cx, message),
-            }
-        });
+    // Requests go out on a runtime of their own, alive as long as the app.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("cyberapi-http")
+        .enable_all()
+        .build()?;
+    let engine: Arc<dyn HttpEngine> = Arc::new(cyberapi_http::NativeEngine::new(
+        runtime.handle().clone(),
+        cyberapi_http::TargetPolicy::Anywhere,
+    ));
+    gpui_kit::application().with_assets(assets::Assets).run(move |cx| {
+        // Must come before anything that uses a component.
+        gpui_kit::init(cx);
+        match opened {
+            Ok((storage, prefs)) => launch(cx, storage, engine, prefs),
+            Err(message) => launch_failed(cx, message),
+        }
+    });
+    drop(runtime);
     Ok(())
 }
 
@@ -93,12 +107,12 @@ fn open_desktop_storage() -> Result<(Storage, AppPrefs), String> {
     Ok((storage, prefs))
 }
 
-/// Opens the main window on `storage`. Both builds call this once the
-/// platform is up and `gpui_kit::init` has run: the desktop from [`run`],
-/// the browser from `cyberapi-web`.
-pub fn launch(cx: &mut App, storage: Storage, prefs: AppPrefs) {
+/// Opens the main window on `storage`, sending with `engine`. Both builds
+/// call this once the platform is up and `gpui_kit::init` has run: the
+/// desktop from [`run`], the browser from `cyberapi-web`.
+pub fn launch(cx: &mut App, storage: Storage, engine: Arc<dyn HttpEngine>, prefs: AppPrefs) {
     i18n::apply(prefs.language.as_deref());
-    AppStore::init(storage, prefs, cx);
+    AppStore::init(storage, engine, prefs, cx);
     views::bind_workspace_keys(cx);
     open_main_window(cx, |window, cx| cx.new(|cx| CyberApi::new(window, cx)));
 }

@@ -20,7 +20,11 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
     - 树这类答案是“绝对值”的修改（“这个目录的 children 现在是 …”）用 `states::run_serial` 排队：一次一个，按发起顺序执行和应用，避免并行请求乱序导致副本和存储不一致。
     - states 的测试用 `#[gpui_kit::test]` + `TestAppContext` + `MemoryStore`（见 `states/workspace.rs`）。
     - 主动（非用户触发）访问 store 的频率集中在 `src/pacing.rs`，每个值桌面 / 浏览器各一个常量。目前只有浏览器版轮询打开项目的修订号（`REVISION_POLL`，后台标签页放慢，可见性由 `cyberapi-web` 通过 `set_page_visible` 传入），修订号变了就重新加载树；桌面版只有本应用一个写入者，不轮询。
-  - `src/views/`：只负责绘制和转发事件，不调用 store。`root.rs` 按路由切换页面、同步主题和窗口标题。
+  - `ApiState`（`states/api.rs`）：选中的接口一个，由 `WorkspaceState` 创建和持有。保存编辑器里的请求（Method / URI 立即保存，其余 300ms 防抖，状态销毁时保存未保存的修改），发送 / 取消（再次点击即取消，drop 任务即断开连接；200ms 内的第二次点击忽略），历史记录（选中历史会把请求放回编辑器，`ApiEvent::RequestReplaced`）。发送和 cURL 都走 `cyberapi_service`。
+  - `AppStore` 持有 `Storage` 和 `HttpEngine`；`AppStore::sender(cx)` 组装发送所需的一切。`launch(cx, storage, engine, prefs)`：桌面版传 `NativeEngine`（自己的 tokio 运行时），浏览器版传 `BridgeHttpEngine`。
+  - `src/this_build.rs`：两端能力不同的地方，每个都是一对同签名、分别加 gate 的函数（`user_agent`、`reads_files`、`files`）。
+  - `src/assets.rs`（仅桌面）：嵌入 gpui-kit 默认图标之外用到的 Lucide 图标；**新用一个 `gpui_kit::assets::IconName` 时要加进 `icon_assets!` 列表**，否则桌面版显示空白（浏览器版从 `www/assets/icons` 取任意图标）。测试 `every_icon_the_app_uses_is_embedded` 列出了它们。
+  - `src/views/`：只负责绘制和转发事件，不调用 store。`root.rs` 按路由切换页面、同步主题和窗口标题。工作区是可拖动宽度的三栏（树 / 请求编辑 / 响应，宽度存入 `AppPrefs.columns`）；`kv_editor.rs` 是 Query / Header / Auth / 表单共用的键值列表。JSON 高亮来自 gpui-kit 的 `tree-sitter` feature，只在 native 依赖表里打开。
   - `src/i18n.rs` + `locales/{en,zh-CN}.toml`：rust-i18n，当前语言与 gpui-component 共用，所以中文的 locale 代码用组件的 `zh-CN`。**新增文案时每个 locale 文件都要加**，测试 `every_locale_has_every_key` 会逐个 key 比对。store 错误统一用 `i18n::store_error` 转成提示文案。
   - 开发用环境变量（`src/paths.rs`）：`CYBERAPI_DATA_DIR` 覆盖数据目录（试运行时指向临时目录，避免写入真实数据），`CYBERAPI_LEGACY_DIR` 覆盖 Tauri 版的数据目录。默认数据目录是平台数据目录下的 `CyberAPI`（Linux 为 `cyberapi`），数据库为 `cyberapi.db`。
 - `crates/cyberapi-core`：L0 领域层。model（项目 / 目录 / 接口 / 请求 / 变量，含旧库字段的转换）、`tree`（构建、关键字过滤后的显示行、移动 / 插入 / 删除的变更计划、拖放落点）、`search`（拼音匹配）、`collection`（首页过滤与排序）。无 IO、无时钟、无 gpui，必须能编译到 wasm。新的纯逻辑放这里，不放 GUI crate。树的规则只在这里写一份：store 按 `plan_*` 的结果写库，state 用同一个计划 `apply` 到自己的副本。

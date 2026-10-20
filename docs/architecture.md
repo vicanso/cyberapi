@@ -288,6 +288,15 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 - **账号、团队、授权目前只有 `SqlStore` 的固有方法**（`create_account` / `create_team` / `set_member` / `set_grant`），供 bridge 和测试使用。面向用户的管理界面和 `DirectoryStore` trait 仍在第 10 步。
 - **留到第 10 步加固的事项：** 登录频率限制；两个请求同时初始化管理员时可能各建一个（目前没有加锁）；会话过期行的清理；退出登录的界面入口（目前只有 `/v1/logout` 接口，会话失效时页面会自动回到登录表单）。
 
+第 7 步落地时的具体做法：
+
+- **纯逻辑在 core，IO 在 service。** `cyberapi_core::template`（解析和求值，IO 需要的数据由调用方先按 `needs` 准备好）、`send::prepare`、`response`、`curl`；`cyberapi-service::send` 只依赖 trait，两端运行同一份发送管线。cURL 也走同一个准备过程，命令和实际发出的请求一致。
+- **请求头优先级（#3）**：默认值（User-Agent）< 全局请求头 < Basic Auth < 请求自身的 header。
+- **计时（#1）与取消（#2）**：`NativeEngine` 在 hyper 的连接级 API 上每个请求新建连接，DNS / TCP / TLS 各自计时，包装后的流记录写完请求和收到首字节的时间；drop future 即中止 tokio 任务、断开连接。每个解析到的地址分到一份连接超时，一个不通的地址不会耗尽全部时间。
+- **历史记录**：`HistoryStore`，读者自己的（bridge 上按账号隔离），每个接口最近 10 条；写入不算项目修改。
+- **bridge 的目标地址限制**：`TargetPolicy::PublicOnly` 在连接时检查解析后的地址（防 DNS rebinding），默认拒绝回环、私网、链路本地（含云元数据地址）、CGNAT、基准测试段（198.18.0.0/15，fake-IP 代理会把域名解析到这里）、IPv6 ULA，IPv6 中嵌入的 IPv4 按 IPv4 判断；`--allow-target` 放行网段。在使用 fake-IP 模式代理的机器上开发时需要放行 198.18.0.0/15。
+- **暂未做**：Cookie 的注入和保存（第 8 步，`CookieStore`）、附件自动保存（F7.5）、响应体的大文件 / 流式处理。
+
 ## 9. 账号、团队与授权（浏览器版，D1）
 
 桌面版没有账号概念。本节只适用于 bridge 和浏览器版。

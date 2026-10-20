@@ -9,15 +9,16 @@
 //! In the browser build other readers change the project too: the state
 //! polls its revision and loads the tree again when it moved (§7).
 
-use super::{Load, run_serial, run_store};
+use super::{ApiState, Load, run_serial, run_store};
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::ItemId;
-use cyberapi_core::model::{ApiSetting, Collection, Folder};
-use cyberapi_core::prefs::WorkspacePrefs;
+use cyberapi_core::model::{ApiSetting, Collection, Folder, Variable, VariableCategory};
+use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
+use cyberapi_service::Sender;
 use cyberapi_store::{Storage, StoreError};
-use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
+use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, Task};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +32,7 @@ pub enum WorkspaceEvent {
 }
 
 pub struct WorkspaceState {
-    storage: Storage,
+    sender: Sender,
     collection: Collection,
     data: TreeData,
     tree: Tree,
@@ -40,21 +41,26 @@ pub struct WorkspaceState {
     keyword: String,
     /// The tree's changes, one at a time.
     gate: Arc<Mutex<()>>,
+    /// The selected API's editor, while one is selected.
+    api: Option<Entity<ApiState>>,
+    /// The project's environment variables, for the URI's prefix (F4.4).
+    environment: Vec<Variable>,
     _poll: Option<Task<()>>,
 }
 
 impl EventEmitter<WorkspaceEvent> for WorkspaceState {}
 
 impl WorkspaceState {
-    /// F2.7: the tree and the reader's state of it.
-    pub fn new(storage: Storage, collection: Collection, cx: &mut Context<Self>) -> Self {
-        Self::with_poll(storage, collection, pacing::REVISION_POLL, cx)
+    /// F2.7: the tree and the reader's state of it. `sender` holds the
+    /// stores and the engine the selected API sends with.
+    pub fn new(sender: Sender, collection: Collection, cx: &mut Context<Self>) -> Self {
+        Self::with_poll(sender, collection, pacing::REVISION_POLL, cx)
     }
 
     /// Asks every `poll` whether another reader changed the project.
-    fn with_poll(storage: Storage, collection: Collection, poll: Option<Duration>, cx: &mut Context<Self>) -> Self {
+    fn with_poll(sender: Sender, collection: Collection, poll: Option<Duration>, cx: &mut Context<Self>) -> Self {
         let mut state = Self {
-            storage,
+            sender,
             collection,
             data: TreeData::default(),
             tree: Tree::default(),
@@ -62,6 +68,8 @@ impl WorkspaceState {
             load: Load::Loading,
             keyword: String::new(),
             gate: Arc::default(),
+            api: None,
+            environment: Vec::new(),
             _poll: poll.map(|every| Self::poll(every, cx)),
         };
         state.reload(cx);
@@ -77,8 +85,9 @@ impl WorkspaceState {
                 if pacing::page_hidden() && !beats.is_multiple_of(pacing::HIDDEN_EVERY) {
                     continue;
                 }
-                let Ok(call) = this.update(cx, |this, _| this.storage.collections().get(this.collection.id.clone()))
-                else {
+                let Ok(call) = this.update(cx, |this, _| {
+                    this.sender.storage.collections().get(this.collection.id.clone())
+                }) else {
                     return;
                 };
                 let result = cx.background_spawn(call).await;
@@ -102,10 +111,11 @@ impl WorkspaceState {
             return;
         }
         self.collection = collection;
-        let call = self.storage.tree().load(self.collection.id.clone());
+        self.load_environment(cx);
+        let call = self.sender.storage.tree().load(self.collection.id.clone());
         run_serial(cx, &self.gate, call, |this, result, cx| match result {
             Ok(data) => {
-                this.set_data(data);
+                this.set_data(data, cx);
                 cx.notify();
             }
             Err(error) => warn!(%error, "the project's tree could not be read again"),
@@ -114,6 +124,79 @@ impl WorkspaceState {
 
     pub fn collection(&self) -> &Collection {
         &self.collection
+    }
+
+    pub fn storage(&self) -> &Storage {
+        &self.sender.storage
+    }
+
+    /// The selected API's editor.
+    pub fn api(&self) -> Option<&Entity<ApiState>> {
+        self.api.as_ref()
+    }
+
+    /// F4.4: the enabled environment variables, by name.
+    pub fn environments(&self) -> impl Iterator<Item = &Variable> {
+        self.environment.iter().filter(|variable| variable.enabled)
+    }
+
+    fn load_environment(&mut self, cx: &mut Context<Self>) {
+        let call = self
+            .sender
+            .storage
+            .variables()
+            .list(self.collection.id.clone(), VariableCategory::Environment);
+        run_store(cx, call, |this, result, cx| match result {
+            Ok(variables) => {
+                this.environment = variables;
+                cx.notify();
+            }
+            Err(error) => warn!(%error, "the environment variables could not be read"),
+        });
+    }
+
+    /// F4.12: the tab the selected API's editor shows.
+    pub fn tab(&self, cx: &gpui_kit::App) -> Option<RequestTab> {
+        let api = self.api.as_ref()?.read(cx);
+        Some(self.prefs.tab(api.api(), api.request().method))
+    }
+
+    pub fn set_tab(&mut self, tab: RequestTab, cx: &mut Context<Self>) {
+        let Some(api) = self.api.as_ref() else { return };
+        let (id, method) = {
+            let api = api.read(cx);
+            (api.api().clone(), api.request().method)
+        };
+        if self.prefs.tab(&id, method) != tab {
+            self.prefs.set_tab(&id, method, tab);
+            self.save_prefs(cx);
+            cx.notify();
+        }
+    }
+
+    /// Opens the editor of the selected API, or closes it when none is
+    /// selected (or the selected one is gone). The editor of an API that
+    /// stays selected is kept, with what it holds.
+    fn sync_api(&mut self, cx: &mut Context<Self>) {
+        let selected = self.selected_api().cloned();
+        let current = self.api.as_ref().map(|api| api.read(cx).api().clone());
+        match selected {
+            Some(api) if current.as_ref() != Some(&api.id) => {
+                let (sender, workspace) = (self.sender.clone(), cx.entity().downgrade());
+                self.api = Some(cx.new(|cx| ApiState::new(sender, workspace, &api, cx)));
+            }
+            Some(_) => {}
+            None => self.api = None,
+        }
+    }
+
+    /// An API's request was saved: the tree's copy follows (its method label).
+    pub fn api_saved(&mut self, setting: ApiSetting, cx: &mut Context<Self>) {
+        if let Some(api) = self.data.apis.iter_mut().find(|api| api.id == setting.id) {
+            *api = setting;
+            self.tree = Tree::build(&self.data);
+            cx.notify();
+        }
     }
 
     pub fn load(&self) -> &Load {
@@ -159,20 +242,24 @@ impl WorkspaceState {
 
     /// Loads (or loads again) the tree and the reader's state of it.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.load_environment(cx);
         let id = self.collection.id.clone();
-        run_store(cx, self.storage.tree().load(id.clone()), |this, result, cx| {
+        run_store(cx, self.sender.storage.tree().load(id.clone()), |this, result, cx| {
             match result {
                 Ok(data) => {
-                    this.set_data(data);
+                    this.set_data(data, cx);
                     this.load = Load::Loaded;
                 }
                 Err(error) => this.load = Load::Failed(error),
             }
             cx.notify();
         });
-        run_store(cx, self.storage.prefs().workspace(id), |this, result, cx| {
+        run_store(cx, self.sender.storage.prefs().workspace(id), |this, result, cx| {
             match result {
-                Ok(prefs) => this.prefs = prefs,
+                Ok(prefs) => {
+                    this.prefs = prefs;
+                    this.sync_api(cx);
+                }
                 // The tree still works without them; the reader starts from
                 // a closed tree.
                 Err(error) => warn!(%error, "the workspace state could not be read"),
@@ -181,9 +268,10 @@ impl WorkspaceState {
         });
     }
 
-    fn set_data(&mut self, data: TreeData) {
+    fn set_data(&mut self, data: TreeData, cx: &mut Context<Self>) {
         self.data = data;
         self.tree = Tree::build(&self.data);
+        self.sync_api(cx);
     }
 
     /// F3.2.
@@ -228,6 +316,7 @@ impl WorkspaceState {
             }
         }
         if changed {
+            self.sync_api(cx);
             self.save_prefs(cx);
             cx.notify();
         }
@@ -250,6 +339,7 @@ impl WorkspaceState {
     /// F3.4: a new API is selected, and the folder it went into opens.
     pub fn create_api(&mut self, parent: Option<ItemId>, name: String, cx: &mut Context<Self>) {
         let call = self
+            .sender
             .storage
             .tree()
             .create_api(self.collection.id.clone(), parent.clone(), name);
@@ -260,6 +350,7 @@ impl WorkspaceState {
                 this.tree = Tree::build(&this.data);
                 this.open_folder(parent.as_ref());
                 this.prefs.selected = Some(inserted.item.id);
+                this.sync_api(cx);
                 this.save_prefs(cx);
                 cx.notify();
             }
@@ -270,6 +361,7 @@ impl WorkspaceState {
     /// F3.4.
     pub fn create_folder(&mut self, parent: Option<ItemId>, name: String, cx: &mut Context<Self>) {
         let call = self
+            .sender
             .storage
             .tree()
             .create_folder(self.collection.id.clone(), parent.clone(), name);
@@ -298,6 +390,7 @@ impl WorkspaceState {
     /// F3.5.
     pub fn rename(&mut self, id: ItemId, name: String, cx: &mut Context<Self>) {
         let call = self
+            .sender
             .storage
             .tree()
             .rename(self.collection.id.clone(), id.clone(), name.clone());
@@ -320,6 +413,7 @@ impl WorkspaceState {
     /// F3.7.
     pub fn move_item(&mut self, id: ItemId, to: Placement, cx: &mut Context<Self>) {
         let call = self
+            .sender
             .storage
             .tree()
             .move_item(self.collection.id.clone(), id, to.clone());
@@ -338,7 +432,7 @@ impl WorkspaceState {
     /// F3.6. The view asks first. What was removed leaves the reader's state
     /// too: selection, pins, open folders.
     pub fn delete(&mut self, id: ItemId, cx: &mut Context<Self>) {
-        let call = self.storage.tree().delete(self.collection.id.clone(), id);
+        let call = self.sender.storage.tree().delete(self.collection.id.clone(), id);
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(removal) => {
                 this.data.apply_removal(&removal);
@@ -349,6 +443,7 @@ impl WorkspaceState {
                 }
                 this.prefs.pinned.retain(|id| !gone(id));
                 this.prefs.expanded.retain(|id| !gone(id));
+                this.sync_api(cx);
                 this.save_prefs(cx);
                 cx.notify();
             }
@@ -360,6 +455,7 @@ impl WorkspaceState {
     /// the state next visit, not now, so it is only logged.
     fn save_prefs(&self, cx: &mut Context<Self>) {
         let call = self
+            .sender
             .storage
             .prefs()
             .set_workspace(self.collection.id.clone(), self.prefs.clone());
@@ -375,11 +471,49 @@ impl WorkspaceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::states::ApiEvent;
+    use crate::states::api::SAVE_DELAY;
+    use cyberapi_core::model::{HttpMethod, HttpRequest, KvParam};
+    use cyberapi_core::prefs::Timeouts;
+    use cyberapi_core::response::Exchange;
+    use cyberapi_core::template::NoFiles;
     use cyberapi_core::tree::TreeError;
+    use cyberapi_http::{HttpEngine, PreparedRequest, SendFuture};
     use cyberapi_store::{MemoryStore, NewCollection};
     use gpui_kit::{Entity, TestAppContext};
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    /// Answers every request with `200 ok`, or never.
+    struct Engine {
+        answers: bool,
+    }
+
+    impl HttpEngine for Engine {
+        fn send(&self, _: PreparedRequest) -> SendFuture {
+            if self.answers {
+                Box::pin(async {
+                    Ok(Exchange {
+                        status: 200,
+                        body: b"ok".to_vec(),
+                        ..Default::default()
+                    })
+                })
+            } else {
+                Box::pin(std::future::pending())
+            }
+        }
+    }
+
+    fn sender(storage: &Storage, answers: bool) -> Sender {
+        Sender {
+            storage: storage.clone(),
+            engine: Arc::new(Engine { answers }),
+            files: Arc::new(NoFiles("no files in tests")),
+            user_agent: "CyberAPI/test".into(),
+            timeouts: Timeouts::default(),
+        }
+    }
 
     async fn project(storage: &Storage) -> Collection {
         storage
@@ -393,7 +527,7 @@ mod tests {
     }
 
     fn open(storage: &Storage, collection: Collection, cx: &mut TestAppContext) -> Entity<WorkspaceState> {
-        let state = cx.new(|cx| WorkspaceState::new(storage.clone(), collection, cx));
+        let state = cx.new(|cx| WorkspaceState::new(sender(storage, true), collection, cx));
         cx.run_until_parked();
         state
     }
@@ -544,7 +678,7 @@ mod tests {
         let storage = MemoryStore::new().storage();
         let collection = project(&storage).await;
         let every = Duration::from_secs(10);
-        let state = cx.new(|cx| WorkspaceState::with_poll(storage.clone(), collection.clone(), Some(every), cx));
+        let state = cx.new(|cx| WorkspaceState::with_poll(sender(&storage, true), collection.clone(), Some(every), cx));
         cx.run_until_parked();
         assert!(row_names(&state, cx).is_empty());
 
@@ -560,6 +694,164 @@ mod tests {
         cx.executor().advance_clock(every);
         cx.run_until_parked();
         assert_eq!(row_names(&state, cx), ["theirs"]);
+    }
+
+    fn editor(state: &Entity<WorkspaceState>, cx: &mut TestAppContext) -> Entity<ApiState> {
+        state.read_with(cx, |state, _| state.api().cloned().expect("an editor"))
+    }
+
+    fn stored(storage: &Storage, collection: &Collection, api: &ItemId) -> HttpRequest {
+        let data = pollster::block_on(storage.tree().load(collection.id.clone())).expect("load");
+        data.apis
+            .into_iter()
+            .find(|found| &found.id == api)
+            .expect("the API")
+            .request
+    }
+
+    fn header(key: &str, value: &str) -> KvParam {
+        KvParam {
+            key: key.into(),
+            value: value.into(),
+            enabled: true,
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn the_editor_saves_at_once_or_after_a_pause(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_api(None, "login".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        let id = api.read_with(cx, |api, _| api.api().clone());
+
+        // F4.2: the method at once, and the tree's label follows.
+        api.update(cx, |api, cx| api.set_method(HttpMethod::Post, cx));
+        cx.run_until_parked();
+        assert_eq!(stored(&storage, &collection, &id).method, HttpMethod::Post);
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.tree().get(&id).map(|node| node.method()), Some(HttpMethod::Post));
+        });
+
+        // F4.11: typing waits; an empty row is not kept (F4.10).
+        api.update(cx, |api, cx| {
+            api.set_headers(vec![header("X-A", "1"), header(" ", "")], cx)
+        });
+        cx.run_until_parked();
+        assert!(stored(&storage, &collection, &id).headers.is_empty(), "not yet");
+        cx.executor().advance_clock(SAVE_DELAY);
+        cx.run_until_parked();
+        assert_eq!(stored(&storage, &collection, &id).headers, [header("X-A", "1")]);
+
+        // Leaving the API saves what is still waiting.
+        api.update(cx, |api, cx| api.set_query(vec![header("q", "x")], cx));
+        drop(api);
+        state.update(cx, |state, cx| state.create_api(None, "other".into(), cx));
+        cx.run_until_parked();
+        assert_eq!(stored(&storage, &collection, &id).query, [header("q", "x")]);
+        let other = editor(&state, cx);
+        assert_ne!(other.read_with(cx, |api, _| api.api().clone()), id);
+    }
+
+    #[gpui_kit::test]
+    async fn sending_keeps_the_answer_and_a_second_click_cancels(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = cx.new(|cx| WorkspaceState::new(sender(&storage, true), collection.clone(), cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.create_api(None, "ping".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| api.set_uri(" http://ping.test ".into(), cx));
+        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        cx.run_until_parked();
+        api.read_with(cx, |api, _| {
+            assert_eq!(api.request().uri, "http://ping.test");
+            assert!(api.sending_since().is_none());
+            let shown = api.shown_response().expect("an answer");
+            assert_eq!(shown.status, Some(200));
+            assert_eq!(api.responses().len(), 1);
+        });
+
+        // A request that never answers is cancelled by sending again.
+        let stuck = cx.new(|cx| WorkspaceState::new(sender(&storage, false), collection.clone(), cx));
+        cx.run_until_parked();
+        let api = editor(&stuck, cx);
+        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        cx.run_until_parked();
+        assert!(api.read_with(cx, |api, _| api.sending_since().is_some()));
+        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        assert!(
+            api.read_with(cx, |api, _| api.sending_since().is_some()),
+            "a double click is one click"
+        );
+        std::thread::sleep(Duration::from_millis(210));
+        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        api.read_with(cx, |api, _| {
+            assert!(api.sending_since().is_none(), "cancelled");
+            assert_eq!(api.responses().len(), 1, "a cancelled request leaves nothing");
+        });
+    }
+
+    #[gpui_kit::test]
+    async fn choosing_a_response_puts_its_request_back(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_api(None, "ping".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| api.set_uri("http://first.test".into(), cx));
+        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        cx.run_until_parked();
+        let first = api.read_with(cx, |api, _| api.responses()[0].id.clone());
+        api.update(cx, |api, cx| api.set_uri("http://second.test".into(), cx));
+        cx.run_until_parked();
+
+        let replaced = Rc::new(RefCell::new(0));
+        let seen = replaced.clone();
+        cx.update(|cx| {
+            cx.subscribe(&api, move |_, event, _| {
+                if matches!(event, ApiEvent::RequestReplaced) {
+                    *seen.borrow_mut() += 1;
+                }
+            })
+            .detach();
+        });
+        api.update(cx, |api, cx| api.choose_response(&first, cx));
+        api.read_with(cx, |api, _| {
+            assert_eq!(api.request().uri, "http://first.test");
+            assert_eq!(api.shown_response().map(|r| r.id.clone()), Some(first.clone()));
+        });
+        assert_eq!(*replaced.borrow(), 1);
+        let id = api.read_with(cx, |api, _| api.api().clone());
+        // Not saved until it is changed (F7.10).
+        cx.run_until_parked();
+        assert_eq!(stored(&storage, &collection, &id).uri, "http://second.test");
+
+        api.update(cx, |api, cx| api.clear_history(cx));
+        cx.run_until_parked();
+        assert!(api.read_with(cx, |api, _| api.shown_response().is_none()));
+    }
+
+    #[gpui_kit::test]
+    async fn the_tab_is_kept_per_api(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_api(None, "a".into(), cx));
+        cx.run_until_parked();
+        assert_eq!(state.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Query));
+        state.update(cx, |state, cx| state.set_tab(RequestTab::Auth, cx));
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| api.set_method(HttpMethod::Post, cx));
+        cx.run_until_parked();
+        assert_eq!(state.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Auth));
+
+        let again = open(&storage, collection, cx);
+        assert_eq!(again.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Auth));
     }
 
     #[gpui_kit::test]

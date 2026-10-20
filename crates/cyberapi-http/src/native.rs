@@ -146,8 +146,14 @@ async fn exchange(request: PreparedRequest, policy: TargetPolicy) -> Result<Exch
         }
         let connecting = Instant::now();
         let mut last_error = None;
+        // Each address gets its share of the time, so one that never answers
+        // (an unreachable IPv6 route) cannot keep the next from being tried.
+        let share = (connect_limit / permitted.len().max(1) as u32).max(Duration::from_secs(1));
         for address in permitted {
-            match TcpStream::connect(address).await {
+            let attempt = timeout(share, TcpStream::connect(address))
+                .await
+                .unwrap_or_else(|_| Err(std::io::Error::from(std::io::ErrorKind::TimedOut)));
+            match attempt {
                 Ok(stream) => {
                     stats.tcp = connecting.elapsed();
                     stats.remote_addr = address.to_string();

@@ -104,21 +104,32 @@ async-lock = { workspace = true }
 # browser build read the clock; the desktop ignores it.
 chrono = { workspace = true, features = ["clock", "wasmbind"] }
 cyberapi-core = { workspace = true }
+cyberapi-http = { workspace = true }
+cyberapi-service = { workspace = true }
 cyberapi-store = { workspace = true }
 gpui-kit = { workspace = true }
 # Shared with gpui-component (same major), so one `set_locale` translates both
 # the app's strings and the components' own.
 rust-i18n = { workspace = true }
+# A form body is stored as its fields' JSON (4.3).
+serde_json = { workspace = true }
 tracing = { workspace = true }
+# The clock of a request in flight, on both targets.
+web-time = "1.1.0"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 cyberapi-store-turso = { workspace = true }
 directories = { workspace = true }
+# JSON highlighting in the body editors. Asked for here only: on wasm,
+# gpui-component drops the grammar but still compiles the feature's code.
+gpui-kit = { workspace = true, features = ["tree-sitter"] }
 # Blocks on the store's first answers before the first window opens.
 pollster = { workspace = true }
 sys-locale = { workspace = true }
 # The terminal logger. A tab logs to the browser console (`cyberapi-web`).
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# The runtime the HTTP engine sends on; gpui's executor is not tokio.
+tokio = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 # `get_locale()` reads `navigator.languages` only behind this feature.
@@ -127,6 +138,7 @@ sys-locale = { workspace = true, features = ["js"] }
 [dev-dependencies]
 # `TestAppContext` and `#[gpui_kit::test]` for the states' tests.
 gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile = { workspace = true }
 # The locale files are compared key by key.
 toml = { workspace = true }
 

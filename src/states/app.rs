@@ -1,29 +1,37 @@
 //! What the whole application shares: the stores, where the reader is, and
 //! their settings.
 
+use crate::this_build;
 use cyberapi_core::collection::SortOrder;
 use cyberapi_core::model::Collection;
-use cyberapi_core::prefs::AppPrefs;
+use cyberapi_core::prefs::{AppPrefs, ColumnWidths};
+use cyberapi_http::HttpEngine;
+use cyberapi_service::Sender;
 use cyberapi_store::Storage;
-use gpui_kit::{App, AppContext as _, Context, Entity, Global};
+use gpui_kit::{App, AppContext as _, Context, Entity, Global, Task};
+use std::sync::Arc;
+use std::time::Duration;
 use tracing::warn;
 
-/// The stores and the application state, installed once by `launch`.
+/// The stores, the engine and the application state, installed once by
+/// `launch`.
 #[derive(Clone)]
 pub struct AppStore {
     storage: Storage,
+    engine: Arc<dyn HttpEngine>,
     state: Entity<AppState>,
 }
 
 impl Global for AppStore {}
 
 impl AppStore {
-    pub fn init(storage: Storage, prefs: AppPrefs, cx: &mut App) {
+    pub fn init(storage: Storage, engine: Arc<dyn HttpEngine>, prefs: AppPrefs, cx: &mut App) {
         let state = cx.new(|_| AppState {
             route: Route::Dashboard,
             prefs,
+            save_task: None,
         });
-        cx.set_global(Self { storage, state });
+        cx.set_global(Self { storage, engine, state });
     }
 
     pub fn global(cx: &App) -> &Self {
@@ -32,6 +40,17 @@ impl AppStore {
 
     pub fn storage(&self) -> &Storage {
         &self.storage
+    }
+
+    /// What sending needs, with the reader's settings as they are now.
+    pub fn sender(&self, cx: &App) -> Sender {
+        Sender {
+            storage: self.storage.clone(),
+            engine: self.engine.clone(),
+            files: this_build::files(),
+            user_agent: this_build::user_agent(),
+            timeouts: self.state.read(cx).prefs().timeouts,
+        }
     }
 
     pub fn state(&self) -> &Entity<AppState> {
@@ -52,6 +71,8 @@ pub enum Route {
 pub struct AppState {
     route: Route,
     prefs: AppPrefs,
+    /// A save waiting for a drag to settle.
+    save_task: Option<Task<()>>,
 }
 
 impl AppState {
@@ -83,6 +104,18 @@ impl AppState {
         self.prefs.collection_sort = order;
         self.save_prefs(cx);
         cx.notify();
+    }
+
+    /// F14.5: the workspace's columns, saved once a drag settles.
+    pub fn set_columns(&mut self, columns: ColumnWidths, cx: &mut Context<Self>) {
+        if self.prefs.columns == columns {
+            return;
+        }
+        self.prefs.columns = columns;
+        self.save_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(500)).await;
+            let _ = this.update(cx, |this, cx| this.save_prefs(cx));
+        }));
     }
 
     /// Settings are saved in the background; a failure costs the reader the

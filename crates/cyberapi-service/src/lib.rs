@@ -4,4 +4,4 @@
 
 mod send;
 
-pub use send::{SendFailure, Sender, send};
+pub use send::{SendFailure, Sender, curl, send};

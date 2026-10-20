@@ -2,6 +2,7 @@
 //! what the reader asks for; they never call a store.
 
 mod dashboard;
+mod kv_editor;
 mod name_dialog;
 mod startup;
 mod workspace;

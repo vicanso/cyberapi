@@ -9,7 +9,7 @@
 use cyberapi_core::model::{HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::Timeouts;
 use cyberapi_core::response::HttpResponse;
-use cyberapi_core::send::{self, PrepareError};
+use cyberapi_core::send::{self, PrepareError, PreparedRequest};
 use cyberapi_core::template::{FileReader, Inputs};
 use cyberapi_core::{CollectionId, ItemId};
 use cyberapi_http::HttpEngine;
@@ -67,66 +67,7 @@ pub async fn send(
     request: HttpRequest,
     picked_file: Option<String>,
 ) -> Result<HttpResponse, SendFailure> {
-    let store = |source| SendFailure::Store { source };
-    let mut variables: Vec<Variable> = Vec::new();
-    for category in [
-        VariableCategory::Environment,
-        VariableCategory::Custom,
-        VariableCategory::GlobalRequestHeader,
-    ] {
-        variables.extend(
-            sender
-                .storage
-                .variables()
-                .list(collection.clone(), category)
-                .await
-                .map_err(store)?,
-        );
-    }
-
-    let needs = send::needs(&request, &variables);
-    let responses = if needs.responses.is_empty() {
-        Vec::new()
-    } else {
-        sender
-            .storage
-            .history()
-            .latest(
-                collection.clone(),
-                needs.responses.iter().map(|id| ItemId::new(id.as_str())).collect(),
-            )
-            .await
-            .map_err(store)?
-    };
-    let inputs = Inputs {
-        now: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|since| since.as_secs() as i64)
-            .unwrap_or_default(),
-        custom: variables
-            .iter()
-            .filter(|v| v.enabled && v.category == VariableCategory::Custom)
-            .map(|v| (v.name.clone(), v.value.clone()))
-            .collect(),
-        responses: responses
-            .iter()
-            .filter_map(|response| Some((response.api.to_string(), response.body_json()?)))
-            .collect(),
-        picked_file,
-    };
-    let prepared = send::prepare(
-        &request,
-        &send::Context {
-            variables: &variables,
-            template: &inputs,
-            files: sender.files.as_ref(),
-            user_agent: &sender.user_agent,
-            timeouts: sender.timeouts,
-            boundary: &boundary(),
-        },
-    )
-    .map_err(|source| SendFailure::Prepare { source })?;
-
+    let prepared = prepare(&sender, &collection, &request, picked_file).await?;
     let started = Instant::now();
     let answered = sender.engine.send(prepared).await;
     // Never zero (F5.7).
@@ -164,12 +105,87 @@ pub async fn send(
     }
 }
 
+/// F7.8: the cURL command of `request`, prepared as sending would prepare
+/// it. An `openFile` in it is not asked: its parameter stands.
+pub async fn curl(sender: Sender, collection: CollectionId, request: HttpRequest) -> Result<String, SendFailure> {
+    let prepared = prepare(&sender, &collection, &request, None).await?;
+    Ok(cyberapi_core::curl::curl(&prepared, &request, &[]))
+}
+
+/// Everything before the engine: the variables, the responses the template
+/// functions read, then `cyberapi_core::send::prepare`.
+async fn prepare(
+    sender: &Sender,
+    collection: &CollectionId,
+    request: &HttpRequest,
+    picked_file: Option<String>,
+) -> Result<PreparedRequest, SendFailure> {
+    let store = |source| SendFailure::Store { source };
+    let mut variables: Vec<Variable> = Vec::new();
+    for category in [
+        VariableCategory::Environment,
+        VariableCategory::Custom,
+        VariableCategory::GlobalRequestHeader,
+    ] {
+        variables.extend(
+            sender
+                .storage
+                .variables()
+                .list(collection.clone(), category)
+                .await
+                .map_err(store)?,
+        );
+    }
+
+    let needs = send::needs(request, &variables);
+    let responses = if needs.responses.is_empty() {
+        Vec::new()
+    } else {
+        sender
+            .storage
+            .history()
+            .latest(
+                collection.clone(),
+                needs.responses.iter().map(|id| ItemId::new(id.as_str())).collect(),
+            )
+            .await
+            .map_err(store)?
+    };
+    let inputs = Inputs {
+        now: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|since| since.as_secs() as i64)
+            .unwrap_or_default(),
+        custom: variables
+            .iter()
+            .filter(|v| v.enabled && v.category == VariableCategory::Custom)
+            .map(|v| (v.name.clone(), v.value.clone()))
+            .collect(),
+        responses: responses
+            .iter()
+            .filter_map(|response| Some((response.api.to_string(), response.body_json()?)))
+            .collect(),
+        picked_file,
+    };
+    send::prepare(
+        request,
+        &send::Context {
+            variables: &variables,
+            template: &inputs,
+            files: sender.files.as_ref(),
+            user_agent: &sender.user_agent,
+            timeouts: sender.timeouts,
+            boundary: &boundary(),
+        },
+    )
+    .map_err(|source| SendFailure::Prepare { source })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use cyberapi_core::model::{ContentType, HttpMethod, KvParam};
     use cyberapi_core::response::Exchange;
-    use cyberapi_core::send::PreparedRequest;
     use cyberapi_core::template::{BaseDir, TemplateError};
     use cyberapi_http::{SendError, SendFuture};
     use cyberapi_store::{MemoryStore, NewCollection, NewVariable};
@@ -340,6 +356,27 @@ mod tests {
         assert!(second.latency >= Duration::from_millis(1));
         let history = pollster::block_on(setup.storage.history().list(setup.collection.clone(), me)).expect("list");
         assert_eq!(history, [second]);
+    }
+
+    #[test]
+    fn curl_is_what_sending_would_send() {
+        let setup = setup(ok(200, "{}"));
+        variable(&setup, VariableCategory::Environment, "HOST", "https://api.test");
+        let command = pollster::block_on(curl(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            HttpRequest {
+                uri: "{{HOST}}/me".into(),
+                query: vec![kv("v", "{{md5(a)}}")],
+                ..Default::default()
+            },
+        ))
+        .expect("a command");
+        assert_eq!(
+            command,
+            "curl -v -XGET -H 'User-Agent: CyberAPI/test' 'https://api.test/me?v=0cc175b9c0f1b6a831c399e269772661'"
+        );
+        assert!(setup.engine.sent.lock().expect("sent").is_empty(), "nothing is sent");
     }
 
     #[test]

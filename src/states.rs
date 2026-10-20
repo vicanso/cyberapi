@@ -2,10 +2,12 @@
 //! hold what is true and decide what changes. Views read them and forward
 //! intent; only these call the stores.
 
+mod api;
 mod app;
 mod dashboard;
 mod workspace;
 
+pub use api::{ApiEvent, ApiState};
 pub use app::{AppState, AppStore, Route};
 pub use dashboard::{DashboardEvent, DashboardState};
 pub use workspace::{WorkspaceEvent, WorkspaceState};
