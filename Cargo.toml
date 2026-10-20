@@ -21,7 +21,7 @@ name = "cyberapi"
 path = "src/main.rs"
 
 [workspace]
-members = ["crates/*", "cyberapi-web"]
+members = ["crates/*", "cyberapi-bridge", "cyberapi-web"]
 # A bare `cargo build` builds the desktop binary only. `cyberapi-web` is built
 # from its own directory, where its `rust-toolchain.toml` selects the nightly
 # its wasm target needs.
@@ -47,6 +47,7 @@ cyberapi-core = { path = "crates/cyberapi-core" }
 cyberapi-store = { path = "crates/cyberapi-store" }
 cyberapi-store-turso = { path = "crates/cyberapi-store-turso" }
 cyberapi-store-sql = { path = "crates/cyberapi-store-sql" }
+cyberapi-store-bridge = { path = "crates/cyberapi-store-bridge" }
 async-lock = "3.4.2"
 # Parsing and formatting only: what "now" is comes from the caller, so no
 # `clock` feature and nothing that needs a wasm time source.

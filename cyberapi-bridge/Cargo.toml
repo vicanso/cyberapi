@@ -1,0 +1,39 @@
+[package]
+name = "cyberapi-bridge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The server of CyberAPI's browser build: accounts, the store, and the page."
+publish = false
+
+# A native server. It links the stores and the protocol, never the GUI
+# crate, which would bring a window system with it.
+[dependencies]
+argon2 = "0.6.0"
+axum = "0.8.9"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+cyberapi-core = { workspace = true }
+cyberapi-store = { workspace = true }
+cyberapi-store-bridge = { workspace = true }
+cyberapi-store-sql = { workspace = true }
+getrandom = "0.4.3"
+hex = "0.4.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.11.1"
+tokio = { workspace = true }
+tower-http = { version = "0.7.1", default-features = false, features = ["fs"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[dev-dependencies]
+cyberapi-store-sql = { workspace = true, features = ["conformance"] }
+http-body-util = "0.1.5"
+sqlx = { workspace = true }
+tower = { version = "0.5.3", features = ["util"] }
+ulid = { workspace = true }
+
+[lints.clippy]
+unwrap_used = "deny"

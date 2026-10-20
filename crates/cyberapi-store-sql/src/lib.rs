@@ -54,6 +54,25 @@ pub struct NewAccount {
     pub admin: bool,
 }
 
+/// A signed-in account, as the bridge sees it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Account {
+    pub id: AccountId,
+    pub name: String,
+    pub display_name: String,
+    pub admin: bool,
+}
+
+fn account(row: &sqlx::any::AnyRow) -> Result<Account, StoreError> {
+    Ok(Account {
+        id: AccountId::new(rows::text(row, 0)?),
+        name: rows::text(row, 1)?,
+        display_name: rows::text(row, 2)?,
+        admin: row.try_get::<i32, _>(3).map_err(db)? != 0,
+    })
+}
+
 #[derive(Clone)]
 pub struct SqlStore {
     pool: AnyPool,
@@ -157,6 +176,64 @@ impl SqlStore {
             .map_err(db)?;
         tx.commit().await.map_err(db)?;
         Ok(account)
+    }
+
+    pub async fn account_count(&self) -> Result<u64, StoreError> {
+        let row = sqlx::query(self.dialect.sql(sql::ACCOUNT_COUNT))
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(u64::try_from(row.try_get::<i64, _>(0).map_err(db)?).unwrap_or(0))
+    }
+
+    /// An enabled account by its sign-in name, with its password hash.
+    pub async fn find_login(&self, name: &str) -> Result<Option<(Account, String)>, StoreError> {
+        let row = sqlx::query(self.dialect.sql(sql::ACCOUNT_LOGIN))
+            .bind(name.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        row.map(|row| Ok((account(&row)?, rows::text(&row, 4)?))).transpose()
+    }
+
+    /// A login that lasts until `expires_at` (unix seconds). The store keeps
+    /// only the token's hash.
+    pub async fn create_session(
+        &self,
+        token_hash: &str,
+        account: &AccountId,
+        expires_at: i64,
+    ) -> Result<(), StoreError> {
+        sqlx::query(self.dialect.sql(sql::SESSION_INSERT))
+            .bind(token_hash.to_string())
+            .bind(account.as_str().to_string())
+            .bind(expires_at)
+            .bind(now().to_rfc3339())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    /// Whose login `token_hash` is, while it lasts (`now` in unix seconds)
+    /// and the account is enabled.
+    pub async fn session_account(&self, token_hash: &str, now: i64) -> Result<Option<Account>, StoreError> {
+        let row = sqlx::query(self.dialect.sql(sql::SESSION_ACCOUNT))
+            .bind(token_hash.to_string())
+            .bind(now)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        row.map(|row| account(&row)).transpose()
+    }
+
+    pub async fn delete_session(&self, token_hash: &str) -> Result<(), StoreError> {
+        sqlx::query(self.dialect.sql(sql::SESSION_DELETE))
+            .bind(token_hash.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
     }
 
     /// A team, with its creator as owner.

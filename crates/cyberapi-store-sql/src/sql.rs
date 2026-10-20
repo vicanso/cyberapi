@@ -116,6 +116,15 @@ pub const COLLECTION_DELETE: &str = "DELETE FROM collections WHERE id = $1";
 
 pub const ACCOUNT_INSERT: &str = "INSERT INTO accounts \
     (id, name, display_name, password_hash, admin, created_at) VALUES ($1, $2, $3, $4, $5, $6)";
+pub const ACCOUNT_COUNT: &str = "SELECT COUNT(*) FROM accounts";
+pub const ACCOUNT_LOGIN: &str = "SELECT id, name, display_name, admin, password_hash \
+    FROM accounts WHERE name = $1 AND disabled = 0";
+pub const SESSION_INSERT: &str =
+    "INSERT INTO sessions (token_hash, account, expires_at, created_at) VALUES ($1, $2, $3, $4)";
+pub const SESSION_ACCOUNT: &str = "SELECT a.id, a.name, a.display_name, a.admin \
+    FROM sessions s JOIN accounts a ON a.id = s.account \
+    WHERE s.token_hash = $1 AND s.expires_at > $2 AND a.disabled = 0";
+pub const SESSION_DELETE: &str = "DELETE FROM sessions WHERE token_hash = $1";
 pub const TEAM_INSERT: &str = "INSERT INTO teams (id, name, personal_of, created_at) VALUES ($1, $2, $3, $4)";
 pub const PERSONAL_TEAM: &str = "SELECT id FROM teams WHERE personal_of = $1";
 pub const TEAM_ROLE: &str = "SELECT role FROM team_members WHERE team = $1 AND account = $2";
@@ -214,6 +223,11 @@ mod tests {
         COLLECTION_TOUCH,
         COLLECTION_DELETE,
         ACCOUNT_INSERT,
+        ACCOUNT_COUNT,
+        ACCOUNT_LOGIN,
+        SESSION_INSERT,
+        SESSION_ACCOUNT,
+        SESSION_DELETE,
         TEAM_INSERT,
         PERSONAL_TEAM,
         TEAM_ROLE,

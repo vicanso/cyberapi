@@ -1,0 +1,21 @@
+[package]
+name = "cyberapi-store-bridge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The store over the bridge: the wire protocol, the server's dispatch, and the browser's BridgeStore."
+publish = false
+
+# Both sides of the wire: the bridge dispatches calls with it, and the
+# browser build makes them — so it builds for wasm, and knows no HTTP
+# client: the page hands it one (`Transport`).
+[dependencies]
+cyberapi-core = { workspace = true }
+cyberapi-store = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints.clippy]
+unwrap_used = "deny"
