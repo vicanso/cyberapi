@@ -20,6 +20,13 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
   - 新增或修改存储行为时，先在 `conformance` 里写检查，再改各后端；每个后端的测试都要跑 `conformance::run(&storage, &probe)`。
   - 新增一条检查后，要故意改坏 `MemoryStore` 的对应行为，确认这条检查会失败。检查不出问题的检查没有意义。
   - 后端返回的记录必须和它实际写入的一致（包括时间只精确到秒），套件会把返回值 `apply` 到副本后与 `load` 的结果比较。
+- `crates/cyberapi-store-turso`：桌面版后端 `TursoStore`（仅 native，GUI 在 native 依赖表里引用）。
+  - 旧版的 5 张表按原样创建，旧列的格式（逗号分隔的 `children`、`"1"`/`"0"`、文本时间）保持不变，所以 Tauri 版的 `my_db.db` 可以直接打开。
+  - 本应用新增的表是 `schema.rs` 的 `MIGRATIONS`，按版本号记在 `cyberapi_meta.schema_version`。**只能追加，已发布的步骤不能改**。比当前程序更新的库拒绝打开。
+  - 一个连接（`async_lock::Mutex`）串行处理所有调用；多行修改放在一个事务里。
+  - `copy_legacy_data` 在首次启动时把 Tauri 版的数据**复制**过来。turso 打开文件时会把它切到 WAL 模式，所以绝不能直接打开 Tauri 版的原文件。
+  - 用真实旧库测试时，用一份**副本**跑 ignored 测试 `opens_a_real_tauri_database`（`CYBERAPI_LEGACY_DB=副本路径`）。
+  - turso 依赖要设 `default-features = false`，否则它会把 mimalloc 装成全局分配器。
 - `cyberapi-web`：浏览器入口。把 GUI crate 编译成 wasm，只负责平台、UI 字体和资源来源；通过 `cyberapi_gui::launch` 进入应用。有自己的 `rust-toolchain.toml`（nightly + wasm32），必须在该目录下构建。`www/index.html` 拉取 `fonts/IBMPlexSans.ttf` 和 wasm 后调用 `run(origin, ui_font)`。
 - UI 只依赖 `gpui-kit` 一个 crate：GPUI 是 `gpui_kit::*`，组件是 `gpui_kit::component`，图标是 `gpui_kit::assets`，平台是 `gpui_kit::platform`（wasm 上还有 `gpui_kit::web`）。不要再单独引入 `gpui-pre-*`。
 

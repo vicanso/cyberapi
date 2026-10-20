@@ -45,16 +45,24 @@ tracing-subscriber = "0.3.23"
 # The in-tree crates. `crates/*` compile for wasm as well as natively.
 cyberapi-core = { path = "crates/cyberapi-core" }
 cyberapi-store = { path = "crates/cyberapi-store" }
+cyberapi-store-turso = { path = "crates/cyberapi-store-turso" }
+async-lock = "3.4.2"
 # Parsing and formatting only: what "now" is comes from the caller, so no
 # `clock` feature and nothing that needs a wasm time source.
 chrono = { version = "0.4.45", default-features = false, features = ["std", "serde"] }
 # Toneless readings with every heteronym, for matching names by pinyin (F15.1).
 pinyin = { version = "0.11.0", default-features = false, features = ["plain", "heteronym"] }
+directories = "6.0.0"
 pollster = "1.0.1"
 pretty_assertions = "1.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 snafu = "0.9.2"
+tempfile = "3.27.0"
+# The desktop's database: an in-process engine that reads and writes the
+# SQLite format, so the Tauri app's `my_db.db` opens as it is. Without the
+# default features, which install mimalloc as the process's global allocator.
+turso = { version = "0.8.3", default-features = false }
 # Record ids. Native only: `generate` reads the system clock and its RNG,
 # neither of which a wasm32 page has.
 ulid = "3.0.0"

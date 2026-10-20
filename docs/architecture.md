@@ -165,17 +165,24 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 - 版本为 0.8.3（2026-10 的最新稳定版）。异步 API，不绑定特定运行时，在 gpui 的后台 executor 上运行。支持事务和批量执行。
 - 必须设置 **`default-features = false`**：turso 的默认 feature 会把 mimalloc 装成全局分配器。
 - 旧版的 5 张表（`api_collections`、`api_folders`、`api_settings`、`variables`、`versions`）**保持原结构**。Domain 层负责转换：`enabled` 的 `"1"` / `"0"` 转为 `bool`，字符串时间转为时间类型（#24）。
-- 原来存放在 localforage 中的数据（设置、展开状态、置顶、活动 Tab、响应历史）以及顶层顺序、Cookie 改为新表，通过 `versions` 表驱动的迁移来创建。
+- 原来存放在 localforage 中的数据（设置、展开状态、置顶、活动 Tab、响应历史）以及顶层顺序、Cookie 改为新表，通过本应用自己的迁移来创建。
+  - 迁移的版本号记在新表 `cyberapi_meta.schema_version` 中，不使用旧版的 `versions` 表；旧版的 `versions` 表原样保留，不再写入。
+  - 迁移 1（第 3 步）创建 `top_orders`（顶层顺序，逗号分隔，与 `children` 相同）、`prefs`（个人文档，`app` 与 `workspace/<项目 ID>`），并为按项目的查询加索引。
+  - 数据库的 schema 版本比当前程序更新时拒绝打开，不用旧规则改写新数据。
+- 一个连接串行处理所有调用（桌面版只有一个用户），涉及多行的修改放在一个事务里，要么全部完成，要么全部不生效。
+- 旧库里的行按 `rowid` 排序读取，即插入顺序，与旧版读出的顺序一致。旧版没有保存顶层顺序（它在 localforage 中，不迁移），所以复制过来的旧库第一次打开时顶层按“接口在前、目录在后”排列，和旧版清空缓存后看到的一样。
 - turso 仍在快速迭代，这也是坚持使用 trait 的原因之一：如果遇到兼容问题，可以增加一个 rusqlite 实现来兜底。
-- 兼容性测试使用一份真实旧库的**副本**，不修改原文件。
+- 兼容性测试使用一份真实旧库的**副本**，不修改原文件（ignored 测试 `opens_a_real_tauri_database`）。
+  - 在一份真实旧库上验证过：21 个项目、162 个目录、628 个接口全部读出，每一项都出现在对应项目的树上。
+  - 表里 129 个变量中有 90 个属于 10 个已经删除的项目，这是旧版 #5 留下的残留。它们在新版中同样不可见，暂不清理。
 
 #### 旧数据迁移（D2、D4）
 
 - **新的数据目录与 Tauri 版分开。** 目录名在实现时确定，但不能在大小写不敏感的文件系统上与 `com.bigtree.cyberapi` 撞名。
-- **首次启动时复制旧数据。** 条件是新目录里还没有数据库，并且在 Tauri 1 的 `app_data_dir`（macOS 为 `~/Library/Application Support/com.bigtree.cyberapi/`，其他平台按 Tauri 1 的规则取）找到 `my_db.db`。此时：
-  - **复制**数据库及其 `-wal` / `-shm` 文件，不移动、不修改原文件，所以旧版仍可继续使用。
-  - 把 `cookies.json` 导入 turso 的 Cookie 表。cookie_store 的 JSON 由迁移代码解析，只导入持久化 Cookie。
-  - 迁移完成后写一条记录，防止重复导入。
+- **首次启动时复制旧数据**（`cyberapi_store_turso::copy_legacy_data`）。条件是新目录里还没有数据库，并且在 Tauri 1 的 `app_data_dir`（`tauri_data_dir()`：平台数据目录下的 `com.bigtree.cyberapi`，macOS 为 `~/Library/Application Support/com.bigtree.cyberapi/`）找到 `my_db.db`。此时：
+  - **复制**数据库及其 `-wal` / `-shm` 文件，不移动、不修改原文件，所以旧版仍可继续使用。turso 打开文件时会把它切换为 WAL 模式，这是绝不能直接打开原文件的另一个原因。
+  - 数据库先复制成临时文件名，最后再改名。复制中断时不会留下一个被误当成数据库的半截文件。新数据库一旦存在，就不会再复制。
+  - `cookies.json` 先原样复制到新目录的 `legacy-cookies.json`。第 8 步实现 `CookieStore` 时再导入 turso 的 Cookie 表：cookie_store 的 JSON 由导入代码解析，只导入持久化 Cookie，导入后打标记防止重复。
 - **localforage 中的数据不迁移**（见分析文档 4.6 / 8.3）。
 
 ### 4.4 服务器：sqlx（照搬 zedis ADR 18）
