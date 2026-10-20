@@ -3,10 +3,11 @@
 
 use crate::states::WorkspaceState;
 use crate::this_build;
+use crate::views::name_dialog::ok_button;
 use cyberapi_core::ItemId;
 use cyberapi_core::import::{self, Format};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -160,13 +161,7 @@ pub fn open_import_dialog(
             .footer(
                 DialogFooter::new()
                     .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))
-                    .child(
-                        DialogAction::new().child(
-                            Button::new("import-ok")
-                                .primary()
-                                .label(t!("import.import").to_string()),
-                        ),
-                    ),
+                    .child(ok_button("import-ok", t!("import.import").to_string(), submit.clone())),
             )
             .on_ok(submit)
     });

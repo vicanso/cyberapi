@@ -21,7 +21,9 @@ mod transport;
 #[cfg(target_family = "wasm")]
 use cyberapi_core::prefs::AppPrefs;
 #[cfg(target_family = "wasm")]
-use cyberapi_store_bridge::{BridgeHttpEngine, BridgeStore};
+use cyberapi_gui::{Extras, SignOut};
+#[cfg(target_family = "wasm")]
+use cyberapi_store_bridge::{BridgeHttpEngine, BridgeStore, Transport as _};
 #[cfg(target_family = "wasm")]
 use gpui_kit::web::{CanvasFontFallback, WebBackendPreference, WebPlatform};
 #[cfg(target_family = "wasm")]
@@ -82,7 +84,25 @@ pub fn run(origin: String, ui_font: Vec<u8>, prefs: String) {
     ));
     let http_client = Arc::new(platform.fetch_http_client());
     let transport = Arc::new(transport::FetchTransport::new(http_client.clone(), origin.clone()));
-    let storage = BridgeStore::new(transport.clone()).storage();
+    let bridge = BridgeStore::new(transport.clone());
+    let storage = bridge.storage();
+    let sign_out: SignOut = {
+        let transport = transport.clone();
+        Arc::new(move || {
+            let transport = transport.clone();
+            Box::pin(async move {
+                if let Err(error) = transport.post("/v1/logout", Vec::new()).await {
+                    error!(%error, "signing out failed");
+                }
+                transport::sign_in_again();
+            })
+        })
+    };
+    let extras = Extras {
+        directory: Some(bridge.directory()),
+        sign_out: Some(sign_out),
+        ..Default::default()
+    };
     // Requests go out from the bridge (`docs/architecture.md` §5, D5).
     let engine = Arc::new(BridgeHttpEngine::new(transport));
     let prefs: AppPrefs = serde_json::from_str(&prefs).unwrap_or_default();
@@ -107,7 +127,7 @@ pub fn run(origin: String, ui_font: Vec<u8>, prefs: String) {
         if let Some(icon_watch) = icon_watch {
             assets::repaint_when_icons_land(icon_watch, cx);
         }
-        cyberapi_gui::launch(cx, storage, None, engine, prefs);
+        cyberapi_gui::launch(cx, storage, engine, prefs, extras);
     });
     APP.with(|slot| *slot.borrow_mut() = Some(handle));
 }

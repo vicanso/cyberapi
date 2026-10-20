@@ -4,8 +4,9 @@
 
 use crate::states::AppStore;
 use crate::this_build;
+use crate::views::inline_confirm::inline_confirm;
 use cyberapi_core::prefs::{ThemeMode, Timeouts, WindowPrefs};
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
@@ -48,6 +49,8 @@ struct SettingsView {
     height: Entity<InputState>,
     /// A number saved once typing pauses.
     pending: Option<Task<()>>,
+    /// Asking whether to reset everything.
+    confirming_reset: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -101,6 +104,7 @@ impl SettingsView {
             width,
             height,
             pending: None,
+            confirming_reset: false,
             _subscriptions: subscriptions,
         }
     }
@@ -158,22 +162,44 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn confirm_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.open_alert_dialog(cx, |alert, _, _| {
-            alert
-                .title(t!("settings.reset_title").to_string())
-                .description(t!("settings.reset_description").to_string())
-                .confirm()
-                .ok_text(t!("settings.reset").to_string())
-                .ok_variant(ButtonVariant::Danger)
-                .cancel_text(t!("common.cancel").to_string())
-                .on_ok(|_, window, cx| {
-                    let app = AppStore::global(cx).state().clone();
-                    app.update(cx, |app, cx| app.reset_prefs(cx));
-                    window.close_dialog(cx);
-                    true
-                })
-        });
+    /// F15.3, asked inside the dialog: the browser build draws no dialog
+    /// stacked on this one.
+    fn render_reset(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.confirming_reset {
+            return h_flex()
+                .justify_end()
+                .child(
+                    Button::new("settings-reset")
+                        .ghost()
+                        .small()
+                        .label(t!("settings.reset").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.confirming_reset = true;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element();
+        }
+        let view = cx.entity().downgrade();
+        inline_confirm(
+            t!("settings.reset_title").to_string(),
+            t!("settings.reset_description").to_string(),
+            None,
+            t!("settings.reset").to_string(),
+            move |_, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.confirming_reset = false;
+                    cx.notify();
+                });
+            },
+            |window, cx| {
+                let app = AppStore::global(cx).state().clone();
+                app.update(cx, |app, cx| app.reset_prefs(cx));
+                window.close_dialog(cx);
+            },
+            cx,
+        )
+        .into_any_element()
     }
 }
 
@@ -327,14 +353,6 @@ impl Render for SettingsView {
             .child(section(t!("settings.timeouts").to_string(), timeouts))
             .children(window_size)
             .child(section(t!("settings.about").to_string(), about))
-            .child(
-                h_flex().justify_end().child(
-                    Button::new("settings-reset")
-                        .ghost()
-                        .small()
-                        .label(t!("settings.reset").to_string())
-                        .on_click(cx.listener(|this, _, window, cx| this.confirm_reset(window, cx))),
-                ),
-            )
+            .child(self.render_reset(cx))
     }
 }

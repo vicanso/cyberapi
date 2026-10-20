@@ -54,9 +54,10 @@ impl Transport for FetchTransport {
     }
 }
 
-/// The login lapsed (or was ended elsewhere): reloading brings the page's
-/// sign-in form back, which is the only place a login is made.
-fn sign_in_again() {
+/// The login lapsed, was ended elsewhere, or was ended here: reloading
+/// brings the page's sign-in form back, which is the only place a login is
+/// made.
+pub fn sign_in_again() {
     if let Some(window) = web_sys::window() {
         let _ = window.location().reload();
     }

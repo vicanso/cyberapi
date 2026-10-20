@@ -53,6 +53,8 @@ pub struct ApiState {
     workspace: WeakEntity<WorkspaceState>,
     collection: CollectionId,
     api: ItemId,
+    /// A viewer's edits stay here: they send, and are never saved (§9.2).
+    editable: bool,
     request: HttpRequest,
     /// What the store has, as far as this state knows; `None` after a save
     /// failed, so the next one goes out whatever it holds.
@@ -74,11 +76,12 @@ impl ApiState {
         sender: Sender,
         workspace: WeakEntity<WorkspaceState>,
         api: &ApiSetting,
+        editable: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         // An edit not saved yet is saved as the state goes.
         cx.on_release(|this, cx| {
-            if this.saved.as_ref() != Some(&this.request) {
+            if this.editable && this.saved.as_ref() != Some(&this.request) {
                 let call = this.sender.storage.tree().save_request(
                     this.collection.clone(),
                     this.api.clone(),
@@ -98,6 +101,7 @@ impl ApiState {
             workspace,
             collection: api.collection.clone(),
             api: api.id.clone(),
+            editable,
             request: api.request.clone(),
             saved: Some(api.request.clone()),
             save_task: None,
@@ -242,7 +246,7 @@ impl ApiState {
     pub fn save_now(&mut self, cx: &mut Context<Self>) {
         self.save_task = None;
         cx.notify();
-        if self.saved.as_ref() == Some(&self.request) {
+        if !self.editable || self.saved.as_ref() == Some(&self.request) {
             return;
         }
         let request = self.request.clone();

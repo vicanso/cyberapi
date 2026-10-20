@@ -129,6 +129,12 @@ impl WorkspaceState {
         &self.collection
     }
 
+    /// Whether the reader may change the tree, the requests and the
+    /// variables (§9.2): a viewer only reads and sends.
+    pub fn editable(&self) -> bool {
+        self.collection.role.can_edit()
+    }
+
     pub fn storage(&self) -> &Storage {
         &self.sender.storage
     }
@@ -187,7 +193,8 @@ impl WorkspaceState {
         match selected {
             Some(api) if current.as_ref() != Some(&api.id) => {
                 let (sender, workspace) = (self.sender.clone(), cx.entity().downgrade());
-                self.api = Some(cx.new(|cx| ApiState::new(sender, workspace, &api, cx)));
+                let editable = self.editable();
+                self.api = Some(cx.new(|cx| ApiState::new(sender, workspace, &api, editable, cx)));
             }
             Some(_) => {}
             None => self.api = None,
@@ -543,6 +550,7 @@ mod tests {
     use super::*;
     use crate::states::ApiEvent;
     use crate::states::api::SAVE_DELAY;
+    use cyberapi_core::access::CollectionRole;
     use cyberapi_core::model::{HttpMethod, HttpRequest, KvParam};
     use cyberapi_core::prefs::Timeouts;
     use cyberapi_core::response::Exchange;
@@ -825,6 +833,41 @@ mod tests {
         assert_eq!(stored(&storage, &collection, &id).query, [header("q", "x")]);
         let other = editor(&state, cx);
         assert_ne!(other.read_with(cx, |api, _| api.api().clone()), id);
+    }
+
+    /// §9.2: a viewer edits and sends, but nothing it changes is saved.
+    #[gpui_kit::test]
+    async fn a_viewers_edits_stay_its_own(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let manager = open(&storage, collection.clone(), cx);
+        manager.update(cx, |state, cx| state.create_api(None, "login".into(), cx));
+        cx.run_until_parked();
+        let id = editor(&manager, cx).read_with(cx, |api, _| api.api().clone());
+
+        let viewer = open(
+            &storage,
+            Collection {
+                role: CollectionRole::Viewer,
+                ..collection.clone()
+            },
+            cx,
+        );
+        assert!(!viewer.read_with(cx, |state, _| state.editable()));
+        viewer.update(cx, |state, cx| state.select(&id, cx));
+        cx.run_until_parked();
+        let api = editor(&viewer, cx);
+        api.update(cx, |api, cx| {
+            api.set_method(HttpMethod::Post, cx);
+            api.set_uri("http://viewer.test".into(), cx);
+        });
+        cx.executor().advance_clock(SAVE_DELAY);
+        cx.run_until_parked();
+        drop(api);
+        drop(viewer);
+        cx.run_until_parked();
+        let request = stored(&storage, &collection, &id);
+        assert_eq!((request.method, request.uri.as_str()), (HttpMethod::Get, ""));
     }
 
     #[gpui_kit::test]

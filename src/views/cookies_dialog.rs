@@ -2,17 +2,18 @@
 
 use crate::i18n;
 use crate::states::{AppStore, CookieKey, CookiesEvent, CookiesState, Load, cookie_key};
+use crate::views::inline_confirm::inline_confirm;
 use chrono::{Local, NaiveDate, NaiveDateTime, TimeZone as _};
 use cyberapi_core::Timestamp;
 use cyberapi_core::cookie::Cookie;
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use rust_i18n::t;
 use std::collections::HashMap;
@@ -72,6 +73,8 @@ struct NewCookie {
 
 struct CookiesEditor {
     state: Entity<CookiesState>,
+    /// Asking whether to clear the jar.
+    confirming_clear: bool,
     rows: HashMap<CookieKey, Row>,
     new: NewCookie,
     _subscriptions: Vec<Subscription>,
@@ -104,6 +107,7 @@ impl CookiesEditor {
         ];
         Self {
             state,
+            confirming_clear: false,
             rows: HashMap::new(),
             new,
             _subscriptions: subscriptions,
@@ -190,22 +194,35 @@ impl CookiesEditor {
         }
     }
 
-    fn confirm_clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.downgrade();
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let state = state.clone();
-            alert
-                .title(t!("cookies.clear_title").to_string())
-                .description(t!("cookies.clear_description").to_string())
-                .confirm()
-                .ok_text(t!("cookies.clear").to_string())
-                .ok_variant(ButtonVariant::Danger)
-                .cancel_text(t!("common.cancel").to_string())
-                .on_ok(move |_, _, cx| {
-                    let _ = state.update(cx, |state, cx| state.clear(cx));
-                    true
-                })
-        });
+    /// F9.7, asked inside the dialog: the browser build draws no dialog
+    /// stacked on this one.
+    fn render_clear(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.confirming_clear {
+            return None;
+        }
+        let (cancelled, confirmed) = (cx.entity().downgrade(), cx.entity().downgrade());
+        Some(
+            inline_confirm(
+                t!("cookies.clear_title").to_string(),
+                t!("cookies.clear_description").to_string(),
+                None,
+                t!("cookies.clear").to_string(),
+                move |_, cx| {
+                    let _ = cancelled.update(cx, |this, cx| {
+                        this.confirming_clear = false;
+                        cx.notify();
+                    });
+                },
+                move |_, cx| {
+                    let _ = confirmed.update(cx, |this, cx| {
+                        this.confirming_clear = false;
+                        this.state.update(cx, |state, cx| state.clear(cx));
+                    });
+                },
+                cx,
+            )
+            .into_any_element(),
+        )
     }
 }
 
@@ -314,9 +331,13 @@ impl Render for CookiesEditor {
                             .outline()
                             .small()
                             .label(t!("cookies.clear").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| this.confirm_clear(window, cx))),
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.confirming_clear = true;
+                                cx.notify();
+                            })),
                     ),
             )
+            .children(self.render_clear(cx))
     }
 }
 

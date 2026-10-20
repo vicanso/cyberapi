@@ -26,9 +26,11 @@ use crate::states::AppStore;
 use crate::views::StartupError;
 use cyberapi_core::prefs::AppPrefs;
 use cyberapi_http::HttpEngine;
-use cyberapi_store::{BackupStore, Storage};
+use cyberapi_store::{BackupStore, DirectoryStore, Storage};
 use gpui_kit::component::TitleBar;
 use gpui_kit::{App, AppContext as _, Bounds, Entity, Render, Window, WindowBounds, WindowOptions, px, size};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tracing::error;
 
@@ -39,6 +41,20 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const APP_ID: &str = "com.bigtree.cyberapi";
 
 gpui_kit::actions!(cyberapi, [Quit, Hide, HideOthers, ShowAll]);
+
+/// What only one of the builds has; the other leaves it `None`.
+#[derive(Clone, Default)]
+pub struct Extras {
+    /// The desktop's backups (M13).
+    pub backups: Option<Arc<dyn BackupStore>>,
+    /// The browser's accounts and teams (`docs/architecture.md` §9.4).
+    pub directory: Option<Arc<dyn DirectoryStore>>,
+    /// Ends the browser's login; the page then asks for one again.
+    pub sign_out: Option<SignOut>,
+}
+
+/// Ending a login: the work, as a future to run.
+pub type SignOut = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// Everything the desktop `main` does.
 #[cfg(not(target_family = "wasm"))]
@@ -61,7 +77,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Must come before anything that uses a component.
         gpui_kit::init(cx);
         match opened {
-            Ok((storage, backups, prefs)) => launch(cx, storage, Some(backups), engine, prefs),
+            Ok((storage, backups, prefs)) => {
+                let extras = Extras {
+                    backups: Some(backups),
+                    ..Default::default()
+                };
+                launch(cx, storage, engine, prefs, extras)
+            }
             Err(message) => launch_failed(cx, message),
         }
     });
@@ -134,19 +156,13 @@ fn import_legacy_cookies(storage: &Storage, dir: &std::path::Path) {
     }
 }
 
-/// Opens the main window on `storage`, sending with `engine`; `backups`
-/// where this build backs up (the desktop). Both builds call this once the
-/// platform is up and `gpui_kit::init` has run: the desktop from [`run`],
-/// the browser from `cyberapi-web`.
-pub fn launch(
-    cx: &mut App,
-    storage: Storage,
-    backups: Option<Arc<dyn BackupStore>>,
-    engine: Arc<dyn HttpEngine>,
-    prefs: AppPrefs,
-) {
+/// Opens the main window on `storage`, sending with `engine`, with what
+/// only this build has in `extras`. Both builds call this once the platform
+/// is up and `gpui_kit::init` has run: the desktop from [`run`], the browser
+/// from `cyberapi-web`.
+pub fn launch(cx: &mut App, storage: Storage, engine: Arc<dyn HttpEngine>, prefs: AppPrefs, extras: Extras) {
     i18n::apply(prefs.language.as_deref());
-    AppStore::init(storage, backups, engine, prefs, cx);
+    AppStore::init(storage, engine, prefs, extras, cx);
     views::bind_workspace_keys(cx);
     open_main_window(cx, |window, cx| cx.new(|cx| CyberApi::new(window, cx)));
 }

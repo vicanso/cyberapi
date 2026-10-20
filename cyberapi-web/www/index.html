@@ -116,7 +116,10 @@
   $("loading").textContent = t("loading");
 
   const show = (id) => {
-    for (const name of ["loading", "login", "setup"]) $(name).hidden = name !== id;
+    for (const name of ["loading", "login", "setup"]) {
+      const panel = $(name);
+      if (panel) panel.hidden = name !== id;
+    }
   };
 
   // Resolves once someone is signed in, by the form the bridge needs.
@@ -173,6 +176,8 @@
 
   try {
     if ((await api("/v1/session")).status === 401) await signIn();
+    // Signed in: the forms go, and the passwords typed into them.
+    for (const id of ["login", "setup"]) $(id).remove();
     show("loading");
     // The UI font rides in with the call: the web text system has no fonts
     // of its own, and the first frame measures text.

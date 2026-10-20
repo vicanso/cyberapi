@@ -4,13 +4,17 @@
 
 use crate::i18n;
 use crate::states::{AppStore, DashboardEvent, DashboardState, Load};
-use cyberapi_core::Timestamp;
+use crate::views::name_dialog::ok_button;
+use crate::views::open_access_dialog;
+use crate::views::pick::pick;
+use cyberapi_core::access::CollectionRole;
 use cyberapi_core::collection::{SortOrder, filter_and_sort};
 use cyberapi_core::format::short_time;
 use cyberapi_core::model::Collection;
+use cyberapi_core::{TeamId, Timestamp};
 use cyberapi_store::{CollectionEdit, NewCollection};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
-use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
+use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::empty::{
     Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
@@ -28,7 +32,7 @@ use gpui_kit::{
     Window, div, px,
 };
 use rust_i18n::t;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// Every order the sort menu offers, in its order.
@@ -109,18 +113,23 @@ impl DashboardView {
         let state = self.state.clone();
         let name_missing = Rc::new(Cell::new(false));
         let focus_once = Cell::new(true);
+        // The browser build's: the team a new project goes in, the reader's
+        // own space unless chosen.
+        let creating = existing.is_none();
+        let team: Rc<RefCell<Option<TeamId>>> = Rc::default();
 
         window.open_dialog(cx, move |dialog, window, cx| {
             if focus_once.replace(false) {
                 name.focus_handle(cx).focus(window, cx);
             }
             let on_ok = {
-                let (name, description, state, existing, name_missing) = (
+                let (name, description, state, existing, name_missing, team) = (
                     name.clone(),
                     description.clone(),
                     state.clone(),
                     existing.clone(),
                     name_missing.clone(),
+                    team.clone(),
                 );
                 move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
                     let name_value = name.read(cx).value().trim().to_string();
@@ -143,7 +152,7 @@ impl DashboardView {
                             NewCollection {
                                 name: name_value,
                                 description: description_value,
-                                owner: None,
+                                owner: team.borrow().clone(),
                             },
                             cx,
                         ),
@@ -168,15 +177,15 @@ impl DashboardView {
                             Input::new(&description),
                             None,
                             cx,
-                        )),
+                        ))
+                        .when_some(creating.then(|| team_field(&team, cx)).flatten(), |this, field| {
+                            this.child(field)
+                        }),
                 )
                 .footer(
                     DialogFooter::new()
                         .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))
-                        .child(
-                            DialogAction::new()
-                                .child(Button::new("collection-dialog-ok").primary().label(ok_label.clone())),
-                        ),
+                        .child(ok_button("collection-dialog-ok", ok_label.clone(), on_ok.clone())),
                 )
                 .on_ok(on_ok)
         });
@@ -263,8 +272,13 @@ impl DashboardView {
         let (border, ring, muted) = (theme.border, theme.ring, theme.muted_foreground);
         let key = collection.id.to_string();
         let opened = collection.clone();
-        let (edited, deleted) = (collection.clone(), collection.clone());
-        let (edit_view, delete_view) = (view.clone(), view);
+        let (edited, deleted, shared) = (collection.clone(), collection.clone(), collection.clone());
+        let (edit_view, delete_view, share_view) = (view.clone(), view.clone(), view);
+        // Changing the project is its managers' (§9.2); the desktop's only
+        // reader manages everything.
+        let manages = collection.role.can_manage();
+        let shares = AppStore::global(cx).directory().is_some();
+        let place = place_of(collection, cx);
         v_flex()
             .id(SharedString::from(format!("collection-{key}")))
             .gap_2()
@@ -292,39 +306,61 @@ impl DashboardView {
                             .font_semibold()
                             .child(collection.name.clone()),
                     )
-                    .child(
-                        // The menu's own clicks must not open the project.
-                        div()
-                            .id(SharedString::from(format!("collection-actions-{key}")))
-                            .on_click(|_, _, cx| cx.stop_propagation())
-                            .child(
-                                Button::new(SharedString::from(format!("collection-more-{key}")))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Ellipsis)
-                                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                                        let (edited, deleted) = (edited.clone(), deleted.clone());
-                                        let (edit_view, delete_view) = (edit_view.clone(), delete_view.clone());
-                                        menu.item(PopupMenuItem::new(t!("common.edit").to_string()).on_click(
-                                            move |_, window, cx| {
-                                                let _ = edit_view.update(cx, |this, cx| {
-                                                    this.open_editor(Some(edited.clone()), window, cx)
-                                                });
-                                            },
-                                        ))
-                                        .separator()
-                                        .item(
-                                            PopupMenuItem::new(t!("common.delete").to_string()).on_click(
-                                                move |_, window, cx| {
-                                                    let _ = delete_view.update(cx, |this, cx| {
-                                                        this.confirm_delete(deleted.clone(), window, cx)
-                                                    });
-                                                },
-                                            ),
-                                        )
-                                    }),
-                            ),
-                    ),
+                    .when(manages, |this| {
+                        this.child(
+                            // The menu's own clicks must not open the project.
+                            div()
+                                .id(SharedString::from(format!("collection-actions-{key}")))
+                                .on_click(|_, _, cx| cx.stop_propagation())
+                                .child(
+                                    Button::new(SharedString::from(format!("collection-more-{key}")))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Ellipsis)
+                                        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                                            let (edited, deleted) = (edited.clone(), deleted.clone());
+                                            let (edit_view, delete_view) = (edit_view.clone(), delete_view.clone());
+                                            let menu =
+                                                menu.item(PopupMenuItem::new(t!("common.edit").to_string()).on_click(
+                                                    move |_, window, cx| {
+                                                        let _ = edit_view.update(cx, |this, cx| {
+                                                            this.open_editor(Some(edited.clone()), window, cx)
+                                                        });
+                                                    },
+                                                ));
+                                            let menu = if shares {
+                                                let (shared, share_view) = (shared.clone(), share_view.clone());
+                                                menu.item(PopupMenuItem::new(t!("access.menu").to_string()).on_click(
+                                                    move |_, window, cx| {
+                                                        let reload = share_view.clone();
+                                                        open_access_dialog(
+                                                            shared.clone(),
+                                                            move |cx| {
+                                                                let _ = reload.update(cx, |this, cx| {
+                                                                    this.state.update(cx, |state, cx| state.reload(cx))
+                                                                });
+                                                            },
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                ))
+                                            } else {
+                                                menu
+                                            };
+                                            menu.separator().item(
+                                                PopupMenuItem::new(t!("common.delete").to_string()).on_click(
+                                                    move |_, window, cx| {
+                                                        let _ = delete_view.update(cx, |this, cx| {
+                                                            this.confirm_delete(deleted.clone(), window, cx)
+                                                        });
+                                                    },
+                                                ),
+                                            )
+                                        }),
+                                ),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -335,10 +371,16 @@ impl DashboardView {
                     .child(collection.description.clone()),
             )
             .child(
-                div()
+                h_flex()
+                    .gap_2()
                     .text_xs()
                     .text_color(muted)
-                    .child(t!("dashboard.updated", time = short_time(collection.updated_at, now)).to_string()),
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(t!("dashboard.updated", time = short_time(collection.updated_at, now)).to_string()),
+                    )
+                    .when_some(place, |this, place| this.child(div().truncate().child(place))),
             )
     }
 
@@ -465,4 +507,56 @@ impl Render for DashboardView {
             .child(self.render_toolbar(sort, total, cx))
             .child(self.render_body(sort, window, cx))
     }
+}
+
+/// The browser build's: the team a project belongs to, unless the reader's
+/// own space, and the reader's role where it is less than managing.
+fn place_of(collection: &Collection, cx: &App) -> Option<String> {
+    AppStore::global(cx).directory()?;
+    let me = AppStore::global(cx).state().read(cx).me()?;
+    let team = me.teams.iter().find(|team| Some(&team.id) == collection.owner.as_ref());
+    let team = match team {
+        Some(team) if team.personal => None,
+        Some(team) => Some(team.name.clone()),
+        None => Some(t!("dashboard.shared").to_string()),
+    };
+    let role = (collection.role < CollectionRole::Manager).then(|| i18n::collection_role(collection.role));
+    match (team, role) {
+        (Some(team), Some(role)) => Some(format!("{team} · {role}")),
+        (one, other) => one.or(other),
+    }
+}
+
+/// The browser build's choice of team for a new project.
+fn team_field(team: &Rc<RefCell<Option<TeamId>>>, cx: &App) -> Option<AnyElement> {
+    AppStore::global(cx).directory()?;
+    let teams = AppStore::global(cx).state().read(cx).me()?.teams.clone();
+    let chosen = team
+        .borrow()
+        .clone()
+        .or_else(|| teams.first().map(|first| first.id.clone()));
+    let label = teams
+        .iter()
+        .find(|candidate| Some(&candidate.id) == chosen.as_ref())
+        .map(|candidate| candidate.name.clone())
+        .unwrap_or_default();
+    let options = teams.iter().map(|team| (team.id.clone(), team.name.clone())).collect();
+    let team = team.clone();
+    Some(
+        v_flex()
+            .gap_1p5()
+            .child(div().text_sm().font_medium().child(t!("dashboard.team").to_string()))
+            .child(h_flex().child(pick(
+                "collection-team",
+                label,
+                options,
+                chosen,
+                false,
+                move |id, window, _| {
+                    *team.borrow_mut() = Some(id);
+                    window.refresh();
+                },
+            )))
+            .into_any_element(),
+    )
 }

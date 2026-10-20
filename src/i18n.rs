@@ -5,7 +5,7 @@
 //! components' own strings (dialog buttons, input menus) along with ours. The
 //! components spell Simplified Chinese `zh-CN`, so this app does too.
 
-use cyberapi_core::access::TeamRole;
+use cyberapi_core::access::{CollectionRole, TeamRole};
 use cyberapi_service::backup::BackupFailure;
 use cyberapi_store::{Refusal, StoreError};
 use rust_i18n::t;
@@ -74,6 +74,15 @@ pub fn team_role(role: TeamRole) -> String {
         TeamRole::Owner => t!("roles.owner"),
         TeamRole::Admin => t!("roles.admin"),
         TeamRole::Member => t!("roles.member"),
+    }
+    .into()
+}
+
+pub fn collection_role(role: CollectionRole) -> String {
+    match role {
+        CollectionRole::Viewer => t!("roles.viewer"),
+        CollectionRole::Editor => t!("roles.editor"),
+        CollectionRole::Manager => t!("roles.manager"),
     }
     .into()
 }

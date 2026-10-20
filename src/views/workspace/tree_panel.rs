@@ -220,6 +220,7 @@ impl TreePanel {
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let state = self.state.downgrade();
+        let editable = self.state.read(cx).editable();
         h_flex()
             .gap_1()
             .p_2()
@@ -233,28 +234,39 @@ impl TreePanel {
                 Button::new("tree-new")
                     .ghost()
                     .small()
-                    .icon(IconName::Plus)
-                    .tooltip(t!("workspace.new").to_string())
+                    // A viewer's only choice is exporting.
+                    .icon(if editable { IconName::Plus } else { IconName::Ellipsis })
+                    .tooltip(
+                        if editable {
+                            t!("workspace.new")
+                        } else {
+                            t!("export.project")
+                        }
+                        .to_string(),
+                    )
                     .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
                         let (for_api, for_folder) = (state.clone(), state.clone());
                         let (for_import, for_export) = (state.clone(), state.clone());
-                        menu.item(
-                            PopupMenuItem::new(t!("workspace.new_api").to_string())
-                                .on_click(move |_, window, cx| new_item(&for_api, None, ItemKind::Api, window, cx)),
-                        )
-                        .item(
-                            PopupMenuItem::new(t!("workspace.new_folder").to_string()).on_click(
+                        let menu = if editable {
+                            menu.item(
+                                PopupMenuItem::new(t!("workspace.new_api").to_string())
+                                    .on_click(move |_, window, cx| new_item(&for_api, None, ItemKind::Api, window, cx)),
+                            )
+                            .item(PopupMenuItem::new(t!("workspace.new_folder").to_string()).on_click(
                                 move |_, window, cx| new_item(&for_folder, None, ItemKind::Folder, window, cx),
-                            ),
-                        )
-                        .separator()
-                        // F10.1 / F11.1.
-                        .item(
-                            PopupMenuItem::new(t!("import.title").to_string()).on_click(move |_, window, cx| {
-                                open_import_dialog(for_import.clone(), None, window, cx)
-                            }),
-                        )
-                        .item(
+                            ))
+                            .separator()
+                            // F10.1.
+                            .item(
+                                PopupMenuItem::new(t!("import.title").to_string()).on_click(move |_, window, cx| {
+                                    open_import_dialog(for_import.clone(), None, window, cx)
+                                }),
+                            )
+                        } else {
+                            menu
+                        };
+                        // F11.1: a viewer may export too.
+                        menu.item(
                             PopupMenuItem::new(t!("export.project").to_string())
                                 .on_click(move |_, window, cx| export(&for_export, None, window, cx)),
                         )
@@ -277,6 +289,7 @@ impl TreePanel {
         let Some(node) = state.tree().get(&row.id) else {
             return div().into_any_element();
         };
+        let editable = state.editable();
         let theme = cx.theme();
         let selected = state.selected() == Some(&row.id);
         let pinned = state.is_pinned(&row.id);
@@ -367,7 +380,7 @@ impl TreePanel {
                     })
                 },
             )
-            .when(!renaming, |this| {
+            .when(!renaming && editable, |this| {
                 this.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
             })
             .child(icon)
@@ -384,13 +397,15 @@ impl TreePanel {
                     ItemKind::Folder => {
                         this.state.update(cx, |state, cx| state.toggle_folder(&id, cx));
                     }
-                    ItemKind::Api if event.click_count() >= 2 => {
+                    ItemKind::Api if event.click_count() >= 2 && editable => {
                         this.start_rename(id.clone(), name.clone(), window, cx);
                     }
                     ItemKind::Api => this.state.update(cx, |state, cx| state.select(&id, cx)),
                 }),
             )
-            .context_menu(move |menu, _, cx| item_menu(menu, &view, &menu_state, &menu_id, &menu_name, kind, cx))
+            .context_menu(move |menu, _, cx| {
+                item_menu(menu, &view, &menu_state, &menu_id, &menu_name, kind, editable, cx)
+            })
             .into_any_element()
     }
 
@@ -470,7 +485,8 @@ impl TreePanel {
     }
 }
 
-/// An item's menu (F3.9 / F3.10).
+/// An item's menu (F3.9 / F3.10). A viewer only pins and exports.
+#[allow(clippy::too_many_arguments)]
 fn item_menu(
     menu: PopupMenu,
     view: &WeakEntity<TreePanel>,
@@ -478,6 +494,7 @@ fn item_menu(
     id: &ItemId,
     name: &str,
     kind: ItemKind,
+    editable: bool,
     cx: &App,
 ) -> PopupMenu {
     let pinned = state.upgrade().is_some_and(|state| state.read(cx).is_pinned(id));
@@ -487,25 +504,29 @@ fn item_menu(
             let folder = parent.clone();
             let (for_import, into) = (state.clone(), id.clone());
             let (for_export, exported) = (state.clone(), id.clone());
+            let menu = if editable {
+                menu.item(
+                    PopupMenuItem::new(t!("workspace.new_api").to_string()).on_click(move |_, window, cx| {
+                        new_item(&for_api, Some(parent.clone()), ItemKind::Api, window, cx)
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new(t!("workspace.new_folder").to_string()).on_click(move |_, window, cx| {
+                        new_item(&for_folder, Some(folder.clone()), ItemKind::Folder, window, cx)
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new(t!("import.into_folder").to_string()).on_click(move |_, window, cx| {
+                        open_import_dialog(for_import.clone(), Some(into.clone()), window, cx)
+                    }),
+                )
+            } else {
+                menu
+            };
             menu.item(
-                PopupMenuItem::new(t!("workspace.new_api").to_string())
-                    .on_click(move |_, window, cx| new_item(&for_api, Some(parent.clone()), ItemKind::Api, window, cx)),
-            )
-            .item(
-                PopupMenuItem::new(t!("workspace.new_folder").to_string()).on_click(move |_, window, cx| {
-                    new_item(&for_folder, Some(folder.clone()), ItemKind::Folder, window, cx)
-                }),
-            )
-            .item(
-                PopupMenuItem::new(t!("import.into_folder").to_string()).on_click(move |_, window, cx| {
-                    open_import_dialog(for_import.clone(), Some(into.clone()), window, cx)
-                }),
-            )
-            .item(
                 PopupMenuItem::new(t!("export.folder").to_string())
                     .on_click(move |_, window, cx| export(&for_export, Some(exported.clone()), window, cx)),
             )
-            .separator()
         }
         ItemKind::Api => {
             let (state, id) = (state.clone(), id.clone());
@@ -517,23 +538,26 @@ fn item_menu(
             menu.item(PopupMenuItem::new(label.to_string()).on_click(move |_, _, cx| {
                 let _ = state.update(cx, |state, cx| state.set_pinned(&id, !pinned, cx));
             }))
-            .separator()
         }
     };
+    if !editable {
+        return menu;
+    }
     let (rename_view, rename_id, rename_name) = (view.clone(), id.clone(), name.to_string());
     let (delete_state, delete_id, delete_name) = (state.clone(), id.clone(), name.to_string());
-    menu.item(
-        PopupMenuItem::new(t!("workspace.rename").to_string()).on_click(move |_, window, cx| {
-            let _ = rename_view.update(cx, |this, cx| {
-                this.start_rename(rename_id.clone(), rename_name.clone(), window, cx)
-            });
-        }),
-    )
-    .item(
-        PopupMenuItem::new(t!("common.delete").to_string()).on_click(move |_, window, cx| {
-            confirm_delete(&delete_state, delete_id.clone(), &delete_name, kind, window, cx)
-        }),
-    )
+    menu.separator()
+        .item(
+            PopupMenuItem::new(t!("workspace.rename").to_string()).on_click(move |_, window, cx| {
+                let _ = rename_view.update(cx, |this, cx| {
+                    this.start_rename(rename_id.clone(), rename_name.clone(), window, cx)
+                });
+            }),
+        )
+        .item(
+            PopupMenuItem::new(t!("common.delete").to_string()).on_click(move |_, window, cx| {
+                confirm_delete(&delete_state, delete_id.clone(), &delete_name, kind, window, cx)
+            }),
+        )
 }
 
 /// A centred state of the whole tree: empty, failed, nothing found.

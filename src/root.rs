@@ -3,7 +3,10 @@
 use crate::APP_NAME;
 use crate::i18n;
 use crate::states::{AppEvent, AppStore, Route};
-use crate::views::{DashboardView, WorkspaceView, open_cookies_dialog, open_settings_dialog, open_variables_dialog};
+use crate::views::{
+    DashboardView, WorkspaceView, open_accounts_dialog, open_cookies_dialog, open_password_dialog,
+    open_settings_dialog, open_teams_dialog, open_variables_dialog,
+};
 use cyberapi_core::model::VariableCategory;
 use cyberapi_core::prefs::ThemeMode;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
@@ -179,19 +182,20 @@ fn apply_theme(mode: ThemeMode, window: &mut Window, cx: &mut App) {
 impl CyberApi {
     /// The settings menu (F14): in a project, its variables (M8) first; on
     /// the project list, where this build backs up, backing up and
-    /// restoring (F13.3).
+    /// restoring (F13.3); where it signs in, the account last (§9).
     fn render_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = match &self.page {
             Page::Workspace(view) => Some(view.read(cx).state().downgrade()),
             Page::Dashboard(_) => None,
         };
         let backs_up = AppStore::global(cx).backups().is_some();
+        let signs_in = AppStore::global(cx).signs_in();
         Button::new("title-settings")
             .ghost()
             .small()
             .icon(IconName::Settings)
             .tooltip(t!("menu.settings").to_string())
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu: PopupMenu, _, _| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu: PopupMenu, _, cx| {
                 let menu = match workspace.clone() {
                     Some(workspace) => [
                         (VariableCategory::Environment, t!("variables.env_title")),
@@ -220,7 +224,8 @@ impl CyberApi {
                         ),
                     None => menu.item(PopupMenuItem::new(t!("menu.no_project").to_string()).disabled(true)),
                 };
-                menu.separator()
+                let menu = menu
+                    .separator()
                     .item(
                         PopupMenuItem::new(t!("cookies.title").to_string())
                             .on_click(|_, window, cx| open_cookies_dialog(window, cx)),
@@ -228,9 +233,43 @@ impl CyberApi {
                     .item(
                         PopupMenuItem::new(t!("settings.title").to_string())
                             .on_click(|_, window, cx| open_settings_dialog(window, cx)),
-                    )
+                    );
+                if signs_in { account_items(menu, cx) } else { menu }
             })
     }
+}
+
+/// Who is signed in, and what they do about it (§9).
+fn account_items(menu: PopupMenu, cx: &App) -> PopupMenu {
+    let me = AppStore::global(cx).state().read(cx).me().map(|me| me.account.clone());
+    let admin = me.as_ref().is_some_and(|me| me.admin);
+    let menu = match &me {
+        Some(me) => menu
+            .separator()
+            .item(PopupMenuItem::new(t!("account.signed_in_as", name = me.label()).to_string()).disabled(true)),
+        None => menu.separator(),
+    };
+    let menu = menu.item(
+        PopupMenuItem::new(t!("account.teams").to_string()).on_click(|_, window, cx| open_teams_dialog(window, cx)),
+    );
+    let menu = if admin {
+        menu.item(
+            PopupMenuItem::new(t!("account.accounts").to_string())
+                .on_click(|_, window, cx| open_accounts_dialog(window, cx)),
+        )
+    } else {
+        menu
+    };
+    menu.item(
+        PopupMenuItem::new(t!("account.change_password").to_string())
+            .on_click(|_, window, cx| open_password_dialog(window, cx)),
+    )
+    .item(
+        PopupMenuItem::new(t!("account.sign_out").to_string()).on_click(|_, _, cx| {
+            let state = AppStore::global(cx).state().clone();
+            state.update(cx, |state, cx| state.sign_out(cx));
+        }),
+    )
 }
 
 /// F13.2: the backup to restore, picked and then confirmed.

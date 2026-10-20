@@ -67,6 +67,9 @@ fn new_item(
     window: &mut Window,
     cx: &mut App,
 ) {
+    if !state.upgrade().is_some_and(|state| state.read(cx).editable()) {
+        return;
+    }
     let state = state.clone();
     let (title, placeholder) = match kind {
         ItemKind::Api => (t!("workspace.new_api"), t!("workspace.api_name_placeholder")),

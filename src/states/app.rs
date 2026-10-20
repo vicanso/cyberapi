@@ -1,15 +1,17 @@
 //! What the whole application shares: the stores, where the reader is, and
 //! their settings.
 
-use crate::this_build;
+use super::run_store;
+use crate::{Extras, this_build};
 use cyberapi_core::Timestamp;
 use cyberapi_core::collection::SortOrder;
+use cyberapi_core::directory::Me;
 use cyberapi_core::model::Collection;
 use cyberapi_core::prefs::{AppPrefs, ColumnWidths, ThemeMode, Timeouts, WindowPrefs};
 use cyberapi_http::HttpEngine;
 use cyberapi_service::Sender;
 use cyberapi_service::backup::{self, BackupFailure};
-use cyberapi_store::{BackupStore, Storage};
+use cyberapi_store::{BackupStore, DirectoryStore, Storage};
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,32 +23,28 @@ use tracing::warn;
 #[derive(Clone)]
 pub struct AppStore {
     storage: Storage,
-    backups: Option<Arc<dyn BackupStore>>,
     engine: Arc<dyn HttpEngine>,
+    extras: Extras,
     state: Entity<AppState>,
 }
 
 impl Global for AppStore {}
 
 impl AppStore {
-    pub fn init(
-        storage: Storage,
-        backups: Option<Arc<dyn BackupStore>>,
-        engine: Arc<dyn HttpEngine>,
-        prefs: AppPrefs,
-        cx: &mut App,
-    ) {
+    pub fn init(storage: Storage, engine: Arc<dyn HttpEngine>, prefs: AppPrefs, extras: Extras, cx: &mut App) {
         let state = cx.new(|_| AppState {
             route: Route::Dashboard,
             prefs,
+            me: None,
             save_task: None,
         });
         cx.set_global(Self {
             storage,
-            backups,
             engine,
-            state,
+            extras,
+            state: state.clone(),
         });
+        state.update(cx, |state, cx| state.reload_me(cx));
     }
 
     pub fn global(cx: &App) -> &Self {
@@ -59,7 +57,17 @@ impl AppStore {
 
     /// The desktop's backups (M13); a page has none.
     pub fn backups(&self) -> Option<&Arc<dyn BackupStore>> {
-        self.backups.as_ref()
+        self.extras.backups.as_ref()
+    }
+
+    /// The browser's accounts and teams (§9.4); the desktop has none.
+    pub fn directory(&self) -> Option<&Arc<dyn DirectoryStore>> {
+        self.extras.directory.as_ref()
+    }
+
+    /// Whether this build signs in (the browser).
+    pub fn signs_in(&self) -> bool {
+        self.extras.sign_out.is_some()
     }
 
     /// What sending needs, with the reader's settings as they are now.
@@ -104,6 +112,8 @@ impl EventEmitter<AppEvent> for AppState {}
 pub struct AppState {
     route: Route,
     prefs: AppPrefs,
+    /// Who is signed in, and their teams: the browser's, once read.
+    me: Option<Me>,
     /// A save waiting for a drag to settle.
     save_task: Option<Task<()>>,
 }
@@ -115,6 +125,32 @@ impl AppState {
 
     pub fn prefs(&self) -> &AppPrefs {
         &self.prefs
+    }
+
+    pub fn me(&self) -> Option<&Me> {
+        self.me.as_ref()
+    }
+
+    /// Reads who is signed in again: their teams change as they make,
+    /// leave and are added to them.
+    pub fn reload_me(&mut self, cx: &mut Context<Self>) {
+        let Some(directory) = AppStore::global(cx).directory().cloned() else {
+            return;
+        };
+        run_store(cx, directory.me(), |this, result, cx| match result {
+            Ok(me) => {
+                this.me = Some(me);
+                cx.notify();
+            }
+            Err(error) => warn!(%error, "who is signed in could not be read"),
+        });
+    }
+
+    /// Ends the browser's login; the page signs in again.
+    pub fn sign_out(&mut self, cx: &mut Context<Self>) {
+        if let Some(sign_out) = AppStore::global(cx).extras.sign_out.clone() {
+            cx.background_spawn(sign_out()).detach();
+        }
     }
 
     /// F2.7.
@@ -293,14 +329,11 @@ mod tests {
         let events: Rc<RefCell<Vec<String>>> = Rc::default();
         let seen = events.clone();
         let state = cx.update(|cx| {
-            let backups: Arc<dyn BackupStore> = Arc::new(store.clone());
-            AppStore::init(
-                store.storage(),
-                Some(backups),
-                Arc::new(NoEngine),
-                AppPrefs::default(),
-                cx,
-            );
+            let extras = Extras {
+                backups: Some(Arc::new(store.clone())),
+                ..Default::default()
+            };
+            AppStore::init(store.storage(), Arc::new(NoEngine), AppPrefs::default(), extras, cx);
             let state = AppStore::global(cx).state().clone();
             cx.subscribe(&state, move |_, event, _| {
                 seen.borrow_mut().push(match event {
