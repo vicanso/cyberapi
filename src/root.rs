@@ -2,7 +2,7 @@
 
 use crate::APP_NAME;
 use crate::states::{AppStore, Route};
-use crate::views::{DashboardView, WorkspaceView, open_cookies_dialog, open_variables_dialog};
+use crate::views::{DashboardView, WorkspaceView, open_cookies_dialog, open_settings_dialog, open_variables_dialog};
 use cyberapi_core::model::VariableCategory;
 use cyberapi_core::prefs::ThemeMode;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -24,6 +24,9 @@ enum Page {
 
 pub struct CyberApi {
     page: Page,
+    /// The settings the window was last drawn with, to see what changed.
+    theme: ThemeMode,
+    language: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -39,11 +42,17 @@ impl CyberApi {
                     apply_theme(theme, window, cx);
                 }
             }),
-            cx.observe_in(&state, window, |this, _, window, cx| this.follow_route(window, cx)),
+            cx.observe_in(&state, window, |this, _, window, cx| {
+                this.follow_settings(window, cx);
+                this.follow_route(window, cx);
+            }),
         ];
         let page = Self::page_for(state.read(cx).route().clone(), window, cx);
+        let prefs = state.read(cx).prefs().clone();
         let root = Self {
             page,
+            theme: prefs.theme,
+            language: prefs.language,
             _subscriptions: subscriptions,
         };
         root.set_title(window, cx);
@@ -56,6 +65,25 @@ impl CyberApi {
             // "last modified" on the way back.
             Route::Dashboard => Page::Dashboard(cx.new(|cx| DashboardView::new(window, cx))),
             Route::Workspace(collection) => Page::Workspace(cx.new(|cx| WorkspaceView::new(collection, window, cx))),
+        }
+    }
+
+    /// F14.1 / F15.2: a new theme or language shows at once. A new language
+    /// builds the page again, so the strings its fields were made with are
+    /// the new language's too.
+    fn follow_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
+        if prefs.theme != self.theme {
+            self.theme = prefs.theme;
+            apply_theme(prefs.theme, window, cx);
+        }
+        if prefs.language != self.language {
+            self.language = prefs.language.clone();
+            crate::i18n::apply(prefs.language.as_deref());
+            let route = AppStore::global(cx).state().read(cx).route().clone();
+            self.page = Self::page_for(route, window, cx);
+            window.refresh();
+            cx.notify();
         }
     }
 
@@ -160,10 +188,15 @@ impl CyberApi {
                     }),
                     None => menu.item(PopupMenuItem::new(t!("menu.no_project").to_string()).disabled(true)),
                 };
-                menu.separator().item(
-                    PopupMenuItem::new(t!("cookies.title").to_string())
-                        .on_click(|_, window, cx| open_cookies_dialog(window, cx)),
-                )
+                menu.separator()
+                    .item(
+                        PopupMenuItem::new(t!("cookies.title").to_string())
+                            .on_click(|_, window, cx| open_cookies_dialog(window, cx)),
+                    )
+                    .item(
+                        PopupMenuItem::new(t!("settings.title").to_string())
+                            .on_click(|_, window, cx| open_settings_dialog(window, cx)),
+                    )
             })
     }
 }

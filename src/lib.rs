@@ -182,13 +182,28 @@ fn open_main_window<V: Render>(cx: &mut App, build: impl FnOnce(&mut Window, &mu
 }
 
 fn main_window_options(cx: &App) -> WindowOptions {
-    let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+    // F1.3: the size the settings name, at least 900 × 600.
+    let window = cx
+        .try_global::<AppStore>()
+        .map(|store| store.state().read(cx).prefs().window)
+        .unwrap_or_default();
+    let (width, height) = if window.width > 0 && window.height > 0 {
+        (window.width.max(900) as f32, window.height.max(600) as f32)
+    } else {
+        (1280., 800.)
+    };
+    let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
+    let window_bounds = if window.maximized {
+        WindowBounds::Maximized(bounds)
+    } else {
+        WindowBounds::Windowed(bounds)
+    };
     let mut titlebar = TitleBar::title_bar_options();
     // The title bar is drawn by the app, but the OS still lists the window
     // by this name (task switcher, window menu).
     titlebar.title = Some(APP_NAME.into());
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(window_bounds),
         // F14.2: the smallest size the settings allow.
         window_min_size: Some(size(px(900.), px(600.))),
         titlebar: Some(titlebar),

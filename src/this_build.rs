@@ -31,6 +31,28 @@ pub fn reads_files() -> bool {
     false
 }
 
+/// Whether the app sizes its own window (F14.2); a page's is the tab's.
+#[cfg(not(target_family = "wasm"))]
+pub fn sizes_window() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn sizes_window() -> bool {
+    false
+}
+
+/// Where the data is kept, for the about section (F1.7).
+#[cfg(not(target_family = "wasm"))]
+pub fn data_location() -> String {
+    crate::paths::data_dir()
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_default()
+}
+#[cfg(target_family = "wasm")]
+pub fn data_location() -> String {
+    rust_i18n::t!("settings.on_the_server").to_string()
+}
+
 /// What reads those files.
 #[cfg(not(target_family = "wasm"))]
 pub fn files() -> Arc<dyn FileReader + Send + Sync> {

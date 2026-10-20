@@ -5,12 +5,14 @@ mod cookies_dialog;
 mod dashboard;
 mod kv_editor;
 mod name_dialog;
+mod settings_dialog;
 mod startup;
 mod variables_dialog;
 mod workspace;
 
 pub use cookies_dialog::open_cookies_dialog;
 pub use dashboard::DashboardView;
+pub use settings_dialog::open_settings_dialog;
 pub use startup::StartupError;
 pub use variables_dialog::open_variables_dialog;
 pub use workspace::{WorkspaceView, bind_keys as bind_workspace_keys};

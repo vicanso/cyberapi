@@ -4,7 +4,7 @@
 use crate::this_build;
 use cyberapi_core::collection::SortOrder;
 use cyberapi_core::model::Collection;
-use cyberapi_core::prefs::{AppPrefs, ColumnWidths};
+use cyberapi_core::prefs::{AppPrefs, ColumnWidths, ThemeMode, Timeouts, WindowPrefs};
 use cyberapi_http::HttpEngine;
 use cyberapi_service::Sender;
 use cyberapi_store::Storage;
@@ -102,6 +102,50 @@ impl AppState {
             return;
         }
         self.prefs.collection_sort = order;
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    /// F14.1.
+    pub fn set_theme(&mut self, theme: ThemeMode, cx: &mut Context<Self>) {
+        if self.prefs.theme != theme {
+            self.prefs.theme = theme;
+            self.save_prefs(cx);
+            cx.notify();
+        }
+    }
+
+    /// F15.2: `None` follows the system. The window follows at once; there
+    /// is no restart.
+    pub fn set_language(&mut self, language: Option<String>, cx: &mut Context<Self>) {
+        if self.prefs.language != language {
+            self.prefs.language = language;
+            self.save_prefs(cx);
+            cx.notify();
+        }
+    }
+
+    /// F14.3: seconds, `0` for the default.
+    pub fn set_timeouts(&mut self, timeouts: Timeouts, cx: &mut Context<Self>) {
+        if self.prefs.timeouts != timeouts {
+            self.prefs.timeouts = timeouts;
+            self.save_prefs(cx);
+            cx.notify();
+        }
+    }
+
+    /// F14.2: the window's size, applied by the view and at the next launch.
+    pub fn set_window(&mut self, window: WindowPrefs, cx: &mut Context<Self>) {
+        if self.prefs.window != window {
+            self.prefs.window = window;
+            self.save_prefs(cx);
+            cx.notify();
+        }
+    }
+
+    /// F15.3: every setting back to its default.
+    pub fn reset_prefs(&mut self, cx: &mut Context<Self>) {
+        self.prefs = AppPrefs::default();
         self.save_prefs(cx);
         cx.notify();
     }

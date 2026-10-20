@@ -1,0 +1,340 @@
+//! The application's settings (M14), in a dialog: theme, language, request
+//! timeouts, the window's size on the desktop, what this build is, and a way
+//! back to the defaults.
+
+use crate::states::AppStore;
+use crate::this_build;
+use cyberapi_core::prefs::{ThemeMode, Timeouts, WindowPrefs};
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
+    Styled as _, Subscription, Task, Window, div, px, size,
+};
+use rust_i18n::t;
+use std::time::Duration;
+
+/// The languages offered (F15.2): `None` follows the system.
+const LANGUAGES: [(Option<&str>, &str); 4] = [
+    (None, ""),
+    (Some("zh-CN"), "中文"),
+    (Some("en"), "English"),
+    (Some("uk"), "Українська"),
+];
+
+pub fn open_settings_dialog(window: &mut Window, cx: &mut App) {
+    let view = cx.new(|cx| SettingsView::new(window, cx));
+    window.open_dialog(cx, move |dialog, _, _| {
+        dialog
+            .title(t!("settings.title").to_string())
+            .w(px(560.))
+            .child(view.clone())
+    });
+}
+
+/// The smallest window the settings allow (F14.2).
+const MIN_WIDTH: u32 = 900;
+const MIN_HEIGHT: u32 = 600;
+
+struct SettingsView {
+    connect: Entity<InputState>,
+    write: Entity<InputState>,
+    read: Entity<InputState>,
+    width: Entity<InputState>,
+    height: Entity<InputState>,
+    /// A number saved once typing pauses.
+    pending: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// How long typing in a number field waits before it counts.
+const COMMIT_DELAY: Duration = Duration::from_millis(600);
+
+impl SettingsView {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
+        let number = |value: u32, window: &mut Window, cx: &mut Context<Self>| {
+            cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("0")
+                    .default_value(if value == 0 { String::new() } else { value.to_string() })
+            })
+        };
+        let connect = number(prefs.timeouts.connect, window, cx);
+        let write = number(prefs.timeouts.write, window, cx);
+        let read = number(prefs.timeouts.read, window, cx);
+        let width = number(prefs.window.width, window, cx);
+        let height = number(prefs.window.height, window, cx);
+        let mut subscriptions = Vec::new();
+        for (input, size) in [
+            (&connect, false),
+            (&write, false),
+            (&read, false),
+            (&width, true),
+            (&height, true),
+        ] {
+            subscriptions.push(
+                cx.subscribe_in(input, window, move |this, _, event: &InputEvent, window, cx| {
+                    match event {
+                        InputEvent::Blur | InputEvent::PressEnter { .. } => this.commit(size, window, cx),
+                        // Typing counts once it pauses: a field left by a click
+                        // on nothing focusable is never blurred.
+                        InputEvent::Change => {
+                            this.pending = Some(cx.spawn_in(window, async move |this, cx| {
+                                cx.background_executor().timer(COMMIT_DELAY).await;
+                                let _ = this.update_in(cx, |this, window, cx| this.commit(size, window, cx));
+                            }));
+                        }
+                        _ => {}
+                    }
+                }),
+            );
+        }
+        Self {
+            connect,
+            write,
+            read,
+            width,
+            height,
+            pending: None,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    fn commit(&mut self, size: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending = None;
+        if size {
+            self.save_size(window, cx);
+        } else {
+            self.save_timeouts(window, cx);
+        }
+    }
+
+    /// A field's number: empty is `0`; `None` when it is not one.
+    fn number(input: &Entity<InputState>, cx: &App) -> Option<u32> {
+        let text = input.read(cx).value().trim().to_string();
+        if text.is_empty() { Some(0) } else { text.parse().ok() }
+    }
+
+    /// F14.3.
+    fn save_timeouts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let read = |input| Self::number(input, cx);
+        let (Some(connect), Some(write), Some(read)) = (read(&self.connect), read(&self.write), read(&self.read))
+        else {
+            window.push_notification(Notification::warning(t!("settings.not_a_number").to_string()), cx);
+            return;
+        };
+        let app = AppStore::global(cx).state().clone();
+        app.update(cx, |app, cx| app.set_timeouts(Timeouts { connect, write, read }, cx));
+    }
+
+    /// F14.2: a size of its own, applied now; at least 900 × 600.
+    fn save_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(width), Some(height)) = (Self::number(&self.width, cx), Self::number(&self.height, cx)) else {
+            window.push_notification(Notification::warning(t!("settings.not_a_number").to_string()), cx);
+            return;
+        };
+        let app = AppStore::global(cx).state().clone();
+        let mut prefs = app.read(cx).prefs().window;
+        prefs.width = if width == 0 { 0 } else { width.max(MIN_WIDTH) };
+        prefs.height = if height == 0 { 0 } else { height.max(MIN_HEIGHT) };
+        app.update(cx, |app, cx| app.set_window(prefs, cx));
+        apply_window(prefs, window);
+        cx.notify();
+    }
+
+    fn set_maximized(&mut self, maximized: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let app = AppStore::global(cx).state().clone();
+        let prefs = WindowPrefs {
+            maximized,
+            ..app.read(cx).prefs().window
+        };
+        app.update(cx, |app, cx| app.set_window(prefs, cx));
+        apply_window(prefs, window);
+        cx.notify();
+    }
+
+    fn confirm_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.open_alert_dialog(cx, |alert, _, _| {
+            alert
+                .title(t!("settings.reset_title").to_string())
+                .description(t!("settings.reset_description").to_string())
+                .confirm()
+                .ok_text(t!("settings.reset").to_string())
+                .ok_variant(ButtonVariant::Danger)
+                .cancel_text(t!("common.cancel").to_string())
+                .on_ok(|_, window, cx| {
+                    let app = AppStore::global(cx).state().clone();
+                    app.update(cx, |app, cx| app.reset_prefs(cx));
+                    window.close_dialog(cx);
+                    true
+                })
+        });
+    }
+}
+
+/// Puts the window at the size the settings name, when they name one.
+fn apply_window(prefs: WindowPrefs, window: &mut Window) {
+    if prefs.maximized {
+        if !window.is_maximized() {
+            window.zoom_window();
+        }
+    } else if prefs.width > 0 && prefs.height > 0 {
+        if window.is_maximized() {
+            window.zoom_window();
+        }
+        window.resize(size(px(prefs.width as f32), px(prefs.height as f32)));
+    }
+}
+
+/// A row of choices, the chosen one filled.
+fn choices<T: PartialEq + Clone + 'static>(
+    id: &'static str,
+    options: Vec<(T, String)>,
+    chosen: T,
+    on_choose: impl Fn(T, &mut Window, &mut App) + Clone + 'static,
+) -> impl IntoElement {
+    h_flex()
+        .gap_1()
+        .flex_wrap()
+        .children(options.into_iter().enumerate().map(move |(index, (value, label))| {
+            let on_choose = on_choose.clone();
+            let selected = value == chosen;
+            Button::new((id, index))
+                .small()
+                .label(label)
+                .map(|button| if selected { button.primary() } else { button.outline() })
+                .on_click(move |_, window, cx| on_choose(value.clone(), window, cx))
+        }))
+}
+
+fn section(title: String, content: impl IntoElement) -> impl IntoElement {
+    v_flex()
+        .gap_2()
+        .child(div().text_sm().font_semibold().child(title))
+        .child(content)
+}
+
+impl Render for SettingsView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
+        let muted = cx.theme().muted_foreground;
+        let theme = choices(
+            "settings-theme",
+            vec![
+                (ThemeMode::System, t!("settings.theme_system").to_string()),
+                (ThemeMode::Light, t!("settings.theme_light").to_string()),
+                (ThemeMode::Dark, t!("settings.theme_dark").to_string()),
+            ],
+            prefs.theme,
+            |theme, _, cx| {
+                let app = AppStore::global(cx).state().clone();
+                app.update(cx, |app, cx| app.set_theme(theme, cx));
+            },
+        );
+        let language = choices(
+            "settings-language",
+            LANGUAGES
+                .iter()
+                .map(|(code, name)| {
+                    let label = if code.is_none() {
+                        t!("settings.language_system").to_string()
+                    } else {
+                        name.to_string()
+                    };
+                    (code.map(str::to_string), label)
+                })
+                .collect(),
+            prefs.language.clone(),
+            |language, _, cx| {
+                let app = AppStore::global(cx).state().clone();
+                app.update(cx, |app, cx| app.set_language(language, cx));
+            },
+        );
+        let field = |label: String, input: &Entity<InputState>| {
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().text_sm().text_color(muted).child(label))
+                .child(div().w(px(80.)).child(Input::new(input).small()))
+        };
+        let timeouts = v_flex()
+            .gap_1()
+            .child(
+                h_flex()
+                    .gap_4()
+                    .child(field(t!("settings.timeout_connect").to_string(), &self.connect))
+                    .child(field(t!("settings.timeout_write").to_string(), &self.write))
+                    .child(field(t!("settings.timeout_read").to_string(), &self.read)),
+            )
+            .child(
+                div().text_xs().text_color(muted).child(
+                    t!(
+                        "settings.timeout_hint",
+                        connect = Timeouts::DEFAULT_CONNECT,
+                        write = Timeouts::DEFAULT_WRITE,
+                        read = Timeouts::DEFAULT_READ
+                    )
+                    .to_string(),
+                ),
+            );
+        let window_size: Option<AnyElement> =
+            this_build::sizes_window().then(|| {
+                section(
+                    t!("settings.window").to_string(),
+                    h_flex()
+                        .gap_4()
+                        .items_center()
+                        .child(
+                            Checkbox::new("settings-maximized")
+                                .label(t!("settings.maximized").to_string())
+                                .checked(prefs.window.maximized)
+                                .on_click(cx.listener(|this, checked: &bool, window, cx| {
+                                    this.set_maximized(*checked, window, cx)
+                                })),
+                        )
+                        .child(field(t!("settings.width").to_string(), &self.width))
+                        .child(field(t!("settings.height").to_string(), &self.height)),
+                )
+                .into_any_element()
+            });
+        let about_rows: Vec<(String, SharedString)> = vec![
+            (t!("settings.version").to_string(), crate::VERSION.into()),
+            (
+                t!("settings.platform").to_string(),
+                format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH).into(),
+            ),
+            ("User-Agent".to_string(), this_build::user_agent().into()),
+            (t!("settings.data").to_string(), this_build::data_location().into()),
+        ];
+        let about = v_flex()
+            .gap_1()
+            .text_sm()
+            .children(about_rows.into_iter().map(|(label, value)| {
+                h_flex()
+                    .gap_3()
+                    .child(div().w(px(110.)).flex_none().text_color(muted).child(label))
+                    .child(div().flex_1().min_w_0().child(value))
+            }));
+        v_flex()
+            .gap_5()
+            .child(section(t!("settings.theme").to_string(), theme))
+            .child(section(t!("settings.language").to_string(), language))
+            .child(section(t!("settings.timeouts").to_string(), timeouts))
+            .children(window_size)
+            .child(section(t!("settings.about").to_string(), about))
+            .child(
+                h_flex().justify_end().child(
+                    Button::new("settings-reset")
+                        .ghost()
+                        .small()
+                        .label(t!("settings.reset").to_string())
+                        .on_click(cx.listener(|this, _, window, cx| this.confirm_reset(window, cx))),
+                ),
+            )
+    }
+}
