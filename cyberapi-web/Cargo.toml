@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 description = "The browser build of CyberAPI."
 # Not published: it ships as a bundle of wasm and JavaScript, not a crate.

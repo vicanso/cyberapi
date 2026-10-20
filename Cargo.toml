@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 description = "A fast, native HTTP API client built with Rust and GPUI."
 keywords = ["http", "api", "rest", "gpui", "gui"]
@@ -22,7 +21,7 @@ name = "cyberapi"
 path = "src/main.rs"
 
 [workspace]
-members = ["cyberapi-web"]
+members = ["crates/*", "cyberapi-web"]
 # A bare `cargo build` builds the desktop binary only. `cyberapi-web` is built
 # from its own directory, where its `rust-toolchain.toml` selects the nightly
 # its wasm target needs.
@@ -33,7 +32,6 @@ version = "0.2.0"
 edition = "2024"
 authors = ["Tree Xie <tree.xie@outlook.com>"]
 license = "Apache-2.0"
-homepage = "https://github.com/vicanso/cyberapi"
 repository = "https://github.com/vicanso/cyberapi"
 
 [workspace.dependencies]
@@ -44,6 +42,15 @@ repository = "https://github.com/vicanso/cyberapi"
 gpui-kit = "0.8.0"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+# Parsing and formatting only: what "now" is comes from the caller, so no
+# `clock` feature and nothing that needs a wasm time source.
+chrono = { version = "0.4.45", default-features = false, features = ["std", "serde"] }
+# Toneless readings with every heteronym, for matching names by pinyin (F15.1).
+pinyin = { version = "0.11.0", default-features = false, features = ["plain", "heteronym"] }
+pretty_assertions = "1.4.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+snafu = "0.9.2"
 
 # A crate in plain `[dependencies]` must build for `wasm32-unknown-unknown`;
 # a native-only one goes in the desktop table below.

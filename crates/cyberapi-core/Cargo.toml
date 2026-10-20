@@ -1,0 +1,24 @@
+[package]
+name = "cyberapi-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CyberAPI's domain: the data model and the pure rules over it, with no I/O."
+publish = false
+
+# Everything here builds for wasm32-unknown-unknown: the browser build links
+# this crate through the GUI. No gpui, no I/O, no clock.
+[dependencies]
+chrono = { workspace = true }
+pinyin = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+snafu = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[lints.clippy]
+unwrap_used = "deny"
