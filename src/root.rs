@@ -82,10 +82,16 @@ impl CyberApi {
     }
 
     fn render_title(&self, cx: &mut Context<Self>) -> AnyElement {
+        let pins = match &self.page {
+            Page::Workspace(view) => Some(view.read(cx).pins().clone()),
+            Page::Dashboard(_) => None,
+        };
         match AppStore::global(cx).state().read(cx).route() {
             Route::Dashboard => div().text_sm().child(APP_NAME).into_any_element(),
-            // F1.9: Home > project.
+            // F1.9: Home > project, then the pins (F12.2).
             Route::Workspace(collection) => h_flex()
+                .flex_1()
+                .min_w_0()
                 .items_center()
                 .gap_1()
                 .child(
@@ -100,7 +106,15 @@ impl CyberApi {
                         }),
                 )
                 .child(div().text_sm().text_color(cx.theme().muted_foreground).child("/"))
-                .child(div().text_sm().font_medium().child(collection.name.clone()))
+                .child(
+                    div()
+                        .flex_none()
+                        .mr_3()
+                        .text_sm()
+                        .font_medium()
+                        .child(collection.name.clone()),
+                )
+                .children(pins)
                 .into_any_element(),
         }
     }

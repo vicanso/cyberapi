@@ -1,6 +1,8 @@
 //! A project's workspace: the tree on the left, the selected API on the
-//! right (its editor comes with step 7 of `docs/architecture.md`).
+//! right (its editor comes with step 7 of `docs/architecture.md`), and the
+//! pins the title bar shows.
 
+mod pins;
 mod tree_panel;
 
 use crate::i18n;
@@ -17,6 +19,7 @@ use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement,
     KeyBinding, ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, div, px,
 };
+pub use pins::PinsBar;
 use rust_i18n::t;
 use tree_panel::TreePanel;
 
@@ -114,6 +117,7 @@ pub struct WorkspaceView {
     id: CollectionId,
     state: Entity<WorkspaceState>,
     tree: Entity<TreePanel>,
+    pins: Entity<PinsBar>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -124,6 +128,7 @@ impl WorkspaceView {
         let storage = AppStore::global(cx).storage().clone();
         let state = cx.new(|cx| WorkspaceState::new(storage, collection, cx));
         let tree = cx.new(|cx| TreePanel::new(state.clone(), window, cx));
+        let pins = cx.new(|cx| PinsBar::new(state.clone(), cx));
         let subscriptions = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
             cx.subscribe_in(&state, window, |_, _, event, window, cx| match event {
@@ -139,6 +144,7 @@ impl WorkspaceView {
             id,
             state,
             tree,
+            pins,
             focus,
             _subscriptions: subscriptions,
         }
@@ -146,6 +152,11 @@ impl WorkspaceView {
 
     pub fn collection_id(&self) -> &CollectionId {
         &self.id
+    }
+
+    /// F12.2: the pins, for the title bar.
+    pub fn pins(&self) -> &Entity<PinsBar> {
+        &self.pins
     }
 
     fn render_detail(&self, cx: &mut Context<Self>) -> impl IntoElement {

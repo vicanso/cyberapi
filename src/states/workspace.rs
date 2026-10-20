@@ -158,14 +158,23 @@ impl WorkspaceState {
         }
     }
 
-    /// F3.8: an API is selected; a folder is opened or closed instead.
+    /// F3.8: an API is selected; a folder is opened or closed instead. The
+    /// folders it sits in open, so a pin (F12.2) shows its row.
     pub fn select(&mut self, id: &ItemId, cx: &mut Context<Self>) {
-        if self.prefs.selected.as_ref() == Some(id) {
-            return;
-        }
+        let mut changed = self.prefs.selected.as_ref() != Some(id);
         self.prefs.selected = Some(id.clone());
-        self.save_prefs(cx);
-        cx.notify();
+        let mut parent = self.tree.get(id).and_then(|node| node.parent()).cloned();
+        while let Some(folder) = parent {
+            parent = self.tree.get(&folder).and_then(|node| node.parent()).cloned();
+            if !self.prefs.expanded.contains(&folder) {
+                self.prefs.expanded.push(folder);
+                changed = true;
+            }
+        }
+        if changed {
+            self.save_prefs(cx);
+            cx.notify();
+        }
     }
 
     /// F12.1 / F12.3. Only this project's APIs, once each.
@@ -408,6 +417,10 @@ mod tests {
         again.update(cx, |state, cx| state.collapse_all(cx));
         cx.run_until_parked();
         assert_eq!(row_names(&again, cx), ["users"]);
+
+        // Chosen from its pin, the API shows again.
+        again.update(cx, |state, cx| state.select(&login, cx));
+        assert_eq!(row_names(&again, cx), ["users", "  login"]);
     }
 
     #[gpui_kit::test]

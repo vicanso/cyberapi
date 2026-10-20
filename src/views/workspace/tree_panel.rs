@@ -1,11 +1,12 @@
 //! The project's tree (M3): search, open and close, select, create, rename,
-//! delete. The rows and every rule behind them are the state's and core's;
-//! this draws the rows and turns pointer and keyboard input into intent.
+//! move by dragging, delete. The rows and every rule behind them are the
+//! state's and core's; this draws the rows and turns pointer and keyboard
+//! input into intent.
 
 use super::{confirm_delete, method_color, new_item};
 use crate::states::{Load, WorkspaceState};
 use cyberapi_core::ItemId;
-use cyberapi_core::tree::{ItemKind, Row};
+use cyberapi_core::tree::{DropPosition, ItemKind, Placement, Row};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::empty::{
     Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
@@ -16,9 +17,9 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity,
-    Window, div, px,
+    Anchor, AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent, Entity, Focusable as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, px,
 };
 use rust_i18n::t;
 
@@ -33,10 +34,49 @@ struct Renaming {
     _events: Subscription,
 }
 
+/// The item being dragged (F3.7); it also draws what follows the pointer.
+#[derive(Clone)]
+struct DraggedItem {
+    id: ItemId,
+    name: SharedString,
+}
+
+impl Render for DraggedItem {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .px_2()
+            .py_1()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.popover)
+            .text_color(theme.popover_foreground)
+            .text_sm()
+            .shadow_md()
+            .child(self.name.clone())
+    }
+}
+
+/// Where the dragged item would land, as drawn.
+#[derive(Clone, Debug, PartialEq)]
+enum DropTarget {
+    Row {
+        id: ItemId,
+        position: DropPosition,
+    },
+    /// Below every row: the end of the top level.
+    End,
+}
+
 pub struct TreePanel {
     state: Entity<WorkspaceState>,
     search: Entity<InputState>,
     renaming: Option<Renaming>,
+    scroll: ScrollHandle,
+    /// The rows as last drawn; the pointer is read against them.
+    drawn: Vec<Row>,
+    drop_target: Option<DropTarget>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -60,8 +100,78 @@ impl TreePanel {
             state,
             search,
             renaming: None,
+            scroll: ScrollHandle::new(),
+            drawn: Vec::new(),
+            drop_target: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The target under the pointer, if dropping there moves `moving`. Rows
+    /// are all [`ROW_HEIGHT`] tall, so the row is the pointer's offset into
+    /// the scrolled list. A folder's middle half means into it; the edges,
+    /// and an API's halves, mean beside.
+    fn drop_target_at(
+        &self,
+        position: Point<Pixels>,
+        bounds: Bounds<Pixels>,
+        moving: &ItemId,
+        cx: &App,
+    ) -> Option<DropTarget> {
+        if !bounds.contains(&position) {
+            return None;
+        }
+        let y = f32::from(position.y - bounds.origin.y - self.scroll.offset().y) / ROW_HEIGHT;
+        let target = match self.drawn.get(y.max(0.).floor() as usize) {
+            None => DropTarget::End,
+            Some(row) => {
+                let within = y.fract();
+                let position = match row.kind {
+                    ItemKind::Folder if within < 0.25 => DropPosition::Above,
+                    ItemKind::Folder if within > 0.75 => DropPosition::Below,
+                    ItemKind::Folder => DropPosition::Over,
+                    ItemKind::Api if within < 0.5 => DropPosition::Above,
+                    ItemKind::Api => DropPosition::Below,
+                };
+                DropTarget::Row {
+                    id: row.id.clone(),
+                    position,
+                }
+            }
+        };
+        self.placement(moving, &target, cx).map(|_| target)
+    }
+
+    fn placement(&self, moving: &ItemId, target: &DropTarget, cx: &App) -> Option<Placement> {
+        let tree = self.state.read(cx).tree();
+        match target {
+            DropTarget::Row { id, position } => {
+                let open = self.drawn.iter().any(|row| &row.id == id && row.open);
+                tree.drop_placement(moving, id, *position, open)
+            }
+            DropTarget::End => tree.contains(moving).then(Placement::default),
+        }
+    }
+
+    fn on_drag_move(&mut self, event: &DragMoveEvent<DraggedItem>, cx: &mut Context<Self>) {
+        let moving = event.drag(cx).id.clone();
+        let target = self.drop_target_at(event.event.position, event.bounds, &moving, cx);
+        if self.drop_target != target {
+            self.drop_target = target;
+            cx.notify();
+        }
+    }
+
+    /// F3.7: the drop moves the item where the indicator showed.
+    fn on_drop(&mut self, dragged: &DraggedItem, cx: &mut Context<Self>) {
+        let Some(target) = self.drop_target.take() else {
+            return;
+        };
+        if let Some(placement) = self.placement(&dragged.id, &target, cx) {
+            let id = dragged.id.clone();
+            self.state.update(cx, |state, cx| state.move_item(id, placement, cx));
+        }
+        cx.notify();
     }
 
     /// F3.5: the name becomes an input; Enter or leaving it saves, Escape
@@ -202,8 +312,23 @@ impl TreePanel {
         let view = cx.entity().downgrade();
         let menu_state = self.state.downgrade();
         let (menu_id, menu_name) = (id.clone(), name.clone());
+        let renaming = self.renaming.as_ref().is_some_and(|renaming| renaming.id == id);
+        let dragged = DraggedItem {
+            id: id.clone(),
+            name: name.clone().into(),
+        };
+        let drop = match &self.drop_target {
+            Some(DropTarget::Row { id: target, position }) if *target == id => Some(*position),
+            _ => None,
+        };
+        // A line between rows, indented to the level the item would join.
+        let line_depth = match drop {
+            Some(DropPosition::Below) if kind == ItemKind::Folder && row.open => row.depth + 1,
+            _ => row.depth,
+        };
         h_flex()
             .id(key)
+            .relative()
             .h(px(ROW_HEIGHT))
             .pl(px(8. + INDENT * row.depth as f32))
             .pr_2()
@@ -214,6 +339,25 @@ impl TreePanel {
             .cursor_pointer()
             .when(selected, |this| this.bg(theme.list_active))
             .when(!selected, |this| this.hover(|style| style.bg(theme.list_hover)))
+            .when(drop == Some(DropPosition::Over), |this| this.bg(theme.drop_target))
+            .when_some(
+                drop.filter(|position| *position != DropPosition::Over),
+                |this, position| {
+                    let line = div()
+                        .absolute()
+                        .left(px(8. + INDENT * line_depth as f32))
+                        .right_0()
+                        .h(px(2.))
+                        .bg(theme.primary);
+                    this.child(match position {
+                        DropPosition::Above => line.top_0(),
+                        _ => line.bottom_0(),
+                    })
+                },
+            )
+            .when(!renaming, |this| {
+                this.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+            })
             .child(icon)
             .child(label)
             .when(pinned, |this| {
@@ -238,7 +382,7 @@ impl TreePanel {
             .into_any_element()
     }
 
-    fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let state = self.state.read(cx);
         let load = state.load().clone();
         let empty = state.tree().is_empty();
@@ -290,15 +434,24 @@ impl TreePanel {
                 None,
             ),
             _ => {
-                let rows: Vec<AnyElement> = rows.iter().map(|row| self.render_row(row, cx)).collect();
+                let elements: Vec<AnyElement> = rows.iter().map(|row| self.render_row(row, cx)).collect();
+                let end = self.drop_target == Some(DropTarget::End);
+                let primary = cx.theme().primary;
+                self.drawn = rows;
                 div()
                     .id("tree-rows")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
                     .px_1()
                     .pb_2()
-                    .children(rows)
+                    .children(elements)
+                    .when(end, |this| this.child(div().mx_2().h(px(2.)).bg(primary)))
+                    .on_drag_move(
+                        cx.listener(|this, event: &DragMoveEvent<DraggedItem>, _, cx| this.on_drag_move(event, cx)),
+                    )
+                    .on_drop(cx.listener(|this, dragged: &DraggedItem, _, cx| this.on_drop(dragged, cx)))
                     .into_any_element()
             }
         }
@@ -388,6 +541,10 @@ fn notice(icon: IconName, title: String, description: String, action: Option<But
 
 impl Render for TreePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A drag let go outside the tree leaves no target behind.
+        if !cx.has_active_drag() {
+            self.drop_target = None;
+        }
         v_flex()
             .size_full()
             .child(self.render_header(cx))
