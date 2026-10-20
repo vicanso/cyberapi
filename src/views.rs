@@ -1,6 +1,7 @@
 //! The pages and dialogs (L4). Views draw what the states hold and forward
 //! what the reader asks for; they never call a store.
 
+mod cookies_dialog;
 mod dashboard;
 mod kv_editor;
 mod name_dialog;
@@ -8,6 +9,7 @@ mod startup;
 mod variables_dialog;
 mod workspace;
 
+pub use cookies_dialog::open_cookies_dialog;
 pub use dashboard::DashboardView;
 pub use startup::StartupError;
 pub use variables_dialog::open_variables_dialog;

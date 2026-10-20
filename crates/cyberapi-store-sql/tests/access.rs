@@ -301,6 +301,23 @@ async fn rules(variable: &str) {
         .expect("prefs");
     assert_eq!(bob.prefs().app().await.expect("prefs").theme, ThemeMode::System);
 
+    // So are cookie jars.
+    alice
+        .cookies()
+        .put(vec![cyberapi_core::cookie::Cookie {
+            name: "sid".into(),
+            value: "alice".into(),
+            domain: "api.test".into(),
+            path: "/".into(),
+            ..Default::default()
+        }])
+        .await
+        .expect("cookies");
+    assert_eq!(alice.cookies().list().await.expect("cookies").len(), 1);
+    assert!(bob.cookies().list().await.expect("cookies").is_empty());
+    bob.cookies().clear().await.expect("clear his own");
+    assert_eq!(alice.cookies().list().await.expect("cookies").len(), 1);
+
     // Deleting the project takes every account's state of it.
     alice.collections().delete(id.clone()).await.expect("delete");
     not_found(carol.prefs().workspace(id.clone()).await, Entity::Collection);

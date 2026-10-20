@@ -100,11 +100,37 @@ fn open_desktop_storage() -> Result<(Storage, AppPrefs), String> {
     let store = pollster::block_on(TursoStore::open(&database))
         .map_err(|e| format!("{}: {}", database.display(), i18n::store_error(&e)))?;
     let storage = store.storage();
+    import_legacy_cookies(&storage, &dir);
     let prefs = pollster::block_on(storage.prefs().app()).unwrap_or_else(|e| {
         warn!(error = %e, "the settings could not be read; using the defaults");
         AppPrefs::default()
     });
     Ok((storage, prefs))
+}
+
+/// D4: the Tauri app's cookie jar, copied beside the database as
+/// `legacy-cookies.json`, goes into the store once; the file is renamed so
+/// the next launch leaves it be. A jar that cannot be read stays for a later
+/// launch to try again.
+#[cfg(not(target_family = "wasm"))]
+fn import_legacy_cookies(storage: &Storage, dir: &std::path::Path) {
+    use tracing::{info, warn};
+
+    let file = dir.join("legacy-cookies.json");
+    let Ok(text) = std::fs::read_to_string(&file) else {
+        return;
+    };
+    let cookies = cyberapi_core::cookie::parse_legacy_jar(&text);
+    let count = cookies.len();
+    match pollster::block_on(storage.cookies().put(cookies)) {
+        Ok(()) => {
+            info!(count, "imported the Tauri app's cookies");
+            if let Err(e) = std::fs::rename(&file, dir.join("legacy-cookies.imported.json")) {
+                warn!(error = %e, "the imported cookie jar could not be renamed");
+            }
+        }
+        Err(e) => warn!(error = %e, "the Tauri app's cookies could not be imported"),
+    }
 }
 
 /// Opens the main window on `storage`, sending with `engine`. Both builds

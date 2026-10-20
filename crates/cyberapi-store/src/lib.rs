@@ -28,6 +28,7 @@ pub use error::{Entity, StoreError};
 #[cfg(not(target_family = "wasm"))]
 pub use memory::MemoryStore;
 
+use cyberapi_core::cookie::Cookie;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
@@ -169,6 +170,26 @@ pub trait PrefStore: Send + Sync {
     fn set_workspace(&self, collection: CollectionId, prefs: WorkspacePrefs) -> StoreFuture<()>;
 }
 
+/// The reader's cookies (M9): every project's requests share them (F9.1);
+/// in the browser build each account has its own. A cookie is known by its
+/// domain, path and name.
+pub trait CookieStore: Send + Sync {
+    /// By name, then domain, then path (F9.4); expired ones included until
+    /// something removes them.
+    fn list(&self) -> StoreFuture<Vec<Cookie>>;
+    /// Keeps each cookie in place of the one with its key; an expired one
+    /// removes that one instead (F9.2).
+    fn put(&self, cookies: Vec<Cookie>) -> StoreFuture<()>;
+    /// F9.7. A cookie that is not kept is no error.
+    fn delete(&self, domain: String, path: String, name: String) -> StoreFuture<()>;
+    fn clear(&self) -> StoreFuture<()>;
+}
+
+/// The order cookies are listed in (F9.4).
+pub fn sort_cookies(cookies: &mut [Cookie]) {
+    cookies.sort_by(|a, b| (&a.name, &a.domain, &a.path).cmp(&(&b.name, &b.domain, &b.path)));
+}
+
 /// One backend's stores, as the layers above hold them.
 #[derive(Clone)]
 pub struct Storage {
@@ -177,6 +198,7 @@ pub struct Storage {
     variables: Arc<dyn VariableStore>,
     prefs: Arc<dyn PrefStore>,
     history: Arc<dyn HistoryStore>,
+    cookies: Arc<dyn CookieStore>,
 }
 
 impl Storage {
@@ -186,6 +208,7 @@ impl Storage {
         variables: Arc<dyn VariableStore>,
         prefs: Arc<dyn PrefStore>,
         history: Arc<dyn HistoryStore>,
+        cookies: Arc<dyn CookieStore>,
     ) -> Self {
         Self {
             collections,
@@ -193,15 +216,17 @@ impl Storage {
             variables,
             prefs,
             history,
+            cookies,
         }
     }
 
     /// Every store from one backend that implements them all.
     pub fn from_backend<B>(backend: Arc<B>) -> Self
     where
-        B: CollectionStore + TreeStore + VariableStore + PrefStore + HistoryStore + 'static,
+        B: CollectionStore + TreeStore + VariableStore + PrefStore + HistoryStore + CookieStore + 'static,
     {
         Self::new(
+            backend.clone(),
             backend.clone(),
             backend.clone(),
             backend.clone(),
@@ -228,5 +253,9 @@ impl Storage {
 
     pub fn history(&self) -> &dyn HistoryStore {
         self.history.as_ref()
+    }
+
+    pub fn cookies(&self) -> &dyn CookieStore {
+        self.cookies.as_ref()
     }
 }

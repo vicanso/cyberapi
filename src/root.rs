@@ -2,7 +2,7 @@
 
 use crate::APP_NAME;
 use crate::states::{AppStore, Route};
-use crate::views::{DashboardView, WorkspaceView, open_variables_dialog};
+use crate::views::{DashboardView, WorkspaceView, open_cookies_dialog, open_variables_dialog};
 use cyberapi_core::model::VariableCategory;
 use cyberapi_core::prefs::ThemeMode;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -143,23 +143,27 @@ impl CyberApi {
             .icon(IconName::Settings)
             .tooltip(t!("menu.settings").to_string())
             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu: PopupMenu, _, _| {
-                let Some(workspace) = workspace.clone() else {
-                    return menu.item(PopupMenuItem::new(t!("menu.no_project").to_string()).disabled(true));
+                let menu = match workspace.clone() {
+                    Some(workspace) => [
+                        (VariableCategory::Environment, t!("variables.env_title")),
+                        (VariableCategory::Custom, t!("variables.custom_title")),
+                        (VariableCategory::GlobalRequestHeader, t!("variables.headers_title")),
+                    ]
+                    .into_iter()
+                    .fold(menu, |menu, (category, label)| {
+                        let workspace = workspace.clone();
+                        menu.item(PopupMenuItem::new(label.to_string()).on_click(move |_, window, cx| {
+                            if let Some(workspace) = workspace.upgrade() {
+                                open_variables_dialog(&workspace, category, window, cx);
+                            }
+                        }))
+                    }),
+                    None => menu.item(PopupMenuItem::new(t!("menu.no_project").to_string()).disabled(true)),
                 };
-                [
-                    (VariableCategory::Environment, t!("variables.env_title")),
-                    (VariableCategory::Custom, t!("variables.custom_title")),
-                    (VariableCategory::GlobalRequestHeader, t!("variables.headers_title")),
-                ]
-                .into_iter()
-                .fold(menu, |menu, (category, label)| {
-                    let workspace = workspace.clone();
-                    menu.item(PopupMenuItem::new(label.to_string()).on_click(move |_, window, cx| {
-                        if let Some(workspace) = workspace.upgrade() {
-                            open_variables_dialog(&workspace, category, window, cx);
-                        }
-                    }))
-                })
+                menu.separator().item(
+                    PopupMenuItem::new(t!("cookies.title").to_string())
+                        .on_click(|_, window, cx| open_cookies_dialog(window, cx)),
+                )
             })
     }
 }

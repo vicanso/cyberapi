@@ -6,6 +6,8 @@
 //! (F5.7). A request that went out and failed is kept like any other answer,
 //! with the reason as its error.
 
+use cyberapi_core::Timestamp;
+use cyberapi_core::cookie::{cookie_header, parse_set_cookie};
 use cyberapi_core::model::{HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::Timeouts;
 use cyberapi_core::response::HttpResponse;
@@ -68,8 +70,23 @@ pub async fn send(
     picked_file: Option<String>,
 ) -> Result<HttpResponse, SendFailure> {
     let prepared = prepare(&sender, &collection, &request, picked_file).await?;
+    let url = url::Url::parse(&prepared.url).ok();
     let started = Instant::now();
     let answered = sender.engine.send(prepared).await;
+    // F9.2: the answer's cookies are kept, an expired one removing its own.
+    if let (Ok(exchange), Some(url)) = (&answered, &url) {
+        let cookies: Vec<_> = exchange
+            .headers
+            .iter()
+            .filter(|(name, _)| name == "set-cookie")
+            .filter_map(|(_, value)| parse_set_cookie(value, url, now()))
+            .collect();
+        if !cookies.is_empty()
+            && let Err(error) = sender.storage.cookies().put(cookies).await
+        {
+            warn!(%error, "the response's cookies could not be kept");
+        }
+    }
     // Never zero (F5.7).
     let floor = |latency: Duration| latency.max(Duration::from_millis(1));
     let response = match answered {
@@ -112,8 +129,18 @@ pub async fn curl(sender: Sender, collection: CollectionId, request: HttpRequest
     Ok(cyberapi_core::curl::curl(&prepared, &request, &[]))
 }
 
+fn now() -> Timestamp {
+    Timestamp::from_unix(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|since| since.as_secs() as i64)
+            .unwrap_or_default(),
+    )
+}
+
 /// Everything before the engine: the variables, the responses the template
-/// functions read, then `cyberapi_core::send::prepare`.
+/// functions read, then `cyberapi_core::send::prepare`, and the cookies that
+/// go with it (F9.3) — unless the request names its own `Cookie`.
 async fn prepare(
     sender: &Sender,
     collection: &CollectionId,
@@ -167,7 +194,7 @@ async fn prepare(
             .collect(),
         picked_file,
     };
-    send::prepare(
+    let mut prepared = send::prepare(
         request,
         &send::Context {
             variables: &variables,
@@ -178,7 +205,16 @@ async fn prepare(
             boundary: &boundary(),
         },
     )
-    .map_err(|source| SendFailure::Prepare { source })
+    .map_err(|source| SendFailure::Prepare { source })?;
+    if prepared.header("cookie").is_none()
+        && let Ok(url) = url::Url::parse(&prepared.url)
+    {
+        let jar = sender.storage.cookies().list().await.map_err(store)?;
+        if let Some(cookie) = cookie_header(&jar, &url, now()) {
+            prepared.headers.push(("Cookie".into(), cookie));
+        }
+    }
+    Ok(prepared)
 }
 
 #[cfg(test)]
@@ -356,6 +392,46 @@ mod tests {
         assert!(second.latency >= Duration::from_millis(1));
         let history = pollster::block_on(setup.storage.history().list(setup.collection.clone(), me)).expect("list");
         assert_eq!(history, [second]);
+    }
+
+    #[test]
+    fn cookies_come_back_with_later_requests() {
+        let setup = setup(Ok(Exchange {
+            status: 200,
+            headers: vec![
+                ("set-cookie".into(), "sid=s-1; Path=/; HttpOnly".into()),
+                ("set-cookie".into(), "other=o; Domain=elsewhere.test".into()),
+            ],
+            ..Default::default()
+        }));
+        let api = new_api(&setup, "login");
+        let request = |uri: &str, headers: Vec<KvParam>| HttpRequest {
+            uri: uri.into(),
+            headers,
+            ..Default::default()
+        };
+        let send_one = |request: HttpRequest| {
+            pollster::block_on(send(
+                setup.sender.clone(),
+                setup.collection.clone(),
+                api.clone(),
+                request,
+                None,
+            ))
+            .expect("sent")
+        };
+        send_one(request("https://api.test/login", vec![]));
+        let jar = pollster::block_on(setup.storage.cookies().list()).expect("cookies");
+        assert_eq!(jar.len(), 1, "a cookie for another site is not kept: {jar:?}");
+        assert_eq!((jar[0].name.as_str(), jar[0].domain.as_str()), ("sid", "api.test"));
+
+        send_one(request("https://api.test/me", vec![]));
+        send_one(request("https://other.test/", vec![]));
+        send_one(request("https://api.test/me", vec![kv("Cookie", "mine=1")]));
+        let sent = setup.engine.sent.lock().expect("sent").clone();
+        assert_eq!(sent[1].header("cookie"), Some("sid=s-1"));
+        assert_eq!(sent[2].header("cookie"), None);
+        assert_eq!(sent[3].header("cookie"), Some("mine=1"), "the request's own wins");
     }
 
     #[test]

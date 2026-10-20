@@ -4,10 +4,11 @@
 
 use crate::rules::required_name;
 use crate::{
-    CollectionEdit, CollectionStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable, PrefStore, Storage,
-    StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
+    CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable,
+    PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
 };
 use chrono::Utc;
+use cyberapi_core::cookie::Cookie;
 use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
@@ -40,6 +41,7 @@ struct State {
     workspaces: HashMap<CollectionId, WorkspacePrefs>,
     /// Oldest first.
     responses: Vec<HttpResponse>,
+    cookies: Vec<Cookie>,
 }
 
 impl Default for MemoryStore {
@@ -504,6 +506,44 @@ impl HistoryStore for MemoryStore {
             state
                 .responses
                 .retain(|response| response.collection != collection || response.api != api);
+            Ok(())
+        })
+    }
+}
+
+impl CookieStore for MemoryStore {
+    fn list(&self) -> StoreFuture<Vec<Cookie>> {
+        self.run(|state, _| {
+            let mut cookies = state.cookies.clone();
+            sort_cookies(&mut cookies);
+            Ok(cookies)
+        })
+    }
+
+    fn put(&self, cookies: Vec<Cookie>) -> StoreFuture<()> {
+        self.run(move |state, now| {
+            for cookie in cookies {
+                state.cookies.retain(|kept| kept.key() != cookie.key());
+                if !cookie.is_expired(now) {
+                    state.cookies.push(cookie);
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn delete(&self, domain: String, path: String, name: String) -> StoreFuture<()> {
+        self.run(move |state, _| {
+            state
+                .cookies
+                .retain(|kept| kept.key() != (domain.as_str(), path.as_str(), name.as_str()));
+            Ok(())
+        })
+    }
+
+    fn clear(&self) -> StoreFuture<()> {
+        self.run(|state, _| {
+            state.cookies.clear();
             Ok(())
         })
     }

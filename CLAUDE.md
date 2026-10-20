@@ -28,10 +28,11 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
   - `src/i18n.rs` + `locales/{en,zh-CN}.toml`：rust-i18n，当前语言与 gpui-component 共用，所以中文的 locale 代码用组件的 `zh-CN`。**新增文案时每个 locale 文件都要加**，测试 `every_locale_has_every_key` 会逐个 key 比对。store 错误统一用 `i18n::store_error` 转成提示文案。
   - 开发用环境变量（`src/paths.rs`）：`CYBERAPI_DATA_DIR` 覆盖数据目录（试运行时指向临时目录，避免写入真实数据），`CYBERAPI_LEGACY_DIR` 覆盖 Tauri 版的数据目录。默认数据目录是平台数据目录下的 `CyberAPI`（Linux 为 `cyberapi`），数据库为 `cyberapi.db`。
 - `crates/cyberapi-core`：L0 领域层。model（项目 / 目录 / 接口 / 请求 / 变量，含旧库字段的转换）、`tree`（构建、关键字过滤后的显示行、移动 / 插入 / 删除的变更计划、拖放落点）、`search`（拼音匹配）、`collection`（首页过滤与排序）。无 IO、无时钟、无 gpui，必须能编译到 wasm。新的纯逻辑放这里，不放 GUI crate。树的规则只在这里写一份：store 按 `plan_*` 的结果写库，state 用同一个计划 `apply` 到自己的副本。
-- `crates/cyberapi-store`：L1 存储接缝。`CollectionStore` / `TreeStore` / `VariableStore` / `PrefStore` / `HistoryStore` 五个 trait（返回 `StoreFuture`，即 `'static` 的 boxed future）、`StoreError`（可序列化，浏览器版原样收到 bridge 的错误）、`Storage`（五个 `Arc<dyn …>` 的组合）、`rules`（各后端共用的校验）、`MemoryStore`（参考实现，仅 native）。trait 本身能编译到 wasm。
+- `crates/cyberapi-store`：L1 存储接缝。`CollectionStore` / `TreeStore` / `VariableStore` / `PrefStore` / `HistoryStore` / `CookieStore` 六个 trait（返回 `StoreFuture`，即 `'static` 的 boxed future）、`StoreError`（可序列化，浏览器版原样收到 bridge 的错误）、`Storage`（六个 `Arc<dyn …>` 的组合）、`rules`（各后端共用的校验）、`MemoryStore`（参考实现，仅 native）。trait 本身能编译到 wasm。
   - 新增或修改存储行为时，先在 `conformance` 里写检查，再改各后端；每个后端的测试都要跑 `conformance::run(&storage, &probe)`。
   - 新增一条检查后，要故意改坏 `MemoryStore` 的对应行为，确认这条检查会失败。检查不出问题的检查没有意义。
   - 后端返回的记录必须和它实际写入的一致（包括时间只精确到秒），套件会把返回值 `apply` 到副本后与 `load` 的结果比较。
+  - Cookie（`CookieStore`）也属于读者自己、所有项目共用；按 (domain, path, name) 识别，放入已过期的即删除。规则（解析 `Set-Cookie`、匹配请求、旧版 `cookies.json` 的格式）在 `cyberapi_core::cookie`；发送管线注入匹配的 Cookie（请求自己写了 `Cookie` 头时以请求为准）并保存响应的 `Set-Cookie`。桌面版首次启动时导入复制过来的 `legacy-cookies.json`，导入后改名为 `legacy-cookies.imported.json`。
   - 响应历史（`HistoryStore`）和 prefs 一样属于读者自己：bridge 上按账号隔离，写入它不算项目的修改（不动 `updated_at` / `revision`）；随接口、项目一起删除。整条 `HttpResponse` 以 JSON 文档存储。
   - 项目的 `revision`：任何其他读者应该看到的修改（项目名、树、请求、变量）都要加一，读取和读者自己的状态（prefs）不加（`architecture.md` §7）。新增写操作时记得同时更新 `updated_at` 和 `revision`。
 - `crates/cyberapi-store-turso`：桌面版后端 `TursoStore`（仅 native，GUI 在 native 依赖表里引用）。

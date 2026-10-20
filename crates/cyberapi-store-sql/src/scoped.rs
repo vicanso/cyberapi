@@ -9,6 +9,7 @@
 use crate::sql::{self, Dialect};
 use crate::{SqlStore, db, new_id, now, rows};
 use cyberapi_core::access::{CollectionRole, TeamRole, effective_role};
+use cyberapi_core::cookie::Cookie;
 use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
@@ -16,8 +17,8 @@ use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
 use cyberapi_store::rules::required_name;
 use cyberapi_store::{
-    CollectionEdit, CollectionStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable, PrefStore, StoreError,
-    StoreFuture, TreeStore, VariableEdit, VariableStore,
+    CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable,
+    PrefStore, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -830,6 +831,82 @@ impl HistoryStore for Scoped {
                 .bind(collection.as_str().to_string())
                 .bind(api.as_str().to_string())
                 .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+            Ok(())
+        })
+    }
+}
+
+/// The key a cookie is kept under: its domain, path and name, hashed.
+fn cookie_key(domain: &str, path: &str, name: &str) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(format!("{domain}\t{path}\t{name}").as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The account's own: no project, so no role to work out.
+impl CookieStore for Scoped {
+    fn list(&self) -> StoreFuture<Vec<Cookie>> {
+        self.run(|this| async move {
+            let found = sqlx::query(this.dialect.sql(sql::COOKIES_OF))
+                .bind(this.account())
+                .fetch_all(&this.pool)
+                .await
+                .map_err(db)?;
+            let mut cookies: Vec<Cookie> = found
+                .iter()
+                .map(|row| serde_json::from_str(&rows::text(row, 0)?).map_err(db))
+                .collect::<Result<_, _>>()?;
+            sort_cookies(&mut cookies);
+            Ok(cookies)
+        })
+    }
+
+    fn put(&self, cookies: Vec<Cookie>) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let at = now();
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            for cookie in cookies {
+                let key = cookie_key(&cookie.domain, &cookie.path, &cookie.name);
+                if cookie.is_expired(at) {
+                    sqlx::query(this.dialect.sql(sql::COOKIE_DELETE))
+                        .bind(this.account())
+                        .bind(key)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db)?;
+                } else {
+                    sqlx::query(this.dialect.pick(&sql::COOKIE_UPSERT))
+                        .bind(this.account())
+                        .bind(key)
+                        .bind(serde_json::to_string(&cookie).map_err(db)?)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db)?;
+                }
+            }
+            tx.commit().await.map_err(db)
+        })
+    }
+
+    fn delete(&self, domain: String, path: String, name: String) -> StoreFuture<()> {
+        self.run(|this| async move {
+            sqlx::query(this.dialect.sql(sql::COOKIE_DELETE))
+                .bind(this.account())
+                .bind(cookie_key(&domain, &path, &name))
+                .execute(&this.pool)
+                .await
+                .map_err(db)?;
+            Ok(())
+        })
+    }
+
+    fn clear(&self) -> StoreFuture<()> {
+        self.run(|this| async move {
+            sqlx::query(this.dialect.sql(sql::COOKIES_CLEAR))
+                .bind(this.account())
+                .execute(&this.pool)
                 .await
                 .map_err(db)?;
             Ok(())

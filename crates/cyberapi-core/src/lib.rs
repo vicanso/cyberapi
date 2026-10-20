@@ -5,6 +5,7 @@
 
 pub mod access;
 pub mod collection;
+pub mod cookie;
 pub mod curl;
 pub mod format;
 mod id;

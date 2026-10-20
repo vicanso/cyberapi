@@ -27,6 +27,12 @@ impl Timestamp {
         self.0
     }
 
+    /// Seconds since the Unix epoch, in UTC: "now" as a caller's clock gives
+    /// it.
+    pub fn from_unix(seconds: i64) -> Self {
+        DateTime::<Utc>::from_timestamp(seconds, 0).map_or_else(Self::default, |at| Self(at.fixed_offset()))
+    }
+
     /// RFC 3339 to the second with the original offset — the form the old
     /// app wrote, so a row written back reads the same in both.
     pub fn to_rfc3339(&self) -> String {

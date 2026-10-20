@@ -4,12 +4,14 @@
 
 mod api;
 mod app;
+mod cookies;
 mod dashboard;
 mod variables;
 mod workspace;
 
 pub use api::{ApiEvent, ApiState};
 pub use app::{AppState, AppStore, Route};
+pub use cookies::{CookieKey, CookiesEvent, CookiesState, cookie_key};
 pub use dashboard::{DashboardEvent, DashboardState};
 pub use variables::{VariablesEvent, VariablesState};
 pub use workspace::{WorkspaceEvent, WorkspaceState};

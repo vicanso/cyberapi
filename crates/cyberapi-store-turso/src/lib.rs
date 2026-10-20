@@ -15,6 +15,7 @@ pub use schema::CURRENT_VERSION as SCHEMA_VERSION;
 
 use async_lock::Mutex;
 use chrono::Local;
+use cyberapi_core::cookie::Cookie;
 use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory, legacy as columns,
 };
@@ -24,8 +25,8 @@ use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, Timestamp, VariableId};
 use cyberapi_store::rules::required_name;
 use cyberapi_store::{
-    CollectionEdit, CollectionStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable, PrefStore, Storage,
-    StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
+    CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable,
+    PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
 };
 use rows::{API_COLUMNS, COLLECTION_COLUMNS, FOLDER_COLUMNS, VARIABLE_COLUMNS};
 use serde::de::DeserializeOwned;
@@ -783,6 +784,67 @@ impl HistoryStore for TursoStore {
             )
             .await
             .map(|_| ())
+        })
+    }
+}
+
+fn cookie_key(domain: &str, path: &str, name: &str) -> String {
+    format!("{domain}\t{path}\t{name}")
+}
+
+impl CookieStore for TursoStore {
+    fn list(&self) -> StoreFuture<Vec<Cookie>> {
+        self.run(|inner, _| async move {
+            let conn = inner.conn.lock().await;
+            let docs = query_all(&conn, "SELECT doc FROM cookies", (), |row| rows::text(row, 0)).await?;
+            let mut cookies: Vec<Cookie> = docs
+                .iter()
+                .map(|doc| serde_json::from_str(doc).map_err(backend))
+                .collect::<Result<_, _>>()?;
+            sort_cookies(&mut cookies);
+            Ok(cookies)
+        })
+    }
+
+    fn put(&self, cookies: Vec<Cookie>) -> StoreFuture<()> {
+        self.run(move |inner, now| async move {
+            let mut conn = inner.conn.lock().await;
+            let tx = conn.transaction().await.map_err(backend)?;
+            for cookie in cookies {
+                let key = cookie_key(&cookie.domain, &cookie.path, &cookie.name);
+                if cookie.is_expired(now) {
+                    execute(&tx, "DELETE FROM cookies WHERE key = ?1", (key,)).await?;
+                } else {
+                    execute(
+                        &tx,
+                        "INSERT INTO cookies (key, doc) VALUES (?1, ?2)
+                         ON CONFLICT (key) DO UPDATE SET doc = excluded.doc",
+                        (key, serde_json::to_string(&cookie).map_err(backend)?),
+                    )
+                    .await?;
+                }
+            }
+            tx.commit().await.map_err(backend)
+        })
+    }
+
+    fn delete(&self, domain: String, path: String, name: String) -> StoreFuture<()> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            execute(
+                &conn,
+                "DELETE FROM cookies WHERE key = ?1",
+                (cookie_key(&domain, &path, &name),),
+            )
+            .await
+            .map(|_| ())
+        })
+    }
+
+    fn clear(&self) -> StoreFuture<()> {
+        self.run(|inner, _| async move {
+            let conn = inner.conn.lock().await;
+            execute(&conn, "DELETE FROM cookies", ()).await.map(|_| ())
         })
     }
 }

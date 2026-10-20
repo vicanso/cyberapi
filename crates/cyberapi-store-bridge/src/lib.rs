@@ -17,6 +17,7 @@
 //! it to [`SEND_PATH`], where the bridge's engine sends it and answers with a
 //! [`SendReply`].
 
+use cyberapi_core::cookie::Cookie;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
@@ -24,8 +25,8 @@ use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, VariableId};
 use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, SendError, SendFuture};
 use cyberapi_store::{
-    CollectionEdit, CollectionStore, HistoryStore, Inserted, NewCollection, NewVariable, PrefStore, Storage,
-    StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
+    CollectionEdit, CollectionStore, CookieStore, HistoryStore, Inserted, NewCollection, NewVariable, PrefStore,
+    Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -139,6 +140,16 @@ pub enum Call {
         collection: CollectionId,
         api: ItemId,
     },
+    CookiesList,
+    CookiesPut {
+        cookies: Vec<Cookie>,
+    },
+    CookiesDelete {
+        domain: String,
+        path: String,
+        name: String,
+    },
+    CookiesClear,
 }
 
 /// What a call answers: the method's value, or the store's refusal.
@@ -157,12 +168,13 @@ pub async fn dispatch(storage: &Storage, call: Call) -> Reply {
             Err(error) => Reply::Err(error),
         }
     }
-    let (collections, tree, variables, prefs, history) = (
+    let (collections, tree, variables, prefs, history, cookies) = (
         storage.collections(),
         storage.tree(),
         storage.variables(),
         storage.prefs(),
         storage.history(),
+        storage.cookies(),
     );
     match call {
         Call::CollectionsList => reply(collections.list().await),
@@ -204,6 +216,10 @@ pub async fn dispatch(storage: &Storage, call: Call) -> Reply {
         Call::HistoryList { collection, api } => reply(history.list(collection, api).await),
         Call::HistoryLatest { collection, apis } => reply(history.latest(collection, apis).await),
         Call::HistoryClear { collection, api } => reply(history.clear(collection, api).await),
+        Call::CookiesList => reply(cookies.list().await),
+        Call::CookiesPut { cookies: put } => reply(cookies.put(put).await),
+        Call::CookiesDelete { domain, path, name } => reply(cookies.delete(domain, path, name).await),
+        Call::CookiesClear => reply(cookies.clear().await),
     }
 }
 
@@ -368,6 +384,21 @@ impl HistoryStore for BridgeStore {
     }
     fn clear(&self, collection: CollectionId, api: ItemId) -> StoreFuture<()> {
         self.call(Call::HistoryClear { collection, api })
+    }
+}
+
+impl CookieStore for BridgeStore {
+    fn list(&self) -> StoreFuture<Vec<Cookie>> {
+        self.call(Call::CookiesList)
+    }
+    fn put(&self, cookies: Vec<Cookie>) -> StoreFuture<()> {
+        self.call(Call::CookiesPut { cookies })
+    }
+    fn delete(&self, domain: String, path: String, name: String) -> StoreFuture<()> {
+        self.call(Call::CookiesDelete { domain, path, name })
+    }
+    fn clear(&self) -> StoreFuture<()> {
+        self.call(Call::CookiesClear)
     }
 }
 

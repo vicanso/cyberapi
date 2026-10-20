@@ -97,6 +97,12 @@ const MIGRATIONS: &[&[&str]] = &[
         )",
         "CREATE INDEX IF NOT EXISTS responses_api ON responses (collection, api)",
     ],
+    // 4: the cookie jar (M9), which the old app kept in `cookies.json`. A
+    // cookie's document, by its domain, path and name.
+    &["CREATE TABLE IF NOT EXISTS cookies (
+            key TEXT PRIMARY KEY NOT NULL,
+            doc TEXT NOT NULL
+        )"],
 ];
 
 /// The schema version this build writes.

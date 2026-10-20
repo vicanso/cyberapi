@@ -10,6 +10,7 @@ use crate::{
 };
 use cyberapi_core::access::CollectionRole;
 use cyberapi_core::collection::SortOrder;
+use cyberapi_core::cookie::Cookie;
 use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, ContentType, Folder, HttpMethod, HttpRequest, KvParam, VariableCategory,
 };
@@ -47,6 +48,7 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     workspace_prefs_are_per_collection(storage).await;
     history_keeps_the_newest(storage, probe).await;
     history_is_only_of_the_projects_apis(storage).await;
+    cookies_are_kept_by_key(storage).await;
 }
 
 const MISSING: &str = "conformance-missing";
@@ -990,4 +992,74 @@ async fn history_is_only_of_the_projects_apis(storage: &Storage) {
             .expect("list")
             .is_empty()
     );
+}
+
+fn cookie(name: &str, value: &str, domain: &str, path: &str) -> Cookie {
+    Cookie {
+        name: name.into(),
+        value: value.into(),
+        domain: domain.into(),
+        path: path.into(),
+        ..Default::default()
+    }
+}
+
+/// M9: kept by domain, path and name, listed by name; a newer cookie
+/// replaces its namesake, an expired one removes it.
+async fn cookies_are_kept_by_key(storage: &Storage) {
+    let cookies = storage.cookies();
+    cookies.clear().await.expect("clear");
+    let lasting = Cookie {
+        expires: Some(cyberapi_core::Timestamp::parse_lenient("2099-01-02T03:04:05Z")),
+        secure: true,
+        http_only: true,
+        host_only: true,
+        ..cookie("x", "3", "other.test", "/")
+    };
+    cookies
+        .put(vec![
+            cookie("sid", "2", "example.com", "/v1"),
+            lasting.clone(),
+            cookie("sid", "1", "example.com", "/"),
+        ])
+        .await
+        .expect("put");
+    assert_eq!(
+        cookies.list().await.expect("list"),
+        [
+            cookie("sid", "1", "example.com", "/"),
+            cookie("sid", "2", "example.com", "/v1"),
+            lasting.clone(),
+        ],
+        "by name, then domain and path, as they were put"
+    );
+
+    let expired = Cookie {
+        expires: Some(cyberapi_core::Timestamp::parse_lenient("1970-01-01T00:00:01Z")),
+        ..cookie("sid", "", "example.com", "/v1")
+    };
+    cookies
+        .put(vec![cookie("sid", "9", "example.com", "/"), expired])
+        .await
+        .expect("put");
+    assert_eq!(
+        cookies.list().await.expect("list"),
+        [cookie("sid", "9", "example.com", "/"), lasting.clone()],
+        "replaced, and removed by an expired one"
+    );
+
+    cookies
+        .delete("other.test".into(), "/".into(), "x".into())
+        .await
+        .expect("delete");
+    cookies
+        .delete("nowhere.test".into(), "/".into(), "x".into())
+        .await
+        .expect("deleting what is not kept");
+    assert_eq!(
+        cookies.list().await.expect("list"),
+        [cookie("sid", "9", "example.com", "/")]
+    );
+    cookies.clear().await.expect("clear");
+    assert!(cookies.list().await.expect("list").is_empty());
 }

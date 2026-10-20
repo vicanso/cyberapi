@@ -210,6 +210,17 @@ pub const RESPONSES_TRIM: &str =
     "DELETE FROM responses WHERE account = $1 AND collection = $2 AND api = $3 AND seq < $4";
 pub const RESPONSES_CLEAR: &str = "DELETE FROM responses WHERE account = $1 AND collection = $2 AND api = $3";
 
+// Each account's cookie jar.
+pub const COOKIES_OF: &str = "SELECT doc FROM cookies WHERE account = $1";
+pub const COOKIE_UPSERT: Pair = Pair {
+    pg: "INSERT INTO cookies (account, ckey, doc) VALUES ($1, $2, $3) \
+         ON CONFLICT (account, ckey) DO UPDATE SET doc = EXCLUDED.doc",
+    my: "INSERT INTO cookies (account, ckey, doc) VALUES (?, ?, ?) AS new \
+         ON DUPLICATE KEY UPDATE doc = new.doc",
+};
+pub const COOKIE_DELETE: &str = "DELETE FROM cookies WHERE account = $1 AND ckey = $2";
+pub const COOKIES_CLEAR: &str = "DELETE FROM cookies WHERE account = $1";
+
 // ---- the conformance probe -------------------------------------------------------
 
 #[cfg(any(test, feature = "conformance"))]
@@ -275,6 +286,9 @@ mod tests {
         RESPONSE_OLDEST_KEPT,
         RESPONSES_TRIM,
         RESPONSES_CLEAR,
+        COOKIES_OF,
+        COOKIE_DELETE,
+        COOKIES_CLEAR,
     ];
 
     #[test]
