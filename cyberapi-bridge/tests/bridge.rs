@@ -7,8 +7,11 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use cyberapi_bridge::Bridge;
+use cyberapi_core::model::HttpMethod;
+use cyberapi_core::prefs::Timeouts;
+use cyberapi_http::{HttpEngine, NativeEngine, PreparedRequest, SendError, TargetPolicy};
 use cyberapi_store::conformance;
-use cyberapi_store_bridge::{BridgeStore, Response, STORE_PATH, Transport};
+use cyberapi_store_bridge::{BridgeHttpEngine, BridgeStore, Response, STORE_PATH, Transport};
 use cyberapi_store_sql::SqlStore;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -19,8 +22,13 @@ use tower::ServiceExt;
 
 const SETUP_TOKEN: &str = "setup-secret";
 
-/// A bridge on a new, empty database, or `None` when there is no server.
+/// A bridge on a new, empty database, or `None` when there is no server. It
+/// sends as a deployed one does: to public addresses only.
 async fn fresh_bridge() -> Option<Bridge> {
+    fresh_bridge_sending_to(vec![]).await
+}
+
+async fn fresh_bridge_sending_to(allowed: Vec<ipnet::IpNet>) -> Option<Bridge> {
     let Ok(url) = std::env::var("CYBERAPI_TEST_POSTGRES") else {
         eprintln!("skipped: CYBERAPI_TEST_POSTGRES is not set");
         return None;
@@ -34,7 +42,8 @@ async fn fresh_bridge() -> Option<Bridge> {
         .expect("create a database");
     let (server, _) = url.rsplit_once('/').expect("a database in the URL");
     let store = SqlStore::connect(&format!("{server}/{name}")).await.expect("connect");
-    Some(Bridge::new(store, SETUP_TOKEN.into(), false))
+    let engine = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::PublicOnly { allowed });
+    Some(Bridge::new(store, Arc::new(engine), SETUP_TOKEN.into(), false))
 }
 
 /// One request; the status, the `Set-Cookie` value, and the body.
@@ -204,4 +213,80 @@ async fn bridge_store_conforms() {
 
     let store = BridgeStore::new(Arc::new(RouterTransport { router, cookie }));
     conformance::run(&store.storage(), bridge.store()).await;
+}
+
+/// A server on this machine that answers every request with `pong`.
+async fn pong_server() -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 4\r\n\r\npong")
+                    .await;
+            });
+        }
+    });
+    address
+}
+
+async fn signed_in_router(bridge: &Bridge) -> (Router, String) {
+    let router = bridge.router(None);
+    let form = json!({"token": SETUP_TOKEN, "name": "admin", "password": "long enough"});
+    let (status, set_cookie, body) = send(&router, "POST", "/v1/setup", None, Some(form)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    (router, cookie_pair(&set_cookie.expect("a cookie")))
+}
+
+/// The page's engine through the bridge's: sent from the server, for a
+/// signed-in account, only where the target policy allows.
+#[tokio::test]
+async fn requests_are_sent_by_the_bridge() {
+    let target = pong_server().await;
+    let request = PreparedRequest {
+        method: HttpMethod::Get,
+        url: format!("http://{target}/ping"),
+        timeouts: Timeouts::default().effective(),
+        ..Default::default()
+    };
+
+    // A deployed bridge does not reach into its own network.
+    let Some(bridge) = fresh_bridge().await else { return };
+    let (router, cookie) = signed_in_router(&bridge).await;
+    let engine = BridgeHttpEngine::new(Arc::new(RouterTransport {
+        router: router.clone(),
+        cookie: cookie.clone(),
+    }));
+    assert_eq!(
+        engine.send(request.clone()).await,
+        Err(SendError::Forbidden {
+            target: "127.0.0.1".into()
+        })
+    );
+    // Nobody signed in: nothing is sent.
+    let anonymous = BridgeHttpEngine::new(Arc::new(RouterTransport {
+        router,
+        cookie: String::new(),
+    }));
+    assert_eq!(
+        anonymous.send(request.clone()).await,
+        Err(SendError::Bridge {
+            message: "not signed in".into()
+        })
+    );
+
+    // Allowed back by its administrator.
+    let Some(bridge) = fresh_bridge_sending_to(vec!["127.0.0.0/8".parse().expect("a range")]).await else {
+        return;
+    };
+    let (router, cookie) = signed_in_router(&bridge).await;
+    let engine = BridgeHttpEngine::new(Arc::new(RouterTransport { router, cookie }));
+    let exchange = engine.send(request).await.expect("an exchange");
+    assert_eq!(exchange.status, 200);
+    assert_eq!(exchange.body, b"pong");
+    assert_eq!(exchange.stats.remote_addr, target.to_string());
 }

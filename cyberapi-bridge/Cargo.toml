@@ -15,11 +15,13 @@ argon2 = "0.6.0"
 axum = "0.8.9"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 cyberapi-core = { workspace = true }
+cyberapi-http = { workspace = true }
 cyberapi-store = { workspace = true }
 cyberapi-store-bridge = { workspace = true }
 cyberapi-store-sql = { workspace = true }
 getrandom = "0.4.3"
 hex = "0.4.3"
+ipnet = "2.12.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.11.1"

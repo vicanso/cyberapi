@@ -1733,12 +1733,14 @@ dependencies = [
  "axum",
  "clap",
  "cyberapi-core",
+ "cyberapi-http",
  "cyberapi-store",
  "cyberapi-store-bridge",
  "cyberapi-store-sql",
  "getrandom 0.4.3",
  "hex",
  "http-body-util",
+ "ipnet",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -1846,6 +1848,7 @@ name = "cyberapi-store-bridge"
 version = "0.2.0"
 dependencies = [
  "cyberapi-core",
+ "cyberapi-http",
  "cyberapi-store",
  "serde",
  "serde_json",

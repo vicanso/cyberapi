@@ -13,6 +13,7 @@ publish = false
 # client: the page hands it one (`Transport`).
 [dependencies]
 cyberapi-core = { workspace = true }
+cyberapi-http = { workspace = true }
 cyberapi-store = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -42,9 +42,9 @@ test-sql:
 
 # The bridge on the local PostgreSQL, serving the last `make web-bundle`:
 # open http://127.0.0.1:7380/. The first visit makes the administrator with
-# the setup token `dev`.
+# the setup token `dev`. Requests may go to this machine, for local APIs.
 bridge:
-	CYBERAPI_BRIDGE_STORE=$(PG_URL) CYBERAPI_BRIDGE_SETUP_TOKEN=dev cargo run -p cyberapi-bridge -- --insecure-cookie
+	CYBERAPI_BRIDGE_STORE=$(PG_URL) CYBERAPI_BRIDGE_SETUP_TOKEN=dev cargo run -p cyberapi-bridge -- --insecure-cookie --allow-target 127.0.0.0/8,::1/128
 
 # The browser's gate, which sees nothing of the desktop (and `lint` sees
 # nothing of wasm). Runs from cyberapi-web/, whose rust-toolchain.toml selects

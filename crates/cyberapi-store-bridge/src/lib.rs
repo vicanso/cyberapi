@@ -11,12 +11,18 @@
 //!
 //! The protocol grows with the traits and with nothing else: a new method is
 //! a new variant here, matched in [`dispatch`] and made in [`BridgeStore`].
+//!
+//! Sending a request is the other half (`docs/architecture.md` §5, D5): the
+//! page prepares it with the shared pipeline and [`BridgeHttpEngine`] posts
+//! it to [`SEND_PATH`], where the bridge's engine sends it and answers with a
+//! [`SendReply`].
 
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, VariableId};
+use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, SendError, SendFuture};
 use cyberapi_store::{
     CollectionEdit, CollectionStore, HistoryStore, Inserted, NewCollection, NewVariable, PrefStore, Storage,
     StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
@@ -29,6 +35,16 @@ use std::sync::Arc;
 
 /// Where calls are posted.
 pub const STORE_PATH: &str = "/v1/store";
+/// Where requests to send are posted.
+pub const SEND_PATH: &str = "/v1/send";
+
+/// What sending answers: the exchange, or why there was none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SendReply {
+    Ok(Exchange),
+    Err(SendError),
+}
 
 /// One Store trait method and its arguments.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -352,6 +368,45 @@ impl HistoryStore for BridgeStore {
     }
     fn clear(&self, collection: CollectionId, api: ItemId) -> StoreFuture<()> {
         self.call(Call::HistoryClear { collection, api })
+    }
+}
+
+/// Sending through the bridge — the browser's engine. Dropping the future
+/// stops waiting; the bridge finishes the request on its own (it is bounded by
+/// its timeouts).
+#[derive(Clone)]
+pub struct BridgeHttpEngine {
+    transport: Arc<dyn Transport>,
+}
+
+impl BridgeHttpEngine {
+    pub fn new(transport: Arc<dyn Transport>) -> Self {
+        Self { transport }
+    }
+}
+
+impl HttpEngine for BridgeHttpEngine {
+    fn send(&self, request: PreparedRequest) -> SendFuture {
+        let transport = self.transport.clone();
+        Box::pin(async move {
+            let bridge = |message: String| SendError::Bridge { message };
+            let body = serde_json::to_vec(&request).map_err(|e| bridge(e.to_string()))?;
+            let response = transport.post(SEND_PATH, body).await.map_err(bridge)?;
+            match response.status {
+                200 => {}
+                401 => return Err(bridge("not signed in".into())),
+                status => {
+                    return Err(bridge(format!(
+                        "answered {status}: {}",
+                        String::from_utf8_lossy(&response.body)
+                    )));
+                }
+            }
+            match serde_json::from_slice(&response.body).map_err(|e| bridge(e.to_string()))? {
+                SendReply::Ok(exchange) => Ok(exchange),
+                SendReply::Err(error) => Err(error),
+            }
+        })
     }
 }
 

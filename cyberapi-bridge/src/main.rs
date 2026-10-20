@@ -6,9 +6,12 @@
 
 use clap::Parser;
 use cyberapi_bridge::Bridge;
+use cyberapi_http::{NativeEngine, TargetPolicy};
 use cyberapi_store_sql::SqlStore;
+use ipnet::IpNet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -32,6 +35,11 @@ struct Args {
     /// HTTP on this machine.
     #[arg(long)]
     insecure_cookie: bool,
+    /// Address ranges requests may be sent to besides public addresses, e.g.
+    /// `10.0.0.0/8,127.0.0.1/32`. Loopback, private, link-local (the cloud
+    /// metadata address) and the like are refused otherwise.
+    #[arg(long = "allow-target", env = "CYBERAPI_BRIDGE_ALLOW_TARGETS", value_delimiter = ',')]
+    allow_targets: Vec<IpNet>,
 }
 
 #[tokio::main]
@@ -48,7 +56,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if store.account_count().await? == 0 {
         tracing::info!(%setup_token, "no account yet: make the first administrator with this setup token");
     }
-    let bridge = Bridge::new(store, setup_token, !args.insecure_cookie);
+    if !args.allow_targets.is_empty() {
+        tracing::info!(allowed = ?args.allow_targets, "requests may also go to these ranges");
+    }
+    let engine = NativeEngine::new(
+        tokio::runtime::Handle::current(),
+        TargetPolicy::PublicOnly {
+            allowed: args.allow_targets,
+        },
+    );
+    let bridge = Bridge::new(store, Arc::new(engine), setup_token, !args.insecure_cookie);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     tracing::info!(listen = %args.listen, www = %args.www.display(), "cyberapi-bridge serving");
     axum::serve(listener, bridge.router(Some(args.www))).await?;

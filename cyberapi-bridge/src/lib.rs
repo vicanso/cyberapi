@@ -10,17 +10,19 @@
 //! | `POST /v1/login`, `POST /v1/logout` | the session cookie |
 //! | `GET /v1/session` | who is signed in, or 401 |
 //! | `POST /v1/store` | one store call (`cyberapi_store_bridge::Call`) |
+//! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5) |
 //! | anything else | the page's files |
 
 mod auth;
 
 use auth::{SESSION_COOKIE, hash_password, hash_token, new_token, session_cookie, signed_in, verify_password};
 use axum::Router;
-use axum::extract::{Json, State};
+use axum::extract::{DefaultBodyLimit, Json, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use cyberapi_store_bridge::{Call, STORE_PATH, dispatch};
+use cyberapi_http::{HttpEngine, PreparedRequest};
+use cyberapi_store_bridge::{Call, SEND_PATH, STORE_PATH, SendReply, dispatch};
 use cyberapi_store_sql::{Account, NewAccount, SqlStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -31,6 +33,8 @@ use tower_http::services::ServeDir;
 pub const SESSION_DAYS: i64 = 30;
 const MIN_PASSWORD_CHARS: usize = 8;
 const MAX_NAME_CHARS: usize = 64;
+/// A request body or a kept response, base64 in JSON.
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Bridge {
@@ -39,6 +43,9 @@ pub struct Bridge {
 
 struct Inner {
     store: SqlStore,
+    /// Sends for every account: a `NativeEngine` that only reaches the
+    /// addresses its `TargetPolicy` allows.
+    engine: Arc<dyn HttpEngine>,
     /// What `POST /v1/setup` must be shown, while no account exists.
     setup_token: String,
     /// Mark the cookie `Secure`: on, unless the bridge is reached over plain
@@ -47,10 +54,11 @@ struct Inner {
 }
 
 impl Bridge {
-    pub fn new(store: SqlStore, setup_token: String, secure_cookie: bool) -> Self {
+    pub fn new(store: SqlStore, engine: Arc<dyn HttpEngine>, setup_token: String, secure_cookie: bool) -> Self {
         Self {
             inner: Arc::new(Inner {
                 store,
+                engine,
                 setup_token,
                 secure_cookie,
             }),
@@ -69,6 +77,8 @@ impl Bridge {
             .route("/v1/logout", post(logout))
             .route("/v1/session", get(session))
             .route(STORE_PATH, post(store_call))
+            .route(SEND_PATH, post(send_request))
+            .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
             .with_state(self.clone());
         match www {
             Some(dir) => api.fallback_service(ServeDir::new(dir)),
@@ -242,4 +252,21 @@ async fn store_call(State(bridge): State<Bridge>, headers: HeaderMap, Json(call)
     };
     let storage = bridge.inner.store.scoped(account.id);
     Json(dispatch(&storage, call).await).into_response()
+}
+
+/// Sends for a signed-in account. A request the engine refuses or that
+/// fails is a normal answer, like a store's refusal.
+async fn send_request(
+    State(bridge): State<Bridge>,
+    headers: HeaderMap,
+    Json(request): Json<PreparedRequest>,
+) -> Response {
+    if let Err(status) = signed_in(&bridge.inner.store, &headers).await {
+        return status.into_response();
+    }
+    let reply = match bridge.inner.engine.send(request).await {
+        Ok(exchange) => SendReply::Ok(exchange),
+        Err(error) => SendReply::Err(error),
+    };
+    Json(reply).into_response()
 }
