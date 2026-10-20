@@ -195,7 +195,7 @@ async fn rules(variable: &str) {
             .list(id.clone(), login.item.id.clone())
             .await
             .expect("list"),
-        [kept.clone()]
+        std::slice::from_ref(&kept)
     );
     assert_eq!(
         alice
