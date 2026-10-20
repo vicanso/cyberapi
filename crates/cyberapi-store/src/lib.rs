@@ -1,0 +1,200 @@
+//! The storage seam (L1 in `docs/architecture.md` §4): the traits every
+//! backend implements, so the layers above never know which one they hold.
+//!
+//! | Backend | Where |
+//! |---|---|
+//! | `TursoStore` (`cyberapi-store-turso`) | the desktop |
+//! | `SqlStore` (`cyberapi-store-sql`) | the bridge, over PostgreSQL / MySQL |
+//! | `BridgeStore` (`cyberapi-web`) | the browser, through the bridge |
+//! | [`MemoryStore`] | tests |
+//!
+//! The rules every backend keeps are written once, as the `conformance`
+//! suite (feature `conformance`), and each backend's tests run it.
+//!
+//! Every method takes owned arguments and returns a `'static` future, so a
+//! call can be handed to gpui's background executor as it is, and every
+//! argument and answer can cross HTTP. Every change to a project's content
+//! names the project, and a backend refuses an item, variable or folder of
+//! another project as if it did not exist.
+
+#[cfg(feature = "conformance")]
+pub mod conformance;
+mod error;
+#[cfg(not(target_family = "wasm"))]
+mod memory;
+pub mod rules;
+
+pub use error::{Entity, StoreError};
+#[cfg(not(target_family = "wasm"))]
+pub use memory::MemoryStore;
+
+use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
+use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
+use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
+use cyberapi_core::{CollectionId, ItemId, TeamId, VariableId};
+use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+/// What every store method returns. Boxed, because the stores are used as
+/// `Arc<dyn …>` — chosen at run time — and an `async fn` in a trait cannot be.
+pub type StoreFuture<T> = Pin<Box<dyn Future<Output = Result<T, StoreError>> + Send + 'static>>;
+
+/// The fields a new project is made from.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewCollection {
+    pub name: String,
+    pub description: String,
+    /// The team it belongs to in the browser build; `None` is the reader's
+    /// own space there, and the only choice on the desktop.
+    pub owner: Option<TeamId>,
+}
+
+/// The fields of a project its readers may change.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionEdit {
+    pub name: String,
+    pub description: String,
+}
+
+/// A new tree item, and where the store put it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Inserted<T> {
+    pub item: T,
+    /// The lists that changed to place it ([`TreeData::plan_insert`]), for the
+    /// caller to apply to its copy.
+    pub change: TreeChange,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewVariable {
+    pub collection: CollectionId,
+    pub category: VariableCategory,
+    pub name: String,
+    pub value: String,
+    pub enabled: bool,
+}
+
+/// The fields of a variable that change; its project and category do not.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VariableEdit {
+    pub name: String,
+    pub value: String,
+    pub enabled: bool,
+}
+
+/// Projects (M2).
+pub trait CollectionStore: Send + Sync {
+    /// The projects the reader can see, in store order; each carries the
+    /// reader's role.
+    fn list(&self) -> StoreFuture<Vec<Collection>>;
+    fn get(&self, id: CollectionId) -> StoreFuture<Collection>;
+    /// A blank name is refused (F2.2).
+    fn create(&self, input: NewCollection) -> StoreFuture<Collection>;
+    fn update(&self, id: CollectionId, edit: CollectionEdit) -> StoreFuture<Collection>;
+    /// Removes the project and everything in it: folders, APIs, variables
+    /// and the readers' workspace state (#5 — the old app kept the variables).
+    fn delete(&self, id: CollectionId) -> StoreFuture<()>;
+}
+
+/// A project's folders and APIs (M3, F4.1). Each change follows the plan
+/// `cyberapi_core::tree` makes for it and moves the project's `updated_at`.
+pub trait TreeStore: Send + Sync {
+    fn load(&self, collection: CollectionId) -> StoreFuture<TreeData>;
+    /// A folder at the end of `parent`, or first on the top level (F3.4).
+    fn create_folder(
+        &self,
+        collection: CollectionId,
+        parent: Option<ItemId>,
+        name: String,
+    ) -> StoreFuture<Inserted<Folder>>;
+    /// An HTTP API with an empty request, placed like a folder (F3.4).
+    fn create_api(
+        &self,
+        collection: CollectionId,
+        parent: Option<ItemId>,
+        name: String,
+    ) -> StoreFuture<Inserted<ApiSetting>>;
+    /// Renames a folder or an API (F3.5). A blank name is refused.
+    fn rename(&self, collection: CollectionId, item: ItemId, name: String) -> StoreFuture<()>;
+    /// Replaces an API's request (F4.11).
+    fn save_request(&self, collection: CollectionId, api: ItemId, request: HttpRequest) -> StoreFuture<ApiSetting>;
+    /// Moves an item (F3.7); answers what changed.
+    fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange>;
+    /// Deletes an item, and for a folder all it contains (F3.6).
+    fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal>;
+}
+
+/// Environment variables, custom variables and global request headers (M8).
+pub trait VariableStore: Send + Sync {
+    /// Sorted by name; equal names keep store order.
+    fn list(&self, collection: CollectionId, category: VariableCategory) -> StoreFuture<Vec<Variable>>;
+    fn create(&self, input: NewVariable) -> StoreFuture<Variable>;
+    fn update(&self, collection: CollectionId, id: VariableId, edit: VariableEdit) -> StoreFuture<Variable>;
+    /// Ids that are not the project's are ignored.
+    fn delete(&self, collection: CollectionId, ids: Vec<VariableId>) -> StoreFuture<()>;
+}
+
+/// What the reader keeps for themselves (4.6 / 4.7). A document never
+/// written reads as its defaults.
+pub trait PrefStore: Send + Sync {
+    fn app(&self) -> StoreFuture<AppPrefs>;
+    fn set_app(&self, prefs: AppPrefs) -> StoreFuture<()>;
+    fn workspace(&self, collection: CollectionId) -> StoreFuture<WorkspacePrefs>;
+    fn set_workspace(&self, collection: CollectionId, prefs: WorkspacePrefs) -> StoreFuture<()>;
+}
+
+/// One backend's stores, as the layers above hold them.
+#[derive(Clone)]
+pub struct Storage {
+    collections: Arc<dyn CollectionStore>,
+    tree: Arc<dyn TreeStore>,
+    variables: Arc<dyn VariableStore>,
+    prefs: Arc<dyn PrefStore>,
+}
+
+impl Storage {
+    pub fn new(
+        collections: Arc<dyn CollectionStore>,
+        tree: Arc<dyn TreeStore>,
+        variables: Arc<dyn VariableStore>,
+        prefs: Arc<dyn PrefStore>,
+    ) -> Self {
+        Self {
+            collections,
+            tree,
+            variables,
+            prefs,
+        }
+    }
+
+    /// Every store from one backend that implements them all.
+    pub fn from_backend<B>(backend: Arc<B>) -> Self
+    where
+        B: CollectionStore + TreeStore + VariableStore + PrefStore + 'static,
+    {
+        Self::new(backend.clone(), backend.clone(), backend.clone(), backend)
+    }
+
+    pub fn collections(&self) -> &dyn CollectionStore {
+        self.collections.as_ref()
+    }
+
+    pub fn tree(&self) -> &dyn TreeStore {
+        self.tree.as_ref()
+    }
+
+    pub fn variables(&self) -> &dyn VariableStore {
+        self.variables.as_ref()
+    }
+
+    pub fn prefs(&self) -> &dyn PrefStore {
+        self.prefs.as_ref()
+    }
+}

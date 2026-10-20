@@ -1206,6 +1206,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyberapi-store"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "cyberapi-core",
+ "cyberapi-store",
+ "pollster 1.0.1",
+ "serde",
+ "snafu",
+ "ulid",
+]
+
+[[package]]
 name = "cyberapi-web"
 version = "0.2.0"
 dependencies = [
@@ -2256,7 +2269,7 @@ dependencies = [
  "parking",
  "parking_lot",
  "pin-project",
- "pollster",
+ "pollster 0.4.0",
  "profiling",
  "rand 0.9.5",
  "raw-window-handle",
@@ -4716,6 +4729,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
 
 [[package]]
+name = "pollster"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336"
+
+[[package]]
 name = "polycool"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6720,6 +6739,16 @@ dependencies = [
  "memoffset",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ulid"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "947dde63b6d514cc5e044edad4e0ca7261afd1099d16c83d942cb2b2f348689c"
+dependencies = [
+ "rand 0.10.3",
+ "web-time",
 ]
 
 [[package]]

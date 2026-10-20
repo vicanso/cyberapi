@@ -7,7 +7,8 @@
 //! request is parsed rather than kept as JSON text. The `legacy` helpers at
 //! the bottom convert the columns that need it; each store maps the rest.
 
-use crate::{CollectionId, ItemId, Timestamp, VariableId};
+use crate::access::CollectionRole;
+use crate::{CollectionId, ItemId, TeamId, Timestamp, VariableId};
 use serde::{Deserialize, Serialize};
 
 /// A project: the top-level container. Variables are scoped to it too.
@@ -18,7 +19,17 @@ pub struct Collection {
     pub name: String,
     pub description: String,
     pub created_at: Timestamp,
+    /// Also moved by any change to the project's tree, requests or variables,
+    /// so "last modified" means the project, not only its name (#21).
     pub updated_at: Timestamp,
+    /// The team the project belongs to in the browser build; `None` on the
+    /// desktop.
+    #[serde(default)]
+    pub owner: Option<TeamId>,
+    /// What the reader may do with it — not stored, worked out per reader. The
+    /// desktop's only user manages everything.
+    #[serde(default)]
+    pub role: CollectionRole,
 }
 
 /// A folder of a project's tree. Its `children` — folders and APIs mixed — is

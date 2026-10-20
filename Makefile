@@ -29,7 +29,7 @@ release:
 # the nightly GPUI's web backend needs. Every crate under `crates/` that the
 # page links is listed: they all build for wasm.
 check-web:
-	cd cyberapi-web && cargo check --target wasm32-unknown-unknown -p cyberapi-core -p cyberapi-gui -p cyberapi-web
+	cd cyberapi-web && cargo check --target wasm32-unknown-unknown -p cyberapi-core -p cyberapi-store -p cyberapi-gui -p cyberapi-web
 
 # The browser bundle (`cargo install wasm-pack` once). `web-bundle` is the
 # iteration build, `web-release` the shipped form (needs binaryen's wasm-opt).

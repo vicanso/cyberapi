@@ -64,3 +64,8 @@ string_id!(
     /// An environment variable, a custom variable or a global request header.
     VariableId
 );
+string_id!(
+    /// A team of the browser build's accounts (`docs/architecture.md` §9).
+    /// Every project there belongs to one; the desktop has none.
+    TeamId
+);

@@ -20,7 +20,8 @@ pub struct Placement {
 }
 
 /// The stored lists a plan rewrites. Only what differs is listed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TreeChange {
     /// Folders whose `children` change, with the new list, in store order.
     pub folders: Vec<(ItemId, Vec<ItemId>)>,
@@ -35,7 +36,7 @@ impl TreeChange {
 }
 
 /// What removing an item deletes, and the lists that stop naming it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Removal {
     /// The removed item first if it is a folder, then every folder inside it.
     pub folders: Vec<ItemId>,
@@ -44,7 +45,8 @@ pub struct Removal {
     pub change: TreeChange,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Snafu)]
+#[derive(Clone, Debug, PartialEq, Eq, Snafu, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TreeError {
     #[snafu(display("{id} is not in this project's tree"))]
     UnknownItem { id: ItemId },

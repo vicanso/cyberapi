@@ -68,6 +68,7 @@ mod tests {
             description: description.into(),
             created_at: Timestamp::parse_lenient(created),
             updated_at: Timestamp::parse_lenient(updated),
+            ..Default::default()
         }
     }
 

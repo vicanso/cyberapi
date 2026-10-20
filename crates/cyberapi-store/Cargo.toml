@@ -1,0 +1,33 @@
+[package]
+name = "cyberapi-store"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CyberAPI's storage seam: the Store traits every backend implements, and an in-memory one."
+publish = false
+
+[features]
+# The behaviour every implementation must share, as one async check suite
+# (`conformance::run`). A backend's tests turn it on as a dev-dependency.
+conformance = []
+
+# The traits build for wasm: the browser build's GUI holds them, filled by an
+# implementation that talks to the bridge.
+[dependencies]
+cyberapi-core = { workspace = true }
+serde = { workspace = true }
+snafu = { workspace = true }
+
+# `MemoryStore` makes ids and reads the clock, which a wasm32 page cannot.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+chrono = { workspace = true, features = ["clock"] }
+ulid = { workspace = true }
+
+[dev-dependencies]
+cyberapi-store = { workspace = true, features = ["conformance"] }
+pollster = { workspace = true }
+
+[lints.clippy]
+unwrap_used = "deny"

@@ -75,43 +75,61 @@ cyberapi-bridge          axum 服务：托管页面、登录、REST 存储 API�
 ```rust
 // 需要 `Arc<dyn …>` 在运行时切换实现，而原生的 async fn in trait 不支持 dyn，
 // 所以统一返回 boxed future。
-pub type StoreFuture<T> = BoxFuture<'static, Result<T, StoreError>>;
+pub type StoreFuture<T> = Pin<Box<dyn Future<Output = Result<T, StoreError>> + Send + 'static>>;
 
 pub trait CollectionStore: Send + Sync {
     /// 当前身份可见的项目，每项附带当前身份的角色（桌面版恒为 Manager）。
     fn list(&self) -> StoreFuture<Vec<Collection>>;
+    fn get(&self, id: CollectionId) -> StoreFuture<Collection>;
     /// `owner` 为归属团队；桌面版忽略，浏览器版为空时归入个人空间。
     fn create(&self, input: NewCollection) -> StoreFuture<Collection>;
-    fn update(&self, collection: Collection) -> StoreFuture<Collection>;
-    /// 级联删除目录、接口、变量、授权、各账号的界面状态和响应历史（修正 #5）。
+    fn update(&self, id: CollectionId, edit: CollectionEdit) -> StoreFuture<Collection>;
+    /// 级联删除目录、接口、变量、各账号的界面状态（修正 #5）。
     fn delete(&self, id: CollectionId) -> StoreFuture<()>;
 }
 
 pub trait TreeStore: Send + Sync {
     /// 目录、接口和顶层顺序。
     fn load(&self, collection: CollectionId) -> StoreFuture<TreeData>;
-    fn create(&self, collection: CollectionId, parent: Option<FolderId>, item: NewItem) -> StoreFuture<TreeItem>;
-    fn rename(&self, item: ItemId, name: String) -> StoreFuture<()>;
-    fn save_request(&self, api: ApiId, request: HttpRequest) -> StoreFuture<()>;
-    fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<()>;
-    fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removed>;
-    fn import(&self, collection: CollectionId, parent: Option<FolderId>, batch: ImportBatch) -> StoreFuture<()>;
+    /// 新建的项与它造成的变更（`Inserted { item, change }`），调用方把 change 应用到自己的副本。
+    fn create_folder(&self, collection: CollectionId, parent: Option<ItemId>, name: String) -> StoreFuture<Inserted<Folder>>;
+    fn create_api(&self, collection: CollectionId, parent: Option<ItemId>, name: String) -> StoreFuture<Inserted<ApiSetting>>;
+    fn rename(&self, collection: CollectionId, item: ItemId, name: String) -> StoreFuture<()>;
+    fn save_request(&self, collection: CollectionId, api: ItemId, request: HttpRequest) -> StoreFuture<ApiSetting>;
+    fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange>;
+    fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal>;
 }
 
-// 其余 trait：
-// VariableStore  —— 按 (collection, category) 隔离的增删改查（M8），按 ID 对应（修正 #26）
-// HistoryStore   —— 每个接口保留 10 条响应历史（F7.9 / F7.11）
-// PrefStore      —— 应用设置、展开状态、置顶、活动 Tab、按项目保存的选中项（4.6 / 4.7，修正 #20）
-// CookieStore    —— 列表 / 新增 / 编辑 / 删除 / 清空（M9）
-// BackupStore    —— 导出快照，在一个事务内恢复（M13，修正 #8）
+pub trait VariableStore: Send + Sync {
+    /// 按名称排序（M8）。
+    fn list(&self, collection: CollectionId, category: VariableCategory) -> StoreFuture<Vec<Variable>>;
+    fn create(&self, input: NewVariable) -> StoreFuture<Variable>;
+    /// 按 ID 对应（修正 #26）。
+    fn update(&self, collection: CollectionId, id: VariableId, edit: VariableEdit) -> StoreFuture<Variable>;
+    fn delete(&self, collection: CollectionId, ids: Vec<VariableId>) -> StoreFuture<()>;
+}
 
-/// 一个后端的全部 Store，构造方式：
-/// `turso::open(path)` / `SqlStore::connect(url)?.scoped(account)` / `BridgeStore::new(http)` / `memory()`
+/// 个人数据：应用设置（4.7）与每个项目的工作区状态（4.6，选中项按项目保存，修正 #20）。
+pub trait PrefStore: Send + Sync {
+    fn app(&self) -> StoreFuture<AppPrefs>;
+    fn set_app(&self, prefs: AppPrefs) -> StoreFuture<()>;
+    fn workspace(&self, collection: CollectionId) -> StoreFuture<WorkspacePrefs>;
+    fn set_workspace(&self, collection: CollectionId, prefs: WorkspacePrefs) -> StoreFuture<()>;
+}
+
+/// 一个后端的全部 Store。一个后端实现全部 trait 时用 `Storage::from_backend(Arc::new(backend))`。
 #[derive(Clone)]
 pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 ```
 
-账号、团队、授权的管理只在浏览器版存在，单独定义 `DirectoryStore`（第 9.4 节），不放进 `Storage`。
+以上是第 2 步已经落地的部分（`crates/cyberapi-store`）。其余 trait 在用到它们的那一步再加，避免提前设计：
+
+| Trait | 内容 | 加入的步骤 |
+|---|---|---|
+| `DirectoryStore` | 账号、团队、授权（9.4 节），只在浏览器版存在，不放进 `Storage` | 第 5 步 |
+| `HistoryStore` | 每个接口保留 10 条响应历史（F7.9 / F7.11），依赖响应模型 | 第 7 步 |
+| `CookieStore` | 列表 / 新增 / 编辑 / 删除 / 清空（M9） | 第 8 步 |
+| `TreeStore::import`、`BackupStore` | 导入（整体重新映射 ID，修正 #7 / #9）；导出快照，在一个事务内恢复（修正 #8） | 第 9 步 |
 
 ### 4.2 设计要点
 
@@ -128,13 +146,18 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
   - **项目共享**（同一项目的成员看到同一份）：项目信息、目录、接口、变量、顶层顺序。
   - **按账号区分**：展开状态、选中项、置顶、活动 Tab、响应历史、Cookie、应用设置。
   - 响应历史可能包含 token，所以只有本人可见。
+- **每个修改项目内容的方法都带上项目 ID。** 树、请求、变量的方法都要求传入所属项目；不属于该项目的条目一律按“不存在”（`NotFound`）处理，和真的不存在没有区别。这样服务器只需要检查一次项目权限，也不会通过 ID 越权访问别的项目。
+- **内容修改会刷新项目的修改时间（#21）。** 树、请求、变量的任何修改都会更新项目的 `updated_at`，所以首页“最近修改”排序反映的是整个项目的修改。个人数据（`PrefStore`）不算内容修改。
+- **名称在存储层校验。** 项目、目录、接口的名称去掉首尾空白后不能为空，否则返回 `NameRequired`。规则写在 `cyberapi_store::rules`，每个后端调用同一个函数。
 - **参数和 future 都拥有所有权，生命周期为 `'static`。** 既能直接交给 gpui 的 `background_spawn`，也方便跨 HTTP 序列化。trait 的方法清单就是 bridge REST API 的清单，数量有界。
 - **身份在构造时绑定。** 服务器按登录账号构造 `SqlStore::scoped(account)`：
   - trait 方法本身不带账号参数，所以桌面版和服务器使用完全相同的 trait。
   - 每个方法内部按第 9 节判定权限，不满足时返回 `StoreError::Forbidden`。
   - 桌面版是唯一的本地用户，不做鉴权。
 - **测试分两套。**
-  - **一致性测试套件**：参照 zedis 的 `store/conformance.rs`，同一组用例分别运行在 Memory、Turso、PostgreSQL、MySQL 上，保证切换实现后行为不变。
+  - **一致性测试套件**：参照 zedis 的 `store/conformance.rs`，同一组用例分别运行在 Memory、Turso、PostgreSQL、MySQL 上，保证切换实现后行为不变。套件在 `cyberapi_store::conformance`（feature `conformance`），后端的测试调用 `conformance::run(&storage, &probe)`。
+    - 有些规则通过 trait 看不出来，例如项目删除后，所有方法对它都返回 `NotFound`，无论它的行是删干净了还是残留着。为此每个后端实现一个只供测试用的 `Probe`，报告某个项目还剩多少行。
+    - 套件的每条检查都会故意改坏 `MemoryStore` 的对应行为来验证，确认这条检查能发现问题。
   - **授权测试**：只运行在 `SqlStore` 上，覆盖第 9 节的每条规则。
 
 ### 4.3 桌面：turso

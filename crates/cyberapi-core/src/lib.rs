@@ -3,12 +3,14 @@
 //! data in and plain data out, so it is the same on the desktop, in the
 //! browser and on the bridge, and it is tested without any of them.
 
+pub mod access;
 pub mod collection;
 mod id;
 pub mod model;
+pub mod prefs;
 pub mod search;
 mod time;
 pub mod tree;
 
-pub use id::{CollectionId, ItemId, VariableId};
+pub use id::{CollectionId, ItemId, TeamId, VariableId};
 pub use time::Timestamp;
