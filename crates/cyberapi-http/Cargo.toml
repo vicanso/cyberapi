@@ -1,0 +1,40 @@
+[package]
+name = "cyberapi-http"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CyberAPI's HTTP engine: the trait every build sends through, and the native engine behind it."
+publish = false
+
+# The trait and the target policy build for wasm32 (the browser build sends
+# through the bridge); the engine is native only.
+[dependencies]
+cyberapi-core = { workspace = true }
+ipnet = "2.12.2"
+serde = { workspace = true }
+snafu = { workspace = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+brotli-decompressor = "6.1.0"
+bytes = "1.12.1"
+flate2 = "1.1.10"
+http = "1.5.0"
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8.5"
+tokio = { workspace = true }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+tracing = { workspace = true }
+url = { workspace = true }
+webpki-roots = "1.0.10"
+
+[dev-dependencies]
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+pretty_assertions = { workspace = true }
+
+[lints.clippy]
+unwrap_used = "deny"
