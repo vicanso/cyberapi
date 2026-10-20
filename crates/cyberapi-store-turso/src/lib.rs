@@ -19,12 +19,13 @@ use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory, legacy as columns,
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
+use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, Timestamp, VariableId};
 use cyberapi_store::rules::required_name;
 use cyberapi_store::{
-    CollectionEdit, CollectionStore, Entity, Inserted, NewCollection, NewVariable, PrefStore, Storage, StoreError,
-    StoreFuture, TreeStore, VariableEdit, VariableStore,
+    CollectionEdit, CollectionStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable, PrefStore, Storage,
+    StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
 };
 use rows::{API_COLUMNS, COLLECTION_COLUMNS, FOLDER_COLUMNS, VARIABLE_COLUMNS};
 use serde::de::DeserializeOwned;
@@ -320,6 +321,7 @@ impl CollectionStore for TursoStore {
                 "DELETE FROM api_settings WHERE collection = ?1",
                 "DELETE FROM variables WHERE collection = ?1",
                 "DELETE FROM top_orders WHERE collection = ?1",
+                "DELETE FROM responses WHERE collection = ?1",
                 "DELETE FROM api_collections WHERE id = ?1",
             ] {
                 execute(&tx, sql, (id.as_str(),)).await?;
@@ -506,12 +508,12 @@ impl TreeStore for TursoStore {
                 .await?;
             }
             for id in &removal.apis {
-                execute(
-                    &tx,
+                for sql in [
                     "DELETE FROM api_settings WHERE id = ?1 AND collection = ?2",
-                    (id.as_str(), collection.as_str()),
-                )
-                .await?;
+                    "DELETE FROM responses WHERE api = ?1 AND collection = ?2",
+                ] {
+                    execute(&tx, sql, (id.as_str(), collection.as_str())).await?;
+                }
             }
             write_change(&tx, &collection, &removal.change).await?;
             touch(&tx, &collection, now).await?;
@@ -665,6 +667,126 @@ impl PrefStore for TursoStore {
     }
 }
 
+/// The project's API `api`, as a history's owner.
+async fn require_api(conn: &Connection, collection: &CollectionId, api: &ItemId) -> Result<(), StoreError> {
+    require_collection(conn, collection).await?;
+    query_one(
+        conn,
+        "SELECT id FROM api_settings WHERE id = ?1 AND collection = ?2",
+        (api.as_str(), collection.as_str()),
+        |row| rows::text(row, 0),
+    )
+    .await?
+    .map(|_| ())
+    .ok_or_else(|| StoreError::not_found(Entity::Api, api))
+}
+
+/// A kept response: the whole entry is its document.
+fn response(row: &Row) -> Result<HttpResponse, StoreError> {
+    serde_json::from_str(&rows::text(row, 0)).map_err(backend)
+}
+
+impl HistoryStore for TursoStore {
+    fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse> {
+        self.run(move |inner, now| async move {
+            let mut conn = inner.conn.lock().await;
+            let tx = conn.transaction().await.map_err(backend)?;
+            require_api(&tx, &response.collection, &response.api).await?;
+            let kept = HttpResponse {
+                id: new_id(),
+                created_at: now,
+                ..response
+            };
+            let (collection, api) = (kept.collection.as_str(), kept.api.as_str());
+            execute(
+                &tx,
+                "INSERT INTO responses (id, collection, api, doc, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                (
+                    kept.id.as_str(),
+                    collection,
+                    api,
+                    serde_json::to_string(&kept).map_err(backend)?,
+                    now.to_rfc3339(),
+                ),
+            )
+            .await?;
+            // The oldest beyond the limit go.
+            let oldest_kept = query_one(
+                &tx,
+                &format!(
+                    "SELECT rowid FROM responses WHERE collection = ?1 AND api = ?2
+                     ORDER BY rowid DESC LIMIT 1 OFFSET {}",
+                    HISTORY_LIMIT - 1
+                ),
+                (collection, api),
+                |row| rows::text(row, 0),
+            )
+            .await?;
+            if let Some(rowid) = oldest_kept.and_then(|rowid| rowid.parse::<i64>().ok()) {
+                execute(
+                    &tx,
+                    "DELETE FROM responses WHERE collection = ?1 AND api = ?2 AND rowid < ?3",
+                    (collection, api, rowid),
+                )
+                .await?;
+            }
+            tx.commit().await.map_err(backend)?;
+            Ok(kept)
+        })
+    }
+
+    fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            require_api(&conn, &collection, &api).await?;
+            query_all(
+                &conn,
+                "SELECT doc FROM responses WHERE collection = ?1 AND api = ?2 ORDER BY rowid DESC",
+                (collection.as_str(), api.as_str()),
+                response,
+            )
+            .await?
+            .into_iter()
+            .collect()
+        })
+    }
+
+    fn latest(&self, collection: CollectionId, apis: Vec<ItemId>) -> StoreFuture<Vec<HttpResponse>> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            require_collection(&conn, &collection).await?;
+            let mut found = Vec::new();
+            for api in &apis {
+                if let Some(newest) = query_one(
+                    &conn,
+                    "SELECT doc FROM responses WHERE collection = ?1 AND api = ?2 ORDER BY rowid DESC LIMIT 1",
+                    (collection.as_str(), api.as_str()),
+                    response,
+                )
+                .await?
+                {
+                    found.push(newest?);
+                }
+            }
+            Ok(found)
+        })
+    }
+
+    fn clear(&self, collection: CollectionId, api: ItemId) -> StoreFuture<()> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            require_api(&conn, &collection, &api).await?;
+            execute(
+                &conn,
+                "DELETE FROM responses WHERE collection = ?1 AND api = ?2",
+                (collection.as_str(), api.as_str()),
+            )
+            .await
+            .map(|_| ())
+        })
+    }
+}
+
 #[cfg(feature = "conformance")]
 impl cyberapi_store::conformance::Probe for TursoStore {
     fn rows_of(&self, collection: CollectionId) -> StoreFuture<usize> {
@@ -681,6 +803,7 @@ impl cyberapi_store::conformance::Probe for TursoStore {
                 ),
                 ("SELECT count(*) FROM variables WHERE collection = ?1", id.to_string()),
                 ("SELECT count(*) FROM top_orders WHERE collection = ?1", id.to_string()),
+                ("SELECT count(*) FROM responses WHERE collection = ?1", id.to_string()),
                 (
                     "SELECT count(*) FROM prefs WHERE scope = ?1",
                     workspace_scope(&collection),

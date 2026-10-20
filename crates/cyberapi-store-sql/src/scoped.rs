@@ -11,17 +11,18 @@ use crate::{SqlStore, db, new_id, now, rows};
 use cyberapi_core::access::{CollectionRole, TeamRole, effective_role};
 use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
+use cyberapi_core::response::HttpResponse;
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
 use cyberapi_store::rules::required_name;
 use cyberapi_store::{
-    CollectionEdit, CollectionStore, Entity, Inserted, NewCollection, NewVariable, PrefStore, StoreError, StoreFuture,
-    TreeStore, VariableEdit, VariableStore,
+    CollectionEdit, CollectionStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable, PrefStore, StoreError,
+    StoreFuture, TreeStore, VariableEdit, VariableStore,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use sqlx::AnyConnection;
-use sqlx::AnyPool;
+use sqlx::any::AnyRow;
+use sqlx::{AnyConnection, AnyPool, Row as _};
 use std::collections::HashMap;
 use std::future::Future;
 
@@ -704,6 +705,134 @@ impl PrefStore for Scoped {
             let mut conn = this.pool.acquire().await.map_err(db)?;
             this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
             this.write_doc(&mut conn, &workspace_scope(&collection), &prefs).await
+        })
+    }
+}
+
+impl Scoped {
+    /// The project's API `api`, as a history's owner: any reader of the
+    /// project keeps their own.
+    async fn require_api(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+        api: &ItemId,
+    ) -> Result<(), StoreError> {
+        self.require(conn, collection, CollectionRole::Viewer).await?;
+        sqlx::query(self.dialect.sql(sql::API_GET))
+            .bind(api.as_str().to_string())
+            .bind(collection.as_str().to_string())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(db)?
+            .map(|_| ())
+            .ok_or_else(|| StoreError::not_found(Entity::Api, api))
+    }
+
+    async fn responses(
+        &self,
+        conn: &mut AnyConnection,
+        statement: &'static str,
+        collection: &CollectionId,
+        api: &ItemId,
+    ) -> Result<Vec<HttpResponse>, StoreError> {
+        sqlx::query(self.dialect.sql(statement))
+            .bind(self.account())
+            .bind(collection.as_str().to_string())
+            .bind(api.as_str().to_string())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(db)?
+            .iter()
+            .map(response)
+            .collect()
+    }
+}
+
+/// A kept response: the whole entry is its document.
+fn response(row: &AnyRow) -> Result<HttpResponse, StoreError> {
+    serde_json::from_str(&rows::text(row, 0)?).map_err(db)
+}
+
+impl HistoryStore for Scoped {
+    fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require_api(&mut tx, &response.collection, &response.api).await?;
+            let kept = HttpResponse {
+                id: new_id(),
+                created_at: now(),
+                ..response
+            };
+            let (collection, api) = (kept.collection.as_str().to_string(), kept.api.as_str().to_string());
+            sqlx::query(this.dialect.sql(sql::RESPONSE_INSERT))
+                .bind(kept.id.clone())
+                .bind(this.account())
+                .bind(collection.clone())
+                .bind(api.clone())
+                .bind(serde_json::to_string(&kept).map_err(db)?)
+                .bind(kept.created_at.to_rfc3339())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            // The oldest beyond the limit go.
+            let oldest_kept = sqlx::query(this.dialect.sql(sql::RESPONSE_OLDEST_KEPT))
+                .bind(this.account())
+                .bind(collection.clone())
+                .bind(api.clone())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?;
+            if let Some(row) = oldest_kept {
+                sqlx::query(this.dialect.sql(sql::RESPONSES_TRIM))
+                    .bind(this.account())
+                    .bind(collection)
+                    .bind(api)
+                    .bind(row.try_get::<i64, _>(0).map_err(db)?)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+            tx.commit().await.map_err(db)?;
+            Ok(kept)
+        })
+    }
+
+    fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require_api(&mut conn, &collection, &api).await?;
+            this.responses(&mut conn, sql::RESPONSES_OF, &collection, &api).await
+        })
+    }
+
+    fn latest(&self, collection: CollectionId, apis: Vec<ItemId>) -> StoreFuture<Vec<HttpResponse>> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            let mut found = Vec::new();
+            for api in &apis {
+                found.extend(
+                    this.responses(&mut conn, sql::RESPONSE_NEWEST, &collection, api)
+                        .await?,
+                );
+            }
+            Ok(found)
+        })
+    }
+
+    fn clear(&self, collection: CollectionId, api: ItemId) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require_api(&mut conn, &collection, &api).await?;
+            sqlx::query(this.dialect.sql(sql::RESPONSES_CLEAR))
+                .bind(this.account())
+                .bind(collection.as_str().to_string())
+                .bind(api.as_str().to_string())
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+            Ok(())
         })
     }
 }

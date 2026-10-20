@@ -14,6 +14,7 @@ use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, ContentType, Folder, HttpMethod, HttpRequest, KvParam, VariableCategory,
 };
 use cyberapi_core::prefs::{AppPrefs, ThemeMode, WorkspacePrefs};
+use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse, HttpStats};
 use cyberapi_core::tree::{Placement, Tree, TreeData, TreeError};
 use cyberapi_core::{CollectionId, ItemId, VariableId};
 
@@ -44,6 +45,8 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     variables_round_trip(storage).await;
     app_prefs_round_trip(storage).await;
     workspace_prefs_are_per_collection(storage).await;
+    history_keeps_the_newest(storage, probe).await;
+    history_is_only_of_the_projects_apis(storage).await;
 }
 
 const MISSING: &str = "conformance-missing";
@@ -175,7 +178,7 @@ async fn deleting_a_collection_takes_its_content(storage: &Storage, probe: &dyn 
     let doomed = new_collection(storage, "doomed").await;
     let kept = new_collection(storage, "kept").await;
     let users = folder(storage, &doomed, None, "users").await;
-    api(storage, &doomed, Some(&users.item.id), "login").await;
+    let login = api(storage, &doomed, Some(&users.item.id), "login").await;
     let kept_api = api(storage, &kept, None, "health").await;
     storage
         .variables()
@@ -199,11 +202,17 @@ async fn deleting_a_collection_takes_its_content(storage: &Storage, probe: &dyn 
         )
         .await
         .expect("set workspace prefs");
+    storage
+        .history()
+        .add(response(&doomed, &login.item.id, 0))
+        .await
+        .expect("add a response");
     let kept_rows = probe.rows_of(kept.id.clone()).await.expect("probe");
     // The project row, the folder, the API, the variable, the workspace
-    // state — and the top-level order wherever the backend keeps one.
+    // state, the response — and the top-level order wherever the backend
+    // keeps one.
     assert!(
-        probe.rows_of(doomed.id.clone()).await.expect("probe") >= 5,
+        probe.rows_of(doomed.id.clone()).await.expect("probe") >= 6,
         "the probe sees the project's rows"
     );
 
@@ -225,6 +234,10 @@ async fn deleting_a_collection_takes_its_content(storage: &Storage, probe: &dyn 
         Entity::Collection,
     );
     not_found(storage.prefs().workspace(doomed.id.clone()).await, Entity::Collection);
+    not_found(
+        storage.history().list(doomed.id.clone(), login.item.id.clone()).await,
+        Entity::Collection,
+    );
     let listed = storage.collections().list().await.expect("list");
     assert!(!listed.iter().any(|collection| collection.id == doomed.id));
     assert_eq!(
@@ -793,5 +806,188 @@ async fn workspace_prefs_are_per_collection(storage: &Storage) {
     assert_eq!(
         storage.prefs().workspace(second.id).await.expect("prefs"),
         WorkspacePrefs::default()
+    );
+}
+
+/// A response of `api`, told apart by `n`, with every field set: what comes
+/// back must be what went in.
+fn response(collection: &Collection, api: &ItemId, n: usize) -> HttpResponse {
+    HttpResponse {
+        api: api.clone(),
+        collection: collection.id.clone(),
+        request: HttpRequest {
+            method: HttpMethod::Post,
+            uri: format!("{{{{HOST}}}}/n/{n}"),
+            body: "{\"a\": 1}".into(),
+            ..Default::default()
+        },
+        status: Some(200 + n as u16),
+        headers: vec![
+            ("content-type".into(), "application/json".into()),
+            ("set-cookie".into(), format!("n={n}")),
+            ("set-cookie".into(), "b=2".into()),
+        ],
+        body: vec![b'{', 0, 159, 146, 150, n as u8, b'}'],
+        error: n.is_multiple_of(3).then(|| format!("failure {n}")),
+        body_size: 7 + n as u64,
+        latency: std::time::Duration::from_micros(1500 + n as u64),
+        stats: HttpStats {
+            remote_addr: "127.0.0.1:80".into(),
+            is_https: n.is_multiple_of(2),
+            cipher: "TLS13_AES_128_GCM_SHA256".into(),
+            dns: std::time::Duration::from_micros(10),
+            tcp: std::time::Duration::from_micros(20),
+            tls: std::time::Duration::from_micros(30),
+            send: std::time::Duration::from_micros(40),
+            server_processing: std::time::Duration::from_micros(50),
+            content_transfer: std::time::Duration::from_micros(60),
+            total: std::time::Duration::from_micros(1500 + n as u64),
+        },
+        ..Default::default()
+    }
+}
+
+/// F7.9 – F7.11: ten per API, newest first, kept as they were added; the
+/// newest of each for `get`; clearing one API leaves the others; the
+/// history goes with its API. Keeping a response is not a change to the
+/// project.
+async fn history_keeps_the_newest(storage: &Storage, probe: &dyn Probe) {
+    let collection = new_collection(storage, "history").await;
+    let login = api(storage, &collection, None, "login").await;
+    let other = api(storage, &collection, None, "other").await;
+    let history = storage.history();
+    let before = storage.collections().get(collection.id.clone()).await.expect("get");
+
+    let mut added = Vec::new();
+    for n in 0..HISTORY_LIMIT + 2 {
+        let kept = history
+            .add(response(&collection, &login.item.id, n))
+            .await
+            .expect("add");
+        assert!(!kept.id.is_empty(), "the store gives the id");
+        assert_eq!(
+            HttpResponse {
+                id: String::new(),
+                created_at: Default::default(),
+                ..kept.clone()
+            },
+            response(&collection, &login.item.id, n),
+            "kept as given, but for the id and the time"
+        );
+        added.push(kept);
+    }
+    let mut ids: Vec<&str> = added.iter().map(|kept| kept.id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), added.len(), "every response has its own id");
+    let other_kept = history
+        .add(response(&collection, &other.item.id, 99))
+        .await
+        .expect("add");
+
+    let listed = history
+        .list(collection.id.clone(), login.item.id.clone())
+        .await
+        .expect("list");
+    let newest: Vec<HttpResponse> = added.iter().rev().take(HISTORY_LIMIT).cloned().collect();
+    assert_eq!(listed, newest, "the newest, newest first, as they were answered");
+
+    let mut latest = history
+        .latest(
+            collection.id.clone(),
+            vec![login.item.id.clone(), other.item.id.clone(), ItemId::new(MISSING)],
+        )
+        .await
+        .expect("latest");
+    latest.sort_by(|a, b| a.api.cmp(&b.api));
+    let mut expected = vec![newest[0].clone(), other_kept.clone()];
+    expected.sort_by(|a, b| a.api.cmp(&b.api));
+    assert_eq!(latest, expected);
+
+    let after = storage.collections().get(collection.id.clone()).await.expect("get");
+    assert_eq!(
+        (after.revision, after.updated_at),
+        (before.revision, before.updated_at),
+        "a reader's history is not a change to the project"
+    );
+
+    history
+        .clear(collection.id.clone(), login.item.id.clone())
+        .await
+        .expect("clear");
+    assert!(
+        history
+            .list(collection.id.clone(), login.item.id.clone())
+            .await
+            .expect("list")
+            .is_empty()
+    );
+    assert_eq!(
+        history
+            .list(collection.id.clone(), other.item.id.clone())
+            .await
+            .expect("list"),
+        [other_kept]
+    );
+
+    let rows = probe.rows_of(collection.id.clone()).await.expect("probe");
+    storage
+        .tree()
+        .delete(collection.id.clone(), other.item.id.clone())
+        .await
+        .expect("delete");
+    assert_eq!(
+        rows - probe.rows_of(collection.id.clone()).await.expect("probe"),
+        2,
+        "the API and its one response go"
+    );
+    not_found(history.list(collection.id, other.item.id).await, Entity::Api);
+}
+
+/// A response belongs to one of the project's APIs: not another project's,
+/// not a folder.
+async fn history_is_only_of_the_projects_apis(storage: &Storage) {
+    let collection = new_collection(storage, "history of apis").await;
+    let elsewhere = new_collection(storage, "history elsewhere").await;
+    let users = folder(storage, &collection, None, "users").await;
+    let theirs = api(storage, &elsewhere, None, "theirs").await;
+    let history = storage.history();
+
+    not_found(
+        history
+            .add(HttpResponse {
+                collection: CollectionId::new(MISSING),
+                ..response(&collection, &theirs.item.id, 1)
+            })
+            .await,
+        Entity::Collection,
+    );
+    not_found(
+        history.add(response(&collection, &theirs.item.id, 1)).await,
+        Entity::Api,
+    );
+    not_found(history.add(response(&collection, &users.item.id, 1)).await, Entity::Api);
+    not_found(
+        history.list(collection.id.clone(), theirs.item.id.clone()).await,
+        Entity::Api,
+    );
+    not_found(
+        history.clear(collection.id.clone(), theirs.item.id.clone()).await,
+        Entity::Api,
+    );
+    assert!(
+        history
+            .latest(collection.id.clone(), vec![theirs.item.id.clone()])
+            .await
+            .expect("latest")
+            .is_empty(),
+        "another project's API has no history here"
+    );
+    assert!(
+        history
+            .list(elsewhere.id.clone(), theirs.item.id.clone())
+            .await
+            .expect("list")
+            .is_empty()
     );
 }

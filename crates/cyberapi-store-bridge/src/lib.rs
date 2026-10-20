@@ -14,11 +14,12 @@
 
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
+use cyberapi_core::response::HttpResponse;
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, VariableId};
 use cyberapi_store::{
-    CollectionEdit, CollectionStore, Inserted, NewCollection, NewVariable, PrefStore, Storage, StoreError, StoreFuture,
-    TreeStore, VariableEdit, VariableStore,
+    CollectionEdit, CollectionStore, HistoryStore, Inserted, NewCollection, NewVariable, PrefStore, Storage,
+    StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -106,6 +107,21 @@ pub enum Call {
         collection: CollectionId,
         prefs: WorkspacePrefs,
     },
+    HistoryAdd {
+        response: HttpResponse,
+    },
+    HistoryList {
+        collection: CollectionId,
+        api: ItemId,
+    },
+    HistoryLatest {
+        collection: CollectionId,
+        apis: Vec<ItemId>,
+    },
+    HistoryClear {
+        collection: CollectionId,
+        api: ItemId,
+    },
 }
 
 /// What a call answers: the method's value, or the store's refusal.
@@ -124,11 +140,12 @@ pub async fn dispatch(storage: &Storage, call: Call) -> Reply {
             Err(error) => Reply::Err(error),
         }
     }
-    let (collections, tree, variables, prefs) = (
+    let (collections, tree, variables, prefs, history) = (
         storage.collections(),
         storage.tree(),
         storage.variables(),
         storage.prefs(),
+        storage.history(),
     );
     match call {
         Call::CollectionsList => reply(collections.list().await),
@@ -166,6 +183,10 @@ pub async fn dispatch(storage: &Storage, call: Call) -> Reply {
             collection,
             prefs: value,
         } => reply(prefs.set_workspace(collection, value).await),
+        Call::HistoryAdd { response } => reply(history.add(response).await),
+        Call::HistoryList { collection, api } => reply(history.list(collection, api).await),
+        Call::HistoryLatest { collection, apis } => reply(history.latest(collection, apis).await),
+        Call::HistoryClear { collection, api } => reply(history.clear(collection, api).await),
     }
 }
 
@@ -313,6 +334,21 @@ impl PrefStore for BridgeStore {
     }
     fn set_workspace(&self, collection: CollectionId, prefs: WorkspacePrefs) -> StoreFuture<()> {
         self.call(Call::PrefsSetWorkspace { collection, prefs })
+    }
+}
+
+impl HistoryStore for BridgeStore {
+    fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse> {
+        self.call(Call::HistoryAdd { response })
+    }
+    fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
+        self.call(Call::HistoryList { collection, api })
+    }
+    fn latest(&self, collection: CollectionId, apis: Vec<ItemId>) -> StoreFuture<Vec<HttpResponse>> {
+        self.call(Call::HistoryLatest { collection, apis })
+    }
+    fn clear(&self, collection: CollectionId, api: ItemId) -> StoreFuture<()> {
+        self.call(Call::HistoryClear { collection, api })
     }
 }
 

@@ -30,6 +30,7 @@ pub use memory::MemoryStore;
 
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
+use cyberapi_core::response::HttpResponse;
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, TeamId, VariableId};
 use serde::{Deserialize, Serialize};
@@ -127,8 +128,26 @@ pub trait TreeStore: Send + Sync {
     fn save_request(&self, collection: CollectionId, api: ItemId, request: HttpRequest) -> StoreFuture<ApiSetting>;
     /// Moves an item (F3.7); answers what changed.
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange>;
-    /// Deletes an item, and for a folder all it contains (F3.6).
+    /// Deletes an item, and for a folder all it contains (F3.6), with the
+    /// response history of every API that goes.
     fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal>;
+}
+
+/// The responses each API keeps (F7.9 – F7.11): the newest
+/// `cyberapi_core::response::HISTORY_LIMIT`, newest first. A reader's own,
+/// like their prefs — in the browser build every account keeps its own — and
+/// not a change to the project: it moves neither `updated_at` nor the
+/// revision.
+pub trait HistoryStore: Send + Sync {
+    /// Keeps a response of `response.api` in `response.collection`, giving it
+    /// an id and the time; the oldest beyond the limit go.
+    fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse>;
+    fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>>;
+    /// The newest response of each of `apis` that has one, in no particular
+    /// order; an id that is not one of the project's APIs is skipped. For the
+    /// `get` template function (M6).
+    fn latest(&self, collection: CollectionId, apis: Vec<ItemId>) -> StoreFuture<Vec<HttpResponse>>;
+    fn clear(&self, collection: CollectionId, api: ItemId) -> StoreFuture<()>;
 }
 
 /// Environment variables, custom variables and global request headers (M8).
@@ -157,6 +176,7 @@ pub struct Storage {
     tree: Arc<dyn TreeStore>,
     variables: Arc<dyn VariableStore>,
     prefs: Arc<dyn PrefStore>,
+    history: Arc<dyn HistoryStore>,
 }
 
 impl Storage {
@@ -165,21 +185,29 @@ impl Storage {
         tree: Arc<dyn TreeStore>,
         variables: Arc<dyn VariableStore>,
         prefs: Arc<dyn PrefStore>,
+        history: Arc<dyn HistoryStore>,
     ) -> Self {
         Self {
             collections,
             tree,
             variables,
             prefs,
+            history,
         }
     }
 
     /// Every store from one backend that implements them all.
     pub fn from_backend<B>(backend: Arc<B>) -> Self
     where
-        B: CollectionStore + TreeStore + VariableStore + PrefStore + 'static,
+        B: CollectionStore + TreeStore + VariableStore + PrefStore + HistoryStore + 'static,
     {
-        Self::new(backend.clone(), backend.clone(), backend.clone(), backend)
+        Self::new(
+            backend.clone(),
+            backend.clone(),
+            backend.clone(),
+            backend.clone(),
+            backend,
+        )
     }
 
     pub fn collections(&self) -> &dyn CollectionStore {
@@ -196,5 +224,9 @@ impl Storage {
 
     pub fn prefs(&self) -> &dyn PrefStore {
         self.prefs.as_ref()
+    }
+
+    pub fn history(&self) -> &dyn HistoryStore {
+        self.history.as_ref()
     }
 }

@@ -85,6 +85,18 @@ const MIGRATIONS: &[&[&str]] = &[
     // (`docs/architecture.md` §7). The desktop has no other reader to tell,
     // but every store keeps the same rules.
     &["ALTER TABLE api_collections ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"],
+    // 3: the responses each API keeps (F7.9), newest by rowid. The old app
+    // kept them in the WebView's storage, which is not carried over.
+    &[
+        "CREATE TABLE IF NOT EXISTS responses (
+            id TEXT NOT NULL,
+            collection TEXT NOT NULL,
+            api TEXT NOT NULL,
+            doc TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+        "CREATE INDEX IF NOT EXISTS responses_api ON responses (collection, api)",
+    ],
 ];
 
 /// The schema version this build writes.

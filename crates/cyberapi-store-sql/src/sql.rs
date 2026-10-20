@@ -195,16 +195,33 @@ pub const PREF_UPSERT: Pair = Pair {
 /// Every account's state of one project, when the project goes.
 pub const PREFS_DELETE_SCOPE: &str = "DELETE FROM prefs WHERE scope = $1";
 
+// The responses each API keeps, per account, newest by `seq`. They go with
+// their API, project and account by the foreign keys.
+pub const RESPONSE_INSERT: &str = "INSERT INTO responses \
+    (id, account, collection, api, doc, created_at) VALUES ($1, $2, $3, $4, $5, $6)";
+pub const RESPONSES_OF: &str =
+    "SELECT doc FROM responses WHERE account = $1 AND collection = $2 AND api = $3 ORDER BY seq DESC";
+pub const RESPONSE_NEWEST: &str =
+    "SELECT doc FROM responses WHERE account = $1 AND collection = $2 AND api = $3 ORDER BY seq DESC LIMIT 1";
+/// The oldest response within the limit (`HISTORY_LIMIT - 1` newer ones).
+pub const RESPONSE_OLDEST_KEPT: &str =
+    "SELECT seq FROM responses WHERE account = $1 AND collection = $2 AND api = $3 ORDER BY seq DESC LIMIT 1 OFFSET 9";
+pub const RESPONSES_TRIM: &str =
+    "DELETE FROM responses WHERE account = $1 AND collection = $2 AND api = $3 AND seq < $4";
+pub const RESPONSES_CLEAR: &str = "DELETE FROM responses WHERE account = $1 AND collection = $2 AND api = $3";
+
 // ---- the conformance probe -------------------------------------------------------
 
 #[cfg(any(test, feature = "conformance"))]
-pub const PROBE_COUNTS: [&str; 7] = [
+pub const PROBE_COUNTS: [&str; 8] = [
     "SELECT COUNT(*) FROM collections WHERE id = $1",
     "SELECT COUNT(*) FROM folders WHERE collection = $1",
     "SELECT COUNT(*) FROM apis WHERE collection = $1",
     "SELECT COUNT(*) FROM variables WHERE collection = $1",
     "SELECT COUNT(*) FROM top_orders WHERE collection = $1",
     "SELECT COUNT(*) FROM collection_grants WHERE collection = $1",
+    "SELECT COUNT(*) FROM responses WHERE collection = $1",
+    // Last: bound to the workspace scope, not the id.
     "SELECT COUNT(*) FROM prefs WHERE scope = $1",
 ];
 
@@ -252,7 +269,19 @@ mod tests {
         VARIABLE_DELETE,
         PREF_GET,
         PREFS_DELETE_SCOPE,
+        RESPONSE_INSERT,
+        RESPONSES_OF,
+        RESPONSE_NEWEST,
+        RESPONSE_OLDEST_KEPT,
+        RESPONSES_TRIM,
+        RESPONSES_CLEAR,
     ];
+
+    #[test]
+    fn the_history_trim_keeps_the_limit() {
+        let offset = cyberapi_core::response::HISTORY_LIMIT - 1;
+        assert!(RESPONSE_OLDEST_KEPT.ends_with(&format!("OFFSET {offset}")));
+    }
 
     fn placeholders(statement: &str) -> Vec<usize> {
         let mut found = Vec::new();

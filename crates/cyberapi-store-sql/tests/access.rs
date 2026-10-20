@@ -5,6 +5,7 @@
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::model::{HttpRequest, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, ThemeMode, WorkspacePrefs};
+use cyberapi_core::response::HttpResponse;
 use cyberapi_core::{AccountId, CollectionId};
 use cyberapi_store::{CollectionEdit, Entity, NewCollection, NewVariable, Storage, StoreError};
 use cyberapi_store_sql::{NewAccount, SqlStore};
@@ -174,6 +175,49 @@ async fn rules(variable: &str) {
         bob.prefs().workspace(id.clone()).await.expect("prefs"),
         WorkspacePrefs::default()
     );
+    // So are the responses she got: a viewer sends and keeps them, and
+    // nobody else sees them.
+    let answered = HttpResponse {
+        api: login.item.id.clone(),
+        collection: id.clone(),
+        status: Some(200),
+        ..Default::default()
+    };
+    let kept = carol
+        .history()
+        .add(answered.clone())
+        .await
+        .expect("a viewer keeps her responses");
+    bob.history().add(answered).await.expect("so does an editor");
+    assert_eq!(
+        carol
+            .history()
+            .list(id.clone(), login.item.id.clone())
+            .await
+            .expect("list"),
+        [kept.clone()]
+    );
+    assert_eq!(
+        alice
+            .history()
+            .latest(id.clone(), vec![login.item.id.clone()])
+            .await
+            .expect("latest"),
+        []
+    );
+    bob.history()
+        .clear(id.clone(), login.item.id.clone())
+        .await
+        .expect("clear his own");
+    assert_eq!(
+        carol
+            .history()
+            .list(id.clone(), login.item.id.clone())
+            .await
+            .expect("list"),
+        [kept],
+        "clearing his history leaves hers"
+    );
 
     // A grant to a team reaches its members.
     store
@@ -216,6 +260,10 @@ async fn rules(variable: &str) {
     assert_eq!(role(&carol, &id).await, None);
     store.set_member(&qa, &dave_id, None).await.expect("leave");
     assert_eq!(role(&dave, &id).await, None);
+    not_found(
+        carol.history().list(id.clone(), login.item.id.clone()).await,
+        Entity::Collection,
+    );
 
     // A personal space is one account's.
     let private = alice

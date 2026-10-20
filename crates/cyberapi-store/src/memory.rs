@@ -4,12 +4,13 @@
 
 use crate::rules::required_name;
 use crate::{
-    CollectionEdit, CollectionStore, Entity, Inserted, NewCollection, NewVariable, PrefStore, Storage, StoreError,
-    StoreFuture, TreeStore, VariableEdit, VariableStore,
+    CollectionEdit, CollectionStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable, PrefStore, Storage,
+    StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
 };
 use chrono::Utc;
 use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
+use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, Timestamp, VariableId};
 use std::collections::HashMap;
@@ -37,6 +38,8 @@ struct State {
     variables: Vec<Variable>,
     app: AppPrefs,
     workspaces: HashMap<CollectionId, WorkspacePrefs>,
+    /// Oldest first.
+    responses: Vec<HttpResponse>,
 }
 
 impl Default for MemoryStore {
@@ -197,6 +200,7 @@ impl CollectionStore for MemoryStore {
             state.variables.retain(|variable| variable.collection != id);
             state.top_orders.remove(&id);
             state.workspaces.remove(&id);
+            state.responses.retain(|response| response.collection != id);
             Ok(())
         })
     }
@@ -322,6 +326,9 @@ impl TreeStore for MemoryStore {
             state
                 .apis
                 .retain(|api| api.collection != collection || !removal.apis.contains(&api.id));
+            state
+                .responses
+                .retain(|response| response.collection != collection || !removal.apis.contains(&response.api));
             state.apply(&collection, &removal.change);
             state.touch(&collection, now)?;
             Ok(removal)
@@ -420,6 +427,88 @@ impl PrefStore for MemoryStore {
     }
 }
 
+impl State {
+    /// The project's API `api`, as a history's owner.
+    fn require_api(&self, collection: &CollectionId, api: &ItemId) -> Result<(), StoreError> {
+        self.collection(collection)?;
+        if self
+            .apis
+            .iter()
+            .any(|found| &found.collection == collection && &found.id == api)
+        {
+            Ok(())
+        } else {
+            Err(StoreError::not_found(Entity::Api, api))
+        }
+    }
+}
+
+impl HistoryStore for MemoryStore {
+    fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse> {
+        self.run(move |state, now| {
+            state.require_api(&response.collection, &response.api)?;
+            let kept = HttpResponse {
+                id: new_id(),
+                created_at: now,
+                ..response
+            };
+            state.responses.push(kept.clone());
+            let of_api = |response: &HttpResponse| response.collection == kept.collection && response.api == kept.api;
+            let count = state.responses.iter().filter(|response| of_api(response)).count();
+            let mut extra = count.saturating_sub(HISTORY_LIMIT);
+            state.responses.retain(|response| {
+                if extra > 0 && of_api(response) {
+                    extra -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
+            Ok(kept)
+        })
+    }
+
+    fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
+        self.run(move |state, _| {
+            state.require_api(&collection, &api)?;
+            Ok(state
+                .responses
+                .iter()
+                .rev()
+                .filter(|response| response.collection == collection && response.api == api)
+                .cloned()
+                .collect())
+        })
+    }
+
+    fn latest(&self, collection: CollectionId, apis: Vec<ItemId>) -> StoreFuture<Vec<HttpResponse>> {
+        self.run(move |state, _| {
+            state.collection(&collection)?;
+            Ok(apis
+                .iter()
+                .filter_map(|api| {
+                    state
+                        .responses
+                        .iter()
+                        .rev()
+                        .find(|response| response.collection == collection && &response.api == api)
+                        .cloned()
+                })
+                .collect())
+        })
+    }
+
+    fn clear(&self, collection: CollectionId, api: ItemId) -> StoreFuture<()> {
+        self.run(move |state, _| {
+            state.require_api(&collection, &api)?;
+            state
+                .responses
+                .retain(|response| response.collection != collection || response.api != api);
+            Ok(())
+        })
+    }
+}
+
 #[cfg(feature = "conformance")]
 impl crate::conformance::Probe for MemoryStore {
     fn rows_of(&self, collection: CollectionId) -> StoreFuture<usize> {
@@ -438,7 +527,12 @@ impl crate::conformance::Probe for MemoryStore {
                         .filter(|variable| variable.collection == collection)
                         .count()
                     + usize::from(state.top_orders.contains_key(&collection))
-                    + usize::from(state.workspaces.contains_key(&collection)),
+                    + usize::from(state.workspaces.contains_key(&collection))
+                    + state
+                        .responses
+                        .iter()
+                        .filter(|response| response.collection == collection)
+                        .count(),
             )
         })
     }
