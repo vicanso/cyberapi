@@ -7,40 +7,181 @@
 <!-- Named here, or the browser asks for `/favicon.ico` at the site root. -->
 <link rel="icon" type="image/png" href="./icon.png" />
 <style>
-  :root { color-scheme: light dark; }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #fff; }
-  @media (prefers-color-scheme: dark) { html, body { background: #0a0a0a; } }
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #0a0a0a; --muted: #71717a; --line: #e4e4e7;
+    --field: #ffffff; --accent: #18181b; --accent-fg: #fafafa; --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a0a0a; --fg: #fafafa; --muted: #a1a1aa; --line: #27272a;
+      --field: #18181b; --accent: #fafafa; --accent-fg: #18181b; --bad: #f87171;
+    }
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); }
   body { font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; }
   canvas { display: block; }
-  #loading { display: flex; height: 100%; align-items: center; justify-content: center; opacity: .6; }
-  #loading.bad { color: #cf222e; opacity: 1; white-space: pre-wrap; }
+  [hidden] { display: none !important; }
+  .center { display: flex; height: 100%; align-items: center; justify-content: center; padding: 0 16px; box-sizing: border-box; }
+  #loading { opacity: .6; }
+  #loading.bad { color: var(--bad); opacity: 1; white-space: pre-wrap; }
+  form { width: 100%; max-width: 22rem; display: flex; flex-direction: column; gap: .875rem; }
+  h1 { font-size: 1.125rem; margin: 0; }
+  .hint { margin: -.25rem 0 0; color: var(--muted); font-size: .8125rem; }
+  label span { display: block; margin-bottom: .25rem; font-size: .8125rem; font-weight: 500; }
+  input { width: 100%; box-sizing: border-box; padding: .5rem .625rem; border: 1px solid var(--line); border-radius: .375rem; background: var(--field); color: inherit; font: inherit; }
+  input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { padding: .5rem; border: 0; border-radius: .375rem; background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 500; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  .msg { min-height: 1.25rem; margin: 0; color: var(--bad); font-size: .8125rem; }
 </style>
 </head>
 <body>
-<div id="loading">Loading…</div>
+<div id="loading" class="center"></div>
+
+<div id="login" class="center" hidden>
+  <form id="login-form">
+    <h1 data-t="login_title"></h1>
+    <label><span data-t="name"></span><input id="login-name" autocomplete="username" required /></label>
+    <label><span data-t="password"></span><input id="login-password" type="password" autocomplete="current-password" required /></label>
+    <p id="login-msg" class="msg" role="alert"></p>
+    <button id="login-go" data-t="sign_in"></button>
+  </form>
+</div>
+
+<div id="setup" class="center" hidden>
+  <form id="setup-form">
+    <h1 data-t="setup_title"></h1>
+    <p class="hint" data-t="setup_hint"></p>
+    <label><span data-t="setup_token"></span><input id="setup-token" autocomplete="off" required /></label>
+    <label><span data-t="name"></span><input id="setup-name" autocomplete="username" required /></label>
+    <label><span data-t="display_name"></span><input id="setup-display" autocomplete="name" /></label>
+    <label><span data-t="password"></span><input id="setup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <p id="setup-msg" class="msg" role="alert"></p>
+    <button id="setup-go" data-t="create_admin"></button>
+  </form>
+</div>
+
 <script type="module">
   // Every address is relative to the page, so it can be served under a base
-  // path. The wasm builds the kit's icon URLs on `root` too.
+  // path. The wasm builds its own requests and the kit's icon URLs on `root`.
   const root = new URL(".", location.href).href.replace(/\/$/, "");
-  const url = (path) => `${root}/${path}`;
-  const loading = document.getElementById("loading");
+  const url = (path) => `${root}${path}`;
+  const api = (path, init = {}) => fetch(url(path), { credentials: "same-origin", ...init });
+  const postJson = (path, body) =>
+    api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const $ = (id) => document.getElementById(id);
+
+  // The sign-in page speaks the browser's language; the app, once in, the
+  // account's.
+  const STRINGS = {
+    en: {
+      loading: "Loading…",
+      login_title: "Sign in to Cyber API",
+      setup_title: "Create the administrator",
+      setup_hint: "This bridge has no account yet. The setup token is in the bridge's log.",
+      setup_token: "Setup token",
+      name: "Name",
+      display_name: "Display name (optional)",
+      password: "Password",
+      sign_in: "Sign in",
+      create_admin: "Create and sign in",
+      wrong_login: "Wrong name or password.",
+      wrong_token: "Wrong setup token.",
+      failed: "Cyber API could not start: {error}",
+    },
+    zh: {
+      loading: "正在加载…",
+      login_title: "登录 Cyber API",
+      setup_title: "创建管理员",
+      setup_hint: "这个 bridge 还没有任何账号。初始化 token 在 bridge 的日志里。",
+      setup_token: "初始化 token",
+      name: "用户名",
+      display_name: "显示名称（选填）",
+      password: "密码",
+      sign_in: "登录",
+      create_admin: "创建并登录",
+      wrong_login: "用户名或密码不正确。",
+      wrong_token: "初始化 token 不正确。",
+      failed: "Cyber API 无法启动：{error}",
+    },
+  };
+  const lang = (navigator.languages || [navigator.language]).some((l) => /^zh/i.test(l)) ? "zh" : "en";
+  document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+  const t = (key, values = {}) =>
+    (STRINGS[lang][key] || STRINGS.en[key]).replace(/\{(\w+)\}/g, (_, name) => values[name] ?? "");
+  for (const element of document.querySelectorAll("[data-t]")) element.textContent = t(element.dataset.t);
+  $("loading").textContent = t("loading");
+
+  const show = (id) => {
+    for (const name of ["loading", "login", "setup"]) $(name).hidden = name !== id;
+  };
+
+  // Resolves once someone is signed in, by the form the bridge needs.
+  async function signIn() {
+    const setup = await (await api("/v1/setup")).json();
+    const [panel, form, msg, go] = setup.needed
+      ? ["setup", "setup-form", "setup-msg", "setup-go"]
+      : ["login", "login-form", "login-msg", "login-go"];
+    show(panel);
+    $(panel).querySelector("input").focus();
+    return new Promise((resolve) => {
+      $(form).onsubmit = async (event) => {
+        event.preventDefault();
+        $(go).disabled = true;
+        $(msg).textContent = "";
+        try {
+          const res = setup.needed
+            ? await postJson("/v1/setup", {
+                token: $("setup-token").value.trim(),
+                name: $("setup-name").value.trim(),
+                displayName: $("setup-display").value.trim(),
+                password: $("setup-password").value,
+              })
+            : await postJson("/v1/login", { name: $("login-name").value.trim(), password: $("login-password").value });
+          if (res.ok) return resolve();
+          $(msg).textContent =
+            res.status === 401 ? t("wrong_login") : res.status === 403 ? t("wrong_token") : await res.text();
+        } catch (error) {
+          $(msg).textContent = String(error);
+        } finally {
+          $(go).disabled = false;
+        }
+      };
+    });
+  }
+
+  // The account's settings, for the first frame; the defaults when they
+  // cannot be had.
+  async function appPrefs() {
+    try {
+      const reply = await (await postJson("/v1/store", { call: "prefsApp" })).json();
+      return reply.ok ?? {};
+    } catch {
+      return {};
+    }
+  }
 
   try {
+    if ((await api("/v1/session")).status === 401) await signIn();
+    show("loading");
     // The UI font rides in with the call: the web text system has no fonts
     // of its own, and the first frame measures text.
-    const [mod, font] = await Promise.all([
-      import(url("wasm/cyberapi_web.js")),
-      fetch(url("fonts/IBMPlexSans.ttf")).then((r) => {
+    const [mod, font, prefs] = await Promise.all([
+      import(url("/wasm/cyberapi_web.js")),
+      fetch(url("/fonts/IBMPlexSans.ttf")).then((r) => {
         if (!r.ok) throw new Error(`font: HTTP ${r.status}`);
         return r.arrayBuffer();
       }),
+      appPrefs(),
     ]);
-    await mod.default({ module_or_path: url("wasm/cyberapi_web_bg.wasm") });
-    loading.remove();
-    mod.run(root, new Uint8Array(font));
-  } catch (e) {
-    loading.textContent = `Cyber API could not start: ${e}`;
-    loading.className = "bad";
+    await mod.default({ module_or_path: url("/wasm/cyberapi_web_bg.wasm") });
+    $("loading").remove();
+    mod.run(root, new Uint8Array(font), JSON.stringify(prefs));
+  } catch (error) {
+    show("loading");
+    $("loading").textContent = t("failed", { error });
+    $("loading").className = "center bad";
   }
 </script>
 </body>

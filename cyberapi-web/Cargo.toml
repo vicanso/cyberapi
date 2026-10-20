@@ -20,10 +20,16 @@ crate-type = ["cdylib", "rlib"]
 # published.
 cyberapi-gui = { path = ".." }
 cyberapi-core = { workspace = true }
-cyberapi-store = { workspace = true }
+cyberapi-store-bridge = { workspace = true }
+# The channel the icon watcher sleeps on, and reading a response body.
+futures = { workspace = true }
 gpui-kit = { workspace = true }
+serde_json = { workspace = true }
 tracing = { workspace = true }
 # `tracing` has nowhere to go in a page without a writer for the console.
 tracing-subscriber = { workspace = true }
 tracing-web = "0.1.3"
 wasm-bindgen = "0.2.104"
+# A reload when the bridge says the login has lapsed, so the page asks for it
+# again.
+web-sys = { version = "0.3.105", features = ["Window", "Location"] }

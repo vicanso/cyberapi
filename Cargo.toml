@@ -55,6 +55,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["std", "ser
 # Toneless readings with every heteronym, for matching names by pinyin (F15.1).
 pinyin = { version = "0.11.0", default-features = false, features = ["plain", "heteronym"] }
 directories = "6.0.0"
+futures = "0.3.34"
 pollster = "1.0.1"
 pretty_assertions = "1.4.1"
 serde = { version = "1.0.229", features = ["derive"] }

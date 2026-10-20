@@ -1752,12 +1752,15 @@ version = "0.2.0"
 dependencies = [
  "cyberapi-core",
  "cyberapi-gui",
- "cyberapi-store",
+ "cyberapi-store-bridge",
+ "futures",
  "gpui-kit",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "tracing-web",
  "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
