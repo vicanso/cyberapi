@@ -1730,12 +1730,18 @@ dependencies = [
 name = "cyberapi-core"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
+ "md-5 0.10.6",
+ "mime_guess",
+ "percent-encoding",
  "pinyin",
  "pretty_assertions",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "snafu",
+ "url",
 ]
 
 [[package]]

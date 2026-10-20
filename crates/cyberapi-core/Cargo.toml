@@ -11,11 +11,17 @@ publish = false
 # Everything here builds for wasm32-unknown-unknown: the browser build links
 # this crate through the GUI. No gpui, no I/O, no clock.
 [dependencies]
+base64 = { workspace = true }
 chrono = { workspace = true }
+md-5 = { workspace = true }
+mime_guess = { workspace = true }
+percent-encoding = { workspace = true }
 pinyin = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 snafu = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

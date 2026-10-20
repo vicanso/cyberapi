@@ -5,11 +5,15 @@
 
 pub mod access;
 pub mod collection;
+pub mod curl;
 pub mod format;
 mod id;
 pub mod model;
 pub mod prefs;
+pub mod response;
 pub mod search;
+pub mod send;
+pub mod template;
 mod time;
 pub mod tree;
 
