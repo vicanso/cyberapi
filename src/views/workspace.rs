@@ -226,6 +226,11 @@ impl WorkspaceView {
         &self.pins
     }
 
+    /// The workspace's state, for the title bar's menu.
+    pub fn state(&self) -> &Entity<WorkspaceState> {
+        &self.state
+    }
+
     fn render_nothing_selected(&self) -> impl IntoElement {
         v_flex().size_full().justify_center().items_center().child(
             Empty::new().header(

@@ -6,7 +6,8 @@ use super::method_color;
 use crate::states::{ApiEvent, ApiState, WorkspaceState};
 use crate::this_build;
 use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
-use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, split_env_prefix};
+use crate::views::open_variables_dialog;
+use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
 use cyberapi_core::prefs::RequestTab;
 use cyberapi_core::send::{self, form_fields};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
@@ -380,15 +381,29 @@ impl RequestEditor {
                 } else {
                     menu.separator()
                 };
-                environments.iter().fold(menu, |menu, (name, value)| {
-                    let (this, chosen) = (this.clone(), name.clone());
-                    menu.item(
-                        PopupMenuItem::new(format!("{name} | {value}")).on_click(move |_, _, cx| {
-                            let chosen = chosen.clone();
-                            let _ = this.update(cx, |this, cx| this.set_environment(Some(chosen), cx));
-                        }),
+                let manage = this.clone();
+                environments
+                    .iter()
+                    .fold(menu, |menu, (name, value)| {
+                        let (this, chosen) = (this.clone(), name.clone());
+                        menu.item(
+                            PopupMenuItem::new(format!("{name} | {value}")).on_click(move |_, _, cx| {
+                                let chosen = chosen.clone();
+                                let _ = this.update(cx, |this, cx| this.set_environment(Some(chosen), cx));
+                            }),
+                        )
+                    })
+                    .separator()
+                    // F4.4: the dialog the variables are kept in.
+                    .item(
+                        PopupMenuItem::new(t!("editor.manage_environments").to_string()).on_click(
+                            move |_, window, cx| {
+                                let Some(this) = manage.upgrade() else { return };
+                                let workspace = this.read(cx).workspace.clone();
+                                open_variables_dialog(&workspace, VariableCategory::Environment, window, cx);
+                            },
+                        ),
                     )
-                })
             }
         };
         h_flex()

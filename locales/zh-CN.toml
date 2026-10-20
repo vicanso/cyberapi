@@ -89,6 +89,7 @@ format = "格式化"
 not_json = "不是有效的 JSON"
 change_type_title = "切换 Body 类型？"
 change_type_description = "切换后会清空当前的 Body。"
+manage_environments = "管理环境变量…"
 
 [response]
 empty_title = "还没有响应"
@@ -115,3 +116,19 @@ send = "发送请求"
 server = "服务器处理"
 transfer = "内容下载"
 total = "总计"
+
+[menu]
+settings = "设置"
+no_project = "打开项目后可设置它的变量"
+
+[variables]
+env_title = "环境变量"
+env_hint = "用作 URI 的开头：{{名称}}/路径。同名的有多个启用时取第一个。"
+custom_title = "自定义变量"
+custom_hint = "在 Body、Query、Header 的值中用 {{value(名称)}} 读取。"
+headers_title = "全局请求头"
+headers_hint = "启用的请求头会随本项目的每个请求发送；请求自己设置了同名请求头时以请求的为准。"
+name = "名称"
+value = "值"
+add = "新增"
+empty = "还没有内容。"

@@ -5,11 +5,13 @@
 mod api;
 mod app;
 mod dashboard;
+mod variables;
 mod workspace;
 
 pub use api::{ApiEvent, ApiState};
 pub use app::{AppState, AppStore, Route};
 pub use dashboard::{DashboardEvent, DashboardState};
+pub use variables::{VariablesEvent, VariablesState};
 pub use workspace::{WorkspaceEvent, WorkspaceState};
 
 use async_lock::Mutex;

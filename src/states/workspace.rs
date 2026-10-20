@@ -111,7 +111,7 @@ impl WorkspaceState {
             return;
         }
         self.collection = collection;
-        self.load_environment(cx);
+        self.refresh_environment(cx);
         let call = self.sender.storage.tree().load(self.collection.id.clone());
         run_serial(cx, &self.gate, call, |this, result, cx| match result {
             Ok(data) => {
@@ -140,7 +140,8 @@ impl WorkspaceState {
         self.environment.iter().filter(|variable| variable.enabled)
     }
 
-    fn load_environment(&mut self, cx: &mut Context<Self>) {
+    /// Reads the environment variables again: they changed, or the project.
+    pub fn refresh_environment(&mut self, cx: &mut Context<Self>) {
         let call = self
             .sender
             .storage
@@ -242,7 +243,7 @@ impl WorkspaceState {
 
     /// Loads (or loads again) the tree and the reader's state of it.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
-        self.load_environment(cx);
+        self.refresh_environment(cx);
         let id = self.collection.id.clone();
         run_store(cx, self.sender.storage.tree().load(id.clone()), |this, result, cx| {
             match result {

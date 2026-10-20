@@ -89,6 +89,7 @@ format = "Format"
 not_json = "Not valid JSON"
 change_type_title = "Change the body type?"
 change_type_description = "The body is emptied for the new type."
+manage_environments = "Manage environment variables…"
 
 [response]
 empty_title = "No response yet"
@@ -115,3 +116,19 @@ send = "Request sent"
 server = "Server processing"
 transfer = "Content download"
 total = "Total"
+
+[menu]
+settings = "Settings"
+no_project = "Open a project for its variables"
+
+[variables]
+env_title = "Environment variables"
+env_hint = "Picked as the start of a URI: {{NAME}}/path. With two enabled of one name, the first is used."
+custom_title = "Custom variables"
+custom_hint = "Read in a body, query or header value with {{value(name)}}."
+headers_title = "Global request headers"
+headers_hint = "Every enabled header is sent with each request of this project; a request’s own header of the same name wins."
+name = "Name"
+value = "Value"
+add = "Add"
+empty = "Nothing here yet."

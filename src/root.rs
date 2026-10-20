@@ -2,15 +2,17 @@
 
 use crate::APP_NAME;
 use crate::states::{AppStore, Route};
-use crate::views::{DashboardView, WorkspaceView};
+use crate::views::{DashboardView, WorkspaceView, open_variables_dialog};
+use cyberapi_core::model::VariableCategory;
 use cyberapi_core::prefs::ThemeMode;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _, StyledExt as _, Theme, ThemeMode as ComponentThemeMode, TitleBar, h_flex,
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
     Subscription, Window, div,
 };
 use rust_i18n::t;
@@ -128,6 +130,40 @@ fn apply_theme(mode: ThemeMode, window: &mut Window, cx: &mut App) {
     }
 }
 
+impl CyberApi {
+    /// The settings menu (F14): in a project, its variables (M8) first.
+    fn render_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let workspace = match &self.page {
+            Page::Workspace(view) => Some(view.read(cx).state().downgrade()),
+            Page::Dashboard(_) => None,
+        };
+        Button::new("title-settings")
+            .ghost()
+            .small()
+            .icon(IconName::Settings)
+            .tooltip(t!("menu.settings").to_string())
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu: PopupMenu, _, _| {
+                let Some(workspace) = workspace.clone() else {
+                    return menu.item(PopupMenuItem::new(t!("menu.no_project").to_string()).disabled(true));
+                };
+                [
+                    (VariableCategory::Environment, t!("variables.env_title")),
+                    (VariableCategory::Custom, t!("variables.custom_title")),
+                    (VariableCategory::GlobalRequestHeader, t!("variables.headers_title")),
+                ]
+                .into_iter()
+                .fold(menu, |menu, (category, label)| {
+                    let workspace = workspace.clone();
+                    menu.item(PopupMenuItem::new(label.to_string()).on_click(move |_, window, cx| {
+                        if let Some(workspace) = workspace.upgrade() {
+                            open_variables_dialog(&workspace, category, window, cx);
+                        }
+                    }))
+                })
+            })
+    }
+}
+
 impl Render for CyberApi {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page = match &self.page {
@@ -139,7 +175,18 @@ impl Render for CyberApi {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .child(TitleBar::new().child(self.render_title(cx)))
+            .child(
+                TitleBar::new().child(
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .pr_2()
+                        .items_center()
+                        .justify_between()
+                        .child(self.render_title(cx))
+                        .child(self.render_menu(cx)),
+                ),
+            )
             .child(div().flex_1().min_h_0().child(page))
     }
 }
