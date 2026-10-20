@@ -52,6 +52,7 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     history_is_only_of_the_projects_apis(storage).await;
     cookies_are_kept_by_key(storage).await;
     imports_get_new_ids_at_the_end(storage).await;
+    the_readers_state_clears(storage).await;
 }
 
 const MISSING: &str = "conformance-missing";
@@ -1207,6 +1208,57 @@ async fn imports_get_new_ids_at_the_end(storage: &Storage) {
 
 /// M13, for a store that backs up: a restore brings back what the snapshot
 /// held and only that.
+/// F15.3: the reader forgets its history of every project at once, and its
+/// state of every project (pins, open folders, the selection); the app's
+/// settings stay.
+async fn the_readers_state_clears(storage: &Storage) {
+    let first = new_collection(storage, "clear one").await;
+    let second = new_collection(storage, "clear two").await;
+    let (a, b) = (
+        api(storage, &first, None, "a").await,
+        api(storage, &second, None, "b").await,
+    );
+    let history = storage.history();
+    history.add(response(&first, &a.item.id, 1)).await.expect("add");
+    history.add(response(&second, &b.item.id, 2)).await.expect("add");
+    let pinned = WorkspacePrefs {
+        pinned: vec![a.item.id.clone()],
+        selected: Some(a.item.id.clone()),
+        ..Default::default()
+    };
+    storage
+        .prefs()
+        .set_workspace(first.id.clone(), pinned)
+        .await
+        .expect("set");
+    let app = AppPrefs {
+        theme: ThemeMode::Dark,
+        ..Default::default()
+    };
+    storage.prefs().set_app(app.clone()).await.expect("set app prefs");
+
+    history.clear_all().await.expect("clear the history");
+    for (collection, api) in [(&first, &a), (&second, &b)] {
+        let left = history
+            .list(collection.id.clone(), api.item.id.clone())
+            .await
+            .expect("list");
+        assert!(left.is_empty(), "no project keeps a response");
+    }
+    storage.prefs().clear_workspaces().await.expect("clear the state");
+    assert_eq!(
+        storage.prefs().workspace(first.id.clone()).await.expect("prefs"),
+        WorkspacePrefs::default()
+    );
+    assert_eq!(
+        storage.prefs().app().await.expect("app prefs"),
+        app,
+        "the settings stay"
+    );
+    // The projects themselves stay too.
+    assert_eq!(load(storage, &first).await.apis.len(), 1);
+}
+
 pub async fn backup(storage: &Storage, backups: &dyn crate::BackupStore) {
     let kept = new_collection(storage, "backed up").await;
     let users = folder(storage, &kept, None, "users").await;

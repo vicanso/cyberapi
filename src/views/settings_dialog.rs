@@ -13,8 +13,8 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Subscription, Task, Window, div, px, size,
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px, size,
 };
 use rust_i18n::t;
 use std::time::Duration;
@@ -41,6 +41,14 @@ pub fn open_settings_dialog(window: &mut Window, cx: &mut App) {
 const MIN_WIDTH: u32 = 900;
 const MIN_HEIGHT: u32 = 600;
 
+/// What the dialog clears or resets, once confirmed (F15.3).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Clearing {
+    Settings,
+    History,
+    Workspaces,
+}
+
 struct SettingsView {
     connect: Entity<InputState>,
     write: Entity<InputState>,
@@ -49,8 +57,8 @@ struct SettingsView {
     height: Entity<InputState>,
     /// A number saved once typing pauses.
     pending: Option<Task<()>>,
-    /// Asking whether to reset everything.
-    confirming_reset: bool,
+    /// What the dialog is asking to confirm.
+    confirming: Option<Clearing>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -104,7 +112,7 @@ impl SettingsView {
             width,
             height,
             pending: None,
-            confirming_reset: false,
+            confirming: None,
             _subscriptions: subscriptions,
         }
     }
@@ -162,44 +170,117 @@ impl SettingsView {
         cx.notify();
     }
 
+    fn ask(&mut self, clearing: Clearing, cx: &mut Context<Self>) {
+        self.confirming = Some(clearing);
+        cx.notify();
+    }
+
     /// F15.3, asked inside the dialog: the browser build draws no dialog
-    /// stacked on this one.
+    /// stacked on this one. Done, the dialog closes.
+    fn render_confirm(&self, clearing: Clearing, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.confirming != Some(clearing) {
+            return None;
+        }
+        let (title, description, ok) = match clearing {
+            Clearing::Settings => (
+                t!("settings.reset_title"),
+                t!("settings.reset_description"),
+                t!("settings.reset"),
+            ),
+            Clearing::History => (
+                t!("settings.clear_history"),
+                t!("settings.clear_history_description"),
+                t!("settings.clear"),
+            ),
+            Clearing::Workspaces => (
+                t!("settings.clear_workspaces"),
+                t!("settings.clear_workspaces_description"),
+                t!("settings.clear"),
+            ),
+        };
+        let view = cx.entity().downgrade();
+        Some(
+            inline_confirm(
+                title.to_string(),
+                description.to_string(),
+                None,
+                ok.to_string(),
+                move |_, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.confirming = None;
+                        cx.notify();
+                    });
+                },
+                move |window, cx| {
+                    let app = AppStore::global(cx).state().clone();
+                    app.update(cx, |app, cx| match clearing {
+                        Clearing::Settings => app.reset_prefs(cx),
+                        Clearing::History => app.clear_history(cx),
+                        Clearing::Workspaces => app.clear_workspaces(cx),
+                    });
+                    window.close_dialog(cx);
+                },
+                cx,
+            )
+            .into_any_element(),
+        )
+    }
+
+    /// F15.3: the reader's responses and their state of every project.
+    fn render_local_data(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let row = |id: &'static str, label: String, clearing: Clearing, cx: &mut Context<Self>| {
+            h_flex()
+                .gap_3()
+                .items_center()
+                .text_sm()
+                .child(div().flex_1().min_w_0().child(label))
+                .child(
+                    Button::new(id)
+                        .outline()
+                        .xsmall()
+                        .label(t!("settings.clear").to_string())
+                        .on_click(cx.listener(move |this, _, _, cx| this.ask(clearing, cx))),
+                )
+        };
+        v_flex()
+            .gap_2()
+            .child(row(
+                "clear-history",
+                t!("settings.clear_history").to_string(),
+                Clearing::History,
+                cx,
+            ))
+            .children(self.render_confirm(Clearing::History, cx))
+            .child(row(
+                "clear-workspaces",
+                t!("settings.clear_workspaces").to_string(),
+                Clearing::Workspaces,
+                cx,
+            ))
+            .children(self.render_confirm(Clearing::Workspaces, cx))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(t!("settings.local_data_hint").to_string()),
+            )
+    }
+
     fn render_reset(&self, cx: &mut Context<Self>) -> AnyElement {
-        if !self.confirming_reset {
-            return h_flex()
+        match self.render_confirm(Clearing::Settings, cx) {
+            Some(confirm) => confirm,
+            None => h_flex()
                 .justify_end()
                 .child(
                     Button::new("settings-reset")
                         .ghost()
                         .small()
                         .label(t!("settings.reset").to_string())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.confirming_reset = true;
-                            cx.notify();
-                        })),
+                        .on_click(cx.listener(|this, _, _, cx| this.ask(Clearing::Settings, cx))),
                 )
-                .into_any_element();
+                .into_any_element(),
         }
-        let view = cx.entity().downgrade();
-        inline_confirm(
-            t!("settings.reset_title").to_string(),
-            t!("settings.reset_description").to_string(),
-            None,
-            t!("settings.reset").to_string(),
-            move |_, cx| {
-                let _ = view.update(cx, |this, cx| {
-                    this.confirming_reset = false;
-                    cx.notify();
-                });
-            },
-            |window, cx| {
-                let app = AppStore::global(cx).state().clone();
-                app.update(cx, |app, cx| app.reset_prefs(cx));
-                window.close_dialog(cx);
-            },
-            cx,
-        )
-        .into_any_element()
     }
 }
 
@@ -246,7 +327,7 @@ fn section(title: String, content: impl IntoElement) -> impl IntoElement {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
         let muted = cx.theme().muted_foreground;
         let theme = choices(
@@ -346,13 +427,23 @@ impl Render for SettingsView {
                     .child(div().w(px(110.)).flex_none().text_color(muted).child(label))
                     .child(div().flex_1().min_w_0().child(value))
             }));
+        // Scrolls inside the dialog rather than running off the window.
+        let room = (window.viewport_size().height - px(220.)).max(px(240.));
         v_flex()
+            .id("settings")
+            .max_h(room)
+            .overflow_y_scroll()
+            .pr_2()
             .gap_5()
             .child(section(t!("settings.theme").to_string(), theme))
             .child(section(t!("settings.language").to_string(), language))
             .child(section(t!("settings.timeouts").to_string(), timeouts))
             .children(window_size)
             .child(section(t!("settings.about").to_string(), about))
+            .child(section(
+                t!("settings.local_data").to_string(),
+                self.render_local_data(cx),
+            ))
             .child(self.render_reset(cx))
     }
 }

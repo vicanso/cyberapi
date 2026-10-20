@@ -744,6 +744,15 @@ impl PrefStore for TursoStore {
             write_doc(&conn, &workspace_scope(&collection), &prefs).await
         })
     }
+
+    fn clear_workspaces(&self) -> StoreFuture<()> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            execute(&conn, "DELETE FROM prefs WHERE scope LIKE 'workspace/%'", ())
+                .await
+                .map(|_| ())
+        })
+    }
 }
 
 /// The project's API `api`, as a history's owner.
@@ -862,6 +871,13 @@ impl HistoryStore for TursoStore {
             )
             .await
             .map(|_| ())
+        })
+    }
+
+    fn clear_all(&self) -> StoreFuture<()> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            execute(&conn, "DELETE FROM responses", ()).await.map(|_| ())
         })
     }
 }

@@ -135,6 +135,7 @@ pub enum Call {
         collection: CollectionId,
         prefs: WorkspacePrefs,
     },
+    PrefsClearWorkspaces,
     HistoryAdd {
         // Boxed: a response is far bigger than any other call.
         response: Box<HttpResponse>,
@@ -151,6 +152,7 @@ pub enum Call {
         collection: CollectionId,
         api: ItemId,
     },
+    HistoryClearAll,
     CookiesList,
     CookiesPut {
         cookies: Vec<Cookie>,
@@ -276,10 +278,12 @@ pub async fn dispatch(storage: &Storage, directory: &dyn DirectoryStore, call: C
             collection,
             prefs: value,
         } => reply(prefs.set_workspace(collection, value).await),
+        Call::PrefsClearWorkspaces => reply(prefs.clear_workspaces().await),
         Call::HistoryAdd { response } => reply(history.add(*response).await),
         Call::HistoryList { collection, api } => reply(history.list(collection, api).await),
         Call::HistoryLatest { collection, apis } => reply(history.latest(collection, apis).await),
         Call::HistoryClear { collection, api } => reply(history.clear(collection, api).await),
+        Call::HistoryClearAll => reply(history.clear_all().await),
         Call::CookiesList => reply(cookies.list().await),
         Call::CookiesPut { cookies: put } => reply(cookies.put(put).await),
         Call::CookiesDelete { domain, path, name } => reply(cookies.delete(domain, path, name).await),
@@ -531,6 +535,10 @@ impl PrefStore for BridgeStore {
     fn set_workspace(&self, collection: CollectionId, prefs: WorkspacePrefs) -> StoreFuture<()> {
         self.call(Call::PrefsSetWorkspace { collection, prefs })
     }
+
+    fn clear_workspaces(&self) -> StoreFuture<()> {
+        self.call(Call::PrefsClearWorkspaces)
+    }
 }
 
 impl HistoryStore for BridgeStore {
@@ -547,6 +555,10 @@ impl HistoryStore for BridgeStore {
     }
     fn clear(&self, collection: CollectionId, api: ItemId) -> StoreFuture<()> {
         self.call(Call::HistoryClear { collection, api })
+    }
+
+    fn clear_all(&self) -> StoreFuture<()> {
+        self.call(Call::HistoryClearAll)
     }
 }
 

@@ -474,6 +474,13 @@ impl PrefStore for MemoryStore {
             Ok(())
         })
     }
+
+    fn clear_workspaces(&self) -> StoreFuture<()> {
+        self.run(|state, _| {
+            state.workspaces.clear();
+            Ok(())
+        })
+    }
 }
 
 impl State {
@@ -553,6 +560,13 @@ impl HistoryStore for MemoryStore {
             state
                 .responses
                 .retain(|response| response.collection != collection || response.api != api);
+            Ok(())
+        })
+    }
+
+    fn clear_all(&self) -> StoreFuture<()> {
+        self.run(|state, _| {
+            state.responses.clear();
             Ok(())
         })
     }

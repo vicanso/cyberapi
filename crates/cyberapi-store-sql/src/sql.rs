@@ -235,6 +235,8 @@ pub const PREF_UPSERT: Pair = Pair {
 };
 /// Every account's state of one project, when the project goes.
 pub const PREFS_DELETE_SCOPE: &str = "DELETE FROM prefs WHERE scope = $1";
+/// The account's state of every project; its `app` settings stay.
+pub const PREFS_CLEAR_WORKSPACES: &str = "DELETE FROM prefs WHERE account = $1 AND scope LIKE 'workspace/%'";
 
 // The responses each API keeps, per account, newest by `seq`. They go with
 // their API, project and account by the foreign keys.
@@ -250,6 +252,7 @@ pub const RESPONSE_OLDEST_KEPT: &str =
 pub const RESPONSES_TRIM: &str =
     "DELETE FROM responses WHERE account = $1 AND collection = $2 AND api = $3 AND seq < $4";
 pub const RESPONSES_CLEAR: &str = "DELETE FROM responses WHERE account = $1 AND collection = $2 AND api = $3";
+pub const RESPONSES_CLEAR_ALL: &str = "DELETE FROM responses WHERE account = $1";
 
 // Each account's cookie jar.
 pub const COOKIES_OF: &str = "SELECT doc FROM cookies WHERE account = $1";
@@ -341,12 +344,14 @@ mod tests {
         VARIABLE_DELETE,
         PREF_GET,
         PREFS_DELETE_SCOPE,
+        PREFS_CLEAR_WORKSPACES,
         RESPONSE_INSERT,
         RESPONSES_OF,
         RESPONSE_NEWEST,
         RESPONSE_OLDEST_KEPT,
         RESPONSES_TRIM,
         RESPONSES_CLEAR,
+        RESPONSES_CLEAR_ALL,
         COOKIES_OF,
         COOKIE_DELETE,
         COOKIES_CLEAR,

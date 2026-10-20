@@ -11,7 +11,7 @@ use cyberapi_core::prefs::{AppPrefs, ColumnWidths, ThemeMode, Timeouts, WindowPr
 use cyberapi_http::HttpEngine;
 use cyberapi_service::Sender;
 use cyberapi_service::backup::{self, BackupFailure};
-use cyberapi_store::{BackupStore, DirectoryStore, Storage};
+use cyberapi_store::{BackupStore, DirectoryStore, Storage, StoreError, StoreFuture};
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -105,6 +105,9 @@ pub enum AppEvent {
     BackupFailed(BackupFailure),
     /// The backup file could not be written or read: where, and why.
     FileFailed(String),
+    /// F15.3: the history or the state of the projects is forgotten.
+    Cleared,
+    Failed(StoreError),
 }
 
 impl EventEmitter<AppEvent> for AppState {}
@@ -219,6 +222,31 @@ impl AppState {
         cx.notify();
     }
 
+    /// F15.3: every response the reader keeps, of every project.
+    pub fn clear_history(&mut self, cx: &mut Context<Self>) {
+        let call = AppStore::global(cx).storage().history().clear_all();
+        self.clear(call, cx);
+    }
+
+    /// F15.3: the reader's state of every project — pins, open folders,
+    /// the selection, tabs.
+    pub fn clear_workspaces(&mut self, cx: &mut Context<Self>) {
+        let call = AppStore::global(cx).storage().prefs().clear_workspaces();
+        self.clear(call, cx);
+    }
+
+    /// Then the project list again, built anew: an open project would show
+    /// what was cleared, and keep it.
+    fn clear(&mut self, call: StoreFuture<()>, cx: &mut Context<Self>) {
+        run_store(cx, call, |this, result, cx| match result {
+            Ok(()) => {
+                this.go_home(cx);
+                cx.emit(AppEvent::Cleared);
+            }
+            Err(error) => cx.emit(AppEvent::Failed(error)),
+        });
+    }
+
     /// F14.5: the workspace's columns, saved once a drag settles.
     pub fn set_columns(&mut self, columns: ColumnWidths, cx: &mut Context<Self>) {
         if self.prefs.columns == columns {
@@ -294,6 +322,8 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cyberapi_core::prefs::WorkspacePrefs;
+    use cyberapi_core::response::HttpResponse;
     use cyberapi_http::{PreparedRequest, SendFuture};
     use cyberapi_store::{MemoryStore, NewCollection};
     use gpui_kit::TestAppContext;
@@ -341,12 +371,55 @@ mod tests {
                     AppEvent::Restored => "restored".into(),
                     AppEvent::BackupFailed(failure) => format!("failed: {failure}"),
                     AppEvent::FileFailed(message) => format!("file: {message}"),
+                    AppEvent::Cleared => "cleared".into(),
+                    AppEvent::Failed(error) => format!("store: {error}"),
                 });
             })
             .detach();
             state
         });
         (state, events)
+    }
+
+    /// F15.3: the history of every project goes, and the state of every
+    /// project, each on its own; the window is back on the project list.
+    #[gpui_kit::test]
+    async fn the_readers_history_and_state_clear(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let shop = create(&store, "shop");
+        let storage = store.storage();
+        let api = pollster::block_on(storage.tree().create_api(shop.id.clone(), None, "ping".into()))
+            .expect("an API")
+            .item
+            .id;
+        pollster::block_on(storage.history().add(HttpResponse {
+            collection: shop.id.clone(),
+            api: api.clone(),
+            status: Some(200),
+            ..Default::default()
+        }))
+        .expect("a response");
+        let pinned = WorkspacePrefs {
+            pinned: vec![api.clone()],
+            ..Default::default()
+        };
+        pollster::block_on(storage.prefs().set_workspace(shop.id.clone(), pinned.clone())).expect("pins");
+
+        let (state, events) = launch(&store, cx);
+        state.update(cx, |state, cx| state.open_collection(shop.clone(), cx));
+        state.update(cx, |state, cx| state.clear_history(cx));
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), ["cleared"]);
+        assert_eq!(state.read_with(cx, |state, _| state.route().clone()), Route::Dashboard);
+        let history = pollster::block_on(storage.history().list(shop.id.clone(), api)).expect("list");
+        assert!(history.is_empty());
+        let kept = pollster::block_on(storage.prefs().workspace(shop.id.clone())).expect("prefs");
+        assert_eq!(kept, pinned, "the pins are another thing to clear");
+
+        state.update(cx, |state, cx| state.clear_workspaces(cx));
+        cx.run_until_parked();
+        let kept = pollster::block_on(storage.prefs().workspace(shop.id.clone())).expect("prefs");
+        assert_eq!(kept, WorkspacePrefs::default());
     }
 
     #[gpui_kit::test]

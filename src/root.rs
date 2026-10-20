@@ -62,6 +62,13 @@ impl CyberApi {
                         cx.notify();
                         Notification::success(t!("backup.restored").to_string())
                     }
+                    AppEvent::Cleared => {
+                        let route = AppStore::global(cx).state().read(cx).route().clone();
+                        this.page = Self::page_for(route, window, cx);
+                        cx.notify();
+                        Notification::success(t!("settings.cleared").to_string())
+                    }
+                    AppEvent::Failed(error) => Notification::error(i18n::store_error(error)),
                     AppEvent::BackupFailed(failure) => Notification::error(i18n::backup_error(failure)),
                     AppEvent::FileFailed(message) => Notification::error(message.clone()),
                 };

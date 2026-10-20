@@ -218,8 +218,39 @@ async fn rules(variable: &str) {
             .list(id.clone(), login.item.id.clone())
             .await
             .expect("list"),
-        [kept],
+        std::slice::from_ref(&kept),
         "clearing his history leaves hers"
+    );
+    // Clearing all of it, and every workspace state, is one account's too.
+    alice
+        .prefs()
+        .set_workspace(
+            id.clone(),
+            WorkspacePrefs {
+                selected: Some(login.item.id.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("her state");
+    bob.history().clear_all().await.expect("clear all of his");
+    alice.prefs().clear_workspaces().await.expect("forget hers");
+    assert_eq!(
+        carol
+            .history()
+            .list(id.clone(), login.item.id.clone())
+            .await
+            .expect("list"),
+        [kept]
+    );
+    assert_eq!(
+        carol.prefs().workspace(id.clone()).await.expect("prefs").pinned,
+        std::slice::from_ref(&login.item.id),
+        "her pins stay"
+    );
+    assert_eq!(
+        alice.prefs().workspace(id.clone()).await.expect("prefs"),
+        WorkspacePrefs::default()
     );
 
     // A grant to a team reaches its members.

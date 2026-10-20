@@ -167,6 +167,8 @@ pub trait HistoryStore: Send + Sync {
     /// `get` template function (M6).
     fn latest(&self, collection: CollectionId, apis: Vec<ItemId>) -> StoreFuture<Vec<HttpResponse>>;
     fn clear(&self, collection: CollectionId, api: ItemId) -> StoreFuture<()>;
+    /// Every response the reader keeps, of every project (F15.3).
+    fn clear_all(&self) -> StoreFuture<()>;
 }
 
 /// Environment variables, custom variables and global request headers (M8).
@@ -186,6 +188,9 @@ pub trait PrefStore: Send + Sync {
     fn set_app(&self, prefs: AppPrefs) -> StoreFuture<()>;
     fn workspace(&self, collection: CollectionId) -> StoreFuture<WorkspacePrefs>;
     fn set_workspace(&self, collection: CollectionId, prefs: WorkspacePrefs) -> StoreFuture<()>;
+    /// Forgets the reader's state of every project — pins, open folders,
+    /// the selection, tabs (F15.3). The app's settings stay.
+    fn clear_workspaces(&self) -> StoreFuture<()>;
 }
 
 /// The reader's cookies (M9): every project's requests share them (F9.1);

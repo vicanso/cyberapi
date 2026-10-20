@@ -780,6 +780,17 @@ impl PrefStore for Scoped {
             this.write_doc(&mut conn, &workspace_scope(&collection), &prefs).await
         })
     }
+
+    fn clear_workspaces(&self) -> StoreFuture<()> {
+        self.run(|this| async move {
+            sqlx::query(this.dialect.sql(sql::PREFS_CLEAR_WORKSPACES))
+                .bind(this.account())
+                .execute(&this.pool)
+                .await
+                .map_err(db)?;
+            Ok(())
+        })
+    }
 }
 
 impl Scoped {
@@ -903,6 +914,18 @@ impl HistoryStore for Scoped {
                 .bind(collection.as_str().to_string())
                 .bind(api.as_str().to_string())
                 .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+            Ok(())
+        })
+    }
+
+    /// The account's own, of every project; nobody else's.
+    fn clear_all(&self) -> StoreFuture<()> {
+        self.run(|this| async move {
+            sqlx::query(this.dialect.sql(sql::RESPONSES_CLEAR_ALL))
+                .bind(this.account())
+                .execute(&this.pool)
                 .await
                 .map_err(db)?;
             Ok(())
