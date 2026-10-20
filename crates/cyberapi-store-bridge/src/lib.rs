@@ -108,7 +108,8 @@ pub enum Call {
         prefs: WorkspacePrefs,
     },
     HistoryAdd {
-        response: HttpResponse,
+        // Boxed: a response is far bigger than any other call.
+        response: Box<HttpResponse>,
     },
     HistoryList {
         collection: CollectionId,
@@ -183,7 +184,7 @@ pub async fn dispatch(storage: &Storage, call: Call) -> Reply {
             collection,
             prefs: value,
         } => reply(prefs.set_workspace(collection, value).await),
-        Call::HistoryAdd { response } => reply(history.add(response).await),
+        Call::HistoryAdd { response } => reply(history.add(*response).await),
         Call::HistoryList { collection, api } => reply(history.list(collection, api).await),
         Call::HistoryLatest { collection, apis } => reply(history.latest(collection, apis).await),
         Call::HistoryClear { collection, api } => reply(history.clear(collection, api).await),
@@ -339,7 +340,9 @@ impl PrefStore for BridgeStore {
 
 impl HistoryStore for BridgeStore {
     fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse> {
-        self.call(Call::HistoryAdd { response })
+        self.call(Call::HistoryAdd {
+            response: Box::new(response),
+        })
     }
     fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
         self.call(Call::HistoryList { collection, api })
