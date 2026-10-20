@@ -1,21 +1,24 @@
 //! The main window's content: the title bar and the page the route names.
 
 use crate::APP_NAME;
-use crate::states::{AppStore, Route};
+use crate::i18n;
+use crate::states::{AppEvent, AppStore, Route};
 use crate::views::{DashboardView, WorkspaceView, open_cookies_dialog, open_settings_dialog, open_variables_dialog};
 use cyberapi_core::model::VariableCategory;
 use cyberapi_core::prefs::ThemeMode;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, Theme, ThemeMode as ComponentThemeMode, TitleBar, h_flex,
-    v_flex,
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, Theme, ThemeMode as ComponentThemeMode, TitleBar,
+    WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
-    Subscription, Window, div,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions,
+    Render, Styled as _, Subscription, Window, div,
 };
 use rust_i18n::t;
+use std::path::PathBuf;
 
 enum Page {
     Dashboard(Entity<DashboardView>),
@@ -45,6 +48,21 @@ impl CyberApi {
             cx.observe_in(&state, window, |this, _, window, cx| {
                 this.follow_settings(window, cx);
                 this.follow_route(window, cx);
+            }),
+            cx.subscribe_in(&state, window, |this, _, event, window, cx| {
+                let note = match event {
+                    AppEvent::BackedUp(path) => Notification::success(t!("backup.saved", path = path).to_string()),
+                    AppEvent::Restored => {
+                        // The list again, read from what was restored.
+                        let route = AppStore::global(cx).state().read(cx).route().clone();
+                        this.page = Self::page_for(route, window, cx);
+                        cx.notify();
+                        Notification::success(t!("backup.restored").to_string())
+                    }
+                    AppEvent::BackupFailed(failure) => Notification::error(i18n::backup_error(failure)),
+                    AppEvent::FileFailed(message) => Notification::error(message.clone()),
+                };
+                window.push_notification(note, cx);
             }),
         ];
         let page = Self::page_for(state.read(cx).route().clone(), window, cx);
@@ -159,12 +177,15 @@ fn apply_theme(mode: ThemeMode, window: &mut Window, cx: &mut App) {
 }
 
 impl CyberApi {
-    /// The settings menu (F14): in a project, its variables (M8) first.
+    /// The settings menu (F14): in a project, its variables (M8) first; on
+    /// the project list, where this build backs up, backing up and
+    /// restoring (F13.3).
     fn render_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = match &self.page {
             Page::Workspace(view) => Some(view.read(cx).state().downgrade()),
             Page::Dashboard(_) => None,
         };
+        let backs_up = AppStore::global(cx).backups().is_some();
         Button::new("title-settings")
             .ghost()
             .small()
@@ -186,6 +207,17 @@ impl CyberApi {
                             }
                         }))
                     }),
+                    None if backs_up => menu
+                        .item(
+                            PopupMenuItem::new(t!("backup.back_up").to_string()).on_click(|_, _, cx| {
+                                let state = AppStore::global(cx).state().clone();
+                                state.update(cx, |state, cx| state.back_up(cx));
+                            }),
+                        )
+                        .item(
+                            PopupMenuItem::new(t!("backup.restore").to_string())
+                                .on_click(|_, window, cx| pick_backup(window, cx)),
+                        ),
                     None => menu.item(PopupMenuItem::new(t!("menu.no_project").to_string()).disabled(true)),
                 };
                 menu.separator()
@@ -199,6 +231,45 @@ impl CyberApi {
                     )
             })
     }
+}
+
+/// F13.2: the backup to restore, picked and then confirmed.
+fn pick_backup(window: &mut Window, cx: &mut App) {
+    let picked = cx.prompt_for_paths(PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: false,
+        prompt: None,
+    });
+    window
+        .spawn(cx, async move |cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let _ = cx.update(|window, cx| confirm_restore(path, window, cx));
+        })
+        .detach();
+}
+
+fn confirm_restore(path: PathBuf, window: &mut Window, cx: &mut App) {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let path = path.clone();
+        alert
+            .title(t!("backup.restore_title", name = name).to_string())
+            .description(t!("backup.restore_description").to_string())
+            .confirm()
+            .ok_text(t!("backup.restore_ok").to_string())
+            .ok_variant(ButtonVariant::Danger)
+            .cancel_text(t!("common.cancel").to_string())
+            .on_ok(move |_, _, cx| {
+                let state = AppStore::global(cx).state().clone();
+                state.update(cx, |state, cx| state.restore(path.clone(), cx));
+                true
+            })
+    });
 }
 
 impl Render for CyberApi {

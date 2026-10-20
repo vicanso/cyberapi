@@ -10,7 +10,7 @@ mod variables;
 mod workspace;
 
 pub use api::{ApiEvent, ApiState};
-pub use app::{AppState, AppStore, Route};
+pub use app::{AppEvent, AppState, AppStore, Route};
 pub use cookies::{CookieKey, CookiesEvent, CookiesState, cookie_key};
 pub use dashboard::{DashboardEvent, DashboardState};
 pub use variables::{VariablesEvent, VariablesState};

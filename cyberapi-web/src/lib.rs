@@ -107,7 +107,7 @@ pub fn run(origin: String, ui_font: Vec<u8>, prefs: String) {
         if let Some(icon_watch) = icon_watch {
             assets::repaint_when_icons_land(icon_watch, cx);
         }
-        cyberapi_gui::launch(cx, storage, engine, prefs);
+        cyberapi_gui::launch(cx, storage, None, engine, prefs);
     });
     APP.with(|slot| *slot.borrow_mut() = Some(handle));
 }

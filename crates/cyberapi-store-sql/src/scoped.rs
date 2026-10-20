@@ -10,6 +10,7 @@ use crate::sql::{self, Dialect};
 use crate::{SqlStore, db, new_id, now, rows};
 use cyberapi_core::access::{CollectionRole, TeamRole, effective_role};
 use cyberapi_core::cookie::Cookie;
+use cyberapi_core::import::{ImportItem, assign_ids};
 use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
@@ -17,7 +18,7 @@ use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
 use cyberapi_store::rules::required_name;
 use cyberapi_store::{
-    CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable,
+    CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection, NewVariable,
     PrefStore, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
 };
 use serde::Serialize;
@@ -545,6 +546,75 @@ impl TreeStore for Scoped {
             this.touch(&mut tx, &collection).await?;
             tx.commit().await.map_err(db)?;
             Ok(change)
+        })
+    }
+
+    fn import(
+        &self,
+        collection: CollectionId,
+        parent: Option<ItemId>,
+        items: Vec<ImportItem>,
+    ) -> StoreFuture<Imported> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            this.lock(&mut tx, &collection).await?;
+            let assigned = assign_ids(&items, &mut || ItemId::new(new_id()));
+            let change = this
+                .tree_data(&mut tx, &collection)
+                .await?
+                .plan_import(&assigned.top, parent.as_ref())?;
+            let at = now();
+            let mut imported = Imported {
+                change,
+                ..Default::default()
+            };
+            for (id, name, children) in assigned.folders {
+                sqlx::query(this.dialect.sql(sql::FOLDER_INSERT))
+                    .bind(id.as_str().to_string())
+                    .bind(collection.as_str().to_string())
+                    .bind(name.clone())
+                    .bind(serde_json::to_string(&children).map_err(db)?)
+                    .bind(at.to_rfc3339())
+                    .bind(at.to_rfc3339())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+                imported.folders.push(Folder {
+                    id,
+                    collection: collection.clone(),
+                    name,
+                    children,
+                    created_at: at,
+                    updated_at: at,
+                });
+            }
+            for (id, name, request) in assigned.apis {
+                sqlx::query(this.dialect.sql(sql::API_INSERT))
+                    .bind(id.as_str().to_string())
+                    .bind(collection.as_str().to_string())
+                    .bind(name.clone())
+                    .bind("http")
+                    .bind(request.to_json())
+                    .bind(at.to_rfc3339())
+                    .bind(at.to_rfc3339())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+                imported.apis.push(ApiSetting {
+                    id,
+                    collection: collection.clone(),
+                    name,
+                    category: ApiCategory::Http,
+                    request,
+                    created_at: at,
+                    updated_at: at,
+                });
+            }
+            this.write_change(&mut tx, &collection, &imported.change).await?;
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)?;
+            Ok(imported)
         })
     }
 

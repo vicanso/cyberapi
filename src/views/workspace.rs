@@ -2,6 +2,7 @@
 //! its response side by side in resizable columns (F14.5), and the pins the
 //! title bar shows.
 
+mod import_dialog;
 mod pins;
 mod request_editor;
 mod response_panel;
@@ -87,6 +88,33 @@ fn new_item(
     );
 }
 
+pub use import_dialog::open_import_dialog;
+
+/// M11: the project or a folder as a file in the downloads folder — or, in
+/// a page, on the clipboard.
+fn export(state: &WeakEntity<WorkspaceState>, folder: Option<ItemId>, window: &mut Window, cx: &mut App) {
+    let Some(state) = state.upgrade() else { return };
+    let (name, json) = state.read(cx).export(folder.as_ref());
+    if !crate::this_build::saves_files() {
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(json));
+        window.push_notification(Notification::success(t!("export.copied").to_string()), cx);
+        return;
+    }
+    let saving = cx.background_spawn(async move { crate::this_build::save_to_downloads(&name, json.as_bytes()) });
+    window
+        .spawn(cx, async move |cx| {
+            let saved = saving.await;
+            let _ = cx.update(|window, cx| {
+                let note = match saved {
+                    Ok(path) => Notification::success(t!("export.saved", path = path).to_string()),
+                    Err(message) => Notification::error(message),
+                };
+                window.push_notification(note, cx);
+            });
+        })
+        .detach();
+}
+
 /// F3.6: name the item, and what goes with a folder, before deleting.
 fn confirm_delete(
     state: &WeakEntity<WorkspaceState>,
@@ -155,6 +183,12 @@ impl WorkspaceView {
                 cx.notify();
             }),
             cx.subscribe_in(&state, window, |_, _, event, window, cx| match event {
+                WorkspaceEvent::Imported { apis, folders } => {
+                    window.push_notification(
+                        Notification::success(t!("import.done", apis = apis, folders = folders).to_string()),
+                        cx,
+                    );
+                }
                 WorkspaceEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);
                 }

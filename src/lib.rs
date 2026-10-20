@@ -26,7 +26,7 @@ use crate::states::AppStore;
 use crate::views::StartupError;
 use cyberapi_core::prefs::AppPrefs;
 use cyberapi_http::HttpEngine;
-use cyberapi_store::Storage;
+use cyberapi_store::{BackupStore, Storage};
 use gpui_kit::component::TitleBar;
 use gpui_kit::{App, AppContext as _, Bounds, Entity, Render, Window, WindowBounds, WindowOptions, px, size};
 use std::sync::Arc;
@@ -61,7 +61,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Must come before anything that uses a component.
         gpui_kit::init(cx);
         match opened {
-            Ok((storage, prefs)) => launch(cx, storage, engine, prefs),
+            Ok((storage, backups, prefs)) => launch(cx, storage, Some(backups), engine, prefs),
             Err(message) => launch_failed(cx, message),
         }
     });
@@ -79,9 +79,10 @@ fn init_logger() {
 }
 
 /// The data directory's database, with the Tauri app's data copied in on the
-/// first launch (D2), and the reader's settings.
+/// first launch (D2): as the stores and as backups (M13), and the reader's
+/// settings.
 #[cfg(not(target_family = "wasm"))]
-fn open_desktop_storage() -> Result<(Storage, AppPrefs), String> {
+fn open_desktop_storage() -> Result<(Storage, Arc<dyn BackupStore>, AppPrefs), String> {
     use cyberapi_store_turso::{TursoStore, copy_legacy_data};
     use tracing::{info, warn};
 
@@ -105,7 +106,7 @@ fn open_desktop_storage() -> Result<(Storage, AppPrefs), String> {
         warn!(error = %e, "the settings could not be read; using the defaults");
         AppPrefs::default()
     });
-    Ok((storage, prefs))
+    Ok((storage, Arc::new(store), prefs))
 }
 
 /// D4: the Tauri app's cookie jar, copied beside the database as
@@ -133,12 +134,19 @@ fn import_legacy_cookies(storage: &Storage, dir: &std::path::Path) {
     }
 }
 
-/// Opens the main window on `storage`, sending with `engine`. Both builds
-/// call this once the platform is up and `gpui_kit::init` has run: the
-/// desktop from [`run`], the browser from `cyberapi-web`.
-pub fn launch(cx: &mut App, storage: Storage, engine: Arc<dyn HttpEngine>, prefs: AppPrefs) {
+/// Opens the main window on `storage`, sending with `engine`; `backups`
+/// where this build backs up (the desktop). Both builds call this once the
+/// platform is up and `gpui_kit::init` has run: the desktop from [`run`],
+/// the browser from `cyberapi-web`.
+pub fn launch(
+    cx: &mut App,
+    storage: Storage,
+    backups: Option<Arc<dyn BackupStore>>,
+    engine: Arc<dyn HttpEngine>,
+    prefs: AppPrefs,
+) {
     i18n::apply(prefs.language.as_deref());
-    AppStore::init(storage, engine, prefs, cx);
+    AppStore::init(storage, backups, engine, prefs, cx);
     views::bind_workspace_keys(cx);
     open_main_window(cx, |window, cx| cx.new(|cx| CyberApi::new(window, cx)));
 }

@@ -3,7 +3,7 @@
 //! state's and core's; this draws the rows and turns pointer and keyboard
 //! input into intent.
 
-use super::{confirm_delete, method_color, new_item};
+use super::{confirm_delete, export, method_color, new_item, open_import_dialog};
 use crate::states::{Load, WorkspaceState};
 use cyberapi_core::ItemId;
 use cyberapi_core::tree::{DropPosition, ItemKind, Placement, Row};
@@ -237,6 +237,7 @@ impl TreePanel {
                     .tooltip(t!("workspace.new").to_string())
                     .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
                         let (for_api, for_folder) = (state.clone(), state.clone());
+                        let (for_import, for_export) = (state.clone(), state.clone());
                         menu.item(
                             PopupMenuItem::new(t!("workspace.new_api").to_string())
                                 .on_click(move |_, window, cx| new_item(&for_api, None, ItemKind::Api, window, cx)),
@@ -245,6 +246,17 @@ impl TreePanel {
                             PopupMenuItem::new(t!("workspace.new_folder").to_string()).on_click(
                                 move |_, window, cx| new_item(&for_folder, None, ItemKind::Folder, window, cx),
                             ),
+                        )
+                        .separator()
+                        // F10.1 / F11.1.
+                        .item(
+                            PopupMenuItem::new(t!("import.title").to_string()).on_click(move |_, window, cx| {
+                                open_import_dialog(for_import.clone(), None, window, cx)
+                            }),
+                        )
+                        .item(
+                            PopupMenuItem::new(t!("export.project").to_string())
+                                .on_click(move |_, window, cx| export(&for_export, None, window, cx)),
                         )
                     }),
             )
@@ -473,6 +485,8 @@ fn item_menu(
         ItemKind::Folder => {
             let (for_api, for_folder, parent) = (state.clone(), state.clone(), id.clone());
             let folder = parent.clone();
+            let (for_import, into) = (state.clone(), id.clone());
+            let (for_export, exported) = (state.clone(), id.clone());
             menu.item(
                 PopupMenuItem::new(t!("workspace.new_api").to_string())
                     .on_click(move |_, window, cx| new_item(&for_api, Some(parent.clone()), ItemKind::Api, window, cx)),
@@ -481,6 +495,15 @@ fn item_menu(
                 PopupMenuItem::new(t!("workspace.new_folder").to_string()).on_click(move |_, window, cx| {
                     new_item(&for_folder, Some(folder.clone()), ItemKind::Folder, window, cx)
                 }),
+            )
+            .item(
+                PopupMenuItem::new(t!("import.into_folder").to_string()).on_click(move |_, window, cx| {
+                    open_import_dialog(for_import.clone(), Some(into.clone()), window, cx)
+                }),
+            )
+            .item(
+                PopupMenuItem::new(t!("export.folder").to_string())
+                    .on_click(move |_, window, cx| export(&for_export, Some(exported.clone()), window, cx)),
             )
             .separator()
         }

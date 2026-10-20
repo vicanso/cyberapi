@@ -91,6 +91,9 @@ toml = "1.1.8"
 # default features, which install mimalloc as the process's global allocator.
 turso = { version = "0.8.3", default-features = false }
 url = "2.5.8"
+# The desktop's backups (M13): the old app's zip of JSON tables, deflated.
+# Pure Rust zlib, and none of the other methods.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # Record ids. Native only: `generate` reads the system clock and its RNG,
 # neither of which a wasm32 page has.
 ulid = "3.0.0"

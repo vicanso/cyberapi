@@ -5,6 +5,7 @@
 //! components' own strings (dialog buttons, input menus) along with ours. The
 //! components spell Simplified Chinese `zh-CN`, so this app does too.
 
+use cyberapi_service::backup::BackupFailure;
 use cyberapi_store::StoreError;
 use rust_i18n::t;
 
@@ -51,6 +52,15 @@ pub fn store_error(error: &StoreError) -> String {
         StoreError::NameRequired => t!("errors.name_required").into(),
         StoreError::Tree { source } => t!("errors.tree", reason = source.to_string()).into(),
         StoreError::Backend { message } => t!("errors.backend", message = message).into(),
+    }
+}
+
+/// What to tell the reader about a backup or restore that failed.
+pub fn backup_error(failure: &BackupFailure) -> String {
+    match failure {
+        BackupFailure::Store { source } => store_error(source),
+        BackupFailure::NotABackup { message } => t!("backup.not_a_backup", reason = message).into(),
+        BackupFailure::Write { message } => message.clone(),
     }
 }
 

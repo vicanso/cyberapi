@@ -13,6 +13,7 @@ use super::{ApiState, Load, run_serial, run_store};
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::ItemId;
+use cyberapi_core::import::ImportBundle;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, Variable, VariableCategory};
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
@@ -29,6 +30,8 @@ use tracing::warn;
 pub enum WorkspaceEvent {
     /// A change the reader asked for did not happen.
     Failed(StoreError),
+    /// An import was written: how many APIs and folders.
+    Imported { apis: usize, folders: usize },
 }
 
 pub struct WorkspaceState {
@@ -430,6 +433,72 @@ impl WorkspaceState {
         });
     }
 
+    /// F10.4: the bundle under `parent` (the top level when `None`), and its
+    /// environment variables — those with a name or a value.
+    pub fn import(&mut self, parent: Option<ItemId>, bundle: ImportBundle, cx: &mut Context<Self>) {
+        let call = self
+            .sender
+            .storage
+            .tree()
+            .import(self.collection.id.clone(), parent.clone(), bundle.items);
+        let environment: Vec<(String, String)> = bundle
+            .environment
+            .into_iter()
+            .filter(|(name, value)| !name.trim().is_empty() || !value.trim().is_empty())
+            .collect();
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(imported) => {
+                let (apis, folders) = (imported.apis.len(), imported.folders.len());
+                this.data.folders.extend(imported.folders);
+                this.data.apis.extend(imported.apis);
+                this.data.apply(&imported.change);
+                this.tree = Tree::build(&this.data);
+                this.open_folder(parent.as_ref());
+                this.save_prefs(cx);
+                this.add_environment(environment, cx);
+                cx.emit(WorkspaceEvent::Imported { apis, folders });
+                cx.notify();
+            }
+            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+        });
+    }
+
+    fn add_environment(&mut self, variables: Vec<(String, String)>, cx: &mut Context<Self>) {
+        if variables.is_empty() {
+            return;
+        }
+        let (storage, collection) = (self.sender.storage.clone(), self.collection.id.clone());
+        cx.spawn(async move |this, cx| {
+            for (name, value) in variables {
+                let call = storage.variables().create(cyberapi_store::NewVariable {
+                    collection: collection.clone(),
+                    category: VariableCategory::Environment,
+                    name,
+                    value,
+                    enabled: true,
+                });
+                if let Err(error) = cx.background_spawn(call).await {
+                    let _ = this.update(cx, |_, cx| cx.emit(WorkspaceEvent::Failed(error)));
+                }
+            }
+            let _ = this.update(cx, |this, cx| this.refresh_environment(cx));
+        })
+        .detach();
+    }
+
+    /// F11.1 / F11.2: the project, or a folder with what is under it, in
+    /// CyberAPI's format, and the file name it is saved as.
+    pub fn export(&self, folder: Option<&ItemId>) -> (String, String) {
+        let name = folder
+            .and_then(|id| self.tree.get(id))
+            .map(|node| node.name().to_string())
+            .unwrap_or_else(|| self.collection.name.clone());
+        (
+            format!("cyberapi-{name}.json"),
+            cyberapi_core::import::export(&self.data, folder),
+        )
+    }
+
     /// F3.6. The view asks first. What was removed leaves the reader's state
     /// too: selection, pins, open folders.
     pub fn delete(&mut self, id: ItemId, cx: &mut Context<Self>) {
@@ -648,8 +717,10 @@ mod tests {
         let failures: Rc<RefCell<Vec<StoreError>>> = Rc::default();
         let seen = failures.clone();
         cx.update(|cx| {
-            cx.subscribe(&state, move |_, event, _| match event {
-                WorkspaceEvent::Failed(error) => seen.borrow_mut().push(error.clone()),
+            cx.subscribe(&state, move |_, event, _| {
+                if let WorkspaceEvent::Failed(error) = event {
+                    seen.borrow_mut().push(error.clone());
+                }
             })
             .detach();
         });

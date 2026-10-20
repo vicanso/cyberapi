@@ -178,3 +178,29 @@ on_the_server = "服务器上"
 reset = "恢复默认设置"
 reset_title = "恢复所有设置？"
 reset_description = "主题、语言、超时、窗口和分栏宽度都会恢复为默认值。"
+
+[import]
+title = "导入…"
+into_folder = "导入到此目录…"
+import = "导入"
+hint = "粘贴 cURL 命令，或 Postman、Insomnia、Swagger / OpenAPI、CyberAPI 的导出内容。"
+placeholder = "curl https://api.example.com … 或 { … }"
+choose_file = "选择文件"
+detected = "识别为 %{format}"
+done = "已导入 %{apis} 个接口、%{folders} 个目录。"
+
+[export]
+project = "导出项目"
+folder = "导出此目录"
+saved = "已保存为 %{path}"
+copied = "导出内容已复制到剪贴板。"
+
+[backup]
+back_up = "备份数据"
+restore = "恢复备份…"
+saved = "已备份到 %{path}"
+restore_title = "恢复 %{name}？"
+restore_description = "现有的全部项目（含目录、接口和变量）会被备份中的数据替换，响应历史也会清空；Cookie 和设置保持不变。此操作无法撤销。"
+restore_ok = "恢复"
+restored = "备份已恢复。"
+not_a_backup = "这不是 CyberAPI 的备份：%{reason}"

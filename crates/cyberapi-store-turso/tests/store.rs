@@ -56,6 +56,13 @@ fn turso_store_conforms() {
 }
 
 #[test]
+fn turso_store_backs_up() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = open(&dir.path().join("cyberapi.db"));
+    pollster::block_on(conformance::backup(&store.storage(), &store));
+}
+
+#[test]
 fn content_changes_move_the_collection_forward() {
     let dir = tempfile::tempdir().expect("temp dir");
     let seconds = Arc::new(AtomicI64::new(1_700_000_000));

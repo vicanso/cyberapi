@@ -6,11 +6,13 @@
 //! already holds data. A failure names the check through its file and line.
 
 use crate::{
-    CollectionEdit, Entity, Inserted, NewCollection, NewVariable, Storage, StoreError, StoreFuture, VariableEdit,
+    CollectionEdit, Entity, Imported, Inserted, NewCollection, NewVariable, Storage, StoreError, StoreFuture,
+    VariableEdit,
 };
 use cyberapi_core::access::CollectionRole;
 use cyberapi_core::collection::SortOrder;
 use cyberapi_core::cookie::Cookie;
+use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, ContentType, Folder, HttpMethod, HttpRequest, KvParam, VariableCategory,
 };
@@ -49,6 +51,7 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     history_keeps_the_newest(storage, probe).await;
     history_is_only_of_the_projects_apis(storage).await;
     cookies_are_kept_by_key(storage).await;
+    imports_get_new_ids_at_the_end(storage).await;
 }
 
 const MISSING: &str = "conformance-missing";
@@ -663,6 +666,17 @@ async fn shared_changes_move_the_revision(storage: &Storage) {
         "a renamed project answers with its new revision"
     );
     last = moved(storage, id, last, "a renamed project").await;
+    tree.import(
+        id.clone(),
+        None,
+        vec![ImportItem::Api {
+            name: "imported".into(),
+            request: HttpRequest::default(),
+        }],
+    )
+    .await
+    .expect("import");
+    last = moved(storage, id, last, "an import").await;
     tree.delete(id.clone(), users.item.id).await.expect("delete");
     last = moved(storage, id, last, "a deletion").await;
 
@@ -1062,4 +1076,209 @@ async fn cookies_are_kept_by_key(storage: &Storage) {
     );
     cookies.clear().await.expect("clear");
     assert!(cookies.list().await.expect("list").is_empty());
+}
+
+fn bundle() -> Vec<ImportItem> {
+    vec![
+        ImportItem::Folder {
+            name: "orders".into(),
+            children: vec![
+                ImportItem::Api {
+                    name: "create".into(),
+                    request: HttpRequest {
+                        method: HttpMethod::Post,
+                        uri: "{{HOST}}/orders".into(),
+                        body: "{\"a\": 1}".into(),
+                        ..Default::default()
+                    },
+                },
+                ImportItem::Folder {
+                    name: "admin".into(),
+                    children: vec![ImportItem::Api {
+                        name: "purge".into(),
+                        request: HttpRequest {
+                            method: HttpMethod::Delete,
+                            ..Default::default()
+                        },
+                    }],
+                },
+            ],
+        },
+        ImportItem::Api {
+            name: "health".into(),
+            request: HttpRequest::default(),
+        },
+    ]
+}
+
+/// F10.4: every item gets a new id, so the same bundle imports twice (#7);
+/// what is imported goes at the end of where it goes (#9); the answer is
+/// what was written.
+async fn imports_get_new_ids_at_the_end(storage: &Storage) {
+    let collection = new_collection(storage, "imports").await;
+    let tree = storage.tree();
+    let first = api(storage, &collection, None, "first").await;
+    let users = folder(storage, &collection, None, "users").await;
+    let before = Tree::build(&load(storage, &collection).await).top_level_ids();
+
+    let mut expected = load(storage, &collection).await;
+    let imported: Imported = tree
+        .import(collection.id.clone(), None, bundle())
+        .await
+        .expect("import");
+    expected.folders.extend(imported.folders.clone());
+    expected.apis.extend(imported.apis.clone());
+    expected.apply(&imported.change);
+    let loaded = load(storage, &collection).await;
+    assert_eq!(loaded, expected, "the answer is what was written");
+
+    let names = |ids: &[ItemId], data: &TreeData| -> Vec<String> {
+        ids.iter()
+            .map(|id| {
+                data.folders
+                    .iter()
+                    .find(|folder| &folder.id == id)
+                    .map(|folder| folder.name.clone())
+                    .or_else(|| data.apis.iter().find(|api| &api.id == id).map(|api| api.name.clone()))
+                    .unwrap_or_default()
+            })
+            .collect()
+    };
+    let top = Tree::build(&loaded).top_level_ids();
+    assert_eq!(&top[..before.len()], &before[..], "what was there stays first");
+    assert_eq!(
+        names(&top[before.len()..], &loaded),
+        ["orders", "health"],
+        "the import at the end"
+    );
+    let orders = loaded
+        .folders
+        .iter()
+        .find(|folder| folder.name == "orders")
+        .expect("orders");
+    assert_eq!(names(&orders.children, &loaded), ["create", "admin"]);
+    let create = loaded.apis.iter().find(|api| api.name == "create").expect("create");
+    assert_eq!(
+        (create.request.method, create.request.uri.as_str()),
+        (HttpMethod::Post, "{{HOST}}/orders")
+    );
+    assert_eq!(create.collection, collection.id);
+
+    // Again, into a folder: new ids, the folder's end.
+    let again = tree
+        .import(collection.id.clone(), Some(users.item.id.clone()), bundle())
+        .await
+        .expect("import again");
+    let first_ids: Vec<&ItemId> = imported
+        .folders
+        .iter()
+        .map(|folder| &folder.id)
+        .chain(imported.apis.iter().map(|api| &api.id))
+        .collect();
+    assert!(
+        again
+            .folders
+            .iter()
+            .map(|folder| &folder.id)
+            .chain(again.apis.iter().map(|api| &api.id))
+            .all(|id| !first_ids.contains(&id) && id != &first.item.id),
+        "every item has a new id"
+    );
+    let loaded = load(storage, &collection).await;
+    let users_now = loaded
+        .folders
+        .iter()
+        .find(|folder| folder.id == users.item.id)
+        .expect("users");
+    assert_eq!(names(&users_now.children, &loaded), ["orders", "health"]);
+    assert_eq!(loaded.apis.len(), 7);
+
+    not_found(
+        tree.import(collection.id.clone(), Some(ItemId::from(MISSING)), bundle())
+            .await,
+        Entity::Folder,
+    );
+    not_found(
+        tree.import(CollectionId::from(MISSING), None, bundle()).await,
+        Entity::Collection,
+    );
+    assert_eq!(load(storage, &collection).await.apis.len(), 7, "nothing was half made");
+}
+
+/// M13, for a store that backs up: a restore brings back what the snapshot
+/// held and only that.
+pub async fn backup(storage: &Storage, backups: &dyn crate::BackupStore) {
+    let kept = new_collection(storage, "backed up").await;
+    let users = folder(storage, &kept, None, "users").await;
+    let login = api(storage, &kept, Some(&users.item.id), "login").await;
+    storage
+        .tree()
+        .save_request(
+            kept.id.clone(),
+            login.item.id.clone(),
+            HttpRequest {
+                method: HttpMethod::Post,
+                uri: "/login".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("save");
+    storage
+        .variables()
+        .create(NewVariable {
+            collection: kept.id.clone(),
+            category: VariableCategory::Environment,
+            name: "HOST".into(),
+            value: "https://a.test".into(),
+            enabled: true,
+        })
+        .await
+        .expect("a variable");
+    storage
+        .history()
+        .add(response(&kept, &login.item.id, 1))
+        .await
+        .expect("a response");
+    let snapshot = backups.snapshot().await.expect("snapshot");
+    let before_list = storage.collections().list().await.expect("list");
+    let before_tree = load(storage, &kept).await;
+    let before_variables = storage
+        .variables()
+        .list(kept.id.clone(), VariableCategory::Environment)
+        .await
+        .expect("variables");
+    assert!(snapshot.collections.iter().any(|collection| collection.id == kept.id));
+    assert!(snapshot.apis.iter().any(|found| found.id == login.item.id));
+
+    // Afterwards: the project goes, another comes.
+    storage.collections().delete(kept.id.clone()).await.expect("delete");
+    let later = new_collection(storage, "made later").await;
+
+    backups.restore(snapshot.clone()).await.expect("restore");
+    assert_eq!(storage.collections().list().await.expect("list"), before_list);
+    assert_eq!(load(storage, &kept).await, before_tree);
+    assert_eq!(
+        storage
+            .variables()
+            .list(kept.id.clone(), VariableCategory::Environment)
+            .await
+            .expect("variables"),
+        before_variables
+    );
+    not_found(storage.collections().get(later.id).await, Entity::Collection);
+    assert!(
+        storage
+            .history()
+            .list(kept.id.clone(), login.item.id.clone())
+            .await
+            .expect("history")
+            .is_empty(),
+        "kept responses go with a restore"
+    );
+    assert_eq!(
+        backups.snapshot().await.expect("snapshot"),
+        snapshot,
+        "a restore is the snapshot"
+    );
 }

@@ -15,7 +15,9 @@ pub use schema::CURRENT_VERSION as SCHEMA_VERSION;
 
 use async_lock::Mutex;
 use chrono::Local;
+use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
+use cyberapi_core::import::{ImportItem, assign_ids};
 use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory, legacy as columns,
 };
@@ -25,8 +27,8 @@ use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, Timestamp, VariableId};
 use cyberapi_store::rules::required_name;
 use cyberapi_store::{
-    CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable,
-    PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
+    BackupStore, CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection,
+    NewVariable, PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
 };
 use rows::{API_COLUMNS, COLLECTION_COLUMNS, FOLDER_COLUMNS, VARIABLE_COLUMNS};
 use serde::de::DeserializeOwned;
@@ -494,6 +496,82 @@ impl TreeStore for TursoStore {
         })
     }
 
+    fn import(
+        &self,
+        collection: CollectionId,
+        parent: Option<ItemId>,
+        items: Vec<ImportItem>,
+    ) -> StoreFuture<Imported> {
+        self.run(move |inner, now| async move {
+            let mut conn = inner.conn.lock().await;
+            let tx = conn.transaction().await.map_err(backend)?;
+            require_collection(&tx, &collection).await?;
+            let assigned = assign_ids(&items, &mut || ItemId::new(new_id()));
+            let change = tree_data(&tx, &collection)
+                .await?
+                .plan_import(&assigned.top, parent.as_ref())?;
+            let mut imported = Imported {
+                change,
+                ..Default::default()
+            };
+            for (id, name, children) in assigned.folders {
+                let folder = Folder {
+                    id,
+                    collection: collection.clone(),
+                    name,
+                    children,
+                    created_at: now,
+                    updated_at: now,
+                };
+                execute(
+                    &tx,
+                    "INSERT INTO api_folders (id, collection, children, name, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (
+                        folder.id.as_str(),
+                        collection.as_str(),
+                        columns::join_id_list(&folder.children),
+                        folder.name.as_str(),
+                        now.to_rfc3339(),
+                        now.to_rfc3339(),
+                    ),
+                )
+                .await?;
+                imported.folders.push(folder);
+            }
+            for (id, name, request) in assigned.apis {
+                let api = ApiSetting {
+                    id,
+                    collection: collection.clone(),
+                    name,
+                    category: ApiCategory::Http,
+                    request,
+                    created_at: now,
+                    updated_at: now,
+                };
+                execute(
+                    &tx,
+                    "INSERT INTO api_settings (id, collection, name, category, setting, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'http', ?4, ?5, ?6)",
+                    (
+                        api.id.as_str(),
+                        collection.as_str(),
+                        api.name.as_str(),
+                        api.request.to_json(),
+                        now.to_rfc3339(),
+                        now.to_rfc3339(),
+                    ),
+                )
+                .await?;
+                imported.apis.push(api);
+            }
+            write_change(&tx, &collection, &imported.change).await?;
+            touch(&tx, &collection, now).await?;
+            tx.commit().await.map_err(backend)?;
+            Ok(imported)
+        })
+    }
+
     fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal> {
         self.run(move |inner, now| async move {
             let mut conn = inner.conn.lock().await;
@@ -784,6 +862,156 @@ impl HistoryStore for TursoStore {
             )
             .await
             .map(|_| ())
+        })
+    }
+}
+
+impl BackupStore for TursoStore {
+    fn snapshot(&self) -> StoreFuture<Backup> {
+        self.run(|inner, _| async move {
+            let conn = inner.conn.lock().await;
+            let collections = query_all(
+                &conn,
+                &format!("SELECT {COLLECTION_COLUMNS} FROM api_collections ORDER BY rowid"),
+                (),
+                rows::collection,
+            )
+            .await?;
+            let folders = query_all(
+                &conn,
+                &format!("SELECT {FOLDER_COLUMNS} FROM api_folders ORDER BY rowid"),
+                (),
+                rows::folder,
+            )
+            .await?;
+            let apis = query_all(
+                &conn,
+                &format!("SELECT {API_COLUMNS} FROM api_settings ORDER BY rowid"),
+                (),
+                rows::api,
+            )
+            .await?;
+            let variables = query_all(
+                &conn,
+                &format!("SELECT {VARIABLE_COLUMNS} FROM variables ORDER BY rowid"),
+                (),
+                rows::variable,
+            )
+            .await?
+            .into_iter()
+            .flatten()
+            .collect();
+            let top_orders = query_all(
+                &conn,
+                "SELECT collection, items FROM top_orders ORDER BY rowid",
+                (),
+                |row| {
+                    (
+                        CollectionId::new(rows::text(row, 0)),
+                        columns::parse_id_list(&rows::text(row, 1)),
+                    )
+                },
+            )
+            .await?;
+            Ok(Backup {
+                collections,
+                folders,
+                apis,
+                variables,
+                top_orders,
+            })
+        })
+    }
+
+    fn restore(&self, backup: Backup) -> StoreFuture<()> {
+        self.run(move |inner, _| async move {
+            let mut conn = inner.conn.lock().await;
+            let tx = conn.transaction().await.map_err(backend)?;
+            for table in [
+                "api_collections",
+                "api_folders",
+                "api_settings",
+                "variables",
+                "top_orders",
+                "responses",
+            ] {
+                execute(&tx, &format!("DELETE FROM {table}"), ()).await?;
+            }
+            for c in &backup.collections {
+                execute(
+                    &tx,
+                    "INSERT INTO api_collections (id, name, description, created_at, updated_at, revision)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (
+                        c.id.as_str(),
+                        c.name.as_str(),
+                        c.description.as_str(),
+                        c.created_at.to_rfc3339(),
+                        c.updated_at.to_rfc3339(),
+                        i64::try_from(c.revision).unwrap_or_default(),
+                    ),
+                )
+                .await?;
+            }
+            for f in &backup.folders {
+                execute(
+                    &tx,
+                    "INSERT INTO api_folders (id, collection, children, name, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (
+                        f.id.as_str(),
+                        f.collection.as_str(),
+                        columns::join_id_list(&f.children),
+                        f.name.as_str(),
+                        f.created_at.to_rfc3339(),
+                        f.updated_at.to_rfc3339(),
+                    ),
+                )
+                .await?;
+            }
+            for a in &backup.apis {
+                execute(
+                    &tx,
+                    "INSERT INTO api_settings (id, collection, name, category, setting, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'http', ?4, ?5, ?6)",
+                    (
+                        a.id.as_str(),
+                        a.collection.as_str(),
+                        a.name.as_str(),
+                        a.request.to_json(),
+                        a.created_at.to_rfc3339(),
+                        a.updated_at.to_rfc3339(),
+                    ),
+                )
+                .await?;
+            }
+            for v in &backup.variables {
+                execute(
+                    &tx,
+                    "INSERT INTO variables (id, category, collection, name, value, enabled, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    (
+                        v.id.as_str(),
+                        v.category.as_str(),
+                        v.collection.as_str(),
+                        v.name.as_str(),
+                        v.value.as_str(),
+                        if v.enabled { "1" } else { "0" },
+                        v.created_at.to_rfc3339(),
+                        v.updated_at.to_rfc3339(),
+                    ),
+                )
+                .await?;
+            }
+            for (collection, items) in &backup.top_orders {
+                execute(
+                    &tx,
+                    "INSERT INTO top_orders (collection, items) VALUES (?1, ?2)",
+                    (collection.as_str(), columns::join_id_list(items)),
+                )
+                .await?;
+            }
+            tx.commit().await.map_err(backend)
         })
     }
 }

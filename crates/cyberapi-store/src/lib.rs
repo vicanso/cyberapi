@@ -28,7 +28,9 @@ pub use error::{Entity, StoreError};
 #[cfg(not(target_family = "wasm"))]
 pub use memory::MemoryStore;
 
+use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
+use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
@@ -60,6 +62,16 @@ pub struct NewCollection {
 pub struct CollectionEdit {
     pub name: String,
     pub description: String,
+}
+
+/// What an import wrote (M10): every folder and API with its new id, in the
+/// order written, and the lists that changed to place them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Imported {
+    pub folders: Vec<Folder>,
+    pub apis: Vec<ApiSetting>,
+    pub change: TreeChange,
 }
 
 /// A new tree item, and where the store put it.
@@ -129,6 +141,10 @@ pub trait TreeStore: Send + Sync {
     fn save_request(&self, collection: CollectionId, api: ItemId, request: HttpRequest) -> StoreFuture<ApiSetting>;
     /// Moves an item (F3.7); answers what changed.
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange>;
+    /// Adds imported folders and APIs (F10.4) at the end of `parent`, or of
+    /// the top level (#9); every one gets a new id (#7).
+    fn import(&self, collection: CollectionId, parent: Option<ItemId>, items: Vec<ImportItem>)
+    -> StoreFuture<Imported>;
     /// Deletes an item, and for a folder all it contains (F3.6), with the
     /// response history of every API that goes.
     fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal>;
@@ -183,6 +199,18 @@ pub trait CookieStore: Send + Sync {
     /// F9.7. A cookie that is not kept is no error.
     fn delete(&self, domain: String, path: String, name: String) -> StoreFuture<()>;
     fn clear(&self) -> StoreFuture<()>;
+}
+
+/// Every project at once (M13): the desktop's backup and restore. Not part
+/// of [`Storage`] — the browser build has none — so the desktop holds it
+/// beside.
+pub trait BackupStore: Send + Sync {
+    /// Every project, folder, API and variable, and the top-level orders,
+    /// in store order.
+    fn snapshot(&self) -> StoreFuture<Backup>;
+    /// Replaces them all with `backup` at once: a restore that fails leaves
+    /// everything as it was (#8). The responses kept for APIs go too.
+    fn restore(&self, backup: Backup) -> StoreFuture<()>;
 }
 
 /// The order cookies are listed in (F9.4).

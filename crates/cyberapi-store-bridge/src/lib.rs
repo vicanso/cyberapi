@@ -18,6 +18,7 @@
 //! [`SendReply`].
 
 use cyberapi_core::cookie::Cookie;
+use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
@@ -25,8 +26,8 @@ use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, VariableId};
 use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, SendError, SendFuture};
 use cyberapi_store::{
-    CollectionEdit, CollectionStore, CookieStore, HistoryStore, Inserted, NewCollection, NewVariable, PrefStore,
-    Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
+    CollectionEdit, CollectionStore, CookieStore, HistoryStore, Imported, Inserted, NewCollection, NewVariable,
+    PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -92,6 +93,11 @@ pub enum Call {
         collection: CollectionId,
         item: ItemId,
         to: Placement,
+    },
+    TreeImport {
+        collection: CollectionId,
+        parent: Option<ItemId>,
+        items: Vec<ImportItem>,
     },
     TreeDelete {
         collection: CollectionId,
@@ -200,6 +206,11 @@ pub async fn dispatch(storage: &Storage, call: Call) -> Reply {
             request,
         } => reply(tree.save_request(collection, api, request).await),
         Call::TreeMove { collection, item, to } => reply(tree.move_item(collection, item, to).await),
+        Call::TreeImport {
+            collection,
+            parent,
+            items,
+        } => reply(tree.import(collection, parent, items).await),
         Call::TreeDelete { collection, item } => reply(tree.delete(collection, item).await),
         Call::VariablesList { collection, category } => reply(variables.list(collection, category).await),
         Call::VariablesCreate { input } => reply(variables.create(input).await),
@@ -334,6 +345,18 @@ impl TreeStore for BridgeStore {
     }
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange> {
         self.call(Call::TreeMove { collection, item, to })
+    }
+    fn import(
+        &self,
+        collection: CollectionId,
+        parent: Option<ItemId>,
+        items: Vec<ImportItem>,
+    ) -> StoreFuture<Imported> {
+        self.call(Call::TreeImport {
+            collection,
+            parent,
+            items,
+        })
     }
     fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal> {
         self.call(Call::TreeDelete { collection, item })

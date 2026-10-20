@@ -7,3 +7,9 @@ fn memory_store_conforms() {
     let store = MemoryStore::new();
     pollster::block_on(conformance::run(&store.storage(), &store));
 }
+
+#[test]
+fn memory_store_backs_up() {
+    let store = MemoryStore::new();
+    pollster::block_on(conformance::backup(&store.storage(), &store));
+}

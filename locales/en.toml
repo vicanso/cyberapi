@@ -178,3 +178,29 @@ on_the_server = "On the server"
 reset = "Restore the defaults"
 reset_title = "Restore every setting?"
 reset_description = "Theme, language, timeouts, window and column sizes go back to their defaults."
+
+[import]
+title = "Import…"
+into_folder = "Import into this folder…"
+import = "Import"
+hint = "Paste a cURL command, or a Postman, Insomnia, Swagger / OpenAPI or CyberAPI export."
+placeholder = "curl https://api.example.com … or { … }"
+choose_file = "Choose a file"
+detected = "Reads as %{format}"
+done = "Imported %{apis} APIs and %{folders} folders."
+
+[export]
+project = "Export the project"
+folder = "Export this folder"
+saved = "Saved as %{path}"
+copied = "The export is on the clipboard."
+
+[backup]
+back_up = "Back up data"
+restore = "Restore a backup…"
+saved = "Backed up to %{path}"
+restore_title = "Restore %{name}?"
+restore_description = "Every project — its folders, APIs and variables — is replaced by the backup's, and the response history is cleared; cookies and settings stay. This cannot be undone."
+restore_ok = "Restore"
+restored = "The backup has been restored."
+not_a_backup = "This is not a CyberAPI backup: %{reason}"

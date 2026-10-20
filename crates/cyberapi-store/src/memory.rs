@@ -4,11 +4,13 @@
 
 use crate::rules::required_name;
 use crate::{
-    CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Inserted, NewCollection, NewVariable,
-    PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
+    BackupStore, CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection,
+    NewVariable, PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
 };
 use chrono::Utc;
+use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
+use cyberapi_core::import::{ImportItem, assign_ids};
 use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
@@ -318,6 +320,51 @@ impl TreeStore for MemoryStore {
         })
     }
 
+    fn import(
+        &self,
+        collection: CollectionId,
+        parent: Option<ItemId>,
+        items: Vec<ImportItem>,
+    ) -> StoreFuture<Imported> {
+        self.run(move |state, now| {
+            state.collection(&collection)?;
+            let assigned = assign_ids(&items, &mut || ItemId::new(new_id()));
+            let change = state
+                .tree_data(&collection)
+                .plan_import(&assigned.top, parent.as_ref())?;
+            let folders: Vec<Folder> = assigned
+                .folders
+                .into_iter()
+                .map(|(id, name, children)| Folder {
+                    id,
+                    collection: collection.clone(),
+                    name,
+                    children,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .collect();
+            let apis: Vec<ApiSetting> = assigned
+                .apis
+                .into_iter()
+                .map(|(id, name, request)| ApiSetting {
+                    id,
+                    collection: collection.clone(),
+                    name,
+                    category: ApiCategory::Http,
+                    request,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .collect();
+            state.folders.extend(folders.clone());
+            state.apis.extend(apis.clone());
+            state.apply(&collection, &change);
+            state.touch(&collection, now)?;
+            Ok(Imported { folders, apis, change })
+        })
+    }
+
     fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal> {
         self.run(move |state, now| {
             state.collection(&collection)?;
@@ -506,6 +553,41 @@ impl HistoryStore for MemoryStore {
             state
                 .responses
                 .retain(|response| response.collection != collection || response.api != api);
+            Ok(())
+        })
+    }
+}
+
+impl BackupStore for MemoryStore {
+    fn snapshot(&self) -> StoreFuture<Backup> {
+        self.run(|state, _| {
+            Ok(Backup {
+                collections: state.collections.clone(),
+                folders: state.folders.clone(),
+                apis: state.apis.clone(),
+                variables: state.variables.clone(),
+                top_orders: state
+                    .collections
+                    .iter()
+                    .filter_map(|collection| {
+                        state
+                            .top_orders
+                            .get(&collection.id)
+                            .map(|order| (collection.id.clone(), order.clone()))
+                    })
+                    .collect(),
+            })
+        })
+    }
+
+    fn restore(&self, backup: Backup) -> StoreFuture<()> {
+        self.run(move |state, _| {
+            state.collections = backup.collections;
+            state.folders = backup.folders;
+            state.apis = backup.apis;
+            state.variables = backup.variables;
+            state.top_orders = backup.top_orders.into_iter().collect();
+            state.responses.clear();
             Ok(())
         })
     }

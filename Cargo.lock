@@ -1825,6 +1825,7 @@ dependencies = [
 name = "cyberapi-service"
 version = "0.2.0"
 dependencies = [
+ "chrono",
  "cyberapi-core",
  "cyberapi-http",
  "cyberapi-store",
@@ -1835,6 +1836,7 @@ dependencies = [
  "tracing",
  "url",
  "web-time",
+ "zip",
 ]
 
 [[package]]
@@ -9167,6 +9169,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-path"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54ec2755506471f54baf5e4bb5499d8e510cc1caf271270e778a736bd2d7336c"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11236,6 +11244,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "zip"
+version = "8.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "typed-path",
 ]
 
 [[package]]

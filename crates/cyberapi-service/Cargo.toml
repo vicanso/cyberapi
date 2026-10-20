@@ -5,12 +5,13 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CyberAPI's use cases over the store and engine traits: sending a request."
+description = "CyberAPI's use cases over the store and engine traits: sending a request, backing up."
 publish = false
 
 # Only traits below this crate, so it builds for wasm32 as well: the browser
 # build runs the same pipeline, with the bridge's store and engine.
 [dependencies]
+chrono = { workspace = true }
 cyberapi-core = { workspace = true }
 cyberapi-http = { workspace = true }
 cyberapi-store = { workspace = true }
@@ -19,6 +20,7 @@ snafu = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 web-time = "1.1.0"
+zip = { workspace = true }
 
 [dev-dependencies]
 pollster = { workspace = true }

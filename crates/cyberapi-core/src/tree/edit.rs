@@ -135,6 +135,35 @@ impl TreeData {
         Ok(change)
     }
 
+    /// Places imported items, new to the tree, at the end of `parent` or of
+    /// the top level, in their order (F10.4). The old app never put imported
+    /// items in the top-level order, so they always showed first (#9).
+    pub fn plan_import(&self, items: &[ItemId], parent: Option<&ItemId>) -> Result<TreeChange, TreeError> {
+        let tree = Tree::build(self);
+        let mut change = TreeChange::default();
+        match parent {
+            Some(parent) => {
+                check_folder(&tree, parent)?;
+                for folder in self.folders.iter().filter(|folder| &folder.id == parent) {
+                    let mut children = folder.children.clone();
+                    children.retain(|child| !items.contains(child));
+                    children.extend(items.iter().cloned());
+                    change.folders.push((folder.id.clone(), children));
+                }
+            }
+            None => {
+                let mut top: Vec<ItemId> = tree
+                    .top_level_ids()
+                    .into_iter()
+                    .filter(|id| !items.contains(id))
+                    .collect();
+                top.extend(items.iter().cloned());
+                change.top_order = Some(top);
+            }
+        }
+        Ok(change)
+    }
+
     /// Removes an item and, for a folder, everything inside it (F3.6). Every
     /// remaining list stops naming what was removed; the old app left those
     /// ids behind (#5).

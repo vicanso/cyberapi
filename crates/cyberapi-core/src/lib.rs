@@ -4,11 +4,13 @@
 //! browser and on the bridge, and it is tested without any of them.
 
 pub mod access;
+pub mod backup;
 pub mod collection;
 pub mod cookie;
 pub mod curl;
 pub mod format;
 mod id;
+pub mod import;
 pub mod model;
 pub mod prefs;
 pub mod response;
