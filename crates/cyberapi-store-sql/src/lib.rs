@@ -20,7 +20,7 @@ use cyberapi_store::{Storage, StoreError};
 use scoped::Scoped;
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
 use sqlx::migrate::MigrateError;
-use sqlx::{AnyPool, Row};
+use sqlx::{AnyConnection, AnyPool, Row};
 use std::sync::Arc;
 use std::time::Duration;
 use ulid::Ulid;
@@ -140,10 +140,45 @@ impl SqlStore {
     /// Creates an account with its personal space (§9.1), whose only member
     /// it is, as owner.
     pub async fn create_account(&self, input: NewAccount) -> Result<AccountId, StoreError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let account = self.insert_account(&mut tx, input).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(account)
+    }
+
+    /// The first administrator (§9.5), made only while there is no account
+    /// at all: `None` once there is one — or when another setup, at the
+    /// same moment, got there first.
+    pub async fn create_first_admin(&self, input: NewAccount) -> Result<Option<AccountId>, StoreError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let claimed = sqlx::query(self.dialect.pick(&sql::SETUP_CLAIM))
+            .bind(now().to_rfc3339())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?
+            .rows_affected()
+            == 1;
+        let accounts = sqlx::query(self.dialect.sql(sql::ACCOUNT_COUNT))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?
+            .try_get::<i64, _>(0)
+            .map_err(db)?;
+        if !claimed || accounts > 0 {
+            tx.rollback().await.map_err(db)?;
+            return Ok(None);
+        }
+        let account = self
+            .insert_account(&mut tx, NewAccount { admin: true, ..input })
+            .await?;
+        tx.commit().await.map_err(db)?;
+        Ok(Some(account))
+    }
+
+    async fn insert_account(&self, conn: &mut AnyConnection, input: NewAccount) -> Result<AccountId, StoreError> {
         let account = AccountId::new(new_id());
         let team = TeamId::new(new_id());
         let at = now().to_rfc3339();
-        let mut tx = self.pool.begin().await.map_err(db)?;
         sqlx::query(self.dialect.sql(sql::ACCOUNT_INSERT))
             .bind(account.as_str().to_string())
             .bind(input.name.clone())
@@ -151,7 +186,7 @@ impl SqlStore {
             .bind(input.password_hash)
             .bind(i32::from(input.admin))
             .bind(at.clone())
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await
             .map_err(db)?;
         let space = if input.display_name.trim().is_empty() {
@@ -164,17 +199,16 @@ impl SqlStore {
             .bind(space)
             .bind(Some(account.as_str().to_string()))
             .bind(at)
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await
             .map_err(db)?;
         sqlx::query(self.dialect.pick(&sql::MEMBER_UPSERT))
             .bind(team.as_str().to_string())
             .bind(account.as_str().to_string())
             .bind(TeamRole::Owner.as_str())
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await
             .map_err(db)?;
-        tx.commit().await.map_err(db)?;
         Ok(account)
     }
 
@@ -225,6 +259,16 @@ impl SqlStore {
             .await
             .map_err(db)?;
         row.map(|row| account(&row)).transpose()
+    }
+
+    /// Forgets the logins that ran out by `now` (unix seconds); how many.
+    pub async fn delete_expired_sessions(&self, now: i64) -> Result<u64, StoreError> {
+        let done = sqlx::query(self.dialect.sql(sql::SESSIONS_EXPIRED_DELETE))
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected())
     }
 
     pub async fn delete_session(&self, token_hash: &str) -> Result<(), StoreError> {

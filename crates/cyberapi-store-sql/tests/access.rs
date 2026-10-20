@@ -333,3 +333,47 @@ async fn postgres_access_rules() {
 async fn mysql_access_rules() {
     rules("CYBERAPI_TEST_MYSQL").await;
 }
+
+/// Setup makes no administrator once there are accounts — that it makes
+/// exactly one on an empty store is the bridge's test, on a database of its
+/// own — and the logins that ran out are forgotten, the others kept.
+async fn sign_ins(variable: &str) {
+    let Ok(url) = std::env::var(variable) else {
+        eprintln!("skipped: {variable} is not set");
+        return;
+    };
+    let store = SqlStore::connect(&url).await.expect("connect");
+    let erin = account(&store, "erin").await;
+    let late = format!("late-{}", ulid::Ulid::generate());
+    let made = store
+        .create_first_admin(NewAccount {
+            name: late.clone(),
+            password_hash: "unused".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("setup");
+    assert_eq!(made, None);
+    assert_eq!(store.find_login(&late).await.expect("find"), None);
+
+    let (ran_out, kept) = (
+        format!("ran-out-{}", ulid::Ulid::generate()),
+        format!("kept-{}", ulid::Ulid::generate()),
+    );
+    store.create_session(&ran_out, &erin, 1).await.expect("a session");
+    store.create_session(&kept, &erin, i64::MAX).await.expect("a session");
+    assert!(store.delete_expired_sessions(2).await.expect("forget") >= 1);
+    let erin_now = store.session_account(&kept, 2).await.expect("a session");
+    assert_eq!(erin_now.map(|account| account.id), Some(erin));
+    assert_eq!(store.session_account(&ran_out, 0).await.expect("a session"), None);
+}
+
+#[tokio::test]
+async fn postgres_sign_ins() {
+    sign_ins("CYBERAPI_TEST_POSTGRES").await;
+}
+
+#[tokio::test]
+async fn mysql_sign_ins() {
+    sign_ins("CYBERAPI_TEST_MYSQL").await;
+}

@@ -167,6 +167,69 @@ async fn first_administrator_sessions_and_sign_in() {
     assert_eq!(status, StatusCode::OK);
 }
 
+/// Two setups at once make one administrator; a name that keeps failing to
+/// sign in is turned away for a while, even with the right password; the
+/// logins that ran out are forgotten.
+#[tokio::test]
+async fn one_setup_slow_guesses_and_old_logins() {
+    let Some(bridge) = fresh_bridge().await else { return };
+    let router = bridge.router(None);
+    let form = |name: &str| json!({"token": SETUP_TOKEN, "name": name, "password": "long enough"});
+    let (first, second) = tokio::join!(
+        send(&router, "POST", "/v1/setup", None, Some(form("one"))),
+        send(&router, "POST", "/v1/setup", None, Some(form("two"))),
+    );
+    let mut statuses = [first.0, second.0];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
+    assert_eq!(bridge.store().account_count().await.expect("count"), 1);
+
+    let winner = if first.0 == StatusCode::OK { "one" } else { "two" };
+    let login = |name: &str, password: &str| json!({"name": name, "password": password});
+    for _ in 0..5 {
+        let (status, ..) = send(
+            &router,
+            "POST",
+            "/v1/login",
+            None,
+            Some(login(winner, "wrong password")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, _, body) = send(
+        &router,
+        "POST",
+        "/v1/login",
+        None,
+        Some(login(&winner.to_uppercase(), "long enough")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+
+    let (account, _) = bridge
+        .store()
+        .find_login(winner)
+        .await
+        .expect("find")
+        .expect("the administrator");
+    bridge
+        .store()
+        .create_session("ran-out", &account.id, 1)
+        .await
+        .expect("a session");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after 1970")
+        .as_secs();
+    let now = i64::try_from(now).expect("a time");
+    assert_eq!(
+        bridge.store().delete_expired_sessions(now).await.expect("forget"),
+        1,
+        "the setup's own login lasts"
+    );
+}
+
 /// The page's transport, into the router instead of over a network.
 struct RouterTransport {
     router: Router,

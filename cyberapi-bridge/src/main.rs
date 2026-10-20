@@ -66,8 +66,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
     let bridge = Bridge::new(store, Arc::new(engine), setup_token, !args.insecure_cookie);
+    bridge.spawn_housekeeping();
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     tracing::info!(listen = %args.listen, www = %args.www.display(), "cyberapi-bridge serving");
-    axum::serve(listener, bridge.router(Some(args.www))).await?;
+    // The peer's address, for counting failed sign-ins by where they come
+    // from. Behind a proxy that is the proxy's.
+    let app = bridge
+        .router(Some(args.www))
+        .into_make_service_with_connect_info::<SocketAddr>();
+    axum::serve(listener, app).await?;
     Ok(())
 }

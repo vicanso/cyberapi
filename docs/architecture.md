@@ -288,6 +288,12 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 - **账号、团队、授权目前只有 `SqlStore` 的固有方法**（`create_account` / `create_team` / `set_member` / `set_grant`），供 bridge 和测试使用。面向用户的管理界面和 `DirectoryStore` trait 仍在第 10 步。
 - **留到第 10 步加固的事项：** 登录频率限制；两个请求同时初始化管理员时可能各建一个（目前没有加锁）；会话过期行的清理；退出登录的界面入口（目前只有 `/v1/logout` 接口，会话失效时页面会自动回到登录表单）。
 
+第 10 步的加固（前三项）：
+
+- **初始化只成功一次。** `SqlStore::create_first_admin` 在一个事务里先插入 `store_meta` 的 `setup` 行（PostgreSQL `ON CONFLICT DO NOTHING`、MySQL `INSERT IGNORE`），再确认没有账号才建管理员。两个同时到达的初始化，后到的会等前一个提交，然后插不进去，返回 409。
+- **登录频率限制**（bridge 进程内存，`throttle.rs`）：15 分钟内同一个用户名失败 5 次、同一个来源地址失败 30 次、初始化 token 试错 10 次，就返回 429 和 `Retry-After`，直到最早的一次失败满 15 分钟。用户名不区分大小写；登录成功清掉该用户名的计数。来源地址来自 `ConnectInfo`，放在反向代理后面时是代理的地址。
+- **过期会话**：bridge 启动时和之后每小时删除 `expires_at` 已过的会话行。
+
 第 7 步落地时的具体做法：
 
 - **纯逻辑在 core，IO 在 service。** `cyberapi_core::template`（解析和求值，IO 需要的数据由调用方先按 `needs` 准备好）、`send::prepare`、`response`、`curl`；`cyberapi-service::send` 只依赖 trait，两端运行同一份发送管线。cURL 也走同一个准备过程，命令和实际发出的请求一致。

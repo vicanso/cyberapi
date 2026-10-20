@@ -88,6 +88,7 @@
       create_admin: "Create and sign in",
       wrong_login: "Wrong name or password.",
       wrong_token: "Wrong setup token.",
+      too_many: "Too many failed attempts. Try again in {minutes} min.",
       failed: "Cyber API could not start: {error}",
     },
     zh: {
@@ -103,6 +104,7 @@
       create_admin: "创建并登录",
       wrong_login: "用户名或密码不正确。",
       wrong_token: "初始化 token 不正确。",
+      too_many: "失败次数过多，请 {minutes} 分钟后再试。",
       failed: "Cyber API 无法启动：{error}",
     },
   };
@@ -140,8 +142,15 @@
               })
             : await postJson("/v1/login", { name: $("login-name").value.trim(), password: $("login-password").value });
           if (res.ok) return resolve();
+          const minutes = Math.max(1, Math.ceil(Number(res.headers.get("retry-after") || 60) / 60));
           $(msg).textContent =
-            res.status === 401 ? t("wrong_login") : res.status === 403 ? t("wrong_token") : await res.text();
+            res.status === 401
+              ? t("wrong_login")
+              : res.status === 403
+                ? t("wrong_token")
+                : res.status === 429
+                  ? t("too_many", { minutes })
+                  : await res.text();
         } catch (error) {
           $(msg).textContent = String(error);
         } finally {

@@ -125,6 +125,13 @@ pub const SESSION_ACCOUNT: &str = "SELECT a.id, a.name, a.display_name, a.admin 
     FROM sessions s JOIN accounts a ON a.id = s.account \
     WHERE s.token_hash = $1 AND s.expires_at > $2 AND a.disabled = 0";
 pub const SESSION_DELETE: &str = "DELETE FROM sessions WHERE token_hash = $1";
+pub const SESSIONS_EXPIRED_DELETE: &str = "DELETE FROM sessions WHERE expires_at <= $1";
+/// Claims the making of the first administrator. Of two setups at once,
+/// one inserts the row; the other waits for it and inserts nothing.
+pub const SETUP_CLAIM: Pair = Pair {
+    pg: "INSERT INTO store_meta (name, value) VALUES ('setup', $1) ON CONFLICT (name) DO NOTHING",
+    my: "INSERT IGNORE INTO store_meta (name, value) VALUES ('setup', ?)",
+};
 pub const TEAM_INSERT: &str = "INSERT INTO teams (id, name, personal_of, created_at) VALUES ($1, $2, $3, $4)";
 pub const PERSONAL_TEAM: &str = "SELECT id FROM teams WHERE personal_of = $1";
 pub const TEAM_ROLE: &str = "SELECT role FROM team_members WHERE team = $1 AND account = $2";
@@ -256,6 +263,7 @@ mod tests {
         SESSION_INSERT,
         SESSION_ACCOUNT,
         SESSION_DELETE,
+        SESSIONS_EXPIRED_DELETE,
         TEAM_INSERT,
         PERSONAL_TEAM,
         TEAM_ROLE,
@@ -321,7 +329,7 @@ mod tests {
             let expected: Vec<usize> = (1..=found.len()).collect();
             assert_eq!(found, expected, "{statement}");
         }
-        for pair in [MEMBER_UPSERT, GRANT_UPSERT, TOP_ORDER_UPSERT, PREF_UPSERT] {
+        for pair in [MEMBER_UPSERT, GRANT_UPSERT, TOP_ORDER_UPSERT, PREF_UPSERT, SETUP_CLAIM] {
             assert_eq!(placeholders(pair.pg).len(), pair.my.matches('?').count(), "{}", pair.pg);
         }
     }

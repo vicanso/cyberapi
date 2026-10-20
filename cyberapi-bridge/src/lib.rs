@@ -12,21 +12,30 @@
 //! | `POST /v1/store` | one store call (`cyberapi_store_bridge::Call`) |
 //! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5) |
 //! | anything else | the page's files |
+//!
+//! Failed sign-ins and setup tries are counted ([`throttle`]) and turned
+//! away with 429 once there are too many; serve the router with
+//! `into_make_service_with_connect_info::<SocketAddr>` so they are counted
+//! by address too.
 
 mod auth;
+mod throttle;
 
 use auth::{SESSION_COOKIE, hash_password, hash_token, new_token, session_cookie, signed_in, verify_password};
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Json, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Json, State};
+use axum::http::{Extensions, HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use cyberapi_http::{HttpEngine, PreparedRequest};
 use cyberapi_store_bridge::{Call, SEND_PATH, STORE_PATH, SendReply, dispatch};
 use cyberapi_store_sql::{Account, NewAccount, SqlStore};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use throttle::{Key, Throttle};
 use tower_http::services::ServeDir;
 
 /// How long a login lasts.
@@ -35,6 +44,8 @@ const MIN_PASSWORD_CHARS: usize = 8;
 const MAX_NAME_CHARS: usize = 64;
 /// A request body or a kept response, base64 in JSON.
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+/// How often the logins that ran out are forgotten.
+const HOUSEKEEPING: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone)]
 pub struct Bridge {
@@ -51,6 +62,7 @@ struct Inner {
     /// Mark the cookie `Secure`: on, unless the bridge is reached over plain
     /// HTTP (development).
     secure_cookie: bool,
+    throttle: Throttle,
 }
 
 impl Bridge {
@@ -61,8 +73,26 @@ impl Bridge {
                 engine,
                 setup_token,
                 secure_cookie,
+                throttle: Throttle::default(),
             }),
         }
+    }
+
+    /// Forgets the logins that ran out, now and every hour after, for as
+    /// long as the runtime runs.
+    pub fn spawn_housekeeping(&self) -> tokio::task::JoinHandle<()> {
+        let bridge = self.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(HOUSEKEEPING);
+            loop {
+                every.tick().await;
+                match bridge.inner.store.delete_expired_sessions(auth::unix_now()).await {
+                    Ok(0) => {}
+                    Ok(forgotten) => tracing::info!(forgotten, "forgot the logins that ran out"),
+                    Err(error) => tracing::warn!(%error, "the logins that ran out could not be forgotten"),
+                }
+            }
+        })
     }
 
     pub fn store(&self) -> &SqlStore {
@@ -117,6 +147,27 @@ fn internal(error: impl std::fmt::Display) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, "the bridge could not do that").into_response()
 }
 
+/// Where a request came from, when the server was told.
+fn address(extensions: &Extensions) -> Option<Key> {
+    extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(from)| Key::Address(from.ip()))
+}
+
+/// 429, saying when to try again, when `keys` have failed too often.
+fn throttled(bridge: &Bridge, keys: &[Key]) -> Option<Response> {
+    let wait = bridge.inner.throttle.wait(keys, Instant::now())?;
+    let seconds = wait.as_secs().max(1);
+    Some(
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, seconds.to_string())],
+            "too many failed attempts; try again later",
+        )
+            .into_response(),
+    )
+}
+
 #[derive(Serialize)]
 struct SetupNeeded {
     needed: bool,
@@ -139,15 +190,24 @@ struct SetupForm {
     password: String,
 }
 
+fn already_set_up() -> Response {
+    (StatusCode::CONFLICT, "the bridge already has accounts").into_response()
+}
+
 /// The first administrator, made with the setup token — which counts only
-/// while there is no account at all.
-async fn setup(State(bridge): State<Bridge>, Json(form): Json<SetupForm>) -> Response {
+/// while there is no account at all. Of two setups at once, one makes it.
+async fn setup(State(bridge): State<Bridge>, extensions: Extensions, Json(form): Json<SetupForm>) -> Response {
     match bridge.inner.store.account_count().await {
         Ok(0) => {}
-        Ok(_) => return (StatusCode::CONFLICT, "the bridge already has accounts").into_response(),
+        Ok(_) => return already_set_up(),
         Err(error) => return internal(error),
     }
+    let keys: Vec<Key> = [Some(Key::Setup), address(&extensions)].into_iter().flatten().collect();
+    if let Some(refused) = throttled(&bridge, &keys) {
+        return refused;
+    }
     if !auth::same_secret(&form.token, &bridge.inner.setup_token) {
+        bridge.inner.throttle.failed(&keys, Instant::now());
         return (StatusCode::FORBIDDEN, "wrong setup token").into_response();
     }
     if let Err(reason) = check_new_account(&form.name, &form.password) {
@@ -167,7 +227,7 @@ async fn setup(State(bridge): State<Bridge>, Json(form): Json<SetupForm>) -> Res
     let id = match bridge
         .inner
         .store
-        .create_account(NewAccount {
+        .create_first_admin(NewAccount {
             name: form.name.clone(),
             display_name: display_name.clone(),
             password_hash: hash,
@@ -175,7 +235,8 @@ async fn setup(State(bridge): State<Bridge>, Json(form): Json<SetupForm>) -> Res
         })
         .await
     {
-        Ok(id) => id,
+        Ok(Some(id)) => id,
+        Ok(None) => return already_set_up(),
         Err(error) => return internal(error),
     };
     let account = Account {
@@ -203,7 +264,15 @@ struct LoginForm {
     password: String,
 }
 
-async fn login(State(bridge): State<Bridge>, Json(form): Json<LoginForm>) -> Response {
+async fn login(State(bridge): State<Bridge>, extensions: Extensions, Json(form): Json<LoginForm>) -> Response {
+    let name = Key::name(&form.name);
+    let keys: Vec<Key> = [Some(name.clone()), address(&extensions)]
+        .into_iter()
+        .flatten()
+        .collect();
+    if let Some(refused) = throttled(&bridge, &keys) {
+        return refused;
+    }
     let found = match bridge.inner.store.find_login(&form.name).await {
         Ok(found) => found,
         Err(error) => return internal(error),
@@ -219,8 +288,14 @@ async fn login(State(bridge): State<Bridge>, Json(form): Json<LoginForm>) -> Res
         .await
         .unwrap_or(false);
     match account {
-        Some(account) if verified => bridge.sign_in(account).await,
-        _ => (StatusCode::UNAUTHORIZED, "wrong name or password").into_response(),
+        Some(account) if verified => {
+            bridge.inner.throttle.succeeded(&name);
+            bridge.sign_in(account).await
+        }
+        _ => {
+            bridge.inner.throttle.failed(&keys, Instant::now());
+            (StatusCode::UNAUTHORIZED, "wrong name or password").into_response()
+        }
     }
 }
 
