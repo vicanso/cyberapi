@@ -1,0 +1,327 @@
+# CyberAPI GPUI 架构设计
+
+> 状态：已定稿（决策见第 10 节）。实现过程中如有变化，同步更新本文。
+> 功能编号（`F<模块>.<序号>`）和问题编号（`#N`）引用自 [gpui-refactor-feature-analysis.md](./gpui-refactor-feature-analysis.md)。
+> 工程组织参照 `~/github/zedis`（ADR 9 / 10 / 17 / 18）。
+
+---
+
+## 1. 目标与约束
+
+1. 同一份代码同时构建**桌面版**和**浏览器版**。
+2. 桌面版的本地数据库用 **turso**，服务器端用 **sqlx**，同时支持 MySQL 和 PostgreSQL。
+3. 数据的保存统一做成 **trait**，以后切换实现时不影响上层代码。
+4. 参照 zedis 拆分 view，让 web 版和 GPUI 桌面版共用同一套 states 和 views。
+5. 浏览器版支持**多账号**：账号属于团队，项目属于团队，项目也可以单独授权给账号（第 9 节）。
+
+## 2. 总体思路
+
+### 2.1 沿用 zedis 的部分
+
+- **一份 GUI 代码，两个目标。** states 和 views 只写一份。浏览器版就是同一个 GUI crate 编译成 wasm，再去掉部分能力。`cyberapi-web` 保持轻薄，只负责装入实现，然后调用 `cyberapi_gui::launch`。
+- **默认代码是桌面代码，浏览器版做减法。** 规则见根目录 `CLAUDE.md` 的“一份代码，两个目标”。
+- **bridge 只帮浏览器做它做不到的事。** 浏览器受 CORS 限制，`Cookie`、`User-Agent`、`Host` 等是禁止设置的请求头，也拿不到 DNS、TCP、TLS 的分阶段耗时（F5.6），所以 HTTP 请求由 bridge 代发（D5）。请求的组装（变量注入、模板函数、body 编码）仍在 GUI 里完成，bridge 只发送已经组装好的请求。这和 zedis 的 bridge 只转发 RESP、不理解具体命令是同一个思路。
+
+### 2.2 和 zedis 有意不同的部分：统一的 Store trait
+
+zedis 的三层各用一种存储机制：
+
+| 层 | 机制 |
+|---|---|
+| 桌面 | redb，wasm 构建时用 `mem_store` 按 cfg 替换 import |
+| 浏览器 | `OnceLock<Arc<dyn Trait>>` 全局插槽 |
+| bridge | `Arc<dyn Store>` trait |
+
+CyberAPI 的数据就是业务本身（项目、接口树、变量、历史），所以只定义**一套 Store trait**，提供四个实现：
+
+| 实现 | 运行位置 | 底层 |
+|---|---|---|
+| `TursoStore` | 桌面 | turso，兼容旧版的 `my_db.db` |
+| `SqlStore` | bridge 服务器 | sqlx `AnyPool`，PostgreSQL / MySQL，按账号鉴权 |
+| `BridgeStore` | 浏览器 | 用 HTTP 调用 bridge 的 REST API，bridge 内部再调 `SqlStore` |
+| `MemoryStore` | 测试 | 内存，作为行为基准 |
+
+启动时把选好的实现装进 gpui Global。states 只依赖 trait，因此 **states 和 views 里不需要任何与存储有关的 `cfg`**。
+
+## 3. Crate 划分与依赖方向
+
+```
+crates/
+  cyberapi-core          L0  纯逻辑：model、tree（构建 / 过滤 / 移动 + 环检测）、template 解析、
+                             request_builder、response、curl、importers、拼音搜索、权限判定        [wasm ✓]
+  cyberapi-store         L1  Store trait、StoreError、MemoryStore、一致性测试套件                  [wasm ✓]
+  cyberapi-store-turso   L1  桌面实现（turso）                                                      [仅 native]
+  cyberapi-store-sql     L1  服务器实现（sqlx，PostgreSQL / MySQL，含账号 / 团队 / 授权）            [仅 native]
+  cyberapi-http          L1  HttpEngine trait（wasm ✓）+ native 引擎（hyper，按请求计时、
+                             drop 即取消、Cookie 注入与接收）                                         [引擎仅 native]
+  cyberapi-service       L2  用例：发送管线、导入、导出、备份。只依赖 trait                          [wasm ✓]
+  cyberapi-ui                通用控件，对应 zedis-ui：不使用 i18n，文案由调用方传入                  [wasm ✓]
+cyberapi-gui（根 crate） L3 states + L4 views；启动时装配实现
+cyberapi-web             wasm 入口：装入 BridgeStore / BridgeHttpEngine，调用 launch
+cyberapi-bridge          axum 服务：托管页面、登录、REST 存储 API、/v1/send 代发请求
+```
+
+依赖规则：
+
+- 方向为 `core ← store / http ← service ← gui ← web`，以及 `bridge → core + store-sql + http（native）+ service`。
+- bridge **永远不依赖 gui**，因为 gui 会链接窗口系统。
+- `crates/*` 和 GUI crate 不得引用 `cyberapi-web` 或 `cyberapi-bridge`。
+- `turso`、`sqlx`、`hyper` 只出现在各自 crate 的 native 依赖表中，wasm 构建在依赖层面就接触不到它们。
+
+## 4. 存储层
+
+### 4.1 Trait 的形状
+
+```rust
+// 需要 `Arc<dyn …>` 在运行时切换实现，而原生的 async fn in trait 不支持 dyn，
+// 所以统一返回 boxed future。
+pub type StoreFuture<T> = BoxFuture<'static, Result<T, StoreError>>;
+
+pub trait CollectionStore: Send + Sync {
+    /// 当前身份可见的项目，每项附带当前身份的角色（桌面版恒为 Manager）。
+    fn list(&self) -> StoreFuture<Vec<Collection>>;
+    /// `owner` 为归属团队；桌面版忽略，浏览器版为空时归入个人空间。
+    fn create(&self, input: NewCollection) -> StoreFuture<Collection>;
+    fn update(&self, collection: Collection) -> StoreFuture<Collection>;
+    /// 级联删除目录、接口、变量、授权、各账号的界面状态和响应历史（修正 #5）。
+    fn delete(&self, id: CollectionId) -> StoreFuture<()>;
+}
+
+pub trait TreeStore: Send + Sync {
+    /// 目录、接口和顶层顺序。
+    fn load(&self, collection: CollectionId) -> StoreFuture<TreeData>;
+    fn create(&self, collection: CollectionId, parent: Option<FolderId>, item: NewItem) -> StoreFuture<TreeItem>;
+    fn rename(&self, item: ItemId, name: String) -> StoreFuture<()>;
+    fn save_request(&self, api: ApiId, request: HttpRequest) -> StoreFuture<()>;
+    fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<()>;
+    fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removed>;
+    fn import(&self, collection: CollectionId, parent: Option<FolderId>, batch: ImportBatch) -> StoreFuture<()>;
+}
+
+// 其余 trait：
+// VariableStore  —— 按 (collection, category) 隔离的增删改查（M8），按 ID 对应（修正 #26）
+// HistoryStore   —— 每个接口保留 10 条响应历史（F7.9 / F7.11）
+// PrefStore      —— 应用设置、展开状态、置顶、活动 Tab、按项目保存的选中项（4.6 / 4.7，修正 #20）
+// CookieStore    —— 列表 / 新增 / 编辑 / 删除 / 清空（M9）
+// BackupStore    —— 导出快照，在一个事务内恢复（M13，修正 #8）
+
+/// 一个后端的全部 Store，构造方式：
+/// `turso::open(path)` / `SqlStore::connect(url)?.scoped(account)` / `BridgeStore::new(http)` / `memory()`
+#[derive(Clone)]
+pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
+```
+
+账号、团队、授权的管理只在浏览器版存在，单独定义 `DirectoryStore`（第 9.4 节），不放进 `Storage`。
+
+### 4.2 设计要点
+
+- **按意图建模，不暴露存储细节。** trait 提供的是 `move_item`，而不是“修改某个目录的 children”。实现内部的流程是：开启事务 → 读取快照（服务器端对相关行加 `FOR UPDATE`）→ 调用 `cyberapi_core::tree::plan_move`（纯函数，含环检测）→ 写回有变化的行。turso 和 sql 两个实现共用同一套算法，并借此修正以下问题：
+  - #4：移动时形成环
+  - #5：删除后留下悬空引用
+  - #7：导入时 ID 冲突（整体重新映射 ID）
+  - #9：导入项没有进入顶层排序
+- **树的存储表示（D3）。** 所有后端都使用“目录的 `children` 列表 + 项目的顶层顺序”，移动算法只在 L0 写一份。
+  - 桌面版沿用旧表的逗号分隔字符串。
+  - 服务器把 children 存为 JSON 列。
+  - **顶层顺序属于树结构**，由 `TreeStore` 负责，不再是界面状态：在服务器上由团队成员共享；在桌面版存入新表，首次迁移时从旧数据中补全。
+- **共享数据与个人数据分开。**
+  - **项目共享**（同一项目的成员看到同一份）：项目信息、目录、接口、变量、顶层顺序。
+  - **按账号区分**：展开状态、选中项、置顶、活动 Tab、响应历史、Cookie、应用设置。
+  - 响应历史可能包含 token，所以只有本人可见。
+- **参数和 future 都拥有所有权，生命周期为 `'static`。** 既能直接交给 gpui 的 `background_spawn`，也方便跨 HTTP 序列化。trait 的方法清单就是 bridge REST API 的清单，数量有界。
+- **身份在构造时绑定。** 服务器按登录账号构造 `SqlStore::scoped(account)`：
+  - trait 方法本身不带账号参数，所以桌面版和服务器使用完全相同的 trait。
+  - 每个方法内部按第 9 节判定权限，不满足时返回 `StoreError::Forbidden`。
+  - 桌面版是唯一的本地用户，不做鉴权。
+- **测试分两套。**
+  - **一致性测试套件**：参照 zedis 的 `store/conformance.rs`，同一组用例分别运行在 Memory、Turso、PostgreSQL、MySQL 上，保证切换实现后行为不变。
+  - **授权测试**：只运行在 `SqlStore` 上，覆盖第 9 节的每条规则。
+
+### 4.3 桌面：turso
+
+- 版本为 0.8.3（2026-10 的最新稳定版）。异步 API，不绑定特定运行时，在 gpui 的后台 executor 上运行。支持事务和批量执行。
+- 必须设置 **`default-features = false`**：turso 的默认 feature 会把 mimalloc 装成全局分配器。
+- 旧版的 5 张表（`api_collections`、`api_folders`、`api_settings`、`variables`、`versions`）**保持原结构**。Domain 层负责转换：`enabled` 的 `"1"` / `"0"` 转为 `bool`，字符串时间转为时间类型（#24）。
+- 原来存放在 localforage 中的数据（设置、展开状态、置顶、活动 Tab、响应历史）以及顶层顺序、Cookie 改为新表，通过 `versions` 表驱动的迁移来创建。
+- turso 仍在快速迭代，这也是坚持使用 trait 的原因之一：如果遇到兼容问题，可以增加一个 rusqlite 实现来兜底。
+- 兼容性测试使用一份真实旧库的**副本**，不修改原文件。
+
+#### 旧数据迁移（D2、D4）
+
+- **新的数据目录与 Tauri 版分开。** 目录名在实现时确定，但不能在大小写不敏感的文件系统上与 `com.bigtree.cyberapi` 撞名。
+- **首次启动时复制旧数据。** 条件是新目录里还没有数据库，并且在 Tauri 1 的 `app_data_dir`（macOS 为 `~/Library/Application Support/com.bigtree.cyberapi/`，其他平台按 Tauri 1 的规则取）找到 `my_db.db`。此时：
+  - **复制**数据库及其 `-wal` / `-shm` 文件，不移动、不修改原文件，所以旧版仍可继续使用。
+  - 把 `cookies.json` 导入 turso 的 Cookie 表。cookie_store 的 JSON 由迁移代码解析，只导入持久化 Cookie。
+  - 迁移完成后写一条记录，防止重复导入。
+- **localforage 中的数据不迁移**（见分析文档 4.6 / 8.3）。
+
+### 4.4 服务器：sqlx（照搬 zedis ADR 18）
+
+- sqlx 0.9，使用同一个 `AnyPool` 代码路径。每条语句写成 `Stmt { pg, my }` 两种 SQL，SQL 相同的用 `both!` 宏。方言由 `backend_name()` 识别。
+- 迁移按方言分目录：`migrations/postgres`、`migrations/mysql`，用 `sqlx::migrate!` 内嵌到二进制，只增不改。
+- MySQL 强制使用 `utf8mb4_bin`。
+- 用 `--store postgres://…` 或 `--store mysql://…` 在**运行时**选择后端，不做成 cargo feature。
+- 服务器的表结构**不需要兼容旧版**，可以使用正规的类型、外键和索引。表结构只需和 trait 的语义一致，与桌面版的表结构无关。
+
+## 5. HTTP 执行
+
+- 定义 `HttpEngine` trait，输入是组装完成的请求，输出是响应和耗时统计。drop 对应的 future 即取消请求，修正“中止只是丢弃结果”的问题（#2）。
+- **native 引擎**（`cyberapi-http`）：
+  - 基于 hyper，用自定义 connector 按请求计时，替代现在解析 tracing 日志的做法（#1）。
+  - 明确请求头优先级：请求自身 > 全局请求头 > 默认值（#3）。
+  - 对响应头做宽松解码（#11）。
+  - 桌面版在私有的 tokio 运行时上运行，bridge 直接在 axum 的 tokio 上运行。
+- **浏览器（D5）**：`BridgeHttpEngine` 把请求 POST 到 bridge 的 `/v1/send`，由 bridge 调用 native 引擎执行。
+  - 行为和桌面版一致。代价是请求从服务器发出，访问不到用户本机的 `localhost`。
+  - Cookie 使用发起请求的账号自己的 Cookie。
+  - 以后可以再增加可选的“浏览器直连”模式（受 CORS 限制）。
+  - bridge 需要限制可访问的目标地址，防止被当作 SSRF 跳板，例如默认拒绝内网和元数据地址，管理员可配置白名单。
+- **发送管线**（L2 `cyberapi-service`）：变量注入（F5.2）、body 处理（F5.3）、Query / Header 处理（F5.4）、模板函数（M6）、写入历史（F5.8）。两端共用同一份代码。
+- **模板函数的 IO 依赖**通过 trait 注入：`FileReader`、`FilePicker`、`ResponseLookup`、`VariableLookup`、`Clock`。浏览器版不提供 `readFile` 和 `openFile`。
+
+## 6. View 拆分（照 zedis）
+
+### 6.1 目录职责
+
+| 目录 | 内容 |
+|---|---|
+| `src/states/` | gpui Entity，是数据的唯一来源：`AppState`（Global）、`DashboardState`、`WorkspaceState`（每个项目一个，含树、置顶、变量）、`RequestEditorState`、`ResponseState`、`SendState`；浏览器版另有 `AccountState`（当前账号、团队、授权） |
+| `src/views/` | 只负责绘制和转发事件：dashboard、workspace（树 / 请求编辑 / 响应）、dialogs（设置、变量、Cookie、导入、缓存）；浏览器版另有账号与团队管理页 |
+| `src/components/` | 依赖应用状态或 i18n 的共享组件 |
+| `src/helpers/` | 快捷键、格式化、`this_build.rs` 能力查询等 |
+
+### 6.2 数据流
+
+1. view 调用 `state.update(cx, |s, cx| s.method(cx))`。
+2. state 用 `cx.spawn` + `background_spawn` 调用 service 或 Store。
+3. 回到主线程更新 state 的字段。
+4. `cx.emit(...)` + `cx.notify()`。
+5. 订阅了该 state 的 view 重新渲染。
+
+### 6.3 规则
+
+- **views 不直接访问 Store 或 HttpEngine，只能通过 states。** 参照 zedis 的 `tests/view_layering.rs`，用测试统计 `src/views` 中的违规调用来强制执行。
+- 原版需要放进 state 的逻辑：
+  - 请求编辑的防抖自动保存，以及“修改发生时的接口 ID 必须等于当前选中的 ID”这一保护（F4.11）
+  - 发送 / 中止状态机和 reqId 去重（F5.1）
+- **权限影响界面，但不由界面判定。** 项目附带当前身份的角色。界面按角色决定是否显示入口：只读时隐藏编辑、删除、拖拽和导入，请求编辑区只读。真正的拦截在 `SqlStore` 中完成。桌面版的角色恒为 Manager，所以这些判断在桌面版上不起作用，也不需要 `cfg`。
+
+### 6.4 平台差异
+
+- **能力查询**：`helpers/this_build.rs` 提供 `saves_files()`、`opens_files()`、`has_file_dialogs()`、`reads_clipboard_on_demand()`、`has_accounts()` 等。每个都是一对同签名、分别加 gate 的函数，桌面版在前，并有 native 测试固定桌面版的返回值。
+- **文件读写成对实现**：桌面版写入下载目录或弹出选择框，浏览器版用下载 / 上传代替。
+- **弹窗**：原版的设置、变量、Cookie 等本来就是弹窗，所以浏览器版不需要第二个窗口。
+- **浏览器版专有**：登录页（由 `index.html` 负责，和 zedis 一样）、账号与团队管理、项目授权、新建项目时选择归属团队、退出登录。这些放在一个 wasm 专用模块中，整体用一个 gate。
+- **浏览器版不提供的能力**：
+  - 模板函数 `readFile` / `openFile`
+  - Multipart 选择本地文件
+  - 附件自动保存（F7.5）：改为下载
+  - 窗口尺寸设置（F1.3）
+  - zip 备份与恢复（M13）
+
+### 6.5 i18n
+
+- rust-i18n + 懒加载，语言为 en / zh / uk（F15.2）。
+- 桌面版内嵌语言文件，浏览器版运行时 fetch。
+- GPUI 可以直接切换语言，不再需要“3 秒后重启”（F1.8）。
+
+## 7. 多人协作下的数据一致性（浏览器版）
+
+同一个项目可能被多人同时编辑，需要处理两件事：写入冲突，以及看到别人的修改。
+
+- **结构性修改在事务内完成。** 移动、新建、删除、导入都在服务器的事务中执行“读取快照 → `plan_move` → 写回”，并对涉及的目录行加 `FOR UPDATE`，不会丢失并发修改。
+- **接口内容采用后写覆盖。** `save_request` 只写单个接口，覆盖范围很小，所以采用后写覆盖。如果实际使用中冲突明显，再加版本号做乐观锁。
+- **项目修订号。** 每个项目维护一个修订号，任何共享数据变化都加一。页面打开某个项目时轮询修订号，参照 zedis 的 `pacing`：前台约 10 秒一次，后台标签页放慢；发生变化时重新加载树和变量。正在编辑的接口保留本地内容，不被覆盖。
+
+## 8. 实施步骤
+
+先打通一个**纵向切片**来验证 trait 设计，再横向补齐功能，避免 trait 全部写完才发现不适合通过 HTTP 传输。
+
+| 步 | 内容 | 验证方式 |
+|---|---|---|
+| 1 | 拆分 workspace；`cyberapi-core` 的 model 和 tree（构建 / 过滤 / 移动 + 环检测） | 单元测试固化现有行为 |
+| 2 | `cyberapi-store`：trait、错误类型、`MemoryStore`、一致性测试套件 | 套件在 Memory 上通过 |
+| 3 | `cyberapi-store-turso`：兼容旧表 + 新表迁移 + 旧数据复制（D2、D4） | 一致性测试；读取旧库副本 |
+| 4 | GUI 骨架：Storage Global、i18n、Dashboard（项目增删改、过滤、排序） | 桌面版可用 |
+| 5 | **纵向切片**：`cyberapi-store-sql` + `cyberapi-bridge` + `BridgeStore`，只覆盖“项目”。账号、团队、授权的**表结构**在这一步就定下来；只实现最小的账号能力（setup token 创建管理员、登录、自动创建个人空间），保证 `scoped(account)` 从一开始就生效 | 一致性测试跑 PostgreSQL / MySQL（docker）；授权测试；浏览器版 Dashboard 可用 |
+| 6 | Workspace：树、展开、拖拽移动、置顶、偏好设置；浏览器版的修订号轮询 | 两端 |
+| 7 | `cyberapi-http` 引擎 + 发送管线 + 请求编辑 + 响应展示 + 历史；bridge 的 `/v1/send` 和目标地址限制 | 两端 |
+| 8 | 变量、Cookie、设置弹窗 | 两端 |
+| 9 | 导入（cURL / Postman / Insomnia / Swagger / 自有格式）、导出、备份 | 用样例文件测试各 importer |
+| 10 | 浏览器版的账号与团队管理：邀请账号、团队增删和成员管理、项目授权管理界面 | 授权测试；两个账号的端到端测试 |
+| 11 | 部署打包：bridge 内嵌页面，产出发布包 | |
+
+## 9. 账号、团队与授权（浏览器版，D1）
+
+桌面版没有账号概念。本节只适用于 bridge 和浏览器版。
+
+### 9.1 实体
+
+| 实体 | 说明 |
+|---|---|
+| 账号（Account） | 用户名、Argon2id 密码哈希、显示名、是否为系统管理员、状态（启用 / 停用） |
+| 团队（Team） | 名称；分为**普通团队**和**个人空间** |
+| 团队成员（TeamMember） | `(team, account, role)`，团队角色为 `Owner` / `Admin` / `Member` |
+| 项目（Collection） | 必须归属一个团队（`owner_team`） |
+| 项目授权（Grant） | `(collection, grantee, role)`，`grantee` 可以是**账号**（单独授权）或**团队**（把项目授权给另一个团队） |
+
+- **个人空间是一种特殊团队。** 每个账号注册时自动创建一个个人空间，只有本人一个成员，不能添加其他成员。这样“项目归属团队”在任何情况下都成立，个人项目不需要第二套规则。
+- **团队管理权限。** 任何账号都可以创建普通团队，创建者成为 `Owner`。系统管理员负责管理账号（邀请、停用、重置密码），不会因此自动获得所有项目的访问权限。
+
+### 9.2 项目角色
+
+| 角色 | 能做什么 |
+|---|---|
+| `Viewer` | 查看树、接口、变量；**可以发送请求**（历史记在自己名下）；可以复制、导出 |
+| `Editor` | 在 Viewer 基础上：编辑树（新建、重命名、移动、删除、导入）、编辑接口、编辑变量 |
+| `Manager` | 在 Editor 基础上：修改项目信息、删除项目、管理授权、转移项目归属 |
+
+### 9.3 有效角色的计算
+
+某个账号对某个项目的有效角色，取以下各项中的**最高者**：
+
+1. 在项目所属团队中的身份：团队 `Owner` / `Admin` → `Manager`；团队 `Member` → `Editor`。
+2. 直接授予该账号的项目授权。
+3. 授予该账号所在团队的项目授权。
+
+什么都没有就是不可见：`list` 不返回这个项目，直接访问时返回 `NotFound`，不暴露项目是否存在。计算逻辑是 `cyberapi-core` 中的纯函数，单独测试；`SqlStore` 先查出上面三类事实，再调用这个函数得出角色。
+
+### 9.4 `DirectoryStore`
+
+账号、团队、授权的管理定义成单独的 trait，只有 `SqlStore` 实现、`BridgeStore` 转发，桌面版不装配：
+
+```rust
+pub trait DirectoryStore: Send + Sync {
+    fn me(&self) -> StoreFuture<Me>;                                   // 当前账号及所在团队
+    fn teams(&self) -> StoreFuture<Vec<Team>>;
+    fn create_team(&self, name: String) -> StoreFuture<Team>;
+    fn set_member(&self, team: TeamId, account: AccountId, role: Option<TeamRole>) -> StoreFuture<()>;
+    fn grants(&self, collection: CollectionId) -> StoreFuture<Vec<Grant>>;
+    fn set_grant(&self, collection: CollectionId, grantee: Grantee, role: Option<CollectionRole>) -> StoreFuture<()>;
+    fn transfer(&self, collection: CollectionId, team: TeamId) -> StoreFuture<()>;
+    // 账号的邀请、停用、重置密码只对系统管理员开放
+}
+```
+
+### 9.5 登录与开通
+
+参照 zedis ADR 17：
+
+- 首个管理员通过一次性 setup token 创建。
+- 之后的账号由管理员邀请。
+- 登录后颁发 `HttpOnly` + `SameSite=Strict` 的 Cookie，页面与 API 同源。
+- 登录页由 `index.html` 负责，登录成功后再加载 wasm。
+
+## 10. 已定决策
+
+| # | 问题 | 结论 |
+|---|---|---|
+| D1 | 浏览器版的定位 | 多账号。账号属于团队，项目属于团队，也可以单独授权给账号或其他团队（第 9 节） |
+| D2 | 桌面版的旧数据 | 首次启动时把 Tauri 版的数据**复制**到新的数据目录，不与旧版共用文件（4.3 节） |
+| D3 | 树结构的存储表示 | 所有后端都使用“目录 `children` 列表 + 顶层顺序”，移动算法只在 L0 写一份；服务器把 children 存为 JSON 列（4.2 节） |
+| D4 | Cookie 的存放位置 | 桌面版首次导入 `cookies.json` 后存入 turso 表；浏览器版存在服务器，按账号隔离 |
+| D5 | 浏览器版发送 HTTP 的方式 | 全部由 bridge 代发；以后可以增加可选的“浏览器直连”模式（第 5 节） |
+| D6 | 项目角色的粒度 | 三级：`Viewer` / `Editor` / `Manager`（9.2 节）；需要更细的粒度时再扩展 |
+| D7 | 团队 `Member` 的默认项目角色 | `Editor`（9.3 节） |
+| D8 | 变量是否区分个人值 | 不区分，变量随项目共享，同项目成员都能看到（4.2 节） |
+| D9 | 接口内容的并发写入 | 后写覆盖，不加乐观锁；冲突明显时再加版本号（第 7 节） |
