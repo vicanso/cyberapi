@@ -53,7 +53,7 @@ impl CyberApi {
             // A new list each visit: what changed in a project shows in its
             // "last modified" on the way back.
             Route::Dashboard => Page::Dashboard(cx.new(|cx| DashboardView::new(window, cx))),
-            Route::Workspace(collection) => Page::Workspace(cx.new(|_| WorkspaceView::new(collection))),
+            Route::Workspace(collection) => Page::Workspace(cx.new(|cx| WorkspaceView::new(collection, window, cx))),
         }
     }
 
@@ -62,7 +62,7 @@ impl CyberApi {
         let route = AppStore::global(cx).state().read(cx).route().clone();
         let current = match (&self.page, &route) {
             (Page::Dashboard(_), Route::Dashboard) => true,
-            (Page::Workspace(view), Route::Workspace(collection)) => view.read(cx).collection().id == collection.id,
+            (Page::Workspace(view), Route::Workspace(collection)) => view.read(cx).collection_id() == &collection.id,
             _ => false,
         };
         if !current {

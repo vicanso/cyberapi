@@ -97,6 +97,7 @@ fn open_desktop_storage() -> Result<(Storage, AppPrefs), String> {
 pub fn launch(cx: &mut App, storage: Storage, prefs: AppPrefs) {
     i18n::apply(prefs.language.as_deref());
     AppStore::init(storage, prefs, cx);
+    views::bind_workspace_keys(cx);
     open_main_window(cx, |window, cx| cx.new(|cx| CyberApi::new(window, cx)));
 }
 
