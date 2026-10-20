@@ -1,0 +1,727 @@
+//! One account's view of the store (§9.3): what it may see and change.
+//!
+//! Every call first works out the account's role on the project it names.
+//! None at all is "not found" — whether the project exists is not the
+//! account's to learn — and too little is "forbidden". A change to a
+//! project's tree takes the project's row first ([`sql::COLLECTION_LOCK`]),
+//! so two changes cannot plan from the same lists.
+
+use crate::sql::{self, Dialect};
+use crate::{SqlStore, db, new_id, now, rows};
+use cyberapi_core::access::{CollectionRole, TeamRole, effective_role};
+use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
+use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
+use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
+use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
+use cyberapi_store::rules::required_name;
+use cyberapi_store::{
+    CollectionEdit, CollectionStore, Entity, Inserted, NewCollection, NewVariable, PrefStore, StoreError, StoreFuture,
+    TreeStore, VariableEdit, VariableStore,
+};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use sqlx::AnyConnection;
+use sqlx::AnyPool;
+use std::collections::HashMap;
+use std::future::Future;
+
+pub(crate) fn workspace_scope(collection: &CollectionId) -> String {
+    format!("workspace/{collection}")
+}
+
+const APP_SCOPE: &str = "app";
+
+#[derive(Clone)]
+pub(crate) struct Scoped {
+    pool: AnyPool,
+    dialect: Dialect,
+    account: AccountId,
+}
+
+/// The ways an account reaches a project, as `(kind, role)` rows of
+/// [`sql::ROLE_OF`] / [`sql::COLLECTIONS_VISIBLE`], folded into one role.
+fn fold_roles<'a>(reached: impl IntoIterator<Item = (&'a str, &'a str)>) -> Option<CollectionRole> {
+    let mut team: Option<TeamRole> = None;
+    let mut grants = Vec::new();
+    for (kind, role) in reached {
+        if kind == "team" {
+            team = team.max(TeamRole::parse(role));
+        } else if let Some(role) = CollectionRole::parse(role) {
+            grants.push(role);
+        }
+    }
+    effective_role(team, grants)
+}
+
+impl Scoped {
+    pub(crate) fn new(store: SqlStore, account: AccountId) -> Self {
+        Self {
+            pool: store.pool,
+            dialect: store.dialect,
+            account,
+        }
+    }
+
+    fn run<T, F>(&self, work: impl FnOnce(Self) -> F) -> StoreFuture<T>
+    where
+        F: Future<Output = Result<T, StoreError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        Box::pin(work(self.clone()))
+    }
+
+    fn account(&self) -> String {
+        self.account.as_str().to_string()
+    }
+
+    async fn role_of(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+    ) -> Result<Option<CollectionRole>, StoreError> {
+        let (id, account) = (collection.as_str().to_string(), self.account());
+        let found = sqlx::query(self.dialect.sql(sql::ROLE_OF))
+            .bind(id.clone())
+            .bind(account.clone())
+            .bind(id.clone())
+            .bind(account.clone())
+            .bind(id)
+            .bind(account)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(db)?;
+        let reached: Vec<(String, String)> = found
+            .iter()
+            .map(|row| Ok((rows::text(row, 0)?, rows::text(row, 1)?)))
+            .collect::<Result<_, StoreError>>()?;
+        Ok(fold_roles(
+            reached.iter().map(|(kind, role)| (kind.as_str(), role.as_str())),
+        ))
+    }
+
+    /// The account's role on the project, when it is at least `needed`.
+    async fn require(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+        needed: CollectionRole,
+    ) -> Result<CollectionRole, StoreError> {
+        match self.role_of(conn, collection).await? {
+            None => Err(StoreError::not_found(Entity::Collection, collection)),
+            Some(role) if role < needed => Err(StoreError::Forbidden { needed }),
+            Some(role) => Ok(role),
+        }
+    }
+
+    async fn lock(&self, conn: &mut AnyConnection, collection: &CollectionId) -> Result<(), StoreError> {
+        sqlx::query(self.dialect.sql(sql::COLLECTION_LOCK))
+            .bind(collection.as_str().to_string())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn touch(&self, conn: &mut AnyConnection, collection: &CollectionId) -> Result<(), StoreError> {
+        sqlx::query(self.dialect.sql(sql::COLLECTION_TOUCH))
+            .bind(now().to_rfc3339())
+            .bind(collection.as_str().to_string())
+            .execute(&mut *conn)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn get_collection(
+        &self,
+        conn: &mut AnyConnection,
+        id: &CollectionId,
+        role: CollectionRole,
+    ) -> Result<Collection, StoreError> {
+        let row = sqlx::query(self.dialect.sql(sql::COLLECTION_GET))
+            .bind(id.as_str().to_string())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(db)?
+            .ok_or_else(|| StoreError::not_found(Entity::Collection, id))?;
+        let mut collection = rows::collection(&row, 0)?;
+        collection.role = role;
+        Ok(collection)
+    }
+
+    async fn tree_data(&self, conn: &mut AnyConnection, collection: &CollectionId) -> Result<TreeData, StoreError> {
+        let id = collection.as_str().to_string();
+        let folders = sqlx::query(self.dialect.sql(sql::FOLDERS_OF))
+            .bind(id.clone())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(db)?
+            .iter()
+            .map(rows::folder)
+            .collect::<Result<_, _>>()?;
+        let apis = sqlx::query(self.dialect.sql(sql::APIS_OF))
+            .bind(id.clone())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(db)?
+            .iter()
+            .map(rows::api)
+            .collect::<Result<_, _>>()?;
+        let top_order = match sqlx::query(self.dialect.sql(sql::TOP_ORDER_OF))
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(db)?
+        {
+            Some(row) => serde_json::from_str(&rows::text(&row, 0)?).unwrap_or_default(),
+            None => Vec::new(),
+        };
+        Ok(TreeData {
+            folders,
+            apis,
+            top_order,
+        })
+    }
+
+    async fn write_change(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+        change: &TreeChange,
+    ) -> Result<(), StoreError> {
+        for (id, children) in &change.folders {
+            sqlx::query(self.dialect.sql(sql::FOLDER_SET_CHILDREN))
+                .bind(serde_json::to_string(children).map_err(db)?)
+                .bind(id.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+        }
+        if let Some(top_order) = &change.top_order {
+            sqlx::query(self.dialect.pick(&sql::TOP_ORDER_UPSERT))
+                .bind(collection.as_str().to_string())
+                .bind(serde_json::to_string(top_order).map_err(db)?)
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+        }
+        Ok(())
+    }
+
+    async fn read_doc<T: DeserializeOwned + Default>(
+        &self,
+        conn: &mut AnyConnection,
+        scope: &str,
+    ) -> Result<T, StoreError> {
+        let row = sqlx::query(self.dialect.sql(sql::PREF_GET))
+            .bind(self.account())
+            .bind(scope.to_string())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(db)?;
+        Ok(match row {
+            Some(row) => serde_json::from_str(&rows::text(&row, 0)?).unwrap_or_default(),
+            None => T::default(),
+        })
+    }
+
+    async fn write_doc(&self, conn: &mut AnyConnection, scope: &str, doc: &impl Serialize) -> Result<(), StoreError> {
+        sqlx::query(self.dialect.pick(&sql::PREF_UPSERT))
+            .bind(self.account())
+            .bind(scope.to_string())
+            .bind(serde_json::to_string(doc).map_err(db)?)
+            .execute(&mut *conn)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    /// Creates a folder or an API: the shared steps around the insert.
+    async fn insert_item<T>(
+        &self,
+        collection: CollectionId,
+        parent: Option<ItemId>,
+        insert: impl AsyncFnOnce(&mut AnyConnection, ItemId) -> Result<T, StoreError>,
+    ) -> Result<Inserted<T>, StoreError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        self.require(&mut tx, &collection, CollectionRole::Editor).await?;
+        self.lock(&mut tx, &collection).await?;
+        let id = ItemId::new(new_id());
+        let change = self
+            .tree_data(&mut tx, &collection)
+            .await?
+            .plan_insert(&id, parent.as_ref())?;
+        let item = insert(&mut tx, id).await?;
+        self.write_change(&mut tx, &collection, &change).await?;
+        self.touch(&mut tx, &collection).await?;
+        tx.commit().await.map_err(db)?;
+        Ok(Inserted { item, change })
+    }
+}
+
+impl CollectionStore for Scoped {
+    fn list(&self) -> StoreFuture<Vec<Collection>> {
+        self.run(|this| async move {
+            let account = this.account();
+            let found = sqlx::query(this.dialect.sql(sql::COLLECTIONS_VISIBLE))
+                .bind(account.clone())
+                .bind(account.clone())
+                .bind(account)
+                .fetch_all(&this.pool)
+                .await
+                .map_err(db)?;
+            // One row per way the project is reached; fold them, keeping the
+            // order projects were made in.
+            let mut order: Vec<CollectionId> = Vec::new();
+            let mut reached: HashMap<CollectionId, (Collection, Vec<(String, String)>)> = HashMap::new();
+            for row in &found {
+                let collection = rows::collection(row, 1)?;
+                let way = (rows::text(row, 7)?, rows::text(row, 8)?);
+                let entry = reached.entry(collection.id.clone()).or_insert_with(|| {
+                    order.push(collection.id.clone());
+                    (collection, Vec::new())
+                });
+                entry.1.push(way);
+            }
+            Ok(order
+                .into_iter()
+                .filter_map(|id| reached.remove(&id))
+                .filter_map(|(mut collection, ways)| {
+                    collection.role = fold_roles(ways.iter().map(|(k, r)| (k.as_str(), r.as_str())))?;
+                    Some(collection)
+                })
+                .collect())
+        })
+    }
+
+    fn get(&self, id: CollectionId) -> StoreFuture<Collection> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            let role = this.require(&mut conn, &id, CollectionRole::Viewer).await?;
+            this.get_collection(&mut conn, &id, role).await
+        })
+    }
+
+    /// In the given team, which the account must be in, or else in the
+    /// account's own space.
+    fn create(&self, input: NewCollection) -> StoreFuture<Collection> {
+        self.run(|this| async move {
+            let name = required_name(&input.name)?;
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            let team = match input.owner {
+                Some(team) => team,
+                None => {
+                    let row = sqlx::query(this.dialect.sql(sql::PERSONAL_TEAM))
+                        .bind(this.account())
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(db)?
+                        .ok_or_else(|| StoreError::not_found(Entity::Team, "personal space"))?;
+                    TeamId::new(rows::text(&row, 0)?)
+                }
+            };
+            let team_role = sqlx::query(this.dialect.sql(sql::TEAM_ROLE))
+                .bind(team.as_str().to_string())
+                .bind(this.account())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?
+                .map(|row| rows::text(&row, 0))
+                .transpose()?
+                .and_then(|role| TeamRole::parse(&role))
+                .ok_or_else(|| StoreError::not_found(Entity::Team, &team))?;
+            let at = now();
+            let collection = Collection {
+                id: CollectionId::new(new_id()),
+                name,
+                description: input.description,
+                created_at: at,
+                updated_at: at,
+                owner: Some(team.clone()),
+                role: team_role.on_team_projects(),
+            };
+            sqlx::query(this.dialect.sql(sql::COLLECTION_INSERT))
+                .bind(collection.id.as_str().to_string())
+                .bind(team.as_str().to_string())
+                .bind(collection.name.clone())
+                .bind(collection.description.clone())
+                .bind(at.to_rfc3339())
+                .bind(at.to_rfc3339())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            tx.commit().await.map_err(db)?;
+            Ok(collection)
+        })
+    }
+
+    fn update(&self, id: CollectionId, edit: CollectionEdit) -> StoreFuture<Collection> {
+        self.run(|this| async move {
+            let name = required_name(&edit.name)?;
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            let role = this.require(&mut tx, &id, CollectionRole::Manager).await?;
+            sqlx::query(this.dialect.sql(sql::COLLECTION_UPDATE))
+                .bind(name)
+                .bind(edit.description)
+                .bind(now().to_rfc3339())
+                .bind(id.as_str().to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            let collection = this.get_collection(&mut tx, &id, role).await?;
+            tx.commit().await.map_err(db)?;
+            Ok(collection)
+        })
+    }
+
+    /// The database takes the project's tree, variables and grants with it;
+    /// every account's workspace state goes here.
+    fn delete(&self, id: CollectionId) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &id, CollectionRole::Manager).await?;
+            sqlx::query(this.dialect.sql(sql::PREFS_DELETE_SCOPE))
+                .bind(workspace_scope(&id))
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            sqlx::query(this.dialect.sql(sql::COLLECTION_DELETE))
+                .bind(id.as_str().to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            tx.commit().await.map_err(db)
+        })
+    }
+}
+
+impl TreeStore for Scoped {
+    fn load(&self, collection: CollectionId) -> StoreFuture<TreeData> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            this.tree_data(&mut conn, &collection).await
+        })
+    }
+
+    fn create_folder(
+        &self,
+        collection: CollectionId,
+        parent: Option<ItemId>,
+        name: String,
+    ) -> StoreFuture<Inserted<Folder>> {
+        self.run(|this| async move {
+            let name = required_name(&name)?;
+            let dialect = this.dialect;
+            let owner = collection.clone();
+            this.insert_item(collection, parent, async move |conn: &mut AnyConnection, id: ItemId| {
+                let at = now();
+                sqlx::query(dialect.sql(sql::FOLDER_INSERT))
+                    .bind(id.as_str().to_string())
+                    .bind(owner.as_str().to_string())
+                    .bind(name.clone())
+                    .bind("[]")
+                    .bind(at.to_rfc3339())
+                    .bind(at.to_rfc3339())
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(db)?;
+                Ok(Folder {
+                    id,
+                    collection: owner,
+                    name,
+                    children: Vec::new(),
+                    created_at: at,
+                    updated_at: at,
+                })
+            })
+            .await
+        })
+    }
+
+    fn create_api(
+        &self,
+        collection: CollectionId,
+        parent: Option<ItemId>,
+        name: String,
+    ) -> StoreFuture<Inserted<ApiSetting>> {
+        self.run(|this| async move {
+            let name = required_name(&name)?;
+            let dialect = this.dialect;
+            let owner = collection.clone();
+            this.insert_item(collection, parent, async move |conn: &mut AnyConnection, id: ItemId| {
+                let at = now();
+                let request = HttpRequest::default();
+                sqlx::query(dialect.sql(sql::API_INSERT))
+                    .bind(id.as_str().to_string())
+                    .bind(owner.as_str().to_string())
+                    .bind(name.clone())
+                    .bind("http")
+                    .bind(request.to_json())
+                    .bind(at.to_rfc3339())
+                    .bind(at.to_rfc3339())
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(db)?;
+                Ok(ApiSetting {
+                    id,
+                    collection: owner,
+                    name,
+                    category: ApiCategory::Http,
+                    request,
+                    created_at: at,
+                    updated_at: at,
+                })
+            })
+            .await
+        })
+    }
+
+    fn rename(&self, collection: CollectionId, item: ItemId, name: String) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let name = required_name(&name)?;
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            let at = now().to_rfc3339();
+            let mut renamed = 0;
+            for statement in [sql::FOLDER_RENAME, sql::API_RENAME] {
+                renamed += sqlx::query(this.dialect.sql(statement))
+                    .bind(name.clone())
+                    .bind(at.clone())
+                    .bind(item.as_str().to_string())
+                    .bind(collection.as_str().to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?
+                    .rows_affected();
+            }
+            if renamed == 0 {
+                return Err(StoreError::not_found(Entity::Item, &item));
+            }
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)
+        })
+    }
+
+    fn save_request(&self, collection: CollectionId, api: ItemId, request: HttpRequest) -> StoreFuture<ApiSetting> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            let saved = sqlx::query(this.dialect.sql(sql::API_SAVE))
+                .bind(request.to_json())
+                .bind(now().to_rfc3339())
+                .bind(api.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            if saved.rows_affected() == 0 {
+                return Err(StoreError::not_found(Entity::Api, &api));
+            }
+            let row = sqlx::query(this.dialect.sql(sql::API_GET))
+                .bind(api.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+            let found = rows::api(&row)?;
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)?;
+            Ok(found)
+        })
+    }
+
+    fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            this.lock(&mut tx, &collection).await?;
+            let change = this.tree_data(&mut tx, &collection).await?.plan_move(&item, &to)?;
+            this.write_change(&mut tx, &collection, &change).await?;
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)?;
+            Ok(change)
+        })
+    }
+
+    fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            this.lock(&mut tx, &collection).await?;
+            let removal = this.tree_data(&mut tx, &collection).await?.plan_remove(&item)?;
+            for (statement, ids) in [(sql::FOLDER_DELETE, &removal.folders), (sql::API_DELETE, &removal.apis)] {
+                for id in ids {
+                    sqlx::query(this.dialect.sql(statement))
+                        .bind(id.as_str().to_string())
+                        .bind(collection.as_str().to_string())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db)?;
+                }
+            }
+            this.write_change(&mut tx, &collection, &removal.change).await?;
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)?;
+            Ok(removal)
+        })
+    }
+}
+
+impl VariableStore for Scoped {
+    /// Sorted here, not by the database: its collation (PostgreSQL's is the
+    /// locale's) would order names differently from every other backend.
+    fn list(&self, collection: CollectionId, category: VariableCategory) -> StoreFuture<Vec<Variable>> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            let found = sqlx::query(this.dialect.sql(sql::VARIABLES_OF))
+                .bind(collection.as_str().to_string())
+                .bind(category.as_str())
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(db)?;
+            let mut variables: Vec<Variable> = found
+                .iter()
+                .map(rows::variable)
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect();
+            variables.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(variables)
+        })
+    }
+
+    fn create(&self, input: NewVariable) -> StoreFuture<Variable> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &input.collection, CollectionRole::Editor).await?;
+            let at = now();
+            let variable = Variable {
+                id: VariableId::new(new_id()),
+                collection: input.collection,
+                category: input.category,
+                name: input.name,
+                value: input.value,
+                enabled: input.enabled,
+                created_at: at,
+                updated_at: at,
+            };
+            sqlx::query(this.dialect.sql(sql::VARIABLE_INSERT))
+                .bind(variable.id.as_str().to_string())
+                .bind(variable.collection.as_str().to_string())
+                .bind(variable.category.as_str())
+                .bind(variable.name.clone())
+                .bind(variable.value.clone())
+                .bind(i32::from(variable.enabled))
+                .bind(at.to_rfc3339())
+                .bind(at.to_rfc3339())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            this.touch(&mut tx, &variable.collection).await?;
+            tx.commit().await.map_err(db)?;
+            Ok(variable)
+        })
+    }
+
+    fn update(&self, collection: CollectionId, id: VariableId, edit: VariableEdit) -> StoreFuture<Variable> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            let updated = sqlx::query(this.dialect.sql(sql::VARIABLE_UPDATE))
+                .bind(edit.name)
+                .bind(edit.value)
+                .bind(i32::from(edit.enabled))
+                .bind(now().to_rfc3339())
+                .bind(id.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            if updated.rows_affected() == 0 {
+                return Err(StoreError::not_found(Entity::Variable, &id));
+            }
+            let row = sqlx::query(this.dialect.sql(sql::VARIABLE_GET))
+                .bind(id.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+            let variable = rows::variable(&row)?.ok_or_else(|| StoreError::not_found(Entity::Variable, &id))?;
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)?;
+            Ok(variable)
+        })
+    }
+
+    fn delete(&self, collection: CollectionId, ids: Vec<VariableId>) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            for id in &ids {
+                sqlx::query(this.dialect.sql(sql::VARIABLE_DELETE))
+                    .bind(id.as_str().to_string())
+                    .bind(collection.as_str().to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)
+        })
+    }
+}
+
+impl PrefStore for Scoped {
+    fn app(&self) -> StoreFuture<AppPrefs> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.read_doc(&mut conn, APP_SCOPE).await
+        })
+    }
+
+    fn set_app(&self, prefs: AppPrefs) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.write_doc(&mut conn, APP_SCOPE, &prefs).await
+        })
+    }
+
+    fn workspace(&self, collection: CollectionId) -> StoreFuture<WorkspacePrefs> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            this.read_doc(&mut conn, &workspace_scope(&collection)).await
+        })
+    }
+
+    fn set_workspace(&self, collection: CollectionId, prefs: WorkspacePrefs) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            this.write_doc(&mut conn, &workspace_scope(&collection), &prefs).await
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ways_in_fold_to_the_strongest() {
+        assert_eq!(fold_roles([]), None);
+        assert_eq!(fold_roles([("team", "member")]), Some(CollectionRole::Editor));
+        assert_eq!(
+            fold_roles([("team", "member"), ("grant", "manager")]),
+            Some(CollectionRole::Manager)
+        );
+        assert_eq!(
+            fold_roles([("grant", "viewer"), ("grant", "bogus")]),
+            Some(CollectionRole::Viewer)
+        );
+    }
+}

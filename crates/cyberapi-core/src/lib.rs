@@ -13,5 +13,5 @@ pub mod search;
 mod time;
 pub mod tree;
 
-pub use id::{CollectionId, ItemId, TeamId, VariableId};
+pub use id::{AccountId, CollectionId, ItemId, TeamId, VariableId};
 pub use time::Timestamp;

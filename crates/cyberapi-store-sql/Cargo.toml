@@ -1,0 +1,32 @@
+[package]
+name = "cyberapi-store-sql"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The bridge's store: CyberAPI's data for many accounts in PostgreSQL or MySQL."
+publish = false
+
+[features]
+# `conformance::Probe` for this store, for the shared suite.
+conformance = ["cyberapi-store/conformance"]
+
+# Server only: the bridge links this crate, the GUI never does.
+[dependencies]
+chrono = { workspace = true, features = ["clock"] }
+cyberapi-core = { workspace = true }
+cyberapi-store = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+
+[dev-dependencies]
+cyberapi-store-sql = { workspace = true, features = ["conformance"] }
+tokio = { workspace = true }
+ulid = { workspace = true }
+
+[lints.clippy]
+unwrap_used = "deny"

@@ -65,4 +65,6 @@ pub enum Entity {
     /// A folder or an API.
     Item,
     Variable,
+    /// A team the reader is not in (the browser build's).
+    Team,
 }

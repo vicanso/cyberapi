@@ -69,3 +69,7 @@ string_id!(
     /// Every project there belongs to one; the desktop has none.
     TeamId
 );
+string_id!(
+    /// An account of the browser build. The desktop has none.
+    AccountId
+);

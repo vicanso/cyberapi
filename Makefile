@@ -1,4 +1,4 @@
-.PHONY: dev debug check fmt lint test release check-web web-bundle web-release web-serve
+.PHONY: dev debug check fmt lint test release check-web web-bundle web-release web-serve db-up db-down test-sql
 
 # The desktop app.
 dev:
@@ -23,6 +23,22 @@ test:
 
 release:
 	cargo build --release
+
+# The SQL store against real databases: `make db-up` starts PostgreSQL and
+# MySQL in local containers (Apple's `container`), `make test-sql` runs the
+# shared suite and the access rules on both. Without the variables those
+# tests skip, so `make test` needs no database.
+PG_URL ?= postgres://cyberapi:cyberapi@127.0.0.1:55432/cyberapi
+MYSQL_URL ?= mysql://cyberapi:cyberapi@127.0.0.1:53306/cyberapi
+
+db-up:
+	scripts/db.sh up
+
+db-down:
+	scripts/db.sh down
+
+test-sql:
+	CYBERAPI_TEST_POSTGRES=$(PG_URL) CYBERAPI_TEST_MYSQL=$(MYSQL_URL) cargo test -p cyberapi-store-sql
 
 # The browser's gate, which sees nothing of the desktop (and `lint` sees
 # nothing of wasm). Runs from cyberapi-web/, whose rust-toolchain.toml selects

@@ -45,6 +45,7 @@ pub fn store_error(error: &StoreError) -> String {
             Entity::Collection => t!("errors.collection_not_found").into(),
             Entity::Folder | Entity::Api | Entity::Item => t!("errors.item_not_found").into(),
             Entity::Variable => t!("errors.variable_not_found").into(),
+            Entity::Team => t!("errors.team_not_found").into(),
         },
         StoreError::Forbidden { .. } => t!("errors.forbidden").into(),
         StoreError::NameRequired => t!("errors.name_required").into(),

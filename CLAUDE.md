@@ -32,6 +32,11 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
   - `copy_legacy_data` 在首次启动时把 Tauri 版的数据**复制**过来。turso 打开文件时会把它切到 WAL 模式，所以绝不能直接打开 Tauri 版的原文件。
   - 用真实旧库测试时，用一份**副本**跑 ignored 测试 `opens_a_real_tauri_database`（`CYBERAPI_LEGACY_DB=副本路径`）。
   - turso 依赖要设 `default-features = false`，否则它会把 mimalloc 装成全局分配器。
+- `crates/cyberapi-store-sql`：bridge 的后端 `SqlStore`（仅 native），sqlx `Any` 同一套代码跑 PostgreSQL / MySQL（`docs/architecture.md` §4.4）。
+  - `SqlStore::scoped(account)` 返回该账号视角的 `Storage`：每次调用先按 §9.3 算出角色（`cyberapi_core::access::effective_role`），看不到的项目一律 `NotFound`，角色不够返回 `Forbidden`。账号、团队、成员、授权的管理方法是 `SqlStore` 的固有方法（`create_account` / `create_team` / `set_member` / `set_grant`）。
+  - SQL 只写 PostgreSQL 的 `$1, $2…` 一份（`src/sql.rs`），MySQL 运行时换成 `?`；**每条语句的占位符必须从 1 开始按出现顺序编号**，测试 `placeholders_count_up_from_one_in_order` 会检查，新语句要加进它的 `ALL` 列表。两边写法不同的（upsert）写成 `Pair`。
+  - 迁移在 `migrations/{postgres,mysql}/`，两套逐列对应，只追加；MySQL 的每条语句都要能重复执行（它的 DDL 不在事务里）。名称类排序在 Rust 里做，不依赖数据库的 collation。
+  - 本地测试库：`make db-up` 用 Apple 的 `container` 起 PostgreSQL（127.0.0.1:55432）和 MySQL（127.0.0.1:53306），`make test-sql` 跑一致性测试和授权测试；没设置 `CYBERAPI_TEST_POSTGRES` / `CYBERAPI_TEST_MYSQL` 时这些测试跳过。改动 SQL 后端时必须跑 `make test-sql`。
 - `cyberapi-web`：浏览器入口。把 GUI crate 编译成 wasm，只负责平台、UI 字体和资源来源；通过 `cyberapi_gui::launch` 进入应用。有自己的 `rust-toolchain.toml`（nightly + wasm32），必须在该目录下构建。`www/index.html` 拉取 `fonts/IBMPlexSans.ttf` 和 wasm 后调用 `run(origin, ui_font)`。
 - UI 只依赖 `gpui-kit` 一个 crate：GPUI 是 `gpui_kit::*`，组件是 `gpui_kit::component`，图标是 `gpui_kit::assets`，平台是 `gpui_kit::platform`（wasm 上还有 `gpui_kit::web`）。不要再单独引入 `gpui-pre-*`。
 
