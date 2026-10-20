@@ -1,4 +1,4 @@
-.PHONY: dev debug check fmt lint test release check-web web-bundle web-release web-serve db-up db-down test-sql bridge
+.PHONY: dev debug check fmt lint test release desktop-dist check-web web-bundle web-release web-serve web-dist db-up db-down test-sql bridge
 
 # The desktop app.
 dev:
@@ -23,6 +23,11 @@ test:
 
 release:
 	cargo build --release
+
+# The desktop package for this host (cargo-bundle): a .dmg on macOS, a .deb
+# and a tarball on Linux, a zip on Windows, in <target dir>/desktop-dist.
+desktop-dist:
+	scripts/desktop-dist.sh
 
 # The SQL store against real databases: `make db-up` starts PostgreSQL and
 # MySQL in local containers (Apple's `container`), `make test-sql` runs the
@@ -65,3 +70,9 @@ web-release:
 
 web-serve:
 	python3 -m http.server 7381 --bind 127.0.0.1 --directory cyberapi-web/www
+
+# The browser build's deployment: the release bridge with the release page
+# compiled in, as one tarball in <target dir>/web-dist. Build on the platform
+# it will run on.
+web-dist:
+	scripts/web-dist.sh

@@ -22,6 +22,12 @@ cyberapi-store-sql = { workspace = true }
 getrandom = "0.4.3"
 hex = "0.4.3"
 ipnet = "2.12.2"
+mime_guess = { workspace = true }
+# The page, compiled into a release binary (`static_files::WebBuild`) so a
+# deployment is one file. No `debug-embed`: a debug bridge reads
+# `cyberapi-web/www` from disk, and `make web-bundle` refreshes the page
+# without rebuilding it.
+rust-embed = { version = "8.13.0", default-features = false, features = ["include-exclude"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.11.1"

@@ -148,6 +148,24 @@ toml = { workspace = true }
 [lints.clippy]
 unwrap_used = "deny"
 
+# The desktop package (`make desktop-dist`, cargo-bundle): the Tauri app's
+# identifier and icons, so the new app takes the old one's place.
+[package.metadata.bundle]
+name = "Cyber API"
+identifier = "com.bigtree.cyberapi"
+icon = [
+    "resources/icons/32x32.png",
+    "resources/icons/128x128.png",
+    "resources/icons/128x128@2x.png",
+    "resources/icons/icon.icns",
+    "resources/icons/icon.ico",
+]
+category = "public.app-category.developer-tools"
+short_description = "A fast, native HTTP API client"
+copyright = "Copyright © 2022-2026 Tree Xie"
+osx_minimum_system_version = "11.0"
+deb_depends = ["libxkbcommon0", "libwayland-client0", "libvulkan1"]
+
 [profile.release]
 codegen-units = 1
 lto = true

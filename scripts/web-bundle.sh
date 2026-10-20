@@ -8,7 +8,9 @@
 #                                    wasm-opt
 #   scripts/web-bundle.sh --release  the shipped form: `--profile web-release`
 #                                    (fat LTO, one codegen unit, stripped),
-#                                    then `wasm-opt -Oz`
+#                                    then `wasm-opt -Oz`, and the module also
+#                                    gzipped, which the bridge sends to a
+#                                    browser that accepts gzip
 #
 # wasm-pack runs from cyberapi-web/ so rustup reads the `rust-toolchain.toml`
 # there and selects the nightly the browser backend needs.
@@ -79,6 +81,11 @@ if [ "$mode" = release ]; then
   wasm-opt -Oz --strip-debug --strip-producers "${features[@]}" -o "$wasm.opt" "$wasm"
   mv "$wasm.opt" "$wasm"
   echo "wasm-opt -Oz: $(mib "$before") -> $(mib "$(size "$wasm")")"
+  gzip -9 -k -f "$wasm"
+  echo "gzip: $(mib "$(size "$wasm.gz")")"
+else
+  # A gzip left by a release build would be sent in place of this module.
+  rm -f "$wasm.gz"
 fi
 
 echo "wasm ($mode): $(mib "$(size "$wasm")")"

@@ -1,7 +1,7 @@
 //! `cyberapi-bridge`: serve CyberAPI's browser build.
 //!
 //! ```text
-//! CYBERAPI_BRIDGE_STORE=postgres://… cyberapi-bridge --listen 127.0.0.1:7380 --www cyberapi-web/www
+//! CYBERAPI_BRIDGE_STORE=postgres://… cyberapi-bridge --listen 127.0.0.1:7380
 //! ```
 
 use clap::Parser;
@@ -24,9 +24,10 @@ struct Args {
     /// rather than a flag, which anyone who can list processes would read.
     #[arg(long, env = "CYBERAPI_BRIDGE_STORE", hide_env_values = true)]
     store: String,
-    /// The page's files: `cyberapi-web/www` after `make web-bundle`.
-    #[arg(long, default_value = "cyberapi-web/www")]
-    www: PathBuf,
+    /// Serve this directory as the page instead of the one compiled in
+    /// (`cyberapi-web/www` after `make web-bundle`).
+    #[arg(long)]
+    www: Option<PathBuf>,
     /// The token the first administrator is made with. Random, and logged,
     /// when not given; it counts only while the bridge has no account.
     #[arg(long, env = "CYBERAPI_BRIDGE_SETUP_TOKEN", hide_env_values = true)]
@@ -68,11 +69,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bridge = Bridge::new(store, Arc::new(engine), setup_token, !args.insecure_cookie);
     bridge.spawn_housekeeping();
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
-    tracing::info!(listen = %args.listen, www = %args.www.display(), "cyberapi-bridge serving");
+    match &args.www {
+        Some(www) => tracing::info!(listen = %args.listen, www = %www.display(), "cyberapi-bridge serving"),
+        None => tracing::info!(listen = %args.listen, "cyberapi-bridge serving, with the page built in"),
+    }
     // The peer's address, for counting failed sign-ins by where they come
     // from. Behind a proxy that is the proxy's.
     let app = bridge
-        .router(Some(args.www))
+        .router(args.www)
         .into_make_service_with_connect_info::<SocketAddr>();
     axum::serve(listener, app).await?;
     Ok(())

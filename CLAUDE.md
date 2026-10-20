@@ -8,13 +8,14 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 - 桌面版检查：`make lint`（`cargo fmt --check` + `cargo clippy --all-targets --all -- --deny=warnings`），完成任何改动前必须通过
 - 浏览器版检查：`make check-web`（在 `cyberapi-web/` 下用 nightly 对 wasm32 做 `cargo check`）
 - 浏览器版构建：`make web-bundle`（开发）/ `make web-release`（发布，需要 `wasm-opt`），产物在 `cyberapi-web/www/wasm/`
-- 浏览器版预览：`make web-serve`，打开 http://127.0.0.1:7380/
+- 浏览器版预览：`make web-serve`（只有页面，没有后端）；带后端：`make db-up && make bridge`，打开 http://127.0.0.1:7380/
+- 发布包：`make desktop-dist`（cargo-bundle；macOS 出 ad-hoc 签名的 `.app` 和 `.dmg`，Linux 出 `.deb` 和 tarball，Windows 出 zip）；`make web-dist`（先 `web-bundle.sh --release`，再编译把页面内嵌进去的 release bridge，打成一个 tarball）。产物在 cargo target 目录下的 `desktop-dist/`、`web-dist/`
 
 改动涉及任何带 target 条件编译的文件时，`make lint` 和 `make check-web` **都要跑**：前者看不到 wasm，后者看不到桌面。
 
 ## Workspace layout
 
-- 根 crate `cyberapi-gui`：库 `cyberapi_gui`（`src/lib.rs`，全部应用代码）+ 只调用 `cyberapi_gui::run()` 的 bin `cyberapi`（`src/main.rs`）。`default-members = ["."]`，裸 `cargo build` 只构建桌面版；`members = ["crates/*", "cyberapi-web"]`。
+- 根 crate `cyberapi-gui`：库 `cyberapi_gui`（`src/lib.rs`，全部应用代码）+ 只调用 `cyberapi_gui::run()` 的 bin `cyberapi`（`src/main.rs`）。`default-members = ["."]`，裸 `cargo build` 只构建桌面版；`members = ["crates/*", "cyberapi-bridge", "cyberapi-web"]`。
   - 入口：桌面版的 `run()` 先打开数据库（`open_desktop_storage`：确定数据目录、复制旧数据、打开 `TursoStore`、读取设置），再调用 `launch`；数据库打不开时调用 `launch_failed` 显示原因。浏览器版由 `cyberapi-web` 准备 `Storage` 后同样调用 `launch`。
   - `src/states/`：gpui entity。`AppStore`（Global，持有 `Storage` 和 `Entity<AppState>`）、`AppState`（路由、设置）、`DashboardState` 等。只有 states 调用 store，统一通过 `states::run_store`（后台执行，结果回到 entity）。修改失败时发事件，由 view 弹通知。
     - 树这类答案是“绝对值”的修改（“这个目录的 children 现在是 …”）用 `states::run_serial` 排队：一次一个，按发起顺序执行和应用，避免并行请求乱序导致副本和存储不一致。
@@ -55,7 +56,7 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 - `crates/cyberapi-http`：发送请求的接缝。`HttpEngine` trait（能编译到 wasm）收 `cyberapi_core::send::PreparedRequest`，回 `Exchange` 或 `SendError`，drop future 即取消请求。`NativeEngine`（仅 native）在 hyper 的连接级 API 上每个请求新建连接，DNS / TCP / TLS 用各自计时，流本身记录写完请求和收到首字节的时间（#1）；不跟随重定向，解压 gzip / br / deflate。它跑在 tokio 运行时上（bridge 用自己的，桌面版另起一个）。`TargetPolicy` 决定能连哪些地址：桌面 `Anywhere`，bridge `PublicOnly`（在连接时检查解析后的地址，默认拒绝内网、回环、链路本地等，管理员可放行网段）。测试在本机起 hyper 服务器；访问外网的 HTTPS 测试是 ignored。
 - `crates/cyberapi-service`：L2 用例，只依赖 trait，能编译到 wasm。`send`：读项目的变量、按模板函数的需要取其他接口的最新响应，`prepare`，交给 `HttpEngine`，结果写入历史（F5.8）。准备失败（读文件失败、URL 无效）不发送也不记历史；发出后失败的请求带着错误原因写入历史（F5.7）。`openFile` 要的文件由调用方事先问读者（`send::needs(...).picks_file`）。`backup`：`BackupStore` 的快照打成 zip（deflate，与旧版互通）和从 zip 恢复；不是备份的文件不会改动任何数据。
 - 发送前的纯逻辑在 core：`template`（模板函数，调用方先按 `needs` 准备好数据再求值）、`send::prepare`（环境变量、全局请求头、Basic Auth、body 编码；请求自身的 header 优先，#3）、`response`（历史记录条目与展示规则）、`curl`。
-- `cyberapi-bridge`：浏览器版的服务端（axum，仅 native），不依赖 GUI crate。负责初始化管理员（setup token，只在没有任何账号时有效；`create_first_admin` 保证并发时只建一个）、登录 / 登出（Argon2id，会话 cookie `HttpOnly; SameSite=Strict`，库里只存 token 的 sha256；失败次数按用户名 / 地址限流，`throttle.rs`，要用 `into_make_service_with_connect_info` 才按地址计数；过期会话每小时清理）、`/v1/store`（在登录账号的 `scoped` 存储上执行）、`/v1/send`（替浏览器版发送已准备好的请求，`NativeEngine` + `TargetPolicy::PublicOnly`，`--allow-target` / `CYBERAPI_BRIDGE_ALLOW_TARGETS` 放行网段；`make bridge` 放行本机），并托管 `cyberapi-web/www`。测试每次新建一个 PG 数据库（`tests/bridge.rs`），其中一条通过内存 `Transport` 直接调用 Router，对 `BridgeStore` 跑一致性测试。本地运行：`make db-up && make web-bundle && make bridge`，打开 http://127.0.0.1:7380/，初始化 token 是 `dev`。
+- `cyberapi-bridge`：浏览器版的服务端（axum，仅 native），不依赖 GUI crate。负责初始化管理员（setup token，只在没有任何账号时有效；`create_first_admin` 保证并发时只建一个）、登录 / 登出（Argon2id，会话 cookie `HttpOnly; SameSite=Strict`，库里只存 token 的 sha256；失败次数按用户名 / 地址限流，`throttle.rs`，要用 `into_make_service_with_connect_info` 才按地址计数；过期会话每小时清理）、`/v1/store`（在登录账号的 `scoped` 存储上执行）、`/v1/send`（替浏览器版发送已准备好的请求，`NativeEngine` + `TargetPolicy::PublicOnly`，`--allow-target` / `CYBERAPI_BRIDGE_ALLOW_TARGETS` 放行网段；`make bridge` 放行本机），并托管页面：release 构建用 `rust-embed` 把 `cyberapi-web/www` 编进二进制（`build.rs` 在模块缺失时拒绝构建；发布版的 `.wasm.gz` 发给接受 gzip 的浏览器；ETag + `no-cache`），debug 构建每次从磁盘读，`--www <dir>` 改用某个目录（`static_files.rs`）。测试每次新建一个 PG 数据库（`tests/bridge.rs`），其中一条通过内存 `Transport` 直接调用 Router，对 `BridgeStore` 跑一致性测试。本地运行：`make db-up && make web-bundle && make bridge`，打开 http://127.0.0.1:7380/，初始化 token 是 `dev`。
 - 浏览器版的登录在 `www/index.html` 里完成：先查 `/v1/session`，未登录时按 `/v1/setup` 显示初始化或登录表单，登录后取 `prefsApp` 再加载 wasm，调用 `run(origin, ui_font, prefs)`。`cyberapi-web` 用 `FetchTransport`（gpui 的 fetch 客户端）创建 `BridgeStore`，收到 401 时刷新页面重新登录；`assets.rs` 是从 zedis 移植的图标重绘观察器。
 - `cyberapi-web`：浏览器入口。把 GUI crate 编译成 wasm，只负责平台、UI 字体和资源来源；通过 `cyberapi_gui::launch` 进入应用。有自己的 `rust-toolchain.toml`（nightly + wasm32），必须在该目录下构建。`www/index.html` 拉取 `fonts/IBMPlexSans.ttf` 和 wasm 后调用 `run(origin, ui_font)`。
 - UI 只依赖 `gpui-kit` 一个 crate：GPUI 是 `gpui_kit::*`，组件是 `gpui_kit::component`，图标是 `gpui_kit::assets`，平台是 `gpui_kit::platform`（wasm 上还有 `gpui_kit::web`）。不要再单独引入 `gpui-pre-*`。

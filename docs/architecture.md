@@ -279,7 +279,7 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 | 8 | 变量、Cookie、设置弹窗 | 两端 |
 | 9 | 导入（cURL / Postman / Insomnia / Swagger / 自有格式）、导出、备份 | 用样例文件测试各 importer |
 | 10 | 浏览器版的账号与团队管理：邀请账号、团队增删和成员管理、项目授权管理界面 | 授权测试；两个账号的端到端测试 |
-| 11 | 部署打包：bridge 内嵌页面，产出发布包 | |
+| 11 | 部署打包：bridge 内嵌页面，产出发布包 | `make web-dist` / `make desktop-dist` |
 
 第 5 步落地时的具体做法（与上表的设想一致，补充细节）：
 
@@ -302,6 +302,11 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 - **历史记录**：`HistoryStore`，读者自己的（bridge 上按账号隔离），每个接口最近 10 条；写入不算项目修改。
 - **bridge 的目标地址限制**：`TargetPolicy::PublicOnly` 在连接时检查解析后的地址（防 DNS rebinding），默认拒绝回环、私网、链路本地（含云元数据地址）、CGNAT、基准测试段（198.18.0.0/15，fake-IP 代理会把域名解析到这里）、IPv6 ULA，IPv6 中嵌入的 IPv4 按 IPv4 判断；`--allow-target` 放行网段。在使用 fake-IP 模式代理的机器上开发时需要放行 198.18.0.0/15。
 - **暂未做**：Cookie 的注入和保存（第 8 步，`CookieStore`）、附件自动保存（F7.5）、响应体的大文件 / 流式处理。
+
+第 11 步落地时的做法：
+
+- **bridge 是浏览器版的全部部署。** release 构建用 `rust-embed` 把 `cyberapi-web/www` 编进二进制，页面和 API 同源（登录 cookie 保持 `SameSite=Strict`）。`scripts/web-bundle.sh --release` 同时生成 `.wasm.gz`，bridge 按 `Accept-Encoding` 发送；每个文件带内容哈希的 ETag 并要求重新验证（模块的文件名不随版本变）。debug 构建从磁盘读，开发时 `make web-bundle` 后无需重编 bridge。`make web-dist` 打出 `bridge + LICENSE + README.txt` 的 tarball。
+- **桌面版用 cargo-bundle 出包**，沿用 Tauri 版的 identifier（`com.bigtree.cyberapi`）和图标（`resources/icons/`）。macOS 的 `.app` 是 ad-hoc 签名，分发给他人还需要 Developer ID 签名和公证；Linux 出 `.deb`，Windows 目前只是 zip。包都在构建所在的平台上产出，交叉编译和 CI 未做。
 
 ## 9. 账号、团队与授权（浏览器版，D1）
 

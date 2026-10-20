@@ -1741,6 +1741,8 @@ dependencies = [
  "hex",
  "http-body-util",
  "ipnet",
+ "mime_guess",
+ "rust-embed",
  "serde",
  "serde_json",
  "sha2 0.11.1",

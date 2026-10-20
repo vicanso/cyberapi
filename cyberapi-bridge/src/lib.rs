@@ -11,7 +11,7 @@
 //! | `GET /v1/session` | who is signed in, or 401 |
 //! | `POST /v1/store` | one store call (`cyberapi_store_bridge::Call`) |
 //! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5) |
-//! | anything else | the page's files |
+//! | anything else | the page's files ([`static_files`]) |
 //!
 //! Failed sign-ins and setup tries are counted ([`throttle`]) and turned
 //! away with 429 once there are too many; serve the router with
@@ -19,6 +19,7 @@
 //! by address too.
 
 mod auth;
+pub mod static_files;
 mod throttle;
 
 use auth::{SESSION_COOKIE, hash_password, hash_token, new_token, session_cookie, signed_in, verify_password};
@@ -99,7 +100,8 @@ impl Bridge {
         &self.inner.store
     }
 
-    /// The routes, with the page's files from `www` behind them.
+    /// The routes, with the page behind them: the one compiled in, or the
+    /// files in `www`.
     pub fn router(&self, www: Option<PathBuf>) -> Router {
         let api = Router::new()
             .route("/v1/setup", get(setup_needed).post(setup))
@@ -112,7 +114,7 @@ impl Bridge {
             .with_state(self.clone());
         match www {
             Some(dir) => api.fallback_service(ServeDir::new(dir)),
-            None => api,
+            None => api.fallback(static_files::serve),
         }
     }
 
