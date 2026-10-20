@@ -1,0 +1,81 @@
+[package]
+name = "cyberapi-gui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "A fast, native HTTP API client built with Rust and GPUI."
+keywords = ["http", "api", "rest", "gpui", "gui"]
+categories = ["development-tools"]
+readme = "README.md"
+
+[lib]
+# The application as a library, so the browser build (`cyberapi-web`) can
+# reach the views. A `[[bin]]`-only crate cannot be depended on.
+name = "cyberapi_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cyberapi"
+path = "src/main.rs"
+
+[workspace]
+members = ["cyberapi-web"]
+# A bare `cargo build` builds the desktop binary only. `cyberapi-web` is built
+# from its own directory, where its `rust-toolchain.toml` selects the nightly
+# its wasm target needs.
+default-members = ["."]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+authors = ["Tree Xie <tree.xie@outlook.com>"]
+license = "Apache-2.0"
+homepage = "https://github.com/vicanso/cyberapi"
+repository = "https://github.com/vicanso/cyberapi"
+
+[workspace.dependencies]
+# One dependency for the UI: gpui-kit re-exports GPUI (`gpui_kit::*`), the
+# platform (`gpui_kit::platform`, and `gpui_kit::web` on wasm), the component
+# library (`gpui_kit::component`) and its icons (`gpui_kit::assets`). It pins
+# the `gpui-pre-*` family itself, so there is no second version to keep in step.
+gpui-kit = "0.8.0"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+
+# A crate in plain `[dependencies]` must build for `wasm32-unknown-unknown`;
+# a native-only one goes in the desktop table below.
+[dependencies]
+gpui-kit = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+# The terminal logger. A tab logs to the browser console (`cyberapi-web`).
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+panic = "abort"
+
+# The browser bundle's iteration build (`make web-bundle`): thin LTO over 16
+# units for build time, `opt-level = "s"` for download size, and the name
+# section kept so a panic's stack in the console shows Rust function names.
+[profile.web]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+opt-level = "s"
+strip = "none"
+
+# The shipped browser bundle (`make web-release`): the release profile with
+# `opt-level = "s"` throughout; `wasm-opt -Oz` runs after it in the script.
+[profile.web-release]
+inherits = "release"
+opt-level = "s"

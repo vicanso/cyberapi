@@ -1,0 +1,12 @@
+# Nightly, and only in this directory.
+#
+# GPUI's browser backend (`gpui-pre-web`) reaches `wasm_thread` and its
+# `#![feature(...)]`, as upstream's own web crates do. The rest of the repo
+# stays on the stable channel pinned at the root. Build this crate from *this*
+# directory so rustup reads the file:
+#
+#   cd cyberapi-web && cargo build --target wasm32-unknown-unknown
+[toolchain]
+channel = "nightly"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

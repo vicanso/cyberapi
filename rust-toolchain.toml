@@ -1,0 +1,5 @@
+# The toolchain the desktop app builds with. `cyberapi-web/` has its own
+# file selecting nightly, which the browser backend needs.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]

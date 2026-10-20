@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cyber API</title>
+<!-- Named here, or the browser asks for `/favicon.ico` at the site root. -->
+<link rel="icon" type="image/png" href="./icon.png" />
+<style>
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #fff; }
+  @media (prefers-color-scheme: dark) { html, body { background: #0a0a0a; } }
+  body { font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; }
+  canvas { display: block; }
+  #loading { display: flex; height: 100%; align-items: center; justify-content: center; opacity: .6; }
+  #loading.bad { color: #cf222e; opacity: 1; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="loading">Loading…</div>
+<script type="module">
+  // Every address is relative to the page, so it can be served under a base
+  // path. The wasm builds the kit's icon URLs on `root` too.
+  const root = new URL(".", location.href).href.replace(/\/$/, "");
+  const url = (path) => `${root}/${path}`;
+  const loading = document.getElementById("loading");
+
+  try {
+    // The UI font rides in with the call: the web text system has no fonts
+    // of its own, and the first frame measures text.
+    const [mod, font] = await Promise.all([
+      import(url("wasm/cyberapi_web.js")),
+      fetch(url("fonts/IBMPlexSans.ttf")).then((r) => {
+        if (!r.ok) throw new Error(`font: HTTP ${r.status}`);
+        return r.arrayBuffer();
+      }),
+    ]);
+    await mod.default({ module_or_path: url("wasm/cyberapi_web_bg.wasm") });
+    loading.remove();
+    mod.run(root, new Uint8Array(font));
+  } catch (e) {
+    loading.textContent = `Cyber API could not start: ${e}`;
+    loading.className = "bad";
+  }
+</script>
+</body>
+</html>
