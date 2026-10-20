@@ -1,0 +1,27 @@
+[package]
+name = "cyberapi-service"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CyberAPI's use cases over the store and engine traits: sending a request."
+publish = false
+
+# Only traits below this crate, so it builds for wasm32 as well: the browser
+# build runs the same pipeline, with the bridge's store and engine.
+[dependencies]
+cyberapi-core = { workspace = true }
+cyberapi-http = { workspace = true }
+cyberapi-store = { workspace = true }
+serde_json = { workspace = true }
+snafu = { workspace = true }
+tracing = { workspace = true }
+web-time = "1.1.0"
+
+[dev-dependencies]
+pollster = { workspace = true }
+pretty_assertions = { workspace = true }
+
+[lints.clippy]
+unwrap_used = "deny"

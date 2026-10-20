@@ -49,6 +49,7 @@ cyberapi-store-turso = { path = "crates/cyberapi-store-turso" }
 cyberapi-store-sql = { path = "crates/cyberapi-store-sql" }
 cyberapi-store-bridge = { path = "crates/cyberapi-store-bridge" }
 cyberapi-http = { path = "crates/cyberapi-http" }
+cyberapi-service = { path = "crates/cyberapi-service" }
 async-lock = "3.4.2"
 base64 = "0.22.1"
 # Parsing and formatting only: what "now" is comes from the caller, so no

@@ -1814,6 +1814,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyberapi-service"
+version = "0.2.0"
+dependencies = [
+ "cyberapi-core",
+ "cyberapi-http",
+ "cyberapi-store",
+ "pollster 1.0.1",
+ "pretty_assertions",
+ "serde_json",
+ "snafu",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
 name = "cyberapi-store"
 version = "0.2.0"
 dependencies = [
