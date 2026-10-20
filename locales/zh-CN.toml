@@ -1,0 +1,50 @@
+[common]
+cancel = "取消"
+create = "创建"
+save = "保存"
+edit = "编辑"
+delete = "删除"
+retry = "重试"
+name = "名称"
+description = "描述"
+optional = "选填"
+
+[startup]
+failed_title = "Cyber API 无法打开数据"
+failed_hint = "没有改动任何数据。下面是出错的详细信息。"
+
+[errors]
+collection_not_found = "该项目已不存在。"
+item_not_found = "该条目已不存在。"
+variable_not_found = "该变量已不存在。"
+forbidden = "你没有执行此操作的权限。"
+name_required = "请输入名称。"
+tree = "不能这样移动：%{reason}"
+backend = "存储出错：%{message}"
+
+[dashboard]
+title = "项目"
+search = "搜索项目（支持拼音）"
+new = "新建项目"
+sort_last_modified = "最近修改"
+sort_name_asc = "名称升序"
+sort_name_desc = "名称降序"
+sort_oldest_first = "创建时间（最早）"
+sort_newest_first = "创建时间（最新）"
+loading = "正在加载项目…"
+load_failed = "无法加载项目"
+empty_title = "还没有项目"
+empty_description = "项目用来集中管理一组接口，以及它们的目录和环境变量。"
+no_match = "没有与“%{keyword}”匹配的项目"
+updated = "更新于 %{time}"
+more = "%{name} 的更多操作"
+create_title = "新建项目"
+edit_title = "编辑项目"
+name_placeholder = "例如：订单服务"
+delete_title = "删除“%{name}”？"
+delete_description = "项目中的接口、目录和变量会一起删除，且无法恢复。"
+
+[workspace]
+back = "项目"
+pending_title = "工作区正在开发中"
+pending_description = "接下来会加入接口树、请求编辑和响应展示。"

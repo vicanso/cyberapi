@@ -273,7 +273,7 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 | 2 | `cyberapi-store`：trait、错误类型、`MemoryStore`、一致性测试套件 | 套件在 Memory 上通过 |
 | 3 | `cyberapi-store-turso`：兼容旧表 + 新表迁移 + 旧数据复制（D2、D4） | 一致性测试；读取旧库副本 |
 | 4 | GUI 骨架：Storage Global、i18n、Dashboard（项目增删改、过滤、排序） | 桌面版可用 |
-| 5 | **纵向切片**：`cyberapi-store-sql` + `cyberapi-bridge` + `BridgeStore`，只覆盖“项目”。账号、团队、授权的**表结构**在这一步就定下来；只实现最小的账号能力（setup token 创建管理员、登录、自动创建个人空间），保证 `scoped(account)` 从一开始就生效 | 一致性测试跑 PostgreSQL / MySQL（docker）；授权测试；浏览器版 Dashboard 可用 |
+| 5 | **纵向切片**：`cyberapi-store-sql` + `cyberapi-bridge` + `BridgeStore`，只覆盖“项目”。账号、团队、授权的**表结构**在这一步就定下来；只实现最小的账号能力（setup token 创建管理员、登录、自动创建个人空间），保证 `scoped(account)` 从一开始就生效。浏览器版补上 zedis 的图标重绘观察器（`repaint_when_icons_land`）：图标是异步下载的，下载完成后没有东西触发重绘，第 4 步时空状态的图标就没显示出来 | 一致性测试跑 PostgreSQL / MySQL（docker）；授权测试；浏览器版 Dashboard 可用 |
 | 6 | Workspace：树、展开、拖拽移动、置顶、偏好设置；浏览器版的修订号轮询 | 两端 |
 | 7 | `cyberapi-http` 引擎 + 发送管线 + 请求编辑 + 响应展示 + 历史；bridge 的 `/v1/send` 和目标地址限制 | 两端 |
 | 8 | 变量、Cookie、设置弹窗 | 两端 |

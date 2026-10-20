@@ -2,14 +2,27 @@
 //!
 //! The desktop binary next to this file only calls [`run`]. The split exists
 //! so the views can be compiled into the browser build as well: `cyberapi-web`
-//! sets up the page's platform itself and enters through [`launch`], which is
-//! everything both builds share.
+//! sets up the page's platform and its stores itself and enters through
+//! [`launch`], which is everything both builds share.
 
+// The app's strings. The current locale is rust-i18n's, shared with
+// gpui-component, and set by `i18n::apply`.
+rust_i18n::i18n!("locales", fallback = "en");
+
+mod i18n;
+#[cfg(not(target_family = "wasm"))]
+mod paths;
 mod root;
+pub mod states;
+mod views;
 
 use crate::root::CyberApi;
+use crate::states::AppStore;
+use crate::views::StartupError;
+use cyberapi_core::prefs::AppPrefs;
+use cyberapi_store::Storage;
 use gpui_kit::component::TitleBar;
-use gpui_kit::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui_kit::{App, AppContext as _, Bounds, Entity, Render, Window, WindowBounds, WindowOptions, px, size};
 use tracing::error;
 
 pub const APP_NAME: &str = "Cyber API";
@@ -25,11 +38,18 @@ gpui_kit::actions!(cyberapi, [Quit, Hide, HideOthers, ShowAll]);
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     init_logger();
     tracing::info!(version = VERSION, "cyberapi launch");
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx| {
-        // Must come before anything that uses a component.
-        gpui_kit::init(cx);
-        launch(cx);
-    });
+    // Before the platform starts: the first window needs the settings.
+    let opened = open_desktop_storage();
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(move |cx| {
+            // Must come before anything that uses a component.
+            gpui_kit::init(cx);
+            match opened {
+                Ok((storage, prefs)) => launch(cx, storage, prefs),
+                Err(message) => launch_failed(cx, message),
+            }
+        });
     Ok(())
 }
 
@@ -42,10 +62,51 @@ fn init_logger() {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-/// Open the main window. Both builds call this once the platform is up and
-/// `gpui_kit::init` has run: the desktop from [`run`], the browser from
-/// `cyberapi-web`.
-pub fn launch(cx: &mut App) {
+/// The data directory's database, with the Tauri app's data copied in on the
+/// first launch (D2), and the reader's settings.
+#[cfg(not(target_family = "wasm"))]
+fn open_desktop_storage() -> Result<(Storage, AppPrefs), String> {
+    use cyberapi_store_turso::{TursoStore, copy_legacy_data};
+    use tracing::{info, warn};
+
+    let dir = paths::data_dir().ok_or("this system names no data directory")?;
+    let database = dir.join(paths::DATABASE_FILE);
+    if let Some(legacy) = paths::legacy_dir() {
+        match copy_legacy_data(&legacy, &database) {
+            Ok(copied) if copied.database => info!(from = %legacy.display(), "copied the Tauri app's data"),
+            Ok(_) => {}
+            // Starting empty beats not starting: the old data stays where it
+            // is, and the next launch tries again.
+            Err(e) => warn!(error = %e, from = %legacy.display(), "the Tauri app's data could not be copied"),
+        }
+    }
+    info!(database = %database.display(), "opening the store");
+    let store = pollster::block_on(TursoStore::open(&database))
+        .map_err(|e| format!("{}: {}", database.display(), i18n::store_error(&e)))?;
+    let storage = store.storage();
+    let prefs = pollster::block_on(storage.prefs().app()).unwrap_or_else(|e| {
+        warn!(error = %e, "the settings could not be read; using the defaults");
+        AppPrefs::default()
+    });
+    Ok((storage, prefs))
+}
+
+/// Opens the main window on `storage`. Both builds call this once the
+/// platform is up and `gpui_kit::init` has run: the desktop from [`run`],
+/// the browser from `cyberapi-web`.
+pub fn launch(cx: &mut App, storage: Storage, prefs: AppPrefs) {
+    i18n::apply(prefs.language.as_deref());
+    AppStore::init(storage, prefs, cx);
+    open_main_window(cx, |window, cx| cx.new(|cx| CyberApi::new(window, cx)));
+}
+
+/// A window that says why the data could not be opened, in place of the app.
+pub fn launch_failed(cx: &mut App, message: String) {
+    i18n::apply(None);
+    open_main_window(cx, move |_, cx| cx.new(|_| StartupError::new(message)));
+}
+
+fn open_main_window<V: Render>(cx: &mut App, build: impl FnOnce(&mut Window, &mut App) -> Entity<V>) {
     #[cfg(target_os = "macos")]
     install_mac_menus(cx);
     // Closing the window hides the app on macOS (F1.4); elsewhere the last
@@ -70,7 +131,7 @@ pub fn launch(cx: &mut App) {
             // frame has painted, so the default white backing never shows.
             window.on_next_frame(|window, _cx| window.activate_window());
         }
-        cx.new(|cx| CyberApi::new(window, cx))
+        build(window, cx)
     });
     if let Err(e) = opened {
         error!(error = %e, "the main window could not be opened");

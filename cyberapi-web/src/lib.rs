@@ -10,6 +10,9 @@
 //! nightly the browser backend needs), then serve it with `make web-serve`.
 
 #[cfg(target_family = "wasm")]
+mod store;
+
+#[cfg(target_family = "wasm")]
 use gpui_kit::web::{CanvasFontFallback, WebBackendPreference, WebPlatform};
 #[cfg(target_family = "wasm")]
 use gpui_kit::{Application, ApplicationHandle, TextRenderingMode};
@@ -82,7 +85,8 @@ pub fn run(origin: String, ui_font: Vec<u8>) {
         // text in a CJK line would get colour fringes the characters beside
         // it do not. A page does not know the screen's subpixel order anyway.
         cx.set_text_rendering_mode(TextRenderingMode::Grayscale);
-        cyberapi_gui::launch(cx);
+        let storage = cyberapi_store::Storage::from_backend(Arc::new(store::UnavailableStore));
+        cyberapi_gui::launch(cx, storage, Default::default());
     });
     APP.with(|slot| *slot.borrow_mut() = Some(handle));
 }

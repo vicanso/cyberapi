@@ -48,11 +48,21 @@ pub fn filter_and_sort<'a>(collections: &'a [Collection], keyword: &str, order: 
 fn compare(a: &Collection, b: &Collection, order: SortOrder) -> Ordering {
     match order {
         SortOrder::LastModified => b.updated_at.cmp(&a.updated_at),
-        SortOrder::NameAsc => a.name.cmp(&b.name),
-        SortOrder::NameDesc => b.name.cmp(&a.name),
+        SortOrder::NameAsc => by_name(a, b),
+        SortOrder::NameDesc => by_name(b, a),
         SortOrder::OldestFirst => a.created_at.cmp(&b.created_at),
         SortOrder::NewestFirst => b.created_at.cmp(&a.created_at),
     }
+}
+
+/// Names ignore case — the old app compared code units, so every capitalised
+/// name came before every lower-case one — and fall back to the exact text
+/// so the order is total.
+fn by_name(a: &Collection, b: &Collection) -> Ordering {
+    a.name
+        .to_lowercase()
+        .cmp(&b.name.to_lowercase())
+        .then_with(|| a.name.cmp(&b.name))
 }
 
 #[cfg(test)]
@@ -114,6 +124,23 @@ mod tests {
         assert_eq!(
             ids(&filter_and_sort(&list, "", SortOrder::NewestFirst)),
             ["b", "a", "c"]
+        );
+    }
+
+    #[test]
+    fn names_ignore_case() {
+        let list = vec![
+            collection("upper", "IPLocation", "", "", ""),
+            collection("lower", "browser", "", "", ""),
+            collection("mixed", "ImageOptim", "", "", ""),
+        ];
+        assert_eq!(
+            ids(&filter_and_sort(&list, "", SortOrder::NameAsc)),
+            ["lower", "mixed", "upper"]
+        );
+        assert_eq!(
+            ids(&filter_and_sort(&list, "", SortOrder::NameDesc)),
+            ["upper", "mixed", "lower"]
         );
     }
 

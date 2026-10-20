@@ -19,6 +19,8 @@ crate-type = ["cdylib", "rlib"]
 # The application itself, as a library. No `version`: this crate is never
 # published.
 cyberapi-gui = { path = ".." }
+cyberapi-core = { workspace = true }
+cyberapi-store = { workspace = true }
 gpui-kit = { workspace = true }
 tracing = { workspace = true }
 # `tracing` has nowhere to go in a page without a writer for the console.

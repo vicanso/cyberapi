@@ -1,0 +1,50 @@
+[common]
+cancel = "Cancel"
+create = "Create"
+save = "Save"
+edit = "Edit"
+delete = "Delete"
+retry = "Retry"
+name = "Name"
+description = "Description"
+optional = "Optional"
+
+[startup]
+failed_title = "Cyber API could not open its data"
+failed_hint = "Nothing was changed. The details below say what went wrong."
+
+[errors]
+collection_not_found = "This project no longer exists."
+item_not_found = "This item no longer exists."
+variable_not_found = "This variable no longer exists."
+forbidden = "You do not have permission to do this."
+name_required = "A name is required."
+tree = "This move is not allowed: %{reason}"
+backend = "Storage failed: %{message}"
+
+[dashboard]
+title = "Projects"
+search = "Search projects"
+new = "New project"
+sort_last_modified = "Last modified"
+sort_name_asc = "Name, A to Z"
+sort_name_desc = "Name, Z to A"
+sort_oldest_first = "Oldest first"
+sort_newest_first = "Newest first"
+loading = "Loading projects…"
+load_failed = "Projects could not be loaded"
+empty_title = "No projects yet"
+empty_description = "A project keeps a set of APIs together with their folders and environments."
+no_match = "No project matches “%{keyword}”"
+updated = "Updated %{time}"
+more = "More actions for %{name}"
+create_title = "New project"
+edit_title = "Edit project"
+name_placeholder = "Order service"
+delete_title = "Delete “%{name}”?"
+delete_description = "Its APIs, folders and variables are deleted with it. This cannot be undone."
+
+[workspace]
+back = "Projects"
+pending_title = "The workspace is on its way"
+pending_description = "The API tree, the request editor and the response view come next."

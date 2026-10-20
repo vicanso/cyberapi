@@ -5,6 +5,7 @@
 
 pub mod access;
 pub mod collection;
+pub mod format;
 mod id;
 pub mod model;
 pub mod prefs;
