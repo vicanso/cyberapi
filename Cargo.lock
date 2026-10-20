@@ -1786,6 +1786,7 @@ dependencies = [
  "cyberapi-store-turso",
  "directories",
  "gpui-kit",
+ "js-sys",
  "pollster 1.0.1",
  "rust-i18n",
  "serde_json",
@@ -1795,6 +1796,8 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "wasm-bindgen",
+ "web-sys",
  "web-time",
 ]
 

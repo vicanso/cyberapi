@@ -65,14 +65,15 @@ pub fn saves_files() -> bool {
 }
 
 /// Saves `bytes` in the downloads folder as `name`, or `name-1` … `name-9`
-/// when it is taken (F15.4); answers where.
+/// when it is taken (F15.4); answers where. A page has the browser download
+/// them, under `name` as far as the browser keeps it.
 #[cfg(not(target_family = "wasm"))]
 pub fn save_to_downloads(name: &str, bytes: &[u8]) -> Result<String, String> {
     desktop::save_to_downloads(name, bytes)
 }
 #[cfg(target_family = "wasm")]
-pub fn save_to_downloads(_: &str, _: &[u8]) -> Result<String, String> {
-    Err("a page cannot save files".into())
+pub fn save_to_downloads(name: &str, bytes: &[u8]) -> Result<String, String> {
+    web::download(name, bytes)
 }
 
 /// A text file the reader picked.
@@ -186,6 +187,36 @@ mod desktop {
             Some(base) => base.join(path),
             None => path.to_path_buf(),
         }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+mod web {
+    use wasm_bindgen::JsCast as _;
+
+    fn reason(error: wasm_bindgen::JsValue) -> String {
+        error.as_string().unwrap_or_else(|| format!("{error:?}"))
+    }
+
+    /// A link to the bytes, clicked: the browser saves them as `name`.
+    pub(super) fn download(name: &str, bytes: &[u8]) -> Result<String, String> {
+        let document = web_sys::window()
+            .and_then(|window| window.document())
+            .ok_or("this page has no document")?;
+        let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+        let blob = web_sys::Blob::new_with_u8_array_sequence(&parts).map_err(reason)?;
+        let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(reason)?;
+        let anchor: web_sys::HtmlAnchorElement = document
+            .create_element("a")
+            .map_err(reason)?
+            .dyn_into()
+            .map_err(|_| "not a link".to_string())?;
+        anchor.set_href(&url);
+        anchor.set_download(name);
+        anchor.click();
+        // The download has the blob already; the URL is no longer needed.
+        let _ = web_sys::Url::revoke_object_url(&url);
+        Ok(name.to_string())
     }
 }
 

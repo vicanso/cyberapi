@@ -135,8 +135,12 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tokio = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+# A file the page saves is a download the browser makes (`this_build`).
+js-sys = "0.3.106"
 # `get_locale()` reads `navigator.languages` only behind this feature.
 sys-locale = { workspace = true, features = ["js"] }
+wasm-bindgen = "0.2.129"
+web-sys = { version = "0.3.106", features = ["Blob", "Document", "Element", "HtmlAnchorElement", "Url", "Window"] }
 
 [dev-dependencies]
 # `TestAppContext` and `#[gpui_kit::test]` for the states' tests.

@@ -112,8 +112,13 @@ pub async fn send(
             ..Default::default()
         },
     };
-    match sender.storage.history().add(response.clone()).await {
-        Ok(kept) => Ok(kept),
+    // A body too big for the history still shows now, in full (#17).
+    match sender.storage.history().add(response.for_history()).await {
+        Ok(kept) => Ok(HttpResponse {
+            id: kept.id,
+            created_at: kept.created_at,
+            ..response
+        }),
         // The answer still shows; it is only not kept.
         Err(error) => {
             warn!(%error, "the response could not be kept");
@@ -477,6 +482,32 @@ mod tests {
         assert!(response.latency >= Duration::from_millis(1));
         let history = pollster::block_on(setup.storage.history().list(setup.collection.clone(), api)).expect("list");
         assert_eq!(history.len(), 1);
+    }
+
+    /// #17: a body too big for the history shows in full, and the history
+    /// keeps its size.
+    #[test]
+    fn a_big_answer_shows_whole_and_is_kept_without_its_body() {
+        let big = "x".repeat(cyberapi_core::response::HISTORY_BODY_LIMIT + 10);
+        let setup = setup(ok(200, &big));
+        let api = new_api(&setup, "export");
+        let response = pollster::block_on(send(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            api.clone(),
+            HttpRequest {
+                uri: "http://big.test".into(),
+                ..Default::default()
+            },
+            None,
+        ))
+        .expect("an answer");
+        assert_eq!(response.body.len(), big.len());
+        assert!(!response.id.is_empty(), "the id the history gave");
+        let history = pollster::block_on(setup.storage.history().list(setup.collection.clone(), api)).expect("list");
+        assert_eq!(history[0].id, response.id);
+        assert!(history[0].body.is_empty());
+        assert_eq!(history[0].body_omitted, Some(big.len() as u64));
     }
 
     #[test]

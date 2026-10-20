@@ -129,6 +129,9 @@ send = "Request sent"
 server = "Server processing"
 transfer = "Content download"
 total = "Total"
+omitted = "The body (%{size}) was too big to keep in the history. Send the request again to see it."
+clipped = "Only the first %{size} of the body shows here."
+save_body = "Save the body"
 
 [menu]
 settings = "Settings"

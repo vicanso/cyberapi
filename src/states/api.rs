@@ -14,6 +14,7 @@
 //! the first is taken as a double click and ignored.
 
 use super::{Load, WorkspaceState, run_store};
+use crate::this_build;
 use cyberapi_core::model::{ApiSetting, ContentType, HttpMethod, HttpRequest, KvParam};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::{CollectionId, ItemId};
@@ -40,6 +41,10 @@ pub enum ApiEvent {
     RequestReplaced,
     /// The cURL command asked for (F7.8), for the clipboard.
     Curl(String),
+    /// A body was saved in the downloads folder, there (F7.5).
+    Saved(String),
+    /// A body could not be saved: why.
+    NotSaved(String),
 }
 
 /// A request on its way.
@@ -305,6 +310,11 @@ impl ApiState {
         self.sending = None;
         match result {
             Ok(response) => {
+                // F7.5: an answer that names its file is saved as it
+                // arrives — never when chosen from the history.
+                if response.error.is_none() && !response.body.is_empty() && response.attachment_name().is_some() {
+                    self.save(response.file_name(), response.body.clone(), cx);
+                }
                 self.responses.insert(0, response);
                 self.responses.truncate(HISTORY_LIMIT);
                 self.shown = None;
@@ -312,6 +322,26 @@ impl ApiState {
             Err(failure) => cx.emit(ApiEvent::NotSent(failure.to_string())),
         }
         cx.notify();
+    }
+
+    /// The shown response's body, whole, in the downloads folder.
+    pub fn save_body(&mut self, cx: &mut Context<Self>) {
+        if let Some(response) = self.shown_response() {
+            let (name, body) = (response.file_name(), response.body.clone());
+            self.save(name, body, cx);
+        }
+    }
+
+    fn save(&self, name: String, body: Vec<u8>, cx: &mut Context<Self>) {
+        let saving = cx.background_spawn(async move { this_build::save_to_downloads(&name, &body) });
+        cx.spawn(async move |this, cx| {
+            let event = match saving.await {
+                Ok(path) => ApiEvent::Saved(path),
+                Err(message) => ApiEvent::NotSaved(message),
+            };
+            let _ = this.update(cx, |_, cx| cx.emit(event));
+        })
+        .detach();
     }
 
     /// F7.10: shows a response of the history and puts its request back in

@@ -9,6 +9,12 @@ use std::time::Duration;
 
 /// How many responses an API keeps, newest first (F7.9).
 pub const HISTORY_LIMIT: usize = 10;
+/// The biggest body an API's history keeps (#17). A bigger one shows when it
+/// arrives; the history keeps only its size.
+pub const HISTORY_BODY_LIMIT: usize = 2 * 1024 * 1024;
+/// The most of a text body the response panel shows; the rest is left out,
+/// and the panel says so.
+pub const DISPLAY_LIMIT: usize = 1024 * 1024;
 
 /// Where the time of one exchange went (F5.6). Each phase is measured on its
 /// own connection, so two requests at once no longer mix their numbers (#1).
@@ -76,6 +82,9 @@ pub struct HttpResponse {
     pub latency: Duration,
     pub stats: HttpStats,
     pub created_at: Timestamp,
+    /// The body was too big to keep in the history (#17): its length, the
+    /// body itself left out.
+    pub body_omitted: Option<u64>,
 }
 
 impl HttpResponse {
@@ -118,7 +127,54 @@ impl HttpResponse {
         self.header_values("content-length")
             .next()
             .and_then(|value| value.trim().parse().ok())
-            .unwrap_or(self.body.len() as u64)
+            .unwrap_or(self.body_omitted.unwrap_or(self.body.len() as u64))
+    }
+
+    /// The name to save the body as: the one the server offers (F7.5), or
+    /// `response` with an extension for its kind.
+    pub fn file_name(&self) -> String {
+        if let Some(name) = self.attachment_name() {
+            return name;
+        }
+        let extension = match self.body_kind() {
+            BodyKind::Json => "json".to_string(),
+            BodyKind::Text => "txt".to_string(),
+            BodyKind::Image | BodyKind::Pdf | BodyKind::Binary => {
+                let content_type = self.content_type();
+                let subtype = content_type
+                    .split(';')
+                    .next()
+                    .and_then(|essence| essence.split_once('/'))
+                    .map(|(_, subtype)| subtype.trim().to_ascii_lowercase())
+                    .unwrap_or_default();
+                let plain = !subtype.is_empty() && subtype.chars().all(|ch| ch.is_ascii_alphanumeric());
+                if plain { subtype } else { "bin".into() }
+            }
+        };
+        format!("response.{extension}")
+    }
+
+    /// What the history keeps of this response: all of it, or, for a body
+    /// over [`HISTORY_BODY_LIMIT`], everything but the body (#17).
+    pub fn for_history(&self) -> HttpResponse {
+        if self.body.len() <= HISTORY_BODY_LIMIT {
+            return self.clone();
+        }
+        HttpResponse {
+            id: self.id.clone(),
+            api: self.api.clone(),
+            collection: self.collection.clone(),
+            request: self.request.clone(),
+            status: self.status,
+            headers: self.headers.clone(),
+            body: Vec::new(),
+            error: self.error.clone(),
+            body_size: self.body_size,
+            latency: self.latency,
+            stats: self.stats.clone(),
+            created_at: self.created_at,
+            body_omitted: Some(self.body.len() as u64),
+        }
     }
 
     /// The headers grouped by name for display (F7.6): `Content-Type`, with
@@ -186,14 +242,47 @@ pub fn body_kind(content_type: &str) -> BodyKind {
     }
 }
 
-/// JSON indented by four spaces, as the old app printed it.
+/// JSON indented by four spaces, as the old app printed it. A body that is
+/// not one value but one per line (NDJSON) is each line indented (F15.5).
 pub fn pretty_json(bytes: &[u8]) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    let mut out = Vec::new();
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
-    let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
-    value.serialize(&mut serializer).ok()?;
-    String::from_utf8(out).ok()
+    fn pretty(value: &serde_json::Value) -> Option<String> {
+        let mut out = Vec::new();
+        let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
+        let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
+        value.serialize(&mut serializer).ok()?;
+        String::from_utf8(out).ok()
+    }
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        return pretty(&value);
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    if lines.len() < 2 {
+        return None;
+    }
+    lines
+        .iter()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|value| pretty(&value))
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|values| values.join("\n"))
+}
+
+/// At most `limit` bytes of `text`, cut at a character, and whether it was
+/// cut.
+pub fn clip_text(mut text: String, limit: usize) -> (String, bool) {
+    if text.len() <= limit {
+        return (text, false);
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    (text, true)
 }
 
 /// `content-type` → `Content-Type` (F7.6).
@@ -351,6 +440,51 @@ mod tests {
             body: body.to_vec(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_big_body_is_not_kept_but_its_size_is() {
+        let small = response(&[], b"ok");
+        assert_eq!(small.for_history(), small);
+        let big = response(&[], &vec![b'x'; HISTORY_BODY_LIMIT + 1]);
+        let kept = big.for_history();
+        assert!(kept.body.is_empty());
+        assert_eq!(kept.body_omitted, Some(HISTORY_BODY_LIMIT as u64 + 1));
+        assert_eq!(kept.size(), big.size(), "the size still shows");
+    }
+
+    #[test]
+    fn ndjson_is_indented_line_by_line() {
+        assert_eq!(
+            pretty_json(b"{\"a\":1}\n\n{\"b\":[2]}\n").as_deref(),
+            Some("{\n    \"a\": 1\n}\n{\n    \"b\": [\n        2\n    ]\n}")
+        );
+        assert_eq!(pretty_json(b"{\"a\":1}\nnot json"), None);
+        assert_eq!(pretty_json(b"not json"), None);
+    }
+
+    #[test]
+    fn a_body_is_saved_under_the_name_offered_or_its_kind() {
+        let offered = response(&[("content-disposition", "attachment; filename=\"a.csv\"")], b"x");
+        assert_eq!(offered.file_name(), "a.csv");
+        assert_eq!(
+            response(&[("content-type", "application/json")], b"{}").file_name(),
+            "response.json"
+        );
+        assert_eq!(
+            response(&[("content-type", "image/png")], b"").file_name(),
+            "response.png"
+        );
+        assert_eq!(
+            response(&[("content-type", "application/x-thing")], b"").file_name(),
+            "response.bin"
+        );
+    }
+
+    #[test]
+    fn text_is_clipped_at_a_character() {
+        assert_eq!(clip_text("abc".into(), 5), ("abc".into(), false));
+        assert_eq!(clip_text("a中b".into(), 2), ("a".into(), true));
     }
 
     #[test]

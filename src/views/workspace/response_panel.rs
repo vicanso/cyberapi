@@ -3,7 +3,8 @@
 
 use crate::states::ApiState;
 use cyberapi_core::response::{
-    BodyKind, HttpResponse, StatusLevel, format_duration, format_size, status_level, status_text,
+    BodyKind, DISPLAY_LIMIT, HttpResponse, StatusLevel, clip_text, format_duration, format_size, status_level,
+    status_text,
 };
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle};
@@ -12,6 +13,7 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, Hsla, Image, ImageFormat, ImageSource,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
@@ -41,6 +43,8 @@ pub struct ResponsePanel {
     body: Entity<EditorState>,
     /// Which response the body editor holds.
     shown: Option<String>,
+    /// The editor holds only the start of a body over `DISPLAY_LIMIT`.
+    clipped: bool,
     tab: ResponseTab,
     _subscriptions: Vec<Subscription>,
 }
@@ -59,6 +63,7 @@ impl ResponsePanel {
             api,
             body,
             shown: None,
+            clipped: false,
             tab: ResponseTab::Body,
             _subscriptions: subscriptions,
         };
@@ -82,6 +87,9 @@ impl ResponsePanel {
             },
             None => ("text", String::new()),
         };
+        // A body that would make the editor crawl shows its start (#17).
+        let (text, clipped) = clip_text(text, DISPLAY_LIMIT);
+        self.clipped = clipped;
         self.body = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(language)
@@ -244,15 +252,23 @@ impl ResponsePanel {
                 .child(error.clone())
                 .into_any_element();
         }
+        if let Some(size) = response.body_omitted {
+            return note(t!("response.omitted", size = format_size(size)).to_string(), false, cx);
+        }
         match response.body_kind() {
-            BodyKind::Json | BodyKind::Text => div()
+            BodyKind::Json | BodyKind::Text => v_flex()
                 .size_full()
-                .relative()
+                .when(self.clipped, |this| {
+                    let shown = format_size(DISPLAY_LIMIT as u64);
+                    this.child(note(t!("response.clipped", size = shown).to_string(), true, cx))
+                })
                 .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .child(Editor::new(&self.body).w_full().h_full().readonly(true).bordered(false)),
+                    div().flex_1().min_h_0().relative().child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .child(Editor::new(&self.body).w_full().h_full().readonly(true).bordered(false)),
+                    ),
                 )
                 .into_any_element(),
             // F7.4.
@@ -345,12 +361,34 @@ fn image_format(content_type: &str) -> Option<ImageFormat> {
     .map(|(_, format)| format)
 }
 
-fn binary(response: &HttpResponse, cx: &App) -> AnyElement {
-    div()
+fn binary(response: &HttpResponse, cx: &mut Context<ResponsePanel>) -> AnyElement {
+    note(
+        t!("response.binary", size = format_size(response.body.len() as u64)).to_string(),
+        true,
+        cx,
+    )
+}
+
+/// A line about the body, with a button that saves it whole where `saves`.
+fn note(text: String, saves: bool, cx: &mut Context<ResponsePanel>) -> AnyElement {
+    h_flex()
         .p_3()
+        .gap_3()
+        .items_center()
         .text_sm()
         .text_color(cx.theme().muted_foreground)
-        .child(t!("response.binary", size = format_size(response.body.len() as u64)).to_string())
+        .child(div().flex_1().min_w_0().child(text))
+        .when(saves, |this| {
+            this.child(
+                Button::new("response-save")
+                    .outline()
+                    .xsmall()
+                    .label(t!("response.save_body").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.api.update(cx, |api, cx| api.save_body(cx));
+                    })),
+            )
+        })
         .into_any_element()
 }
 

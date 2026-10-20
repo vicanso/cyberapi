@@ -129,6 +129,9 @@ send = "发送请求"
 server = "服务器处理"
 transfer = "内容下载"
 total = "总计"
+omitted = "响应体（%{size}）太大，没有保存在历史中。重新发送即可查看。"
+clipped = "这里只显示响应体的前 %{size}。"
+save_body = "保存响应体"
 
 [menu]
 settings = "设置"

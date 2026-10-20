@@ -117,6 +117,12 @@ impl RequestEditor {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(command.clone()));
                     window.push_notification(Notification::success(t!("response.curl_copied").to_string()), cx);
                 }
+                ApiEvent::Saved(path) => {
+                    window.push_notification(Notification::success(t!("export.saved", path = path).to_string()), cx);
+                }
+                ApiEvent::NotSaved(message) => {
+                    window.push_notification(Notification::error(message.clone()), cx);
+                }
                 ApiEvent::Failed(_) => {}
             }),
             // F4.3: the URI is saved as the field is left, or on Enter.
