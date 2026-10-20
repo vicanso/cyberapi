@@ -40,6 +40,7 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     deleting_a_folder_takes_its_content(storage).await;
     projects_do_not_see_each_other(storage).await;
     content_changes_touch_the_collection(storage).await;
+    shared_changes_move_the_revision(storage).await;
     variables_round_trip(storage).await;
     app_prefs_round_trip(storage).await;
     workspace_prefs_are_per_collection(storage).await;
@@ -555,6 +556,112 @@ async fn content_changes_touch_the_collection(storage: &Storage) {
     let after = storage.collections().get(collection.id).await.expect("get");
     assert!(after.updated_at >= before.updated_at);
     assert_eq!(after.created_at, before.created_at);
+}
+
+async fn revision(storage: &Storage, id: &CollectionId) -> u64 {
+    storage.collections().get(id.clone()).await.expect("get").revision
+}
+
+/// The revision now, which `what` must have moved past `last`.
+async fn moved(storage: &Storage, id: &CollectionId, last: u64, what: &str) -> u64 {
+    let now = revision(storage, id).await;
+    assert!(now > last, "{what} must move the revision past {last}, it is {now}");
+    now
+}
+
+/// Every change the project's other readers should see moves its revision
+/// on (`docs/architecture.md` §7): the browser build polls it to find them.
+/// Reading, and a reader's own state, do not.
+async fn shared_changes_move_the_revision(storage: &Storage) {
+    let collection = new_collection(storage, "revision").await;
+    let id = &collection.id;
+    let tree = storage.tree();
+    let variables = storage.variables();
+    let mut last = collection.revision;
+    assert_eq!(revision(storage, id).await, last, "created as answered");
+
+    let users = folder(storage, &collection, None, "users").await;
+    last = moved(storage, id, last, "a new folder").await;
+    let login = api(storage, &collection, None, "login").await;
+    last = moved(storage, id, last, "a new API").await;
+    tree.rename(id.clone(), login.item.id.clone(), "sign in".into())
+        .await
+        .expect("rename");
+    last = moved(storage, id, last, "a rename").await;
+    tree.save_request(id.clone(), login.item.id.clone(), HttpRequest::default())
+        .await
+        .expect("save");
+    last = moved(storage, id, last, "a saved request").await;
+    tree.move_item(
+        id.clone(),
+        login.item.id.clone(),
+        Placement {
+            parent: Some(users.item.id.clone()),
+            before: None,
+        },
+    )
+    .await
+    .expect("move");
+    last = moved(storage, id, last, "a move").await;
+    let variable = variables
+        .create(NewVariable {
+            collection: id.clone(),
+            category: VariableCategory::Environment,
+            name: "host".into(),
+            value: "a".into(),
+            enabled: true,
+        })
+        .await
+        .expect("create a variable");
+    last = moved(storage, id, last, "a new variable").await;
+    variables
+        .update(
+            id.clone(),
+            variable.id.clone(),
+            VariableEdit {
+                name: "host".into(),
+                value: "b".into(),
+                enabled: true,
+            },
+        )
+        .await
+        .expect("update a variable");
+    last = moved(storage, id, last, "an edited variable").await;
+    variables
+        .delete(id.clone(), vec![variable.id])
+        .await
+        .expect("delete a variable");
+    last = moved(storage, id, last, "a deleted variable").await;
+    let edited = storage
+        .collections()
+        .update(
+            id.clone(),
+            CollectionEdit {
+                name: "revision, renamed".into(),
+                description: String::new(),
+            },
+        )
+        .await
+        .expect("update");
+    assert!(
+        edited.revision > last,
+        "a renamed project answers with its new revision"
+    );
+    last = moved(storage, id, last, "a renamed project").await;
+    tree.delete(id.clone(), users.item.id).await.expect("delete");
+    last = moved(storage, id, last, "a deletion").await;
+
+    load(storage, &collection).await;
+    storage
+        .prefs()
+        .set_workspace(id.clone(), WorkspacePrefs::default())
+        .await
+        .expect("set prefs");
+    assert_eq!(
+        revision(storage, id).await,
+        last,
+        "reading and a reader's own state change nothing"
+    );
 }
 
 async fn variables_round_trip(storage: &Storage) {

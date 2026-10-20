@@ -113,6 +113,13 @@ pub fn run(origin: String, ui_font: Vec<u8>, prefs: String) {
     APP.with(|slot| *slot.borrow_mut() = Some(handle));
 }
 
+/// The page's `visibilitychange`: a background tab polls less often.
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn set_page_visible(visible: bool) {
+    cyberapi_gui::set_page_visible(visible);
+}
+
 // The page is the process: it lives until the tab closes, and so does this.
 #[cfg(target_family = "wasm")]
 thread_local! {

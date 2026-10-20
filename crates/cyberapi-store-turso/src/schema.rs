@@ -81,6 +81,10 @@ const MIGRATIONS: &[&[&str]] = &[
         "CREATE INDEX IF NOT EXISTS api_settings_collection ON api_settings (collection)",
         "CREATE INDEX IF NOT EXISTS variables_collection ON variables (collection, category)",
     ],
+    // 2: a project's revision, which every shared change moves on
+    // (`docs/architecture.md` §7). The desktop has no other reader to tell,
+    // but every store keeps the same rules.
+    &["ALTER TABLE api_collections ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"],
 ];
 
 /// The schema version this build writes.

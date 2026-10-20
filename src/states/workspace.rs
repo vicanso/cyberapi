@@ -5,17 +5,22 @@
 //! answer applied to the copy here — the same plan the store wrote — so the
 //! copy never guesses. Changes go one at a time ([`run_serial`]) so their
 //! answers apply in the order the store made them.
+//!
+//! In the browser build other readers change the project too: the state
+//! polls its revision and loads the tree again when it moved (§7).
 
 use super::{Load, run_serial, run_store};
+use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::ItemId;
 use cyberapi_core::model::{ApiSetting, Collection, Folder};
 use cyberapi_core::prefs::WorkspacePrefs;
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
 use cyberapi_store::{Storage, StoreError};
-use gpui_kit::{AppContext as _, Context, EventEmitter};
+use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::warn;
 
 /// What the view should tell the reader about.
@@ -35,6 +40,7 @@ pub struct WorkspaceState {
     keyword: String,
     /// The tree's changes, one at a time.
     gate: Arc<Mutex<()>>,
+    _poll: Option<Task<()>>,
 }
 
 impl EventEmitter<WorkspaceEvent> for WorkspaceState {}
@@ -42,6 +48,11 @@ impl EventEmitter<WorkspaceEvent> for WorkspaceState {}
 impl WorkspaceState {
     /// F2.7: the tree and the reader's state of it.
     pub fn new(storage: Storage, collection: Collection, cx: &mut Context<Self>) -> Self {
+        Self::with_poll(storage, collection, pacing::REVISION_POLL, cx)
+    }
+
+    /// Asks every `poll` whether another reader changed the project.
+    fn with_poll(storage: Storage, collection: Collection, poll: Option<Duration>, cx: &mut Context<Self>) -> Self {
         let mut state = Self {
             storage,
             collection,
@@ -51,9 +62,54 @@ impl WorkspaceState {
             load: Load::Loading,
             keyword: String::new(),
             gate: Arc::default(),
+            _poll: poll.map(|every| Self::poll(every, cx)),
         };
         state.reload(cx);
         state
+    }
+
+    fn poll(every: Duration, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            let mut beats = 0u32;
+            loop {
+                cx.background_executor().timer(every).await;
+                beats = beats.wrapping_add(1);
+                if pacing::page_hidden() && !beats.is_multiple_of(pacing::HIDDEN_EVERY) {
+                    continue;
+                }
+                let Ok(call) = this.update(cx, |this, _| this.storage.collections().get(this.collection.id.clone()))
+                else {
+                    return;
+                };
+                let result = cx.background_spawn(call).await;
+                if this.update(cx, |this, cx| this.revision_read(result, cx)).is_err() {
+                    return;
+                }
+            }
+        })
+    }
+
+    /// A moved revision means someone changed the project: its tree loads
+    /// again, behind any change of this reader's still on its way. Their own
+    /// changes move it too, which costs one load.
+    fn revision_read(&mut self, result: Result<Collection, StoreError>, cx: &mut Context<Self>) {
+        let collection = match result {
+            Ok(collection) => collection,
+            // Asked again next beat.
+            Err(error) => return warn!(%error, "the project's revision could not be read"),
+        };
+        if collection.revision == self.collection.revision {
+            return;
+        }
+        self.collection = collection;
+        let call = self.storage.tree().load(self.collection.id.clone());
+        run_serial(cx, &self.gate, call, |this, result, cx| match result {
+            Ok(data) => {
+                this.set_data(data);
+                cx.notify();
+            }
+            Err(error) => warn!(%error, "the project's tree could not be read again"),
+        });
     }
 
     pub fn collection(&self) -> &Collection {
@@ -481,6 +537,29 @@ mod tests {
                 source: TreeError::Cycle { id: a }
             }]
         );
+    }
+
+    #[gpui_kit::test]
+    async fn other_readers_changes_show_on_the_next_beat(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let every = Duration::from_secs(10);
+        let state = cx.new(|cx| WorkspaceState::with_poll(storage.clone(), collection.clone(), Some(every), cx));
+        cx.run_until_parked();
+        assert!(row_names(&state, cx).is_empty());
+
+        // Someone else, straight through the store.
+        storage
+            .tree()
+            .create_api(collection.id.clone(), None, "theirs".into())
+            .await
+            .expect("create");
+        cx.run_until_parked();
+        assert!(row_names(&state, cx).is_empty(), "not before the beat");
+
+        cx.executor().advance_clock(every);
+        cx.run_until_parked();
+        assert_eq!(row_names(&state, cx), ["theirs"]);
     }
 
     #[gpui_kit::test]

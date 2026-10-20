@@ -74,14 +74,14 @@ fn question_marks(statement: &str) -> String {
 /// account or one of its teams (`grant`, with the project role). The account
 /// is bound three times.
 pub const COLLECTIONS_VISIBLE: &str = "\
-    SELECT c.seq, c.id, c.name, c.description, c.created_at, c.updated_at, c.owner_team, 'team', tm.role \
+    SELECT c.seq, c.id, c.name, c.description, c.created_at, c.updated_at, c.owner_team, c.revision, 'team', tm.role \
     FROM collections c JOIN team_members tm ON tm.team = c.owner_team WHERE tm.account = $1 \
     UNION ALL \
-    SELECT c.seq, c.id, c.name, c.description, c.created_at, c.updated_at, c.owner_team, 'grant', g.role \
+    SELECT c.seq, c.id, c.name, c.description, c.created_at, c.updated_at, c.owner_team, c.revision, 'grant', g.role \
     FROM collections c JOIN collection_grants g ON g.collection = c.id \
     WHERE g.grantee_kind = 'account' AND g.grantee = $2 \
     UNION ALL \
-    SELECT c.seq, c.id, c.name, c.description, c.created_at, c.updated_at, c.owner_team, 'grant', g.role \
+    SELECT c.seq, c.id, c.name, c.description, c.created_at, c.updated_at, c.owner_team, c.revision, 'grant', g.role \
     FROM collections c JOIN collection_grants g ON g.collection = c.id \
     JOIN team_members tm ON tm.team = g.grantee \
     WHERE g.grantee_kind = 'team' AND tm.account = $3 \
@@ -100,7 +100,7 @@ pub const ROLE_OF: &str = "\
     WHERE g.collection = $5 AND g.grantee_kind = 'team' AND tm.account = $6";
 
 pub const COLLECTION_GET: &str =
-    "SELECT id, name, description, created_at, updated_at, owner_team FROM collections WHERE id = $1";
+    "SELECT id, name, description, created_at, updated_at, owner_team, revision FROM collections WHERE id = $1";
 /// Holds the project's row for the transaction: every change to a project's
 /// tree takes it first, so two cannot plan from the same lists (§7).
 pub const COLLECTION_LOCK: &str = "SELECT id FROM collections WHERE id = $1 FOR UPDATE";

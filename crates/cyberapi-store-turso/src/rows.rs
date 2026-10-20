@@ -23,7 +23,15 @@ fn time(row: &Row, index: usize) -> Timestamp {
     Timestamp::parse_lenient(&text(row, index))
 }
 
-pub const COLLECTION_COLUMNS: &str = "id, name, description, created_at, updated_at";
+/// A count this app wrote: anything else is zero.
+fn count(row: &Row, index: usize) -> u64 {
+    match row.get_value(index) {
+        Ok(Value::Integer(number)) => u64::try_from(number).unwrap_or_default(),
+        _ => 0,
+    }
+}
+
+pub const COLLECTION_COLUMNS: &str = "id, name, description, created_at, updated_at, revision";
 
 pub fn collection(row: &Row) -> Collection {
     Collection {
@@ -32,6 +40,7 @@ pub fn collection(row: &Row) -> Collection {
         description: text(row, 2),
         created_at: time(row, 3),
         updated_at: time(row, 4),
+        revision: count(row, 5),
         // No teams on the desktop, and its one reader manages everything.
         owner: None,
         role: Default::default(),

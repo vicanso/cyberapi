@@ -144,11 +144,12 @@ async fn require_collection(conn: &Connection, id: &CollectionId) -> Result<(), 
     get_collection(conn, id).await.map(|_| ())
 }
 
-/// A change to the project's content moves its `updated_at` (#21).
+/// A change to the project's content moves its `updated_at` (#21) and its
+/// revision.
 async fn touch(conn: &Connection, id: &CollectionId, now: Timestamp) -> Result<(), StoreError> {
     execute(
         conn,
-        "UPDATE api_collections SET updated_at = ?1 WHERE id = ?2",
+        "UPDATE api_collections SET updated_at = ?1, revision = revision + 1 WHERE id = ?2",
         (now.to_rfc3339(), id.as_str()),
     )
     .await
@@ -267,6 +268,7 @@ impl CollectionStore for TursoStore {
                 description: input.description,
                 created_at: now,
                 updated_at: now,
+                revision: 0,
                 owner: None,
                 role: Default::default(),
             };
@@ -295,13 +297,15 @@ impl CollectionStore for TursoStore {
             let mut collection = get_collection(&conn, &id).await?;
             execute(
                 &conn,
-                "UPDATE api_collections SET name = ?1, description = ?2, updated_at = ?3 WHERE id = ?4",
+                "UPDATE api_collections
+                 SET name = ?1, description = ?2, updated_at = ?3, revision = revision + 1 WHERE id = ?4",
                 (name.as_str(), edit.description.as_str(), now.to_rfc3339(), id.as_str()),
             )
             .await?;
             collection.name = name;
             collection.description = edit.description;
             collection.updated_at = now;
+            collection.revision += 1;
             Ok(collection)
         })
     }

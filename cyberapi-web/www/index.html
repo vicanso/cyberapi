@@ -178,6 +178,10 @@
     await mod.default({ module_or_path: url("/wasm/cyberapi_web_bg.wasm") });
     $("loading").remove();
     mod.run(root, new Uint8Array(font), JSON.stringify(prefs));
+    // A background tab polls the bridge less often.
+    const visibility = () => mod.set_page_visible(!document.hidden);
+    document.addEventListener("visibilitychange", visibility);
+    visibility();
   } catch (error) {
     show("loading");
     $("loading").textContent = t("failed", { error });

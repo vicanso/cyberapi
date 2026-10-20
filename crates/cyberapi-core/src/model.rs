@@ -22,6 +22,11 @@ pub struct Collection {
     /// Also moved by any change to the project's tree, requests or variables,
     /// so "last modified" means the project, not only its name (#21).
     pub updated_at: Timestamp,
+    /// Counts the changes to what the project shares: its name, tree,
+    /// requests and variables. The browser build polls it to see other
+    /// readers' changes (`docs/architecture.md` §7).
+    #[serde(default)]
+    pub revision: u64,
     /// The team the project belongs to in the browser build; `None` on the
     /// desktop.
     #[serde(default)]

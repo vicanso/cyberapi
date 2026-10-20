@@ -124,6 +124,8 @@ fn data_survives_a_restart() {
                 })
                 .await
                 .expect("prefs");
+            // As stored, after the API moved it on.
+            let collection = storage.collections().get(collection.id).await.expect("get");
             (collection, api.item)
         })
     };

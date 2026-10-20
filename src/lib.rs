@@ -10,12 +10,14 @@
 rust_i18n::i18n!("locales", fallback = "en");
 
 mod i18n;
+mod pacing;
 #[cfg(not(target_family = "wasm"))]
 mod paths;
 mod root;
 pub mod states;
 mod views;
 
+pub use crate::pacing::set_page_visible;
 use crate::root::CyberApi;
 use crate::states::AppStore;
 use crate::views::StartupError;

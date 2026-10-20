@@ -277,7 +277,7 @@ impl CollectionStore for Scoped {
             let mut reached: HashMap<CollectionId, (Collection, Vec<(String, String)>)> = HashMap::new();
             for row in &found {
                 let collection = rows::collection(row, 1)?;
-                let way = (rows::text(row, 7)?, rows::text(row, 8)?);
+                let way = (rows::text(row, 8)?, rows::text(row, 9)?);
                 let entry = reached.entry(collection.id.clone()).or_insert_with(|| {
                     order.push(collection.id.clone());
                     (collection, Vec::new())
@@ -338,6 +338,7 @@ impl CollectionStore for Scoped {
                 description: input.description,
                 created_at: at,
                 updated_at: at,
+                revision: 0,
                 owner: Some(team.clone()),
                 role: team_role.on_team_projects(),
             };

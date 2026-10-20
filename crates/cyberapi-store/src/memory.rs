@@ -100,9 +100,12 @@ impl State {
             .ok_or_else(|| StoreError::not_found(Entity::Collection, id))
     }
 
-    /// A change to the project's content moves its `updated_at` (#21).
+    /// A change to the project's content moves its `updated_at` (#21) and
+    /// its revision.
     fn touch(&mut self, id: &CollectionId, now: Timestamp) -> Result<(), StoreError> {
-        self.collection_mut(id)?.updated_at = now;
+        let collection = self.collection_mut(id)?;
+        collection.updated_at = now;
+        collection.revision += 1;
         Ok(())
     }
 
@@ -163,6 +166,7 @@ impl CollectionStore for MemoryStore {
                 description: input.description,
                 created_at: now,
                 updated_at: now,
+                revision: 0,
                 // No teams here: every project is the one reader's.
                 owner: None,
                 role: Default::default(),
@@ -179,6 +183,7 @@ impl CollectionStore for MemoryStore {
             collection.name = name;
             collection.description = edit.description;
             collection.updated_at = now;
+            collection.revision += 1;
             Ok(collection.clone())
         })
     }

@@ -15,8 +15,8 @@ fn time(row: &AnyRow, index: usize) -> Result<Timestamp, StoreError> {
     Ok(Timestamp::parse_lenient(&text(row, index)?))
 }
 
-/// `id, name, description, created_at, updated_at, owner_team` from
-/// `start`. The role is the reader's, worked out apart from the row.
+/// `id, name, description, created_at, updated_at, owner_team, revision`
+/// from `start`. The role is the reader's, worked out apart from the row.
 pub fn collection(row: &AnyRow, start: usize) -> Result<Collection, StoreError> {
     Ok(Collection {
         id: CollectionId::new(text(row, start)?),
@@ -25,6 +25,7 @@ pub fn collection(row: &AnyRow, start: usize) -> Result<Collection, StoreError> 
         created_at: time(row, start + 3)?,
         updated_at: time(row, start + 4)?,
         owner: Some(TeamId::new(text(row, start + 5)?)),
+        revision: u64::try_from(row.try_get::<i64, _>(start + 6).map_err(db)?).unwrap_or_default(),
         role: Default::default(),
     })
 }
