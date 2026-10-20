@@ -17,6 +17,8 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 - 根 crate `cyberapi-gui`：库 `cyberapi_gui`（`src/lib.rs`，全部应用代码）+ 只调用 `cyberapi_gui::run()` 的 bin `cyberapi`（`src/main.rs`）。`default-members = ["."]`，裸 `cargo build` 只构建桌面版；`members = ["crates/*", "cyberapi-web"]`。
   - 入口：桌面版的 `run()` 先打开数据库（`open_desktop_storage`：确定数据目录、复制旧数据、打开 `TursoStore`、读取设置），再调用 `launch(cx, storage, prefs)`；数据库打不开时调用 `launch_failed` 显示原因。浏览器版由 `cyberapi-web` 准备 `Storage` 后同样调用 `launch`。
   - `src/states/`：gpui entity。`AppStore`（Global，持有 `Storage` 和 `Entity<AppState>`）、`AppState`（路由、设置）、`DashboardState` 等。只有 states 调用 store，统一通过 `states::run_store`（后台执行，结果回到 entity）。修改失败时发事件，由 view 弹通知。
+    - 树这类答案是“绝对值”的修改（“这个目录的 children 现在是 …”）用 `states::run_serial` 排队：一次一个，按发起顺序执行和应用，避免并行请求乱序导致副本和存储不一致。
+    - states 的测试用 `#[gpui_kit::test]` + `TestAppContext` + `MemoryStore`（见 `states/workspace.rs`）。
   - `src/views/`：只负责绘制和转发事件，不调用 store。`root.rs` 按路由切换页面、同步主题和窗口标题。
   - `src/i18n.rs` + `locales/{en,zh-CN}.toml`：rust-i18n，当前语言与 gpui-component 共用，所以中文的 locale 代码用组件的 `zh-CN`。**新增文案时每个 locale 文件都要加**，测试 `every_locale_has_every_key` 会逐个 key 比对。store 错误统一用 `i18n::store_error` 转成提示文案。
   - 开发用环境变量（`src/paths.rs`）：`CYBERAPI_DATA_DIR` 覆盖数据目录（试运行时指向临时目录，避免写入真实数据），`CYBERAPI_LEGACY_DIR` 覆盖 Tauri 版的数据目录。默认数据目录是平台数据目录下的 `CyberAPI`（Linux 为 `cyberapi`），数据库为 `cyberapi.db`。
@@ -42,6 +44,7 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 - 浏览器版的登录在 `www/index.html` 里完成：先查 `/v1/session`，未登录时按 `/v1/setup` 显示初始化或登录表单，登录后取 `prefsApp` 再加载 wasm，调用 `run(origin, ui_font, prefs)`。`cyberapi-web` 用 `FetchTransport`（gpui 的 fetch 客户端）创建 `BridgeStore`，收到 401 时刷新页面重新登录；`assets.rs` 是从 zedis 移植的图标重绘观察器。
 - `cyberapi-web`：浏览器入口。把 GUI crate 编译成 wasm，只负责平台、UI 字体和资源来源；通过 `cyberapi_gui::launch` 进入应用。有自己的 `rust-toolchain.toml`（nightly + wasm32），必须在该目录下构建。`www/index.html` 拉取 `fonts/IBMPlexSans.ttf` 和 wasm 后调用 `run(origin, ui_font)`。
 - UI 只依赖 `gpui-kit` 一个 crate：GPUI 是 `gpui_kit::*`，组件是 `gpui_kit::component`，图标是 `gpui_kit::assets`，平台是 `gpui_kit::platform`（wasm 上还有 `gpui_kit::web`）。不要再单独引入 `gpui-pre-*`。
+  - **锁文件的两个精确版本**：gpui-kit 可选的 GPUI Fast 后端把 `cocoa` 锁在 `=0.26.0`、`unicode-properties` 锁在 `=0.1.3`，而锁文件也要满足可选依赖。不要用 `cargo update` 把这两个包升上去；打开 gpui-kit 的新 feature（例如 `test-support`）时如果报 “failed to select a version for `cocoa`”，说明锁文件里是更高的版本，需要重新生成锁文件（`cargo generate-lockfile`）。
 
 ## 一份代码，两个目标
 

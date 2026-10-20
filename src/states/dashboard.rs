@@ -1,18 +1,10 @@
 //! The project list (M2).
 
-use super::run_store;
+use super::{Load, run_store};
 use cyberapi_core::CollectionId;
 use cyberapi_core::model::Collection;
 use cyberapi_store::{CollectionEdit, NewCollection, Storage, StoreError};
 use gpui_kit::{Context, EventEmitter};
-
-/// Where loading the list stands. A reload keeps the projects already shown.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Load {
-    Loading,
-    Loaded,
-    Failed(StoreError),
-}
 
 /// What the view should tell the reader about.
 #[derive(Clone, Debug)]

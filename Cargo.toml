@@ -90,6 +90,8 @@ ulid = "3.0.0"
 # A crate in plain `[dependencies]` must build for `wasm32-unknown-unknown`;
 # a native-only one goes in the desktop table below.
 [dependencies]
+# Puts a workspace's changes in a queue (`states::run_serial`).
+async-lock = { workspace = true }
 # "Now", for showing times relative to it. `wasmbind` is what lets the
 # browser build read the clock; the desktop ignores it.
 chrono = { workspace = true, features = ["clock", "wasmbind"] }
@@ -115,6 +117,8 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 sys-locale = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
+# `TestAppContext` and `#[gpui_kit::test]` for the states' tests.
+gpui-kit = { workspace = true, features = ["test-support"] }
 # The locale files are compared key by key.
 toml = { workspace = true }
 
