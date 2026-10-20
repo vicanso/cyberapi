@@ -1,0 +1,95 @@
+# The gates `CLAUDE.md` asks of every change, on every push: the desktop's
+# lint and tests on macOS and Linux, the SQL store and the bridge against
+# real PostgreSQL and MySQL, and the browser build's wasm check.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: desktop (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rustup installs what rust-toolchain.toml names.
+      - name: toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: lint
+        run: make lint
+      - name: test
+        run: cargo test --all
+
+  linux:
+    name: desktop and stores (Linux)
+    runs-on: ubuntu-24.04
+    services:
+      # The ports and credentials `make test-sql` expects (Makefile).
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: cyberapi
+          POSTGRES_PASSWORD: cyberapi
+          POSTGRES_DB: cyberapi
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U cyberapi"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: cyberapi
+          MYSQL_DATABASE: cyberapi
+          MYSQL_USER: cyberapi
+          MYSQL_PASSWORD: cyberapi
+        ports:
+          - 53306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -ucyberapi -pcyberapi"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libssl-dev
+      - name: toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: lint
+        run: make lint
+      - name: test
+        run: cargo test --all
+      - name: SQL store and bridge
+        run: make test-sql
+
+  web:
+    name: browser build (wasm)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang pkg-config libssl-dev
+      # cyberapi-web/rust-toolchain.toml: nightly with the wasm32 target.
+      - name: toolchain
+        working-directory: cyberapi-web
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: wasm
+      - name: check every crate the page links
+        run: make check-web

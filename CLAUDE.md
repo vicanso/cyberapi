@@ -10,6 +10,7 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 - 浏览器版构建：`make web-bundle`（开发）/ `make web-release`（发布，需要 `wasm-opt`），产物在 `cyberapi-web/www/wasm/`
 - 浏览器版预览：`make web-serve`（只有页面，没有后端）；带后端：`make db-up && make bridge`，打开 http://127.0.0.1:7380/
 - 发布包：`make desktop-dist`（cargo-bundle；macOS 出 ad-hoc 签名的 `.app` 和 `.dmg`，Linux 出 `.deb` 和 tarball，Windows 出 zip）；`make web-dist`（先 `web-bundle.sh --release`，再编译把页面内嵌进去的 release bridge，打成一个 tarball）。产物在 cargo target 目录下的 `desktop-dist/`、`web-dist/`
+- CI（`.github/workflows/`）：`ci.yml` 在每次 push 时跑 macOS / Linux 的 `make lint` + `cargo test --all`、Linux 上用服务容器跑 `make test-sql`、`make check-web`；`release.yml` 在推送 `v*` tag（或手动触发）时在三个平台上跑打包脚本，产物挂到 Release（未签名）。改工作流后用 `actionlint` 检查
 
 改动涉及任何带 target 条件编译的文件时，`make lint` 和 `make check-web` **都要跑**：前者看不到 wasm，后者看不到桌面。
 

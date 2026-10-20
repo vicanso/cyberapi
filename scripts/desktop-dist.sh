@@ -13,8 +13,10 @@ cd "$(dirname "$0")/.."
 VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
 TARGET=$(rustc -vV | sed -n 's/^host: //p')
 NAME="cyberapi-${VERSION}-${TARGET}"
-TARGET_DIR=$(cargo metadata --format-version 1 --no-deps \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+# CARGO_TARGET_DIR when set (CI sets it), else asked of cargo, never
+# assumed: `build.target-dir` may move it.
+TARGET_DIR="${CARGO_TARGET_DIR:-$(cargo metadata --format-version 1 --no-deps \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')}"
 OUT_DIR="$TARGET_DIR/desktop-dist"
 mkdir -p "$OUT_DIR"
 
