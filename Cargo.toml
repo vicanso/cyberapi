@@ -160,6 +160,11 @@ tempfile = { workspace = true }
 # The locale files are compared key by key.
 toml = { workspace = true }
 
+# The Windows executable's icon, compiled in by build.rs; a build for any
+# other target does nothing with it.
+[build-dependencies]
+winresource = { version = "0.1.34", default-features = false }
+
 [lints.clippy]
 unwrap_used = "deny"
 

@@ -1,0 +1,79 @@
+# The packages, built on the platform each is for and kept as artifacts:
+# the desktop app for macOS, Linux and Windows, and the bridge with the
+# browser build in it. Called by release.yml (a version tag) and nightly.yml;
+# what they do with the artifacts is theirs. Unsigned: signing and
+# notarization come later.
+name: Package
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Where the scripts look for cargo's output.
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  desktop:
+    name: desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libssl-dev
+      - name: toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo-bundle
+        if: runner.os != 'Windows'
+        run: cargo install cargo-bundle --locked
+      - name: package
+        shell: bash
+        run: scripts/desktop-dist.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            target/desktop-dist/*.dmg
+            target/desktop-dist/*.deb
+            target/desktop-dist/*.tar.gz
+            target/desktop-dist/*.zip
+            target/desktop-dist/*.sha256
+          if-no-files-found: error
+
+  web:
+    name: browser build (Linux bridge)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: system libraries and wasm-opt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang pkg-config libssl-dev binaryen
+      - name: toolchains
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          (cd cyberapi-web && (rustup show active-toolchain || rustup toolchain install))
+      - uses: Swatinem/rust-cache@v2
+      - name: wasm-pack
+        run: cargo install wasm-pack --locked
+      - name: package
+        run: scripts/web-dist.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-linux
+          path: |
+            target/web-dist/*.tar.gz
+            target/web-dist/*.sha256
+          if-no-files-found: error

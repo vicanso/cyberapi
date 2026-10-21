@@ -10,7 +10,9 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 - 浏览器版构建：`make web-bundle`（开发）/ `make web-release`（发布，需要 `wasm-opt`），产物在 `cyberapi-web/www/wasm/`
 - 浏览器版预览：`make web-serve`（只有页面，没有后端）；带后端：`make db-up && make bridge`，打开 http://127.0.0.1:7380/
 - 发布包：`make desktop-dist`（cargo-bundle；macOS 出 ad-hoc 签名的 `.app` 和 `.dmg`，Linux 出 `.deb` 和 tarball，Windows 出 zip）；`make web-dist`（先 `web-bundle.sh --release`，再编译把页面内嵌进去的 release bridge，打成一个 tarball）。产物在 cargo target 目录下的 `desktop-dist/`、`web-dist/`
-- CI（`.github/workflows/`）：`ci.yml` 在每次 push 时跑 macOS / Linux 的 `make lint` + `cargo test --all`、Linux 上用服务容器跑 `make test-sql`、`make check-web`；`release.yml` 在推送 `v*` tag（或手动触发）时在三个平台上跑打包脚本，产物挂到 Release（未签名）。改工作流后用 `actionlint` 检查
+- 图标：`make icons`（在 macOS 上）从 `icons/cyberapi.png`（1024×1024）生成各平台的图标：macOS 的 `resources/icons/icon.icns` 把圆角方块缩到 Apple 图标网格（1024 里占 824，居中）；Linux 的 PNG、Windows 的 `icon.ico` 和页面的 `cyberapi-web/www/icon.png` 让方块几乎铺满画布。`.icns` 由 cargo-bundle 原样放进 `.app`，`.ico` 由 `build.rs` 用 `winresource` 编进 Windows 的 exe（只在目标是 Windows 时）。换图后若方块大小变了，改 `scripts/icons.sh` 的 `BODY`
+- 立即跑一次 gpui 的 nightly（不管分支有没有新提交）：`make nightly`（需要已登录的 `gh`）
+- CI（`.github/workflows/`）：`ci.yml` 在每次 push 时跑 macOS / Linux 的 `make lint` + `cargo test --all`、Linux 上用服务容器跑 `make test-sql`、`make check-web`；打包步骤只写在可复用的 `package.yml`（三个平台的桌面版 + 带页面的 bridge，产物为 artifact）：`release.yml` 在推送 `v*` tag（或手动触发）时调用它并把产物挂到该 tag 的 Release（未签名）；`nightly.yml` 每晚打包 gpui 分支，替换名为 `nightly` 的预发布（tag 移到所构建的提交，分支没有新提交时跳过，手动运行可用 `force` 强制）。定时任务只认默认分支上的文件，而默认分支仍是 Tauri 版的 `main`，所以 `main` 上另有一个同路径的极简 `nightly.yml`，每晚 `gh workflow run nightly.yml --ref gpui` 派发到这里；gpui 合入 main 后由这里的文件取代它。改工作流后用 `actionlint` 检查
 
 改动涉及任何带 target 条件编译的文件时，`make lint` 和 `make check-web` **都要跑**：前者看不到 wasm，后者看不到桌面。
 

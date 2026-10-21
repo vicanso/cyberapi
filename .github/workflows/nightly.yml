@@ -1,0 +1,85 @@
+# The gpui branch, packaged every night (package.yml) into the `nightly`
+# prerelease, replaced each time: its tag moves to the commit built and its
+# assets are that build's. A night with nothing new on the branch builds
+# nothing; a manual run with `force` builds anyway.
+#
+# GitHub runs a schedule, and offers a dispatch, only for a workflow file on
+# the default branch, which is still the Tauri app's `main`. So `main` keeps a
+# small .github/workflows/nightly.yml of its own that, each night, dispatches
+# this file on gpui (`gh workflow run nightly.yml --ref gpui`). Once gpui is
+# the default branch this file replaces that one, and the schedule below
+# runs it directly.
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 18 * * *" # 02:00 in China
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even if the branch has not moved since the last nightly
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# A newer nightly replaces one still building.
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: anything new?
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.compare.outputs.build }}
+    steps:
+      - id: compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          built=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
+          if [ "$FORCE" = true ] || [ "$built" != "$GITHUB_SHA" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "the nightly is $GITHUB_SHA already"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  package:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    uses: ./.github/workflows/package.yml
+
+  publish:
+    name: replace the nightly release
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          notes="Built from $GITHUB_REF_NAME at $GITHUB_SHA on $(date -u '+%Y-%m-%d %H:%M') UTC.
+
+          An unsigned development build, replaced every night. On macOS the app is
+          ad-hoc signed: allow it once in System Settings → Privacy & Security, or run
+          xattr -cr \"/Applications/Cyber API.app\"."
+          # Deleted and made again, so no asset of an older build is left.
+          gh release delete nightly --cleanup-tag --yes || true
+          gh release create nightly dist/* \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --latest=false \
+            --title "Nightly $(date -u +%Y-%m-%d) (${GITHUB_SHA::7})" \
+            --notes "$notes"

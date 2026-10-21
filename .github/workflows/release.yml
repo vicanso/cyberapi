@@ -1,6 +1,5 @@
-# The packages, built on the platform each is for, attached to the release
-# a version tag makes (and kept as artifacts of a manual run). Unsigned:
-# signing and notarization come later.
+# The packages (package.yml) attached to the release a version tag makes. A
+# manual run builds them and keeps them as its artifacts only.
 name: Release
 
 on:
@@ -9,88 +8,24 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-env:
-  CARGO_TERM_COLOR: always
-  # Where the scripts look for cargo's output.
-  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  contents: read
 
 jobs:
-  desktop:
-    name: desktop (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-24.04, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - name: system libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libssl-dev
-      - name: toolchain
-        shell: bash
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo-bundle
-        if: runner.os != 'Windows'
-        run: cargo install cargo-bundle --locked
-      - name: package
-        shell: bash
-        run: scripts/desktop-dist.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: desktop-${{ matrix.os }}
-          path: |
-            target/desktop-dist/*.dmg
-            target/desktop-dist/*.deb
-            target/desktop-dist/*.tar.gz
-            target/desktop-dist/*.zip
-            target/desktop-dist/*.sha256
-          if-no-files-found: error
-      - name: attach to the release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            target/desktop-dist/*.dmg
-            target/desktop-dist/*.deb
-            target/desktop-dist/*.tar.gz
-            target/desktop-dist/*.zip
-            target/desktop-dist/*.sha256
+  package:
+    uses: ./.github/workflows/package.yml
 
-  web:
-    name: browser build (Linux bridge)
+  release:
+    name: attach to the release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - name: system libraries and wasm-opt
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang pkg-config libssl-dev binaryen
-      - name: toolchains
-        run: |
-          rustup show active-toolchain || rustup toolchain install
-          (cd cyberapi-web && (rustup show active-toolchain || rustup toolchain install))
-      - uses: Swatinem/rust-cache@v2
-      - name: wasm-pack
-        run: cargo install wasm-pack --locked
-      - name: package
-        run: scripts/web-dist.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: web-linux
-          path: |
-            target/web-dist/*.tar.gz
-            target/web-dist/*.sha256
-          if-no-files-found: error
-      - name: attach to the release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            target/web-dist/*.tar.gz
-            target/web-dist/*.sha256
+          files: dist/*

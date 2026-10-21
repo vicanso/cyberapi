@@ -1,4 +1,4 @@
-.PHONY: dev debug check fmt lint test release desktop-dist check-web web-bundle web-release web-serve web-dist db-up db-down test-sql bridge
+.PHONY: dev debug check fmt lint test release desktop-dist icons nightly check-web web-bundle web-release web-serve web-dist db-up db-down test-sql bridge
 
 # The desktop app.
 dev:
@@ -28,6 +28,16 @@ release:
 # and a tarball on Linux, a zip on Windows, in <target dir>/desktop-dist.
 desktop-dist:
 	scripts/desktop-dist.sh
+
+# Every platform's icon (resources/icons, the page's) made again from
+# icons/cyberapi.png. Run on macOS.
+icons:
+	scripts/icons.sh
+
+# The nightly build of the gpui branch, started now and built even if the
+# branch has not moved (.github/workflows/nightly.yml). Needs `gh`, signed in.
+nightly:
+	gh workflow run nightly.yml --ref gpui -f force=true
 
 # The SQL store against real databases: `make db-up` starts PostgreSQL and
 # MySQL in local containers (Apple's `container`), `make test-sql` runs the
