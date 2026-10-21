@@ -266,6 +266,10 @@ fn install_mac_menus(cx: &mut App) {
     use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
     use gpui_kit::{KeyBinding, Menu, MenuItem, OsAction};
 
+    // The bundle's name (`[package.metadata.bundle]`), which macOS shows as
+    // the application menu's title; its items say the same.
+    const BUNDLE_NAME: &str = "CyberAPI";
+
     fn on_window(cx: &mut App, act: impl FnOnce(&mut Window)) {
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, _| act(window));
@@ -290,12 +294,12 @@ fn install_mac_menus(cx: &mut App) {
         KeyBinding::new("cmd-w", CloseWindow, None),
     ]);
     cx.set_menus([
-        Menu::new(APP_NAME).items([
-            MenuItem::action(format!("Hide {APP_NAME}"), Hide),
+        Menu::new(BUNDLE_NAME).items([
+            MenuItem::action(format!("Hide {BUNDLE_NAME}"), Hide),
             MenuItem::action("Hide Others", HideOthers),
             MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
-            MenuItem::action(format!("Quit {APP_NAME}"), Quit),
+            MenuItem::action(format!("Quit {BUNDLE_NAME}"), Quit),
         ]),
         Menu::new("Edit").items([
             MenuItem::os_action("Undo", Undo, OsAction::Undo),

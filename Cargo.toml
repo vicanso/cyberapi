@@ -173,9 +173,11 @@ winresource = { version = "0.1.34", default-features = false }
 unwrap_used = "deny"
 
 # The desktop package (`make desktop-dist`, cargo-bundle): the Tauri app's
-# identifier and icons, so the new app takes the old one's place.
+# name and identifier, so installing it is an upgrade that takes the old
+# app's place (/Applications/CyberAPI.app). Its data stays where it was; this
+# app copies it once (`src/paths.rs`). The windows are titled `APP_NAME`.
 [package.metadata.bundle]
-name = "Cyber API"
+name = "CyberAPI"
 identifier = "com.bigtree.cyberapi"
 icon = [
     "resources/icons/32x32.png",

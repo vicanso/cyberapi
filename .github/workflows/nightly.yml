@@ -68,9 +68,8 @@ jobs:
         run: |
           notes="Built from $GITHUB_REF_NAME at $GITHUB_SHA on $(date -u '+%Y-%m-%d %H:%M') UTC.
 
-          An unsigned development build, replaced every night. On macOS the app is
-          ad-hoc signed: allow it once in System Settings → Privacy & Security, or run
-          xattr -cr \"/Applications/Cyber API.app\"."
+          A development build, replaced every night. The macOS app is signed and
+          notarized; the Windows and Linux packages are not signed."
           # Deleted and made again, so no asset of an older build is left.
           gh release delete nightly --cleanup-tag --yes || true
           gh release create nightly dist/* \

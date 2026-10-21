@@ -3,7 +3,7 @@
 # `make desktop-dist`; needs cargo-bundle 0.11 (`cargo install --locked
 # cargo-bundle@0.11.0`; 0.12 reads [package.metadata.bundle] differently).
 #
-#   macOS    Cyber API.app in cyberapi-<version>-<triple>.dmg
+#   macOS    CyberAPI.app in cyberapi-<version>-<triple>.dmg
 #   Linux    the .deb cargo-bundle makes, and a tarball of the binary
 #   Windows  a zip of cyberapi.exe
 #
@@ -52,7 +52,7 @@ case "$(uname -s)" in
     need_bundle
     # No `--bin`: with it cargo-bundle ignores [package.metadata.bundle].
     cargo bundle --release
-    APP="$TARGET_DIR/release/bundle/osx/Cyber API.app"
+    APP="$TARGET_DIR/release/bundle/osx/CyberAPI.app"
     if [ -n "${CYBERAPI_SIGN_IDENTITY:-}" ]; then
       # The hardened runtime and a secure timestamp are what notarization
       # asks for. Apple's timestamp server fails now and then, so retry.
@@ -76,7 +76,7 @@ case "$(uname -s)" in
     trap 'rm -rf "$STAGE"' EXIT
     cp -R "$APP" "$STAGE/"
     ln -s /Applications "$STAGE/Applications"
-    hdiutil create -quiet -volname "Cyber API" -srcfolder "$STAGE" -ov -format UDZO "$OUT_DIR/$NAME.dmg"
+    hdiutil create -quiet -volname "CyberAPI" -srcfolder "$STAGE" -ov -format UDZO "$OUT_DIR/$NAME.dmg"
     if [ -n "${CYBERAPI_SIGN_IDENTITY:-}" ] && [ -n "${CYBERAPI_NOTARY_APPLE_ID:-}" ] \
       && [ -n "${CYBERAPI_NOTARY_PASSWORD:-}" ] && [ -n "${CYBERAPI_NOTARY_TEAM_ID:-}" ]; then
       xcrun notarytool submit "$OUT_DIR/$NAME.dmg" --wait \
