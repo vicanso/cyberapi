@@ -1,22 +1,25 @@
 //! A key / value list (F4.10): query, headers, auth, form fields. A blank
 //! row is always last, and typing in it adds the next; each row can be
-//! turned off or removed. Changes are reported 200 ms after the last one.
+//! turned off or removed, the second click on its remove button removing it.
+//! Changes are reported 200 ms after the last one.
 
 use crate::this_build;
 use cyberapi_core::model::KvParam;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Disableable as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task, Window, div,
+    PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task, Window, div, px,
 };
 use rust_i18n::t;
 use std::time::Duration;
 
 const REPORT_DELAY: Duration = Duration::from_millis(200);
+/// How long a first click on remove waits for the second.
+const REMOVE_WAIT: Duration = Duration::from_secs(3);
 
 pub enum KvEvent {
     Changed(Vec<KvParam>),
@@ -42,6 +45,9 @@ pub struct KvEditor {
     rows: Vec<Row>,
     options: KvOptions,
     report: Option<Task<()>>,
+    /// The row whose remove button was clicked once, and the wait for the
+    /// second click.
+    removing: Option<(usize, Task<()>)>,
 }
 
 impl EventEmitter<KvEvent> for KvEditor {}
@@ -52,6 +58,7 @@ impl KvEditor {
             rows: Vec::new(),
             options,
             report: None,
+            removing: None,
         };
         editor.set_list(list, window, cx);
         editor
@@ -72,6 +79,7 @@ impl KvEditor {
             cx,
         );
         self.report = None;
+        self.removing = None;
         cx.notify();
     }
 
@@ -135,6 +143,7 @@ impl KvEditor {
     }
 
     fn report_later(&mut self, cx: &mut Context<Self>) {
+        self.removing = None;
         cx.notify();
         self.report = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REPORT_DELAY).await;
@@ -152,11 +161,25 @@ impl KvEditor {
         }
     }
 
+    /// F4.10: the first click asks, the second removes.
     fn remove(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index + 1 < self.rows.len() {
+        if index + 1 >= self.rows.len() {
+            return;
+        }
+        if matches!(self.removing, Some((asked, _)) if asked == index) {
             self.rows.remove(index);
             self.report_later(cx);
+            return;
         }
+        let wait = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(REMOVE_WAIT).await;
+            let _ = this.update(cx, |this, cx| {
+                this.removing = None;
+                cx.notify();
+            });
+        });
+        self.removing = Some((index, wait));
+        cx.notify();
     }
 
     /// F4.8: a file for a multipart field, as `file://` and its path.
@@ -189,42 +212,107 @@ impl KvEditor {
 impl Render for KvEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let last = self.rows.len().saturating_sub(1);
+        let removing = self.removing.as_ref().map(|(index, _)| *index);
         let files = self.options.files && this_build::reads_files();
+        let theme = cx.theme();
+        let (border, muted) = (theme.border, theme.muted_foreground);
+        // A table: the fields sit in its cells without frames of their own,
+        // the lines between the cells drawing the grid.
+        let cell = move || div().h_full().flex().items_center().border_l_1().border_color(border);
+        let actions = move || {
+            h_flex()
+                .w(px(if files { 56. } else { 32. }))
+                .flex_none()
+                .justify_end()
+                .pr_0p5()
+        };
+        let header = h_flex()
+            .h(px(26.))
+            .bg(theme.muted)
+            .text_xs()
+            .text_color(muted)
+            .child(div().w_8().flex_none())
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(cell().w_2_5().flex_none().px_2().child(t!("editor.key").to_string()))
+                    .child(cell().flex_1().min_w_0().px_2().child(t!("editor.value").to_string())),
+            )
+            .child(actions());
         let rows = self.rows.iter().enumerate().map(|(index, row)| {
             let blank = index == last;
+            let remove = if removing == Some(index) {
+                Button::new(("kv-remove", index))
+                    .danger()
+                    .xsmall()
+                    .icon(gpui_kit::assets::IconName::Trash)
+                    .tooltip(SharedString::from(t!("editor.remove_again").to_string()))
+                    .on_click(cx.listener(move |this, _, _, cx| this.remove(index, cx)))
+            } else {
+                Button::new(("kv-remove", index))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .tooltip(SharedString::from(t!("common.delete").to_string()))
+                    .on_click(cx.listener(move |this, _, _, cx| this.remove(index, cx)))
+            };
             h_flex()
                 .id(("kv-row", index))
-                .gap_1()
+                .h(px(30.))
                 .items_center()
-                .child(div().w_6().flex_none().when(!blank, |this| {
+                .border_t_1()
+                .border_color(border)
+                .child(div().w_8().flex_none().flex().justify_center().when(!blank, |this| {
                     this.child(
                         Checkbox::new(("kv-enabled", index))
                             .checked(row.enabled)
                             .on_click(cx.listener(move |this, _, _, cx| this.toggle(index, cx))),
                     )
                 }))
-                .child(div().w_2_5().flex_none().child(Input::new(&row.key).small()))
-                .child(div().flex_1().min_w_0().child(Input::new(&row.value).small()))
-                .when(files, |this| {
-                    this.child(
-                        Button::new(("kv-file", index))
-                            .ghost()
-                            .small()
-                            .icon(gpui_kit::assets::IconName::Paperclip)
-                            .tooltip(t!("editor.choose_file").to_string())
-                            .on_click(cx.listener(move |this, _, window, cx| this.pick_file(index, window, cx))),
-                    )
-                })
                 .child(
-                    Button::new(("kv-remove", index))
-                        .ghost()
-                        .small()
-                        .icon(IconName::Close)
-                        .disabled(blank)
-                        .tooltip(SharedString::from(t!("common.delete").to_string()))
-                        .on_click(cx.listener(move |this, _, _, cx| this.remove(index, cx))),
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .when(!blank && !row.enabled, |this| this.opacity(0.45))
+                        .child(
+                            cell()
+                                .w_2_5()
+                                .flex_none()
+                                .child(Input::new(&row.key).small().appearance(false)),
+                        )
+                        .child(
+                            cell()
+                                .flex_1()
+                                .min_w_0()
+                                .child(Input::new(&row.value).small().appearance(false)),
+                        ),
+                )
+                .child(
+                    actions()
+                        .when(files && !blank, |this| {
+                            this.child(
+                                Button::new(("kv-file", index))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(gpui_kit::assets::IconName::Paperclip)
+                                    .tooltip(t!("editor.choose_file").to_string())
+                                    .on_click(
+                                        cx.listener(move |this, _, window, cx| this.pick_file(index, window, cx)),
+                                    ),
+                            )
+                        })
+                        .when(!blank, |this| this.child(remove)),
                 )
         });
-        v_flex().gap_1().children(rows.collect::<Vec<_>>())
+        v_flex()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(border)
+            .overflow_hidden()
+            .child(header)
+            .children(rows.collect::<Vec<_>>())
     }
 }

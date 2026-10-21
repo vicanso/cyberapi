@@ -9,7 +9,7 @@ make dev            # run it
 make desktop-dist   # package it for this machine (cargo install cargo-bundle)
 ```
 
-On first launch the desktop app copies the data of the earlier Tauri app, if there is one; the old app's files are left as they were.
+On first launch the desktop app copies the data of the earlier Tauri app, if there is one; the old app's files are left as they were. What is copied is the database (projects, folders, APIs, variables) and the cookies. What the old app kept in its web view's storage is not: its settings (theme, language, timeouts), pinned APIs, open folders, chosen tabs, response history and the order of a project's top level. Those start afresh, and backups made by the old app restore as they always did.
 
 ## Browser
 

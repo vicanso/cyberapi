@@ -10,10 +10,11 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    Render, Styled as _, Subscription, Window, div, px,
 };
 use rust_i18n::t;
 
@@ -231,7 +232,13 @@ impl Render for AccountsEditor {
             .gap_2()
             .child(div().text_sm().text_color(muted).child(t!("accounts.hint").to_string()))
             .child(header)
-            .child(div().id("accounts").max_h(px(360.)).overflow_y_scroll().children(rows))
+            .child(
+                div()
+                    .id("accounts")
+                    .max_h(px(360.))
+                    .overflow_y_scrollbar()
+                    .children(rows),
+            )
             .children(self.render_resetting(cx))
             .child(
                 h_flex()

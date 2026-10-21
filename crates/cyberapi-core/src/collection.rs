@@ -1,9 +1,12 @@
-//! The home page's project list: keyword filter (F2.5) and sort (F2.6).
+//! The home page's project list: keyword filter (F2.5), sort (F2.6) and
+//! the reader's own groups.
 
+use crate::CollectionId;
 use crate::model::Collection;
 use crate::search::matches_text_or_pinyin;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 /// How the home page orders projects. The names are the old app's setting
 /// values, so a saved choice reads back.
@@ -45,6 +48,62 @@ pub fn filter_and_sort<'a>(collections: &'a [Collection], keyword: &str, order: 
     found
 }
 
+/// A group of the project list, and its projects in the list's order.
+#[derive(Debug, PartialEq)]
+pub struct Group<'a> {
+    /// `None` for the projects in no group.
+    pub name: Option<String>,
+    pub collections: Vec<&'a Collection>,
+}
+
+/// The projects the keyword finds, in the groups the reader put them in
+/// (`groups`, a project's group by its id): the named groups by name, then
+/// the projects in none. The chosen order holds inside each group; a group
+/// the keyword leaves empty is not there.
+pub fn grouped<'a>(
+    collections: &'a [Collection],
+    groups: &BTreeMap<CollectionId, String>,
+    keyword: &str,
+    order: SortOrder,
+) -> Vec<Group<'a>> {
+    let mut found: Vec<Group<'a>> = Vec::new();
+    for collection in filter_and_sort(collections, keyword, order) {
+        let name = group_of(groups, &collection.id);
+        match found.iter_mut().find(|group| group.name.as_deref() == name) {
+            Some(group) => group.collections.push(collection),
+            None => found.push(Group {
+                name: name.map(str::to_string),
+                collections: vec![collection],
+            }),
+        }
+    }
+    found.sort_by(|a, b| match (&a.name, &b.name) {
+        (Some(a), Some(b)) => by_text(a, b),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    });
+    found
+}
+
+/// The group a project is in: a name with something in it.
+pub fn group_of<'a>(groups: &'a BTreeMap<CollectionId, String>, id: &CollectionId) -> Option<&'a str> {
+    groups.get(id).map(|name| name.trim()).filter(|name| !name.is_empty())
+}
+
+/// Every group's name, once each, by name.
+pub fn group_names(groups: &BTreeMap<CollectionId, String>) -> Vec<String> {
+    let mut names: Vec<String> = groups
+        .values()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect();
+    names.sort_by(|a, b| by_text(a, b));
+    names.dedup();
+    names
+}
+
 fn compare(a: &Collection, b: &Collection, order: SortOrder) -> Ordering {
     match order {
         SortOrder::LastModified => b.updated_at.cmp(&a.updated_at),
@@ -59,10 +118,11 @@ fn compare(a: &Collection, b: &Collection, order: SortOrder) -> Ordering {
 /// name came before every lower-case one — and fall back to the exact text
 /// so the order is total.
 fn by_name(a: &Collection, b: &Collection) -> Ordering {
-    a.name
-        .to_lowercase()
-        .cmp(&b.name.to_lowercase())
-        .then_with(|| a.name.cmp(&b.name))
+    by_text(&a.name, &b.name)
+}
+
+fn by_text(a: &str, b: &str) -> Ordering {
+    a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b))
 }
 
 #[cfg(test)]
@@ -151,6 +211,44 @@ mod tests {
         assert_eq!(ids(&filter_and_sort(&list, "ACCOUNT", SortOrder::NameAsc)), ["b"]);
         assert_eq!(ids(&filter_and_sort(&list, "zf", SortOrder::NameAsc)), ["c"]);
         assert!(filter_and_sort(&list, "nothing", SortOrder::NameAsc).is_empty());
+    }
+
+    #[test]
+    fn groups_by_name_then_the_rest_each_in_the_order() {
+        let mut list = sample();
+        list.push(collection(
+            "d",
+            "Docs",
+            "",
+            "2022-01-01T00:00:00Z",
+            "2022-05-01T00:00:00Z",
+        ));
+        let groups: BTreeMap<CollectionId, String> = [
+            (CollectionId::from("a"), "work".to_string()),
+            (CollectionId::from("c"), "Home".to_string()),
+            (CollectionId::from("d"), " work ".to_string()),
+            // Blank is no group.
+            (CollectionId::from("b"), "  ".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let shown = |keyword: &str| {
+            grouped(&list, &groups, keyword, SortOrder::LastModified)
+                .into_iter()
+                .map(|group| (group.name, ids(&group.collections)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            shown(""),
+            [
+                (Some("Home".to_string()), vec!["c".to_string()]),
+                (Some("work".to_string()), vec!["d".to_string(), "a".to_string()]),
+                (None, vec!["b".to_string()]),
+            ]
+        );
+        // A group the keyword empties is gone.
+        assert_eq!(shown("orders"), [(Some("work".to_string()), vec!["a".to_string()])]);
+        assert_eq!(group_names(&groups), ["Home", "work"]);
     }
 
     #[test]

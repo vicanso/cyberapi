@@ -12,11 +12,12 @@ use cyberapi_core::model::Collection;
 use cyberapi_core::{CollectionId, TeamId};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    Render, Styled as _, Subscription, Window, div, px,
 };
 use rust_i18n::t;
 use std::rc::Rc;
@@ -276,7 +277,7 @@ impl Render for AccessEditor {
                 v_flex()
                     .id("grants")
                     .max_h(px(240.))
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .when(grants.is_empty(), |this| {
                         this.child(
                             div()

@@ -130,6 +130,14 @@ impl HttpResponse {
             .unwrap_or(self.body_omitted.unwrap_or(self.body.len() as u64))
     }
 
+    /// F7.2: for a body that came compressed, its size on the wire and that
+    /// as a whole percentage (rounded up) of the body it decoded to.
+    pub fn compression(&self) -> Option<(u64, u64)> {
+        let decoded = self.body_omitted.unwrap_or(self.body.len() as u64);
+        (self.body_size > 0 && self.body_size < decoded)
+            .then(|| (self.body_size, (self.body_size * 100).div_ceil(decoded)))
+    }
+
     /// The name to save the body as: the one the server offers (F7.5), or
     /// `response` with an extension for its kind.
     pub fn file_name(&self) -> String {
@@ -518,6 +526,19 @@ mod tests {
         assert_eq!(format_size(340), "340 B");
         assert_eq!(format_size(1536), "1.5 KB");
         assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn compression_is_the_wire_against_the_body() {
+        let mut resp = response(&[], &[b'a'; 1000]);
+        assert_eq!(resp.compression(), None, "not compressed");
+        resp.body_size = 1000;
+        assert_eq!(resp.compression(), None, "the same size");
+        resp.body_size = 241;
+        assert_eq!(resp.compression(), Some((241, 25)));
+        resp.body = Vec::new();
+        resp.body_omitted = Some(1000);
+        assert_eq!(resp.compression(), Some((241, 25)), "a body kept out of the history");
     }
 
     #[test]

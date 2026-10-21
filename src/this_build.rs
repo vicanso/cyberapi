@@ -9,15 +9,39 @@ use std::sync::Arc;
 #[cfg(not(target_family = "wasm"))]
 pub fn user_agent() -> String {
     format!(
-        "CyberAPI/{} ({}; {})",
+        "CyberAPI/{} ({}; {}; {})",
         crate::VERSION,
         std::env::consts::OS,
+        desktop::os_version(),
         std::env::consts::ARCH
     )
 }
 #[cfg(target_family = "wasm")]
 pub fn user_agent() -> String {
     format!("CyberAPI/{} (web)", crate::VERSION)
+}
+
+/// What the app runs on, for the about section (F1.7): the OS and the
+/// architecture, or a page's browser.
+#[cfg(not(target_family = "wasm"))]
+pub fn platform() -> String {
+    format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH)
+}
+#[cfg(target_family = "wasm")]
+pub fn platform() -> String {
+    web_sys::window()
+        .and_then(|window| window.navigator().user_agent().ok())
+        .unwrap_or_default()
+}
+
+/// The OS's version (F1.7); a page cannot know it.
+#[cfg(not(target_family = "wasm"))]
+pub fn os_version() -> Option<String> {
+    Some(desktop::os_version().to_string())
+}
+#[cfg(target_family = "wasm")]
+pub fn os_version() -> Option<String> {
+    None
 }
 
 /// Whether a request can read local files: multipart file fields and the
@@ -76,6 +100,46 @@ pub fn save_to_downloads(name: &str, bytes: &[u8]) -> Result<String, String> {
     web::download(name, bytes)
 }
 
+/// Whether this is a page in a Mac's browser, which binds the Cmd
+/// shortcuts the kit gives only its macOS build
+/// (`views::bind_mac_page_keys`). The desktop has them already.
+#[cfg(not(target_family = "wasm"))]
+pub fn mac_page() -> bool {
+    false
+}
+#[cfg(target_family = "wasm")]
+pub fn mac_page() -> bool {
+    web::on_mac()
+}
+
+/// The editors' monospace face, JetBrains Mono (as zedis has it): the
+/// desktop carries it; a page is handed it after its first frame
+/// (`cyberapi-web`), and text drawn before then uses the fallback.
+#[cfg(not(target_family = "wasm"))]
+pub fn add_fonts(cx: &mut gpui_kit::App) {
+    let faces = [
+        include_bytes!("../resources/fonts/JetBrainsMono-Regular.ttf").as_slice(),
+        include_bytes!("../resources/fonts/JetBrainsMono-Bold.ttf").as_slice(),
+    ];
+    if let Err(error) = cx.text_system().add_fonts(faces.map(Into::into).to_vec()) {
+        tracing::error!(%error, "the monospace font could not be registered");
+    }
+}
+#[cfg(target_family = "wasm")]
+pub fn add_fonts(_: &mut gpui_kit::App) {}
+
+/// F7.4: a body the app cannot draw (a PDF) shown by what can: the
+/// system's viewer for it, or a new tab of the browser.
+#[cfg(not(target_family = "wasm"))]
+pub fn view_outside(name: &str, _content_type: &str, bytes: &[u8], cx: &gpui_kit::App) -> Result<(), String> {
+    desktop::view_outside(name, bytes, cx)
+}
+#[cfg(target_family = "wasm")]
+pub fn view_outside(_name: &str, content_type: &str, bytes: &[u8], cx: &gpui_kit::App) -> Result<(), String> {
+    cx.open_url(&web::blob_url(content_type, bytes)?);
+    Ok(())
+}
+
 /// A text file the reader picked.
 #[cfg(not(target_family = "wasm"))]
 pub fn read_text(path: &std::path::Path) -> Result<String, String> {
@@ -112,6 +176,14 @@ pub fn files() -> Arc<dyn FileReader + Send + Sync> {
 mod desktop {
     use cyberapi_core::template::{BaseDir, FileReader};
     use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+
+    /// Read once: finding it out may start a process, and every request's
+    /// User-Agent names it.
+    pub(super) fn os_version() -> &'static str {
+        static VERSION: OnceLock<String> = OnceLock::new();
+        VERSION.get_or_init(|| os_info::get().version().to_string())
+    }
 
     /// Files from this machine: a name relative to the downloads, documents
     /// or desktop folder (M6), or an absolute path.
@@ -131,10 +203,24 @@ mod desktop {
         save_unique(&dir, name, bytes)
     }
 
-    /// F15.4: `name`, then `stem-1.ext` … `stem-9.ext`; never over a file.
-    pub(super) fn save_unique(dir: &Path, name: &str, bytes: &[u8]) -> Result<String, String> {
-        let name: String = name
-            .chars()
+    /// A fresh folder of the temporary one for each body, so the viewer
+    /// shows the body's own name.
+    pub(super) fn view_outside(name: &str, bytes: &[u8], cx: &gpui_kit::App) -> Result<(), String> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default();
+        let dir = std::env::temp_dir().join("cyberapi-view").join(stamp.to_string());
+        std::fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+        let path = dir.join(file_name(name));
+        std::fs::write(&path, bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+        cx.open_with_system(&path);
+        Ok(())
+    }
+
+    /// `name` with what no file name may hold made `_`.
+    fn file_name(name: &str) -> String {
+        name.chars()
             .map(|ch| {
                 if matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
                     '_'
@@ -142,7 +228,12 @@ mod desktop {
                     ch
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    /// F15.4: `name`, then `stem-1.ext` … `stem-9.ext`; never over a file.
+    pub(super) fn save_unique(dir: &Path, name: &str, bytes: &[u8]) -> Result<String, String> {
+        let name = file_name(name);
         let (stem, extension) = match name.rsplit_once('.') {
             Some((stem, extension)) => (stem.to_string(), format!(".{extension}")),
             None => (name.clone(), String::new()),
@@ -196,6 +287,24 @@ mod web {
 
     fn reason(error: wasm_bindgen::JsValue) -> String {
         error.as_string().unwrap_or_else(|| format!("{error:?}"))
+    }
+
+    pub(super) fn on_mac() -> bool {
+        let Some(navigator) = web_sys::window().map(|window| window.navigator()) else {
+            return false;
+        };
+        navigator.platform().is_ok_and(|platform| platform.starts_with("Mac"))
+            || navigator.user_agent().is_ok_and(|agent| agent.contains("Macintosh"))
+    }
+
+    /// The bytes as a URL of this page, typed so the browser can show them.
+    /// It lives as long as the page: the tab it opens reads it later.
+    pub(super) fn blob_url(content_type: &str, bytes: &[u8]) -> Result<String, String> {
+        let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type(content_type);
+        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options).map_err(reason)?;
+        web_sys::Url::create_object_url_with_blob(&blob).map_err(reason)
     }
 
     /// A link to the bytes, clicked: the browser saves them as `name`.

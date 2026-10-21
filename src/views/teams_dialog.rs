@@ -12,6 +12,7 @@ use cyberapi_core::{AccountId, TeamId};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
 };
@@ -245,28 +246,33 @@ impl TeamsEditor {
             .w(px(240.))
             .flex_none()
             .gap_2()
-            .child(v_flex().id("teams").h(px(340.)).overflow_y_scroll().gap_0p5().children(
-                teams.into_iter().enumerate().map(|(index, team)| {
-                    let id = team.id.clone();
-                    let role = if team.personal {
-                        t!("teams.personal").to_string()
-                    } else {
-                        i18n::team_role(team.role)
-                    };
-                    h_flex()
-                        .id(("team", index))
-                        .px_2()
-                        .py_1p5()
-                        .gap_2()
-                        .rounded(cx.theme().radius)
-                        .cursor_pointer()
-                        .when(selected.as_ref() == Some(&team.id), |this| this.bg(active))
-                        .hover(|style| style.bg(active))
-                        .on_click(cx.listener(move |this, _, window, cx| this.select(id.clone(), window, cx)))
-                        .child(div().flex_1().min_w_0().truncate().text_sm().child(team.name.clone()))
-                        .child(div().text_xs().text_color(muted).child(role))
-                }),
-            ))
+            .child(
+                v_flex()
+                    .id("teams")
+                    .h(px(340.))
+                    .overflow_y_scrollbar()
+                    .gap_0p5()
+                    .children(teams.into_iter().enumerate().map(|(index, team)| {
+                        let id = team.id.clone();
+                        let role = if team.personal {
+                            t!("teams.personal").to_string()
+                        } else {
+                            i18n::team_role(team.role)
+                        };
+                        h_flex()
+                            .id(("team", index))
+                            .px_2()
+                            .py_1p5()
+                            .gap_2()
+                            .rounded(cx.theme().radius)
+                            .cursor_pointer()
+                            .when(selected.as_ref() == Some(&team.id), |this| this.bg(active))
+                            .hover(|style| style.bg(active))
+                            .on_click(cx.listener(move |this, _, window, cx| this.select(id.clone(), window, cx)))
+                            .child(div().flex_1().min_w_0().truncate().text_sm().child(team.name.clone()))
+                            .child(div().text_xs().text_color(muted).child(role))
+                    })),
+            )
             .child(
                 h_flex()
                     .gap_1()
@@ -420,7 +426,7 @@ impl TeamsEditor {
             })
             .child(div().text_xs().text_color(muted).child(t!("teams.members").to_string()))
             .child(
-                v_flex().id("members").h(px(250.)).overflow_y_scroll().children(
+                v_flex().id("members").h(px(250.)).overflow_y_scrollbar().children(
                     members
                         .iter()
                         .enumerate()

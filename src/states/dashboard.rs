@@ -5,17 +5,24 @@ use cyberapi_core::CollectionId;
 use cyberapi_core::model::Collection;
 use cyberapi_store::{CollectionEdit, NewCollection, Storage, StoreError};
 use gpui_kit::{Context, EventEmitter};
+use std::collections::BTreeMap;
+use tracing::warn;
 
 /// What the view should tell the reader about.
 #[derive(Clone, Debug)]
 pub enum DashboardEvent {
     /// A change the reader asked for did not happen.
     Failed(StoreError),
+    /// A project is gone, and with it the reader's state of it.
+    Deleted(CollectionId),
 }
 
 pub struct DashboardState {
     storage: Storage,
     collections: Vec<Collection>,
+    /// How many APIs each project holds, for its card; read beside the
+    /// list, and `None` until it was.
+    api_counts: Option<BTreeMap<CollectionId, usize>>,
     load: Load,
 }
 
@@ -26,6 +33,7 @@ impl DashboardState {
         let mut state = Self {
             storage,
             collections: Vec::new(),
+            api_counts: None,
             load: Load::Loading,
         };
         state.reload(cx);
@@ -41,6 +49,12 @@ impl DashboardState {
         &self.load
     }
 
+    /// How many APIs `id` holds, when that was read.
+    pub fn api_count(&self, id: &CollectionId) -> Option<usize> {
+        let counts = self.api_counts.as_ref()?;
+        Some(counts.get(id).copied().unwrap_or_default())
+    }
+
     /// F2.1.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.load = Load::Loading;
@@ -52,6 +66,14 @@ impl DashboardState {
                     this.load = Load::Loaded;
                 }
                 Err(error) => this.load = Load::Failed(error),
+            }
+            cx.notify();
+        });
+        run_store(cx, self.storage.collections().api_counts(), |this, result, cx| {
+            match result {
+                Ok(counts) => this.api_counts = Some(counts),
+                // The cards go without their counts.
+                Err(error) => warn!(%error, "the projects' API counts could not be read"),
             }
             cx.notify();
         });
@@ -98,6 +120,7 @@ impl DashboardState {
             move |this, result, cx| match result {
                 Ok(()) => {
                     this.collections.retain(|found| found.id != deleted);
+                    cx.emit(DashboardEvent::Deleted(deleted));
                     cx.notify();
                 }
                 Err(error) => cx.emit(DashboardEvent::Failed(error)),

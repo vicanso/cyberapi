@@ -1,13 +1,14 @@
 //! What the whole application shares: the stores, where the reader is, and
 //! their settings.
 
-use super::run_store;
+use super::{run_serial, run_store};
 use crate::{Extras, this_build};
-use cyberapi_core::Timestamp;
+use async_lock::Mutex;
 use cyberapi_core::collection::SortOrder;
 use cyberapi_core::directory::Me;
 use cyberapi_core::model::Collection;
 use cyberapi_core::prefs::{AppPrefs, ColumnWidths, ThemeMode, Timeouts, WindowPrefs};
+use cyberapi_core::{CollectionId, Timestamp};
 use cyberapi_http::HttpEngine;
 use cyberapi_service::Sender;
 use cyberapi_service::backup::{self, BackupFailure};
@@ -37,6 +38,7 @@ impl AppStore {
             prefs,
             me: None,
             save_task: None,
+            saves: Arc::default(),
         });
         cx.set_global(Self {
             storage,
@@ -44,7 +46,10 @@ impl AppStore {
             extras,
             state: state.clone(),
         });
-        state.update(cx, |state, cx| state.reload_me(cx));
+        state.update(cx, |state, cx| {
+            state.reload_me(cx);
+            state.reopen_last_page(cx);
+        });
     }
 
     pub fn global(cx: &App) -> &Self {
@@ -119,6 +124,10 @@ pub struct AppState {
     me: Option<Me>,
     /// A save waiting for a drag to settle.
     save_task: Option<Task<()>>,
+    /// The saves of the settings, one at a time in the order made: each
+    /// writes the whole document, so a later one landing first would be
+    /// overwritten by an older.
+    saves: Arc<Mutex<()>>,
 }
 
 impl AppState {
@@ -158,14 +167,39 @@ impl AppState {
 
     /// F2.7.
     pub fn open_collection(&mut self, collection: Collection, cx: &mut Context<Self>) {
+        self.remember_page(Some(collection.id.clone()), cx);
         self.route = Route::Workspace(collection);
         cx.notify();
     }
 
     /// F2.8.
     pub fn go_home(&mut self, cx: &mut Context<Self>) {
+        self.remember_page(None, cx);
         self.route = Route::Dashboard;
         cx.notify();
+    }
+
+    /// F1.9: the page is kept, to open again at the next start.
+    fn remember_page(&mut self, collection: Option<CollectionId>, cx: &mut Context<Self>) {
+        if self.prefs.last_collection != collection {
+            self.prefs.last_collection = collection;
+            self.save_prefs(cx);
+        }
+    }
+
+    /// F1.1: back to the project open when the app last left it, if it is
+    /// still there to open.
+    fn reopen_last_page(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.prefs.last_collection.clone() else {
+            return;
+        };
+        let call = AppStore::global(cx).storage().collections().get(id);
+        run_store(cx, call, |this, result, cx| match result {
+            // Not if the reader has gone somewhere meanwhile.
+            Ok(collection) if this.route == Route::Dashboard => this.open_collection(collection, cx),
+            Ok(_) => {}
+            Err(_) => this.remember_page(None, cx),
+        });
     }
 
     /// F2.6: the choice is kept.
@@ -176,6 +210,75 @@ impl AppState {
         self.prefs.collection_sort = order;
         self.save_prefs(cx);
         cx.notify();
+    }
+
+    /// The reader's groups of the project list: `project` into `group`, or
+    /// into none for a blank one.
+    pub fn set_project_group(&mut self, project: CollectionId, group: &str, cx: &mut Context<Self>) {
+        let group = group.trim();
+        let changed = if group.is_empty() {
+            self.prefs.project_groups.remove(&project).is_some()
+        } else {
+            self.prefs.project_groups.insert(project, group.to_string()).as_deref() != Some(group)
+        };
+        if changed {
+            self.save_prefs(cx);
+            cx.notify();
+        }
+    }
+
+    /// The group `from` renamed `to`, or every project of it in none for a
+    /// blank name; folded or not as it was.
+    pub fn rename_group(&mut self, from: &str, to: &str, cx: &mut Context<Self>) {
+        let to = to.trim();
+        if from == to {
+            return;
+        }
+        let groups = std::mem::take(&mut self.prefs.project_groups);
+        self.prefs.project_groups = groups
+            .into_iter()
+            .filter_map(|(project, group)| {
+                if group.trim() != from {
+                    Some((project, group))
+                } else {
+                    (!to.is_empty()).then(|| (project, to.to_string()))
+                }
+            })
+            .collect();
+        let folded = self.prefs.folded_groups.iter().any(|group| group == from);
+        self.prefs.folded_groups.retain(|group| group != from && group != to);
+        if folded && !to.is_empty() {
+            self.prefs.folded_groups.push(to.to_string());
+        }
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    /// A group of the project list folded or unfolded; `None` is the
+    /// projects in none.
+    pub fn toggle_group(&mut self, group: Option<&str>, cx: &mut Context<Self>) {
+        let key = group.unwrap_or_default();
+        match self.prefs.folded_groups.iter().position(|folded| folded == key) {
+            Some(at) => {
+                self.prefs.folded_groups.remove(at);
+            }
+            None => self.prefs.folded_groups.push(key.to_string()),
+        }
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    pub fn is_group_folded(&self, group: Option<&str>) -> bool {
+        let key = group.unwrap_or_default();
+        self.prefs.folded_groups.iter().any(|folded| folded == key)
+    }
+
+    /// A deleted project leaves its group.
+    pub fn forget_project(&mut self, project: &CollectionId, cx: &mut Context<Self>) {
+        if self.prefs.project_groups.remove(project).is_some() {
+            self.save_prefs(cx);
+            cx.notify();
+        }
     }
 
     /// F14.1.
@@ -217,7 +320,14 @@ impl AppState {
 
     /// F15.3: every setting back to its default.
     pub fn reset_prefs(&mut self, cx: &mut Context<Self>) {
-        self.prefs = AppPrefs::default();
+        // Where the reader is, and how they grouped their projects, are not
+        // settings.
+        self.prefs = AppPrefs {
+            last_collection: self.prefs.last_collection.clone(),
+            project_groups: std::mem::take(&mut self.prefs.project_groups),
+            folded_groups: std::mem::take(&mut self.prefs.folded_groups),
+            ..AppPrefs::default()
+        };
         self.save_prefs(cx);
         cx.notify();
     }
@@ -310,12 +420,11 @@ impl AppState {
     /// choice next launch, not now, so it is only logged.
     fn save_prefs(&self, cx: &mut Context<Self>) {
         let call = AppStore::global(cx).storage().prefs().set_app(self.prefs.clone());
-        cx.background_spawn(async move {
-            if let Err(error) = call.await {
+        run_serial(cx, &self.saves, call, |_, result, _| {
+            if let Err(error) = result {
                 warn!(%error, "the settings could not be saved");
             }
-        })
-        .detach();
+        });
     }
 }
 
@@ -379,6 +488,81 @@ mod tests {
             state
         });
         (state, events)
+    }
+
+    /// F1.1 / F1.9: the project open at the last exit opens again; one that
+    /// is gone leaves the project list, and is forgotten.
+    #[gpui_kit::test]
+    async fn the_last_project_opens_again(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let shop = create(&store, "shop");
+        let start = |last: Option<CollectionId>, cx: &mut TestAppContext| {
+            let state = cx.update(|cx| {
+                let prefs = AppPrefs {
+                    last_collection: last,
+                    ..Default::default()
+                };
+                AppStore::init(store.storage(), Arc::new(NoEngine), prefs, Extras::default(), cx);
+                AppStore::global(cx).state().clone()
+            });
+            cx.run_until_parked();
+            state
+        };
+        let state = start(Some(shop.id.clone()), cx);
+        assert_eq!(
+            state.read_with(cx, |state, _| state.route().clone()),
+            Route::Workspace(shop.clone())
+        );
+        state.update(cx, |state, cx| state.go_home(cx));
+        cx.run_until_parked();
+        let kept = pollster::block_on(store.storage().prefs().app()).expect("prefs");
+        assert_eq!(kept.last_collection, None, "the list is where the reader left");
+
+        let state = start(Some(CollectionId::new("gone")), cx);
+        assert_eq!(state.read_with(cx, |state, _| state.route().clone()), Route::Dashboard);
+        assert_eq!(
+            state.read_with(cx, |state, _| state.prefs().last_collection.clone()),
+            None
+        );
+    }
+
+    /// The reader's groups: set, renamed, folded, kept by a reset, and left
+    /// by a deleted project.
+    #[gpui_kit::test]
+    async fn projects_go_in_the_readers_groups(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let (shop, blog) = (create(&store, "shop"), create(&store, "blog"));
+        let state = cx.update(|cx| {
+            AppStore::init(
+                store.storage(),
+                Arc::new(NoEngine),
+                AppPrefs::default(),
+                Extras::default(),
+                cx,
+            );
+            AppStore::global(cx).state().clone()
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            state.set_project_group(shop.id.clone(), " work ", cx);
+            state.set_project_group(blog.id.clone(), "work", cx);
+            state.toggle_group(Some("work"), cx);
+            state.rename_group("work", "jobs", cx);
+            state.set_project_group(blog.id.clone(), "", cx);
+            state.reset_prefs(cx);
+        });
+        cx.run_until_parked();
+        let kept = pollster::block_on(store.storage().prefs().app()).expect("prefs");
+        assert_eq!(
+            kept.project_groups.into_iter().collect::<Vec<_>>(),
+            [(shop.id.clone(), "jobs".to_string())]
+        );
+        assert_eq!(kept.folded_groups, ["jobs"], "folded as it was, under its new name");
+
+        state.update(cx, |state, cx| state.forget_project(&shop.id, cx));
+        cx.run_until_parked();
+        let kept = pollster::block_on(store.storage().prefs().app()).expect("prefs");
+        assert!(kept.project_groups.is_empty());
     }
 
     /// F15.3: the history of every project goes, and the state of every

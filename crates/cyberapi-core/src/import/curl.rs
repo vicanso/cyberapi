@@ -195,10 +195,11 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
         true
     });
     let has_body = !body.is_empty() || !form.is_empty();
-    let method = match (method, head) {
-        (Some(method), _) => HttpMethod::parse_lenient(&method),
+    // A body makes a GET a POST, even a GET asked for (F10.3).
+    let method = match (method.map(|method| HttpMethod::parse_lenient(&method)), head) {
+        (Some(HttpMethod::Get) | None, false) if has_body => HttpMethod::Post,
+        (Some(method), _) => method,
         (None, true) => HttpMethod::Head,
-        (None, false) if has_body => HttpMethod::Post,
         (None, false) => HttpMethod::Get,
     };
     let (content_type, body) = if !form.is_empty() {
@@ -285,6 +286,10 @@ mod tests {
         );
         assert_eq!(form.auth, [kv("me", "secret", true)]);
         assert_eq!(form.headers, [kv("User-Agent", "agent/1", true)]);
+
+        let get_with_body = request("curl -X GET https://a.test -H 'content-type: application/json' -d '{}'");
+        assert_eq!(get_with_body.method, HttpMethod::Post);
+        assert_eq!(request("curl -X GET https://a.test").method, HttpMethod::Get);
 
         let multipart = request("curl https://a.test/up -F 'note=hi' -F 'file=@/tmp/a.png;type=image/png'");
         assert_eq!(

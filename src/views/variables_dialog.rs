@@ -8,12 +8,13 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    Styled as _, Subscription, Window, div, px,
 };
 use rust_i18n::t;
 use std::collections::HashMap;
@@ -201,7 +202,7 @@ impl Render for VariablesEditor {
         v_flex()
             .gap_3()
             .child(div().text_sm().text_color(muted).child(hint))
-            .child(div().id("variables").max_h(px(420.)).overflow_y_scroll().child(body))
+            .child(div().id("variables").max_h(px(420.)).overflow_y_scrollbar().child(body))
             .child(if editable {
                 h_flex()
                     .child(

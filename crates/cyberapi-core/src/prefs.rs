@@ -4,9 +4,9 @@
 //! Both are documents: every field defaults, so a field added later reads
 //! from a document written before it, and one that is gone is ignored.
 
-use crate::ItemId;
 use crate::collection::SortOrder;
 use crate::model::HttpMethod;
+use crate::{CollectionId, ItemId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -20,6 +20,14 @@ pub struct AppPrefs {
     pub columns: ColumnWidths,
     pub window: WindowPrefs,
     pub timeouts: Timeouts,
+    /// The project open when the app last left it, opened again at the
+    /// next start (F1.1, F1.9); `None` was the project list.
+    pub last_collection: Option<CollectionId>,
+    /// The reader's groups of the project list: a project's group by its
+    /// id. A project not here is in none.
+    pub project_groups: BTreeMap<CollectionId, String>,
+    /// The groups folded on the project list; `""` is the projects in none.
+    pub folded_groups: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

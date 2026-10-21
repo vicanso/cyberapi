@@ -32,6 +32,10 @@ pub enum WorkspaceEvent {
     Failed(StoreError),
     /// An import was written: how many APIs and folders.
     Imported { apis: usize, folders: usize },
+    /// F3.9: an API's cURL command, for the clipboard.
+    Curl(String),
+    /// The command could not be made: why.
+    CurlFailed(String),
 }
 
 pub struct WorkspaceState {
@@ -44,10 +48,16 @@ pub struct WorkspaceState {
     keyword: String,
     /// The tree's changes, one at a time.
     gate: Arc<Mutex<()>>,
+    /// The saves of the reader's state, one at a time in the order made:
+    /// each writes the whole document.
+    saves: Arc<Mutex<()>>,
     /// The selected API's editor, while one is selected.
     api: Option<Entity<ApiState>>,
     /// The project's environment variables, for the URI's prefix (F4.4).
     environment: Vec<Variable>,
+    /// The project's global request headers, for the file an `openFile`
+    /// in one of them asks for before a send.
+    global_headers: Vec<Variable>,
     _poll: Option<Task<()>>,
 }
 
@@ -71,8 +81,10 @@ impl WorkspaceState {
             load: Load::Loading,
             keyword: String::new(),
             gate: Arc::default(),
+            saves: Arc::default(),
             api: None,
             environment: Vec::new(),
+            global_headers: Vec::new(),
             _poll: poll.map(|every| Self::poll(every, cx)),
         };
         state.reload(cx);
@@ -114,7 +126,7 @@ impl WorkspaceState {
             return;
         }
         self.collection = collection;
-        self.refresh_environment(cx);
+        self.refresh_kept_variables(cx);
         let call = self.sender.storage.tree().load(self.collection.id.clone());
         run_serial(cx, &self.gate, call, |this, result, cx| match result {
             Ok(data) => {
@@ -149,19 +161,40 @@ impl WorkspaceState {
         self.environment.iter().filter(|variable| variable.enabled)
     }
 
-    /// Reads the environment variables again: they changed, or the project.
-    pub fn refresh_environment(&mut self, cx: &mut Context<Self>) {
+    /// The global request headers, enabled or not.
+    pub fn global_headers(&self) -> &[Variable] {
+        &self.global_headers
+    }
+
+    /// Reads the variables kept here again: the project changed.
+    fn refresh_kept_variables(&mut self, cx: &mut Context<Self>) {
+        self.refresh_variables(VariableCategory::Environment, cx);
+        self.refresh_variables(VariableCategory::GlobalRequestHeader, cx);
+    }
+
+    /// Reads a category's variables again, when it is one kept here: they
+    /// changed.
+    pub fn refresh_variables(&mut self, category: VariableCategory, cx: &mut Context<Self>) {
+        if !matches!(
+            category,
+            VariableCategory::Environment | VariableCategory::GlobalRequestHeader
+        ) {
+            return;
+        }
         let call = self
             .sender
             .storage
             .variables()
-            .list(self.collection.id.clone(), VariableCategory::Environment);
-        run_store(cx, call, |this, result, cx| match result {
+            .list(self.collection.id.clone(), category);
+        run_store(cx, call, move |this, result, cx| match result {
             Ok(variables) => {
-                this.environment = variables;
+                match category {
+                    VariableCategory::Environment => this.environment = variables,
+                    _ => this.global_headers = variables,
+                }
                 cx.notify();
             }
-            Err(error) => warn!(%error, "the environment variables could not be read"),
+            Err(error) => warn!(%error, ?category, "variables could not be read"),
         });
     }
 
@@ -179,6 +212,14 @@ impl WorkspaceState {
         };
         if self.prefs.tab(&id, method) != tab {
             self.prefs.set_tab(&id, method, tab);
+            self.save_prefs(cx);
+            cx.notify();
+        }
+    }
+
+    /// F4.12: a new method opens on its default tab — the kept one goes.
+    pub fn method_changed(&mut self, api: &ItemId, cx: &mut Context<Self>) {
+        if self.prefs.tabs.remove(api).is_some() {
             self.save_prefs(cx);
             cx.notify();
         }
@@ -253,7 +294,7 @@ impl WorkspaceState {
 
     /// Loads (or loads again) the tree and the reader's state of it.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
-        self.refresh_environment(cx);
+        self.refresh_kept_variables(cx);
         let id = self.collection.id.clone();
         run_store(cx, self.sender.storage.tree().load(id.clone()), |this, result, cx| {
             match result {
@@ -488,13 +529,36 @@ impl WorkspaceState {
                     let _ = this.update(cx, |_, cx| cx.emit(WorkspaceEvent::Failed(error)));
                 }
             }
-            let _ = this.update(cx, |this, cx| this.refresh_environment(cx));
+            let _ = this.update(cx, |this, cx| this.refresh_variables(VariableCategory::Environment, cx));
         })
         .detach();
     }
 
     /// F11.1 / F11.2: the project, or a folder with what is under it, in
     /// CyberAPI's format, and the file name it is saved as.
+    /// F3.9: the API's record as JSON, which an import reads back.
+    pub fn api_config(&self, id: &ItemId) -> Option<String> {
+        let api = self.data.apis.iter().find(|api| &api.id == id)?;
+        Some(cyberapi_core::import::api_config(api))
+    }
+
+    /// F3.9 / F7.8: the API's cURL command, prepared as sending would
+    /// prepare its stored request.
+    pub fn copy_curl(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        let Some(api) = self.data.apis.iter().find(|api| &api.id == id) else {
+            return;
+        };
+        let call = cyberapi_service::curl(self.sender.clone(), self.collection.id.clone(), api.request.clone());
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(call).await;
+            let _ = this.update(cx, |_, cx| match result {
+                Ok(command) => cx.emit(WorkspaceEvent::Curl(command)),
+                Err(failure) => cx.emit(WorkspaceEvent::CurlFailed(failure.to_string())),
+            });
+        })
+        .detach();
+    }
+
     pub fn export(&self, folder: Option<&ItemId>) -> (String, String) {
         let name = folder
             .and_then(|id| self.tree.get(id))
@@ -536,12 +600,11 @@ impl WorkspaceState {
             .storage
             .prefs()
             .set_workspace(self.collection.id.clone(), self.prefs.clone());
-        cx.background_spawn(async move {
-            if let Err(error) = call.await {
+        run_serial(cx, &self.saves, call, |_, result, _| {
+            if let Err(error) = result {
                 warn!(%error, "the workspace state could not be saved");
             }
-        })
-        .detach();
+        });
     }
 }
 
@@ -557,7 +620,7 @@ mod tests {
     use cyberapi_core::template::NoFiles;
     use cyberapi_core::tree::TreeError;
     use cyberapi_http::{HttpEngine, PreparedRequest, SendFuture};
-    use cyberapi_store::{MemoryStore, NewCollection};
+    use cyberapi_store::{MemoryStore, NewCollection, NewVariable};
     use gpui_kit::{Entity, TestAppContext};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -638,6 +701,48 @@ mod tests {
         })
     }
 
+    /// The global request headers are kept beside the environment, so a
+    /// send knows the file an `openFile` in one asks for.
+    #[gpui_kit::test]
+    async fn the_global_headers_are_kept(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let variable = |category, name: &str, value: &str| NewVariable {
+            collection: collection.id.clone(),
+            category,
+            name: name.into(),
+            value: value.into(),
+            enabled: true,
+        };
+        for new in [
+            variable(VariableCategory::Environment, "dev", "http://dev"),
+            variable(VariableCategory::GlobalRequestHeader, "X-Sign", "{{openFile()}}"),
+        ] {
+            storage.variables().create(new).await.expect("create");
+        }
+        let state = open(&storage, collection.clone(), cx);
+        let names = |state: &Entity<WorkspaceState>, cx: &mut TestAppContext| {
+            state.read_with(cx, |state, _| {
+                let names = |list: &[Variable]| list.iter().map(|v| v.name.clone()).collect::<Vec<_>>();
+                let environment: Vec<Variable> = state.environments().cloned().collect();
+                (names(&environment), names(state.global_headers()))
+            })
+        };
+        assert_eq!(names(&state, cx), (vec!["dev".into()], vec!["X-Sign".into()]));
+        let needs = state.read_with(cx, |state, _| {
+            cyberapi_core::send::needs(&HttpRequest::default(), state.global_headers())
+        });
+        assert!(needs.picks_file);
+
+        let new = variable(VariableCategory::GlobalRequestHeader, "X-Trace", "1");
+        storage.variables().create(new).await.expect("create");
+        state.update(cx, |state, cx| {
+            state.refresh_variables(VariableCategory::GlobalRequestHeader, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(names(&state, cx).1, ["X-Sign", "X-Trace"]);
+    }
+
     #[gpui_kit::test]
     async fn a_new_api_is_selected_inside_its_opened_folder(cx: &mut TestAppContext) {
         let storage = MemoryStore::new().storage();
@@ -657,6 +762,26 @@ mod tests {
             assert_eq!(state.selected(), Some(&login));
             assert_eq!(state.selected_api().map(|api| api.name.as_str()), Some("login"));
         });
+    }
+
+    /// Each change saves the whole state; the last one made is the one kept,
+    /// however the saves are scheduled.
+    #[gpui_kit::test]
+    async fn the_last_state_is_the_one_saved(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_folder(None, "users".into(), cx));
+        cx.run_until_parked();
+        let users = find(&state, "users", cx);
+        state.update(cx, |state, cx| {
+            for _ in 0..9 {
+                state.toggle_folder(&users, cx);
+            }
+        });
+        cx.run_until_parked();
+        let kept = storage.prefs().workspace(collection.id.clone()).await.expect("prefs");
+        assert_eq!(kept, state.read_with(cx, |state, _| state.prefs.clone()));
     }
 
     #[gpui_kit::test]
@@ -942,9 +1067,31 @@ mod tests {
         });
         assert_eq!(*replaced.borrow(), 1);
         let id = api.read_with(cx, |api, _| api.api().clone());
-        // Not saved until it is changed (F7.10).
+        // Not saved until it is changed (F7.10): not by sending it,
         cx.run_until_parked();
         assert_eq!(stored(&storage, &collection, &id).uri, "http://second.test");
+        std::thread::sleep(Duration::from_millis(210));
+        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        cx.run_until_parked();
+        assert_eq!(stored(&storage, &collection, &id).uri, "http://second.test");
+        // nor by leaving the API.
+        drop(api);
+        state.update(cx, |state, cx| state.create_api(None, "other".into(), cx));
+        cx.run_until_parked();
+        assert_eq!(stored(&storage, &collection, &id).uri, "http://second.test");
+
+        // Changed, it is saved whole.
+        state.update(cx, |state, cx| state.select(&id, cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| api.choose_response(&first, cx));
+        api.update(cx, |api, cx| api.set_method(HttpMethod::Put, cx));
+        cx.run_until_parked();
+        let saved = stored(&storage, &collection, &id);
+        assert_eq!(
+            (saved.method, saved.uri.as_str()),
+            (HttpMethod::Put, "http://first.test")
+        );
 
         api.update(cx, |api, cx| api.clear_history(cx));
         cx.run_until_parked();
@@ -960,13 +1107,17 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(state.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Query));
         state.update(cx, |state, cx| state.set_tab(RequestTab::Auth, cx));
+        cx.run_until_parked();
+        let again = open(&storage, collection.clone(), cx);
+        assert_eq!(again.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Auth));
+
+        // F4.12: another method opens on its default tab.
         let api = editor(&state, cx);
         api.update(cx, |api, cx| api.set_method(HttpMethod::Post, cx));
         cx.run_until_parked();
-        assert_eq!(state.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Auth));
-
+        assert_eq!(state.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Body));
         let again = open(&storage, collection, cx);
-        assert_eq!(again.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Auth));
+        assert_eq!(again.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Body));
     }
 
     #[gpui_kit::test]

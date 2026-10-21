@@ -6,18 +6,19 @@ use cyberapi_core::response::{
     BodyKind, DISPLAY_LIMIT, HttpResponse, StatusLevel, clip_text, format_duration, format_size, status_level,
     status_text,
 };
+use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle};
 use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, Hsla, Image, ImageFormat, ImageSource,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, img, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, div, img, px,
 };
 use rust_i18n::t;
 use std::sync::Arc;
@@ -160,27 +161,41 @@ impl ResponsePanel {
                 .into_any_element(),
             (None, Some(response)) => {
                 let status: AnyElement = match response.status {
-                    Some(code) => div()
-                        .font_semibold()
-                        .text_color(self.status_color(code, cx))
-                        .child(format!("{code} {}", status_text(code)))
-                        .into_any_element(),
-                    None => div()
-                        .font_semibold()
-                        .text_color(cx.theme().danger)
-                        .child(t!("response.failed").to_string())
-                        .into_any_element(),
+                    Some(code) => {
+                        let color = self.status_color(code, cx);
+                        h_flex()
+                            .h(px(22.))
+                            .px_2()
+                            .items_center()
+                            .rounded_full()
+                            .bg(color.opacity(0.16))
+                            .font_semibold()
+                            .text_color(color)
+                            .child(format!("{code} {}", status_text(code)))
+                            .into_any_element()
+                    }
+                    None => {
+                        let color = cx.theme().danger;
+                        h_flex()
+                            .h(px(22.))
+                            .px_2()
+                            .items_center()
+                            .rounded_full()
+                            .bg(color.opacity(0.16))
+                            .font_semibold()
+                            .text_color(color)
+                            .child(t!("response.failed").to_string())
+                            .into_any_element()
+                    }
                 };
                 // F7.2: the size, and how much smaller it came.
-                let size = if response.body_size > 0 && response.body_size < response.body.len() as u64 {
-                    format!(
-                        "{} ({} {})",
-                        format_size(response.body.len() as u64),
-                        format_size(response.body_size),
-                        t!("response.compressed")
-                    )
-                } else {
-                    format_size(response.size())
+                let size = match response.compression() {
+                    Some((wire, percent)) => format!(
+                        "{} ({})",
+                        format_size(response.body_omitted.unwrap_or(response.body.len() as u64)),
+                        t!("response.compressed", size = format_size(wire), percent = percent)
+                    ),
+                    None => format_size(response.size()),
                 };
                 h_flex()
                     .gap_3()
@@ -244,23 +259,27 @@ impl ResponsePanel {
     }
 
     fn render_body(&self, response: &HttpResponse, cx: &mut Context<Self>) -> AnyElement {
+        // F5.7: why it failed, as the failure it is.
         if let Some(error) = &response.error {
             return div()
                 .p_3()
-                .text_sm()
-                .text_color(cx.theme().danger)
-                .child(error.clone())
+                .child(Alert::error("response-error", error.clone()).title(t!("response.failed").to_string()))
                 .into_any_element();
         }
         if let Some(size) = response.body_omitted {
-            return note(t!("response.omitted", size = format_size(size)).to_string(), false, cx);
+            return note(
+                t!("response.omitted", size = format_size(size)).to_string(),
+                Vec::new(),
+                cx,
+            );
         }
         match response.body_kind() {
             BodyKind::Json | BodyKind::Text => v_flex()
                 .size_full()
                 .when(self.clipped, |this| {
                     let shown = format_size(DISPLAY_LIMIT as u64);
-                    this.child(note(t!("response.clipped", size = shown).to_string(), true, cx))
+                    let text = t!("response.clipped", size = shown).to_string();
+                    this.child(note(text, vec![save_button(cx)], cx))
                 })
                 .child(
                     div().flex_1().min_h_0().relative().child(
@@ -288,9 +307,14 @@ impl ResponsePanel {
                         .max_h_full(),
                     )
                     .into_any_element(),
-                None => binary(response, cx),
+                None => viewed_outside(t!("response.image", size = body_size(response)).to_string(), cx),
             },
-            BodyKind::Pdf | BodyKind::Binary => binary(response, cx),
+            BodyKind::Pdf => viewed_outside(t!("response.pdf", size = body_size(response)).to_string(), cx),
+            BodyKind::Binary => note(
+                t!("response.binary", size = body_size(response)).to_string(),
+                vec![save_button(cx)],
+                cx,
+            ),
         }
     }
 
@@ -299,7 +323,7 @@ impl ResponsePanel {
         v_flex()
             .id("response-headers")
             .size_full()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .p_3()
             .gap_1()
             .text_sm()
@@ -355,22 +379,44 @@ fn image_format(content_type: &str) -> Option<ImageFormat> {
         ("webp", ImageFormat::Webp),
         ("svg", ImageFormat::Svg),
         ("bmp", ImageFormat::Bmp),
+        ("tif", ImageFormat::Tiff),
+        ("icon", ImageFormat::Ico),
+        ("portable-", ImageFormat::Pnm),
     ]
     .into_iter()
     .find(|(name, _)| lower.contains(name))
     .map(|(_, format)| format)
 }
 
-fn binary(response: &HttpResponse, cx: &mut Context<ResponsePanel>) -> AnyElement {
-    note(
-        t!("response.binary", size = format_size(response.body.len() as u64)).to_string(),
-        true,
-        cx,
-    )
+fn body_size(response: &HttpResponse) -> String {
+    format_size(response.body.len() as u64)
 }
 
-/// A line about the body, with a button that saves it whole where `saves`.
-fn note(text: String, saves: bool, cx: &mut Context<ResponsePanel>) -> AnyElement {
+/// F7.4: a body the app cannot draw, which something outside it can.
+fn viewed_outside(text: String, cx: &mut Context<ResponsePanel>) -> AnyElement {
+    let view = Button::new("response-view")
+        .outline()
+        .xsmall()
+        .label(t!("response.view_outside").to_string())
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.api.update(cx, |api, cx| api.view_body(cx));
+        }));
+    note(text, vec![view, save_button(cx)], cx)
+}
+
+/// Saves the body whole (F7.5).
+fn save_button(cx: &mut Context<ResponsePanel>) -> Button {
+    Button::new("response-save")
+        .outline()
+        .xsmall()
+        .label(t!("response.save_body").to_string())
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.api.update(cx, |api, cx| api.save_body(cx));
+        }))
+}
+
+/// A line about the body, and what can be done with it.
+fn note(text: String, buttons: Vec<Button>, cx: &mut Context<ResponsePanel>) -> AnyElement {
     h_flex()
         .p_3()
         .gap_3()
@@ -378,17 +424,7 @@ fn note(text: String, saves: bool, cx: &mut Context<ResponsePanel>) -> AnyElemen
         .text_sm()
         .text_color(cx.theme().muted_foreground)
         .child(div().flex_1().min_w_0().child(text))
-        .when(saves, |this| {
-            this.child(
-                Button::new("response-save")
-                    .outline()
-                    .xsmall()
-                    .label(t!("response.save_body").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.api.update(cx, |api, cx| api.save_body(cx));
-                    })),
-            )
-        })
+        .children(buttons)
         .into_any_element()
 }
 
@@ -438,6 +474,11 @@ impl Render for ResponsePanel {
                 )
                 .into_any_element(),
         };
-        v_flex().size_full().child(summary).child(content)
+        v_flex()
+            .size_full()
+            .border_l_1()
+            .border_color(cx.theme().border)
+            .child(summary)
+            .child(content)
     }
 }

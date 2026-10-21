@@ -43,7 +43,7 @@ pub enum ApiEvent {
     Curl(String),
     /// A body was saved in the downloads folder, there (F7.5).
     Saved(String),
-    /// A body could not be saved: why.
+    /// A body could not be saved, or opened outside the app: why.
     NotSaved(String),
 }
 
@@ -175,6 +175,10 @@ impl ApiState {
         if self.request.method != method {
             self.request.method = method;
             self.save_now(cx);
+            let api = self.api.clone();
+            let _ = self
+                .workspace
+                .update(cx, |workspace, cx| workspace.method_changed(&api, cx));
         }
     }
 
@@ -261,16 +265,19 @@ impl ApiState {
             .tree()
             .save_request(self.collection.clone(), self.api.clone(), request.clone());
         // Marked saved now, so a change while the call is out saves again.
-        self.saved = Some(request);
-        run_store(cx, call, |this, result, cx| match result {
+        self.saved = Some(request.clone());
+        run_store(cx, call, move |this, result, cx| match result {
             Ok(setting) => {
                 let _ = this
                     .workspace
                     .update(cx, |workspace, cx| workspace.api_saved(setting, cx));
             }
             Err(error) => {
-                // Not saved after all: the next save goes out.
-                this.saved = None;
+                // Not saved after all: the next save goes out — unless the
+                // editor has moved on to a request of the history meanwhile.
+                if this.saved.as_ref() == Some(&request) {
+                    this.saved = None;
+                }
                 cx.emit(ApiEvent::Failed(error));
             }
         });
@@ -332,6 +339,18 @@ impl ApiState {
         }
     }
 
+    /// F7.4: the shown body opened outside the app.
+    pub fn view_body(&mut self, cx: &mut Context<Self>) {
+        let Some(response) = self.shown_response() else {
+            return;
+        };
+        if let Err(message) =
+            this_build::view_outside(&response.file_name(), &response.content_type(), &response.body, cx)
+        {
+            cx.emit(ApiEvent::NotSaved(message));
+        }
+    }
+
     fn save(&self, name: String, body: Vec<u8>, cx: &mut Context<Self>) {
         let saving = cx.background_spawn(async move { this_build::save_to_downloads(&name, &body) });
         cx.spawn(async move |this, cx| {
@@ -352,8 +371,13 @@ impl ApiState {
         };
         self.shown = Some(response.id.clone());
         if self.request != response.request {
-            self.request = response.request.clone();
-            self.save_task = None;
+            let restored = response.request.clone();
+            // An edit still waiting is kept first.
+            self.save_now(cx);
+            self.request = restored;
+            // F7.10: the restored request is saved by the next edit, and not
+            // before — leaving the API or sending it writes nothing.
+            self.saved = Some(self.request.clone());
             cx.emit(ApiEvent::RequestReplaced);
         }
         cx.notify();

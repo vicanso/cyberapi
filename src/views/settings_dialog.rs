@@ -10,11 +10,12 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px, size,
+    Render, SharedString, Styled as _, Subscription, Task, Window, div, px, size,
 };
 use rust_i18n::t;
 use std::time::Duration;
@@ -409,15 +410,18 @@ impl Render for SettingsView {
                 )
                 .into_any_element()
             });
-        let about_rows: Vec<(String, SharedString)> = vec![
+        // F1.7.
+        let mut about_rows: Vec<(String, SharedString)> = vec![
             (t!("settings.version").to_string(), crate::VERSION.into()),
-            (
-                t!("settings.platform").to_string(),
-                format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH).into(),
-            ),
+            (t!("settings.platform").to_string(), this_build::platform().into()),
+        ];
+        if let Some(version) = this_build::os_version() {
+            about_rows.push((t!("settings.os_version").to_string(), version.into()));
+        }
+        about_rows.extend([
             ("User-Agent".to_string(), this_build::user_agent().into()),
             (t!("settings.data").to_string(), this_build::data_location().into()),
-        ];
+        ]);
         let about = v_flex()
             .gap_1()
             .text_sm()
@@ -432,7 +436,7 @@ impl Render for SettingsView {
         v_flex()
             .id("settings")
             .max_h(room)
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .pr_2()
             .gap_5()
             .child(section(t!("settings.theme").to_string(), theme))

@@ -25,7 +25,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::any::AnyRow;
 use sqlx::{AnyConnection, AnyPool, Row as _};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 
 pub(crate) fn workspace_scope(collection: &CollectionId) -> String {
@@ -265,38 +265,63 @@ impl Scoped {
     }
 }
 
+impl Scoped {
+    /// The projects the reader can see, each with the reader's role, in the
+    /// order they were made.
+    async fn visible(&self) -> Result<Vec<Collection>, StoreError> {
+        let account = self.account();
+        let found = sqlx::query(self.dialect.sql(sql::COLLECTIONS_VISIBLE))
+            .bind(account.clone())
+            .bind(account.clone())
+            .bind(account)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+        // One row per way the project is reached; fold them, keeping the
+        // order projects were made in.
+        let mut order: Vec<CollectionId> = Vec::new();
+        let mut reached: HashMap<CollectionId, (Collection, Vec<(String, String)>)> = HashMap::new();
+        for row in &found {
+            let collection = rows::collection(row, 1)?;
+            let way = (rows::text(row, 8)?, rows::text(row, 9)?);
+            let entry = reached.entry(collection.id.clone()).or_insert_with(|| {
+                order.push(collection.id.clone());
+                (collection, Vec::new())
+            });
+            entry.1.push(way);
+        }
+        Ok(order
+            .into_iter()
+            .filter_map(|id| reached.remove(&id))
+            .filter_map(|(mut collection, ways)| {
+                collection.role = fold_roles(ways.iter().map(|(k, r)| (k.as_str(), r.as_str())))?;
+                Some(collection)
+            })
+            .collect())
+    }
+}
+
 impl CollectionStore for Scoped {
     fn list(&self) -> StoreFuture<Vec<Collection>> {
+        self.run(|this| async move { this.visible().await })
+    }
+
+    fn api_counts(&self) -> StoreFuture<BTreeMap<CollectionId, usize>> {
         self.run(|this| async move {
-            let account = this.account();
-            let found = sqlx::query(this.dialect.sql(sql::COLLECTIONS_VISIBLE))
-                .bind(account.clone())
-                .bind(account.clone())
-                .bind(account)
+            let visible: HashSet<CollectionId> = this.visible().await?.into_iter().map(|c| c.id).collect();
+            let found = sqlx::query(this.dialect.sql(sql::API_COUNTS))
                 .fetch_all(&this.pool)
                 .await
                 .map_err(db)?;
-            // One row per way the project is reached; fold them, keeping the
-            // order projects were made in.
-            let mut order: Vec<CollectionId> = Vec::new();
-            let mut reached: HashMap<CollectionId, (Collection, Vec<(String, String)>)> = HashMap::new();
+            let mut counts = BTreeMap::new();
             for row in &found {
-                let collection = rows::collection(row, 1)?;
-                let way = (rows::text(row, 8)?, rows::text(row, 9)?);
-                let entry = reached.entry(collection.id.clone()).or_insert_with(|| {
-                    order.push(collection.id.clone());
-                    (collection, Vec::new())
-                });
-                entry.1.push(way);
+                let id = CollectionId::new(rows::text(row, 0)?);
+                let count = usize::try_from(row.try_get::<i64, _>(1).map_err(db)?).unwrap_or_default();
+                if visible.contains(&id) {
+                    counts.insert(id, count);
+                }
             }
-            Ok(order
-                .into_iter()
-                .filter_map(|id| reached.remove(&id))
-                .filter_map(|(mut collection, ways)| {
-                    collection.role = fold_roles(ways.iter().map(|(k, r)| (k.as_str(), r.as_str())))?;
-                    Some(collection)
-                })
-                .collect())
+            Ok(counts)
         })
     }
 

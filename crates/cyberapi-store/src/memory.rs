@@ -16,7 +16,7 @@ use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, Timestamp, VariableId};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use ulid::Ulid;
 
@@ -163,6 +163,16 @@ impl CollectionStore for MemoryStore {
 
     fn get(&self, id: CollectionId) -> StoreFuture<Collection> {
         self.run(move |state, _| state.collection(&id).cloned())
+    }
+
+    fn api_counts(&self) -> StoreFuture<BTreeMap<CollectionId, usize>> {
+        self.run(|state, _| {
+            let mut counts = BTreeMap::new();
+            for api in &state.apis {
+                *counts.entry(api.collection.clone()).or_insert(0) += 1;
+            }
+            Ok(counts)
+        })
     }
 
     fn create(&self, input: NewCollection) -> StoreFuture<Collection> {

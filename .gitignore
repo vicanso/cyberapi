@@ -3,9 +3,11 @@
 **/*.rs.bk
 *.pdb
 
-# web bundle output (scripts/web-bundle.sh): the wasm and the kit's icons
+# web bundle output (scripts/web-bundle.sh): the wasm, the kit's icons and
+# the monospace font copied from resources/
 cyberapi-web/www/wasm/
 cyberapi-web/www/assets/
+cyberapi-web/www/fonts/JetBrainsMono-*
 
 .DS_Store
 .gstack/

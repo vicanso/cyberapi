@@ -39,6 +39,7 @@ use cyberapi_core::response::HttpResponse;
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -117,6 +118,9 @@ pub trait CollectionStore: Send + Sync {
     /// Removes the project and everything in it: folders, APIs, variables
     /// and the readers' workspace state (#5 — the old app kept the variables).
     fn delete(&self, id: CollectionId) -> StoreFuture<()>;
+    /// How many APIs each project the reader can see holds, in its folders
+    /// too, for the project list; a project with none is not there.
+    fn api_counts(&self) -> StoreFuture<BTreeMap<CollectionId, usize>>;
 }
 
 /// A project's folders and APIs (M3, F4.1). Each change follows the plan

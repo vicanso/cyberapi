@@ -32,6 +32,7 @@ use cyberapi_store::{
 };
 use rows::{API_COLUMNS, COLLECTION_COLUMNS, FOLDER_COLUMNS, VARIABLE_COLUMNS};
 use serde::de::DeserializeOwned;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
@@ -261,6 +262,20 @@ impl CollectionStore for TursoStore {
         self.run(move |inner, _| async move {
             let conn = inner.conn.lock().await;
             get_collection(&conn, &id).await
+        })
+    }
+
+    fn api_counts(&self) -> StoreFuture<BTreeMap<CollectionId, usize>> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            let counts = query_all(
+                &conn,
+                "SELECT collection, COUNT(*) FROM api_settings GROUP BY collection",
+                (),
+                rows::api_count,
+            )
+            .await?;
+            Ok(counts.into_iter().collect())
         })
     }
 

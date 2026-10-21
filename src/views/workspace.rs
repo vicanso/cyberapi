@@ -8,6 +8,7 @@ mod request_editor;
 mod response_panel;
 mod tree_panel;
 
+use crate::APP_NAME;
 use crate::i18n;
 use crate::states::{ApiState, AppStore, WorkspaceEvent, WorkspaceState};
 use crate::views::name_dialog::open_name_dialog;
@@ -48,6 +49,45 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
+/// A page in a Mac's browser: `secondary` is Ctrl in any page, and the
+/// kit gives its fields their Cmd shortcuts only in the macOS build, so a
+/// Mac reader's Cmd-A, Cmd-Z, Cmd-Enter… did nothing. These are the kit's
+/// macOS bindings, and Send's, beside the Ctrl ones the page keeps.
+pub fn bind_mac_page_keys(cx: &mut App) {
+    use gpui_kit::component::input::{
+        Copy, Cut, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd, DeleteToPreviousWordStart, MoveEnd,
+        MoveHome, MoveToEnd, MoveToNextWord, MoveToPreviousWord, MoveToStart, Paste, Redo, SelectAll, SelectToEnd,
+        SelectToEndOfLine, SelectToNextWordEnd, SelectToPreviousWordStart, SelectToStart, SelectToStartOfLine, Undo,
+    };
+    const INPUT: Option<&str> = Some("Input");
+    cx.bind_keys([
+        KeyBinding::new("cmd-a", SelectAll, INPUT),
+        KeyBinding::new("cmd-c", Copy, INPUT),
+        KeyBinding::new("cmd-x", Cut, INPUT),
+        KeyBinding::new("cmd-v", Paste, INPUT),
+        KeyBinding::new("cmd-z", Undo, INPUT),
+        KeyBinding::new("cmd-shift-z", Redo, INPUT),
+        KeyBinding::new("cmd-left", MoveHome, INPUT),
+        KeyBinding::new("cmd-right", MoveEnd, INPUT),
+        KeyBinding::new("cmd-up", MoveToStart, INPUT),
+        KeyBinding::new("cmd-down", MoveToEnd, INPUT),
+        KeyBinding::new("alt-left", MoveToPreviousWord, INPUT),
+        KeyBinding::new("alt-right", MoveToNextWord, INPUT),
+        KeyBinding::new("shift-cmd-left", SelectToStartOfLine, INPUT),
+        KeyBinding::new("shift-cmd-right", SelectToEndOfLine, INPUT),
+        KeyBinding::new("cmd-shift-up", SelectToStart, INPUT),
+        KeyBinding::new("cmd-shift-down", SelectToEnd, INPUT),
+        KeyBinding::new("alt-shift-left", SelectToPreviousWordStart, INPUT),
+        KeyBinding::new("alt-shift-right", SelectToNextWordEnd, INPUT),
+        KeyBinding::new("cmd-backspace", DeleteToBeginningOfLine, INPUT),
+        KeyBinding::new("cmd-delete", DeleteToEndOfLine, INPUT),
+        KeyBinding::new("alt-backspace", DeleteToPreviousWordStart, INPUT),
+        KeyBinding::new("alt-delete", DeleteToNextWordEnd, INPUT),
+        KeyBinding::new("cmd-enter", Send, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-enter", Send, Some("Workspace > Input")),
+    ]);
+}
+
 /// The color of a method's label (§6): DELETE red, the methods with a body
 /// green, the rest blue.
 pub fn method_color(method: HttpMethod, cx: &App) -> Hsla {
@@ -56,6 +96,16 @@ pub fn method_color(method: HttpMethod, cx: &App) -> Hsla {
         HttpMethod::Delete => theme.danger,
         method if method.has_body() => theme.success,
         _ => theme.info,
+    }
+}
+
+/// The method short enough for a list's narrow column: `DEL`, `OPT`.
+pub fn method_label(method: HttpMethod) -> &'static str {
+    match method {
+        HttpMethod::Delete => "DEL",
+        HttpMethod::Options => "OPT",
+        HttpMethod::Connect => "CONN",
+        method => method.as_str(),
     }
 }
 
@@ -171,6 +221,8 @@ pub struct WorkspaceView {
     selected: Option<Selected>,
     columns: Entity<ResizableState>,
     focus: FocusHandle,
+    /// The window title last set.
+    title: String,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -184,6 +236,7 @@ impl WorkspaceView {
         let subscriptions = vec![
             cx.observe_in(&state, window, |this, _, window, cx| {
                 this.follow_selection(window, cx);
+                this.follow_title(window, cx);
                 cx.notify();
             }),
             cx.subscribe_in(&state, window, |_, _, event, window, cx| match event {
@@ -195,6 +248,13 @@ impl WorkspaceView {
                 }
                 WorkspaceEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);
+                }
+                WorkspaceEvent::Curl(command) => {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(command.clone()));
+                    window.push_notification(Notification::success(t!("response.curl_copied").to_string()), cx);
+                }
+                WorkspaceEvent::CurlFailed(message) => {
+                    window.push_notification(Notification::error(message.clone()), cx);
                 }
             }),
         ];
@@ -210,16 +270,41 @@ impl WorkspaceView {
             selected: None,
             columns,
             focus,
+            title: String::new(),
             _subscriptions: subscriptions,
         };
         view.follow_selection(window, cx);
+        view.follow_title(window, cx);
         view
+    }
+
+    /// F1.5: the window is named after the selected API, or the project
+    /// while none is.
+    fn follow_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let name = state
+            .selected()
+            .and_then(|id| state.tree().get(id))
+            .map(|node| node.name().to_string())
+            .unwrap_or_else(|| state.collection().name.clone());
+        let title = format!("{APP_NAME} - {name}");
+        if title != self.title {
+            window.set_window_title(&title);
+            self.title = title;
+        }
     }
 
     /// Makes the editor and response columns of the selected API's state, or
     /// drops them when nothing is selected.
     fn follow_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let api: Option<Entity<ApiState>> = self.state.read(cx).api().cloned();
+        // Two columns become three, or three two: the sizes start again from
+        // the kept widths. Carried over, the empty column's measured width
+        // and the new column's would overflow, and flex would squeeze the
+        // tree to fit.
+        if api.is_some() != self.selected.is_some() {
+            self.columns = cx.new(|_| ResizableState::default());
+        }
         match api {
             Some(api) if self.selected.as_ref().map(|s| s.api) != Some(api.entity_id()) => {
                 let state = self.state.clone();
@@ -241,22 +326,41 @@ impl WorkspaceView {
     }
 
     /// F14.5: the widths kept — the tree in pixels, the editor as its share
-    /// of the rest.
-    fn columns_resized(&mut self, columns: &Entity<ResizableState>, cx: &mut Context<Self>) {
+    /// of the rest. Moving the tree's edge keeps that share: the editor's
+    /// edge is the only one that changes it.
+    fn columns_resized(&mut self, columns: &Entity<ResizableState>, window: &mut Window, cx: &mut Context<Self>) {
         let sizes = columns.read(cx).sizes().clone();
-        let [tree, editor, response] = sizes[..] else {
-            return;
-        };
-        let rest = f32::from(editor) + f32::from(response);
-        if rest <= 0. {
-            return;
-        }
-        let widths = ColumnWidths {
-            tree: f32::from(tree),
-            editor_ratio: (f32::from(editor) / rest).clamp(0.2, 0.8),
-        };
         let app = AppStore::global(cx).state().clone();
+        let kept = app.read(cx).prefs().columns;
+        let (widths, editor) = match sizes[..] {
+            [tree, editor, response] => {
+                let rest = f32::from(editor) + f32::from(response);
+                if rest <= 0. {
+                    return;
+                }
+                let tree = f32::from(tree);
+                if (tree - kept.tree).abs() > 0.5 {
+                    let widths = ColumnWidths { tree, ..kept };
+                    (widths, Some(rest * kept.editor_ratio.clamp(0.2, 0.8)))
+                } else {
+                    let editor_ratio = (f32::from(editor) / rest).clamp(0.2, 0.8);
+                    (ColumnWidths { tree, editor_ratio }, None)
+                }
+            }
+            // Nothing selected: the tree and the space beside it.
+            [tree, _] => (
+                ColumnWidths {
+                    tree: f32::from(tree),
+                    ..kept
+                },
+                None,
+            ),
+            _ => return,
+        };
         app.update(cx, |app, cx| app.set_columns(widths, cx));
+        if let Some(editor) = editor {
+            columns.update(cx, |columns, cx| columns.resize_panel(1, px(editor), window, cx));
+        }
     }
 
     /// F4.14: the editor column at `share` of what the tree leaves, kept
@@ -269,7 +373,7 @@ impl WorkspaceView {
         let width = (f32::from(editor) + f32::from(response)) * share;
         let columns = self.columns.clone();
         columns.update(cx, |columns, cx| columns.resize_panel(1, px(width), window, cx));
-        self.columns_resized(&columns, cx);
+        self.columns_resized(&columns, window, cx);
     }
 
     pub fn collection_id(&self) -> &CollectionId {
@@ -286,17 +390,19 @@ impl WorkspaceView {
         &self.state
     }
 
-    fn render_nothing_selected(&self) -> impl IntoElement {
+    fn render_nothing_selected(&self, _: &App) -> impl IntoElement {
         v_flex().size_full().justify_center().items_center().child(
-            Empty::new().header(
-                EmptyHeader::new()
-                    .media(
-                        EmptyMedia::new()
-                            .with_variant(EmptyMediaVariant::Icon)
-                            .child(Icon::new(IconName::FileText)),
-                    )
-                    .title(EmptyTitle::new().child(t!("workspace.nothing_selected").to_string()))
-                    .description(EmptyDescription::new().child(t!("workspace.select_hint").to_string())),
+            v_flex().max_w(px(420.)).px_8().items_center().child(
+                Empty::new().header(
+                    EmptyHeader::new()
+                        .media(
+                            EmptyMedia::new()
+                                .with_variant(EmptyMediaVariant::Icon)
+                                .child(Icon::new(IconName::FileText)),
+                        )
+                        .title(EmptyTitle::new().child(t!("workspace.nothing_selected").to_string()))
+                        .description(EmptyDescription::new().child(t!("workspace.select_hint").to_string())),
+                ),
             ),
         )
     }
@@ -310,6 +416,11 @@ impl Focusable for WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A closed dialog leaves nothing focused; the workspace takes it
+        // back, so its keys (F3.12) keep working.
+        if window.focused(cx).is_none() {
+            self.focus.focus(window, cx);
+        }
         let columns = AppStore::global(cx).state().read(cx).prefs().columns;
         let state = self.state.downgrade();
         let folder_state = state.clone();
@@ -335,7 +446,7 @@ impl Render for WorkspaceView {
                         .size_range(px(240.)..px(4000.))
                         .child(selected.response.clone()),
                 ),
-            None => group.child(resizable_panel().child(self.render_nothing_selected())),
+            None => group.child(resizable_panel().child(self.render_nothing_selected(cx))),
         };
         let editor = self.selected.as_ref().map(|selected| selected.editor.downgrade());
         h_flex()
@@ -349,8 +460,10 @@ impl Render for WorkspaceView {
                     let _ = editor.update(cx, |editor, cx| editor.send(window, cx));
                 }
             })
-            .child(group.on_resize(
-                cx.listener(|this, columns: &Entity<ResizableState>, _, cx| this.columns_resized(columns, cx)),
-            ))
+            .child(
+                group.on_resize(cx.listener(|this, columns: &Entity<ResizableState>, window, cx| {
+                    this.columns_resized(columns, window, cx)
+                })),
+            )
     }
 }

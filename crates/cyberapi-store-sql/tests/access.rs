@@ -109,6 +109,15 @@ async fn rules(variable: &str) {
         .save_request(id.clone(), login.item.id.clone(), HttpRequest::default())
         .await
         .expect("an editor saves a request");
+    // A project's API count goes to those who see the project only.
+    let count = |counts: std::collections::BTreeMap<CollectionId, usize>| counts.get(&id).copied();
+    assert_eq!(count(alice.collections().api_counts().await.expect("counts")), Some(1));
+    assert_eq!(count(bob.collections().api_counts().await.expect("counts")), Some(1));
+    assert_eq!(
+        count(carol.collections().api_counts().await.expect("counts")),
+        None,
+        "an outsider is not told the project's size"
+    );
     forbidden(
         bob.collections()
             .update(

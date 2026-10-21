@@ -40,7 +40,19 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The identifier the original Tauri build used; Linux groups windows by it.
 const APP_ID: &str = "com.bigtree.cyberapi";
 
-gpui_kit::actions!(cyberapi, [Quit, Hide, HideOthers, ShowAll]);
+gpui_kit::actions!(
+    cyberapi,
+    [
+        Quit,
+        Hide,
+        HideOthers,
+        ShowAll,
+        Minimize,
+        Zoom,
+        ToggleFullScreen,
+        CloseWindow
+    ]
+);
 
 /// What only one of the builds has; the other leaves it `None`.
 #[derive(Clone, Default)]
@@ -162,8 +174,14 @@ fn import_legacy_cookies(storage: &Storage, dir: &std::path::Path) {
 /// from `cyberapi-web`.
 pub fn launch(cx: &mut App, storage: Storage, engine: Arc<dyn HttpEngine>, prefs: AppPrefs, extras: Extras) {
     i18n::apply(prefs.language.as_deref());
+    this_build::add_fonts(cx);
     AppStore::init(storage, engine, prefs, extras, cx);
     views::bind_workspace_keys(cx);
+    views::bind_dashboard_keys(cx);
+    if this_build::mac_page() {
+        views::bind_mac_page_keys(cx);
+        views::bind_dashboard_mac_page_keys(cx);
+    }
     open_main_window(cx, |window, cx| cx.new(|cx| CyberApi::new(window, cx)));
 }
 
@@ -240,26 +258,61 @@ fn main_window_options(cx: &App) -> WindowOptions {
     }
 }
 
-/// The application menu. Closing the window only hides the app on macOS, so
-/// this is where Quit lives.
+/// The menu bar. Closing the window only hides the app on macOS, so the
+/// application menu is where Quit lives; Edit's items act on the focused
+/// field, Window's on the main window.
 #[cfg(target_os = "macos")]
 fn install_mac_menus(cx: &mut App) {
-    use gpui_kit::{KeyBinding, Menu, MenuItem};
+    use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
+    use gpui_kit::{KeyBinding, Menu, MenuItem, OsAction};
+
+    fn on_window(cx: &mut App, act: impl FnOnce(&mut Window)) {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, _| act(window));
+        }
+    }
 
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+    cx.on_action(|_: &Minimize, cx| on_window(cx, |window| window.minimize_window()));
+    cx.on_action(|_: &Zoom, cx| on_window(cx, |window| window.zoom_window()));
+    cx.on_action(|_: &ToggleFullScreen, cx| on_window(cx, |window| window.toggle_fullscreen()));
+    // As the close button does (F1.4).
+    cx.on_action(|_: &CloseWindow, cx| cx.hide());
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-h", Hide, None),
         KeyBinding::new("alt-cmd-h", HideOthers, None),
+        KeyBinding::new("cmd-m", Minimize, None),
+        KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
+        KeyBinding::new("cmd-w", CloseWindow, None),
     ]);
-    cx.set_menus([Menu::new(APP_NAME).items([
-        MenuItem::action(format!("Hide {APP_NAME}"), Hide),
-        MenuItem::action("Hide Others", HideOthers),
-        MenuItem::action("Show All", ShowAll),
-        MenuItem::separator(),
-        MenuItem::action(format!("Quit {APP_NAME}"), Quit),
-    ])]);
+    cx.set_menus([
+        Menu::new(APP_NAME).items([
+            MenuItem::action(format!("Hide {APP_NAME}"), Hide),
+            MenuItem::action("Hide Others", HideOthers),
+            MenuItem::action("Show All", ShowAll),
+            MenuItem::separator(),
+            MenuItem::action(format!("Quit {APP_NAME}"), Quit),
+        ]),
+        Menu::new("Edit").items([
+            MenuItem::os_action("Undo", Undo, OsAction::Undo),
+            MenuItem::os_action("Redo", Redo, OsAction::Redo),
+            MenuItem::separator(),
+            MenuItem::os_action("Cut", Cut, OsAction::Cut),
+            MenuItem::os_action("Copy", Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", Paste, OsAction::Paste),
+            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+        ]),
+        // gpui makes the menu named "Window" the system's window menu.
+        Menu::new("Window").items([
+            MenuItem::action("Minimize", Minimize),
+            MenuItem::action("Zoom", Zoom),
+            MenuItem::action("Enter Full Screen", ToggleFullScreen),
+            MenuItem::separator(),
+            MenuItem::action("Close Window", CloseWindow),
+        ]),
+    ]);
 }

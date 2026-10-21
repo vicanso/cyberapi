@@ -36,6 +36,7 @@ use cyberapi_store::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -71,6 +72,7 @@ pub enum Call {
     CollectionsDelete {
         id: CollectionId,
     },
+    CollectionsApiCounts,
     TreeLoad {
         collection: CollectionId,
     },
@@ -243,6 +245,7 @@ pub async fn dispatch(storage: &Storage, directory: &dyn DirectoryStore, call: C
         Call::CollectionsCreate { input } => reply(collections.create(input).await),
         Call::CollectionsUpdate { id, edit } => reply(collections.update(id, edit).await),
         Call::CollectionsDelete { id } => reply(collections.delete(id).await),
+        Call::CollectionsApiCounts => reply(collections.api_counts().await),
         Call::TreeLoad { collection } => reply(tree.load(collection).await),
         Call::TreeCreateFolder {
             collection,
@@ -446,6 +449,9 @@ impl CollectionStore for BridgeStore {
     }
     fn delete(&self, id: CollectionId) -> StoreFuture<()> {
         self.call(Call::CollectionsDelete { id })
+    }
+    fn api_counts(&self) -> StoreFuture<BTreeMap<CollectionId, usize>> {
+        self.call(Call::CollectionsApiCounts)
     }
 }
 

@@ -192,6 +192,18 @@
     await mod.default({ module_or_path: url("/wasm/cyberapi_web_bg.wasm") });
     $("loading").remove();
     mod.run(root, new Uint8Array(font), JSON.stringify(prefs));
+    // The editors' monospace font comes after the first frame; text drawn
+    // before it lands uses the fallback.
+    Promise.all(
+      ["Regular", "Bold"].map((face) =>
+        fetch(url(`/fonts/JetBrainsMono-${face}.ttf`)).then((r) => {
+          if (!r.ok) throw new Error(`font: HTTP ${r.status}`);
+          return r.arrayBuffer();
+        }),
+      ),
+    )
+      .then(([regular, bold]) => mod.add_mono_fonts(new Uint8Array(regular), new Uint8Array(bold)))
+      .catch((error) => console.warn("JetBrains Mono could not be loaded", error));
     // A background tab polls the bridge less often.
     const visibility = () => mod.set_page_visible(!document.hidden);
     document.addEventListener("visibilitychange", visibility);

@@ -18,7 +18,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions,
-    Render, Styled as _, Subscription, Window, div,
+    Render, Styled as _, Subscription, Window, div, hsla, px,
 };
 use rust_i18n::t;
 use std::path::PathBuf;
@@ -130,13 +130,12 @@ impl CyberApi {
         }
     }
 
-    /// F1.5: the window is named after what it shows.
+    /// F1.5: the project list is the app's name; a workspace names the
+    /// window itself, after its selected API.
     fn set_title(&self, window: &mut Window, cx: &App) {
-        let title = match AppStore::global(cx).state().read(cx).route() {
-            Route::Dashboard => APP_NAME.to_string(),
-            Route::Workspace(collection) => format!("{APP_NAME} - {}", collection.name),
-        };
-        window.set_window_title(&title);
+        if *AppStore::global(cx).state().read(cx).route() == Route::Dashboard {
+            window.set_window_title(APP_NAME);
+        }
     }
 
     fn render_title(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -178,12 +177,28 @@ impl CyberApi {
     }
 }
 
+/// The UI's text size, the rem everything is measured in. The kit's 16 px
+/// is a document's; a tool's panels read better denser, as Zed's do.
+const UI_FONT_SIZE: f32 = 14.;
+/// The editors' face, the same on every platform (`this_build::add_fonts`).
+const MONO_FONT: &str = "JetBrains Mono";
+
 fn apply_theme(mode: ThemeMode, window: &mut Window, cx: &mut App) {
     match mode {
         ThemeMode::System => Theme::sync_system_appearance(Some(window), cx),
         ThemeMode::Light => Theme::change(ComponentThemeMode::Light, Some(window), cx),
         ThemeMode::Dark => Theme::change(ComponentThemeMode::Dark, Some(window), cx),
     }
+    // A theme change may set its own size and faces; these stay.
+    let theme = Theme::global_mut(cx);
+    theme.font_size = px(UI_FONT_SIZE);
+    theme.mono_font_family = MONO_FONT.into();
+    // The dark theme's backdrop hardly darkens a page that is dark already;
+    // a dialog should stand off it as it does in the light one.
+    if theme.mode.is_dark() {
+        theme.overlay = hsla(0., 0., 0., 0.55);
+    }
+    window.refresh();
 }
 
 impl CyberApi {

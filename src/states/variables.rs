@@ -63,16 +63,14 @@ impl VariablesState {
             if calls.is_empty() {
                 return;
             }
-            let (workspace, environment) = (this.workspace.clone(), this.category == VariableCategory::Environment);
+            let (workspace, category) = (this.workspace.clone(), this.category);
             cx.spawn(async move |cx| {
                 for call in calls {
                     if let Err(error) = call.await {
                         tracing::warn!(%error, "a variable could not be saved");
                     }
                 }
-                if environment {
-                    let _ = workspace.update(cx, |workspace, cx| workspace.refresh_environment(cx));
-                }
+                let _ = workspace.update(cx, |workspace, cx| workspace.refresh_variables(category, cx));
             })
             .detach();
         })
@@ -114,13 +112,13 @@ impl VariablesState {
         &self.load
     }
 
-    /// The workspace keeps the environment for the URI's prefix (F4.4).
+    /// The workspace keeps the environment for the URI's prefix (F4.4) and
+    /// the global request headers for the file they may ask for.
     fn changed(&self, cx: &mut Context<Self>) {
-        if self.category == VariableCategory::Environment {
-            let _ = self
-                .workspace
-                .update(cx, |workspace, cx| workspace.refresh_environment(cx));
-        }
+        let category = self.category;
+        let _ = self
+            .workspace
+            .update(cx, |workspace, cx| workspace.refresh_variables(category, cx));
         cx.notify();
     }
 

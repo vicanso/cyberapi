@@ -47,6 +47,10 @@ mkdir -p cyberapi-web/www/assets/icons
 cp "$kit_dir"/assets/icons/*.svg cyberapi-web/www/assets/icons/
 echo "icons: $(ls cyberapi-web/www/assets/icons | wc -l | tr -d ' ') from $kit_dir"
 
+# The editors' monospace font, shared with the desktop build, which embeds it.
+cp resources/fonts/JetBrainsMono-Regular.ttf resources/fonts/JetBrainsMono-Bold.ttf \
+  resources/fonts/JetBrainsMono-OFL.txt cyberapi-web/www/fonts/
+
 profile=web
 if [ "$mode" = release ]; then
   profile=web-release

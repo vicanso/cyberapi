@@ -5,7 +5,10 @@
 use gpui_kit::{AssetSource, Result, SharedString};
 use std::borrow::Cow;
 
-gpui_kit::assets::icon_assets!(AppIcons, [Clock, Paperclip, Send, Terminal, WandSparkles]);
+gpui_kit::assets::icon_assets!(
+    AppIcons,
+    [Clock, Infinity, Paperclip, Send, Terminal, Trash, WandSparkles]
+);
 
 pub struct Assets;
 
@@ -35,9 +38,11 @@ mod tests {
     fn every_icon_the_app_uses_is_embedded() {
         for icon in [
             IconName::Clock,
+            IconName::Infinity,
             IconName::Paperclip,
             IconName::Send,
             IconName::Terminal,
+            IconName::Trash,
             IconName::WandSparkles,
             IconName::FolderOpen,
         ] {

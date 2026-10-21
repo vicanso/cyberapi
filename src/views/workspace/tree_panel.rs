@@ -3,7 +3,7 @@
 //! state's and core's; this draws the rows and turns pointer and keyboard
 //! input into intent.
 
-use super::{confirm_delete, export, method_color, new_item, open_import_dialog};
+use super::{confirm_delete, export, method_color, method_label, new_item, open_import_dialog};
 use crate::states::{Load, WorkspaceState};
 use cyberapi_core::ItemId;
 use cyberapi_core::tree::{DropPosition, ItemKind, Placement, Row};
@@ -13,8 +13,12 @@ use gpui_kit::component::empty::{
 };
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent, Entity, Focusable as _,
@@ -221,14 +225,23 @@ impl TreePanel {
         let muted = cx.theme().muted_foreground;
         let state = self.state.downgrade();
         let editable = self.state.read(cx).editable();
+        // `muted` and `border` are the same tone in the dark theme.
+        let border = cx.theme().foreground.opacity(0.12);
         h_flex()
+            .h(px(44.))
+            .px_2()
             .gap_1()
-            .p_2()
+            .items_center()
+            .border_b_1()
+            .border_color(border)
             .child(
-                Input::new(&self.search)
-                    .small()
-                    .cleanable(true)
-                    .prefix(Icon::new(IconName::Search).text_color(muted)),
+                div().flex_1().min_w_0().child(
+                    Input::new(&self.search)
+                        .small()
+                        .w_full()
+                        .cleanable(true)
+                        .prefix(Icon::new(IconName::Search).text_color(muted)),
+                ),
             )
             .child(
                 Button::new("tree-new")
@@ -297,21 +310,41 @@ impl TreePanel {
         let key = SharedString::from(format!("tree-row-{id}"));
 
         let icon: AnyElement = match kind {
-            ItemKind::Folder => Icon::new(if row.open {
-                IconName::FolderOpen
-            } else {
-                IconName::FolderClosed
-            })
-            .small()
-            .text_color(theme.muted_foreground)
-            .into_any_element(),
+            ItemKind::Folder => h_flex()
+                .gap_1()
+                .items_center()
+                .child(
+                    Icon::new(if row.open {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .xsmall()
+                    .text_color(theme.muted_foreground),
+                )
+                .child(
+                    Icon::new(if row.open {
+                        IconName::FolderOpen
+                    } else {
+                        IconName::FolderClosed
+                    })
+                    .small()
+                    .text_color(if row.open {
+                        theme.foreground
+                    } else {
+                        theme.muted_foreground
+                    }),
+                )
+                .into_any_element(),
+            // The method as coloured text, short enough for one width: a
+            // filled badge on every row outweighs the names beside it.
             ItemKind::Api => div()
-                .w(px(46.))
+                .w(px(34.))
                 .flex_none()
-                .text_xs()
-                .font_semibold()
+                .text_size(px(10.5))
+                .font_bold()
                 .text_color(method_color(node.method(), cx))
-                .child(node.method().as_str())
+                .child(method_label(node.method()))
                 .into_any_element(),
         };
         let label: AnyElement = match &self.renaming {
@@ -330,6 +363,7 @@ impl TreePanel {
                 .flex_1()
                 .min_w_0()
                 .truncate()
+                .when(selected, |this| this.font_medium())
                 .child(name.clone())
                 .into_any_element(),
         };
@@ -386,11 +420,7 @@ impl TreePanel {
             .child(icon)
             .child(label)
             .when(pinned, |this| {
-                this.child(
-                    Icon::new(IconName::StarFill)
-                        .xsmall()
-                        .text_color(theme.muted_foreground),
-                )
+                this.child(Icon::new(IconName::StarFill).xsmall().text_color(theme.warning))
             })
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| match kind {
@@ -465,10 +495,9 @@ impl TreePanel {
                 let end = self.drop_target == Some(DropTarget::End);
                 let primary = cx.theme().primary;
                 self.drawn = rows;
-                div()
+                let list = div()
                     .id("tree-rows")
-                    .flex_1()
-                    .min_h_0()
+                    .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .px_1()
@@ -478,7 +507,16 @@ impl TreePanel {
                     .on_drag_move(
                         cx.listener(|this, event: &DragMoveEvent<DraggedItem>, _, cx| this.on_drag_move(event, cx)),
                     )
-                    .on_drop(cx.listener(|this, dragged: &DraggedItem, _, cx| this.on_drop(dragged, cx)))
+                    .on_drop(cx.listener(|this, dragged: &DraggedItem, _, cx| this.on_drop(dragged, cx)));
+                // The list keeps its own handle (a drop is placed by its
+                // offset), so its scrollbar is laid over it rather than the
+                // kit's scroll wrapper, which brings a handle of its own.
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(list)
+                    .child(div().absolute().inset_0().child(Scrollbar::vertical(&self.scroll)))
                     .into_any_element()
             }
         }
@@ -530,12 +568,32 @@ fn item_menu(
         }
         ItemKind::Api => {
             let (state, id) = (state.clone(), id.clone());
+            let (config_state, config_id) = (state.clone(), id.clone());
+            let (curl_state, curl_id) = (state.clone(), id.clone());
             let label = if pinned {
                 t!("workspace.unpin")
             } else {
                 t!("workspace.pin")
             };
-            menu.item(PopupMenuItem::new(label.to_string()).on_click(move |_, _, cx| {
+            // F3.9: what a viewer may do too.
+            menu.item(
+                PopupMenuItem::new(t!("workspace.copy_config").to_string()).on_click(move |_, window, cx| {
+                    let config = config_state
+                        .upgrade()
+                        .and_then(|state| state.read(cx).api_config(&config_id));
+                    if let Some(config) = config {
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(config));
+                        let copied = t!("workspace.config_copied").to_string();
+                        window.push_notification(Notification::success(copied), cx);
+                    }
+                }),
+            )
+            .item(
+                PopupMenuItem::new(t!("response.copy_curl").to_string()).on_click(move |_, _, cx| {
+                    let _ = curl_state.update(cx, |state, cx| state.copy_curl(&curl_id, cx));
+                }),
+            )
+            .item(PopupMenuItem::new(label.to_string()).on_click(move |_, _, cx| {
                 let _ = state.update(cx, |state, cx| state.set_pinned(&id, !pinned, cx));
             }))
         }
@@ -594,6 +652,7 @@ impl Render for TreePanel {
         }
         v_flex()
             .size_full()
+            .bg(cx.theme().muted)
             .child(self.render_header(cx))
             .child(self.render_body(cx))
     }

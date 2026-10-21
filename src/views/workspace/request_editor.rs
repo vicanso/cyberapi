@@ -17,7 +17,7 @@ use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -138,11 +138,19 @@ impl RequestEditor {
                 }
                 ApiEvent::Failed(_) => {}
             }),
-            // F4.3: the URI is saved as the field is left, or on Enter.
-            cx.subscribe_in(&uri, window, |this, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+            // F4.3: the URI is saved as the field is left, or on Enter —
+            // which also sends it, when there is one (F3.12). Cmd/Ctrl+Enter
+            // is the workspace's own Send.
+            cx.subscribe_in(&uri, window, |this, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Blur => this.save_uri(cx),
+                InputEvent::PressEnter { secondary, .. } => {
                     this.save_uri(cx);
+                    let has_uri = !this.api.read(cx).request().uri.trim().is_empty();
+                    if !*secondary && has_uri {
+                        this.send(window, cx);
+                    }
                 }
+                _ => {}
             }),
             cx.subscribe(&query, |this, _, KvEvent::Changed(list), cx| {
                 this.api.update(cx, |api, cx| api.set_query(list.clone(), cx));
@@ -314,8 +322,10 @@ impl RequestEditor {
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush(cx);
         let api = self.api.read(cx);
-        let picks_file =
-            api.sending_since().is_none() && this_build::reads_files() && send::needs(api.request(), &[]).picks_file;
+        let headers = self.workspace.read(cx).global_headers();
+        let picks_file = api.sending_since().is_none()
+            && this_build::reads_files()
+            && send::needs(api.request(), headers).picks_file;
         if !picks_file {
             self.api.update(cx, |api, cx| api.send_or_cancel(None, cx));
             return;
@@ -425,41 +435,78 @@ impl RequestEditor {
                     )
             }
         };
-        h_flex()
-            .gap_2()
-            .p_2()
+        let theme = cx.theme();
+        let (border, muted) = (theme.border, theme.muted_foreground);
+        let method_color = method_color(request.method, cx);
+        // F4.1–F4.4: the method, the environment and the URI read as one
+        // address, the way a browser's bar does.
+        let address = h_flex()
+            .flex_1()
+            .min_w_0()
+            .h(px(30.))
             .items_center()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(theme.input)
+            .bg(theme.background)
             .child(
                 Button::new("request-method")
-                    .outline()
+                    .ghost()
                     .small()
-                    .w(px(96.))
                     .child(
-                        div()
-                            .font_semibold()
-                            .text_color(method_color(request.method, cx))
-                            .child(request.method.as_str()),
+                        h_flex()
+                            .w(px(64.))
+                            .gap_1()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_bold()
+                                    .text_color(method_color)
+                                    .child(request.method.as_str()),
+                            )
+                            .child(Icon::new(IconName::ChevronDown).xsmall().text_color(muted)),
                     )
                     .dropdown_menu_with_anchor(Anchor::TopLeft, method_menu),
             )
+            .child(div().w(px(1.)).h(px(16.)).bg(border))
             .child(
-                h_flex()
+                Button::new("request-env")
+                    .ghost()
+                    .xsmall()
+                    .ml_1()
+                    .child(match &env {
+                        Some(name) => div()
+                            .px_1p5()
+                            .rounded(theme.radius)
+                            .bg(theme.info.opacity(0.14))
+                            .text_color(theme.info)
+                            .text_xs()
+                            .font_medium()
+                            .child(format!("{{{{{name}}}}}")),
+                        None => div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(t!("editor.environment").to_string()),
+                    })
+                    .tooltip(t!("editor.environment").to_string())
+                    .dropdown_menu_with_anchor(Anchor::TopLeft, env_menu),
+            )
+            .child(
+                div()
                     .flex_1()
                     .min_w_0()
-                    .gap_1()
-                    .child(
-                        Button::new("request-env")
-                            .ghost()
-                            .small()
-                            .label(match &env {
-                                Some(name) => format!("{{{{{name}}}}}"),
-                                None => t!("editor.environment").to_string(),
-                            })
-                            .when(env.is_none(), |this| this.text_color(cx.theme().muted_foreground))
-                            .dropdown_menu_with_anchor(Anchor::TopLeft, env_menu),
-                    )
-                    .child(div().flex_1().min_w_0().child(Input::new(&self.uri).small())),
-            )
+                    .child(Input::new(&self.uri).small().appearance(false)),
+            );
+        h_flex()
+            .h(px(44.))
+            .px_3()
+            .gap_2()
+            .items_center()
+            .border_b_1()
+            .border_color(border)
+            .child(address)
             .child(match sending {
                 Some(started) => Button::new("request-send")
                     .danger()
@@ -482,8 +529,8 @@ impl RequestEditor {
     fn render_tabs(&self, tab: RequestTab, cx: &mut Context<Self>) -> impl IntoElement {
         let request = self.api.read(cx).request().clone();
         let tabs = RequestTab::for_method(request.method);
-        let count = |list: &[cyberapi_core::model::KvParam]| list.iter().filter(|kv| kv.enabled).count();
-        // F4.13: how many entries each list has.
+        // F4.13: how many entries each list has, on or off.
+        let count = |list: &[cyberapi_core::model::KvParam]| list.len();
         let label = |tab: &RequestTab| {
             let (name, count) = match tab {
                 RequestTab::Body => (
@@ -555,9 +602,19 @@ impl RequestEditor {
             .items_center()
             .child(
                 Button::new("body-type")
-                    .outline()
+                    .ghost()
                     .xsmall()
-                    .label(request.content_type.as_str())
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(request.content_type.as_str())
+                            .child(
+                                Icon::new(IconName::ChevronDown)
+                                    .xsmall()
+                                    .text_color(cx.theme().muted_foreground),
+                            ),
+                    )
                     .dropdown_menu_with_anchor(Anchor::TopLeft, type_menu),
             )
             .when(request.content_type == ContentType::Json, |this| {

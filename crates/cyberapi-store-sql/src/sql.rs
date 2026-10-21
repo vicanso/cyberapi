@@ -210,6 +210,7 @@ pub const API_RENAME: &str = "UPDATE apis SET name = $1, updated_at = $2 WHERE i
 pub const API_SAVE: &str = "UPDATE apis SET request = $1, updated_at = $2 WHERE id = $3 AND collection = $4";
 pub const FOLDER_DELETE: &str = "DELETE FROM folders WHERE id = $1 AND collection = $2";
 pub const API_DELETE: &str = "DELETE FROM apis WHERE id = $1 AND collection = $2";
+pub const API_COUNTS: &str = "SELECT collection, COUNT(*) FROM apis GROUP BY collection";
 
 // ---- variables -----------------------------------------------------------------
 
@@ -328,6 +329,7 @@ mod tests {
         FOLDERS_OF,
         APIS_OF,
         API_GET,
+        API_COUNTS,
         TOP_ORDER_OF,
         FOLDER_INSERT,
         API_INSERT,

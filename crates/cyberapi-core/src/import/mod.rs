@@ -17,7 +17,7 @@ mod openapi;
 mod own;
 mod postman;
 
-pub use own::{export, parse_own};
+pub use own::{api_config, export, parse_own};
 
 use crate::ItemId;
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam};

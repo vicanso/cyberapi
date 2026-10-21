@@ -127,6 +127,21 @@ fn api_record(api: &ApiSetting) -> Record {
     }
 }
 
+fn pretty(records: &impl Serialize) -> String {
+    let mut out = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
+    let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
+    // Plain records serialize.
+    let _ = records.serialize(&mut serializer);
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// F3.9: one API as its record, for the clipboard; importing the text adds
+/// the API back.
+pub fn api_config(api: &ApiSetting) -> String {
+    pretty(&api_record(api))
+}
+
 /// F11.1 / F11.2: the whole project, or one folder with everything under it
 /// — its folders too, so the hierarchy comes back on import (#6). Folders
 /// first, then APIs, indented by four spaces as before.
@@ -164,12 +179,7 @@ pub fn export(data: &TreeData, folder: Option<&ItemId>) -> String {
         .map(folder_record)
         .chain(apis.into_iter().map(api_record))
         .collect();
-    let mut out = Vec::new();
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
-    let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
-    // A list of plain records serializes.
-    let _ = records.serialize(&mut serializer);
-    String::from_utf8(out).unwrap_or_default()
+    pretty(&records)
 }
 
 #[cfg(test)]
@@ -247,6 +257,17 @@ mod tests {
         assert_eq!(names(&bundle.items), ["users[login,admin[ban]]"]);
         let inner = parse_own(&export(&sample(), Some(&ItemId::from("f2")))).expect("JSON");
         assert_eq!(names(&inner.items), ["admin[ban]"]);
+    }
+
+    #[test]
+    fn an_apis_config_reads_back_as_the_api() {
+        let text = api_config(&api("a1", "login", "/login"));
+        let bundle = parse_own(&text).expect("JSON");
+        assert_eq!(names(&bundle.items), ["login"]);
+        let ImportItem::Api { request, .. } = &bundle.items[0] else {
+            panic!("an API");
+        };
+        assert_eq!((request.method, request.uri.as_str()), (HttpMethod::Post, "/login"));
     }
 
     #[test]

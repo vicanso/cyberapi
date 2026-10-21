@@ -132,6 +132,24 @@ pub fn run(origin: String, ui_font: Vec<u8>, prefs: String) {
     APP.with(|slot| *slot.borrow_mut() = Some(handle));
 }
 
+/// The editors' monospace faces (JetBrains Mono), which the page fetches
+/// after the first frame: registered together, so the bold face joins its
+/// family, and every window drawn again with them.
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn add_mono_fonts(regular: Vec<u8>, bold: Vec<u8>) {
+    APP.with(|slot| {
+        if let Some(app) = slot.borrow().as_ref() {
+            app.update(|cx| {
+                if let Err(e) = cx.text_system().add_fonts(vec![Cow::Owned(regular), Cow::Owned(bold)]) {
+                    error!(error = %e, "the monospace font could not be registered");
+                }
+                cx.refresh_windows();
+            });
+        }
+    });
+}
+
 /// The page's `visibilitychange`: a background tab polls less often.
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen::prelude::wasm_bindgen]

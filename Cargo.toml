@@ -126,6 +126,8 @@ directories = { workspace = true }
 # JSON highlighting in the body editors. Asked for here only: on wasm,
 # gpui-component drops the grammar but still compiles the feature's code.
 gpui-kit = { workspace = true, features = ["tree-sitter"] }
+# The OS version, for the about section and the User-Agent (F1.7, F5.4).
+os_info = { version = "3.15.0", default-features = false }
 # Blocks on the store's first answers before the first window opens.
 pollster = { workspace = true }
 sys-locale = { workspace = true }
@@ -140,7 +142,16 @@ js-sys = "0.3.106"
 # `get_locale()` reads `navigator.languages` only behind this feature.
 sys-locale = { workspace = true, features = ["js"] }
 wasm-bindgen = "0.2.129"
-web-sys = { version = "0.3.106", features = ["Blob", "Document", "Element", "HtmlAnchorElement", "Url", "Window"] }
+web-sys = { version = "0.3.106", features = [
+    "Blob",
+    "BlobPropertyBag",
+    "Document",
+    "Element",
+    "HtmlAnchorElement",
+    "Navigator",
+    "Url",
+    "Window",
+] }
 
 [dev-dependencies]
 # `TestAppContext` and `#[gpui_kit::test]` for the states' tests.

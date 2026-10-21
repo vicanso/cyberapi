@@ -9,11 +9,12 @@ use cyberapi_core::cookie::Cookie;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    AnyElement, App, AppContext as _, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
 };
 use rust_i18n::t;
 use std::collections::HashMap;
@@ -162,6 +163,16 @@ impl CookiesEditor {
         cx.notify();
     }
 
+    /// F9.6: a cookie kept until the year 3000.
+    fn never_expires(&mut self, key: &CookieKey, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.get(key) else {
+            return;
+        };
+        row.expires.update(cx, |input, cx| input.set_value(NEVER, window, cx));
+        let at = read_expires(NEVER).ok().flatten();
+        self.state.update(cx, |state, cx| state.set_expires(key, at, cx));
+    }
+
     /// F9.5: a name and a domain at least; the path defaults to `/`.
     fn add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let read = |input: &Entity<InputState>, cx: &App| input.read(cx).value().trim().to_string();
@@ -240,7 +251,7 @@ impl Render for CookiesEditor {
             .child(div().w(px(150.)).child(t!("cookies.domain").to_string()))
             .child(div().w(px(70.)).child(t!("cookies.path").to_string()))
             .child(div().w(px(170.)).child(t!("cookies.expires").to_string()))
-            .child(div().w(px(28.)));
+            .child(div().w(px(64.)));
         let body: gpui_kit::AnyElement = match state.load() {
             Load::Loading => h_flex().child(Spinner::new().small()).into_any_element(),
             _ if state.cookies().is_empty() => div()
@@ -254,6 +265,7 @@ impl Render for CookiesEditor {
                 .children(state.cookies().iter().enumerate().filter_map(|(index, cookie)| {
                     let key = cookie_key(cookie);
                     let row = self.rows.get(&key)?;
+                    let never_key = key.clone();
                     Some(
                         h_flex()
                             .id(("cookie", index))
@@ -271,6 +283,9 @@ impl Render for CookiesEditor {
                             )
                             .child(div().w(px(70.)).truncate().text_color(muted).child(cookie.path.clone()))
                             .child(div().w(px(170.)).child(Input::new(&row.expires).small()))
+                            .child(never_button(("cookie-never", index)).on_click(
+                                cx.listener(move |this, _, window, cx| this.never_expires(&never_key, window, cx)),
+                            ))
                             .child(
                                 Button::new(("cookie-delete", index))
                                     .ghost()
@@ -298,6 +313,13 @@ impl Render for CookiesEditor {
             .child(div().w(px(70.)).child(Input::new(&new.path).small()))
             .child(div().w(px(170.)).child(Input::new(&new.expires).small()))
             .child(
+                never_button("cookie-never").on_click(cx.listener(|this, _, window, cx| {
+                    this.new
+                        .expires
+                        .update(cx, |input, cx| input.set_value(NEVER, window, cx));
+                })),
+            )
+            .child(
                 Button::new("cookie-add")
                     .primary()
                     .small()
@@ -309,36 +331,31 @@ impl Render for CookiesEditor {
             .gap_2()
             .child(div().text_sm().text_color(muted).child(t!("cookies.hint").to_string()))
             .child(header)
-            .child(div().id("cookies").max_h(px(360.)).overflow_y_scroll().child(body))
+            .child(div().id("cookies").max_h(px(360.)).overflow_y_scrollbar().child(body))
             .child(add_form)
             .child(
-                h_flex()
-                    .gap_2()
-                    .justify_between()
-                    .child(
-                        Button::new("cookie-never")
-                            .ghost()
-                            .xsmall()
-                            .label(t!("cookies.never").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new
-                                    .expires
-                                    .update(cx, |input, cx| input.set_value(NEVER, window, cx));
-                            })),
-                    )
-                    .child(
-                        Button::new("cookie-clear")
-                            .outline()
-                            .small()
-                            .label(t!("cookies.clear").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.confirming_clear = true;
-                                cx.notify();
-                            })),
-                    ),
+                h_flex().justify_end().child(
+                    Button::new("cookie-clear")
+                        .outline()
+                        .small()
+                        .label(t!("cookies.clear").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.confirming_clear = true;
+                            cx.notify();
+                        })),
+                ),
             )
             .children(self.render_clear(cx))
     }
+}
+
+/// F9.6: sets the expiry beside it to "never".
+fn never_button(id: impl Into<ElementId>) -> Button {
+    Button::new(id)
+        .ghost()
+        .small()
+        .icon(gpui_kit::assets::IconName::Infinity)
+        .tooltip(t!("cookies.never").to_string())
 }
 
 #[cfg(test)]

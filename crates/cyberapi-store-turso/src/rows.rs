@@ -31,6 +31,14 @@ fn count(row: &Row, index: usize) -> u64 {
     }
 }
 
+/// A project and how many APIs it holds.
+pub fn api_count(row: &Row) -> (CollectionId, usize) {
+    (
+        CollectionId::new(text(row, 0)),
+        usize::try_from(count(row, 1)).unwrap_or_default(),
+    )
+}
+
 pub const COLLECTION_COLUMNS: &str = "id, name, description, created_at, updated_at, revision";
 
 pub fn collection(row: &Row) -> Collection {

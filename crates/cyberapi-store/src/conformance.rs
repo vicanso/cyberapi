@@ -36,6 +36,7 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     collection_names_are_required(storage).await;
     unknown_collections_are_not_found(storage).await;
     deleting_a_collection_takes_its_content(storage, probe).await;
+    api_counts_are_per_project(storage).await;
     new_items_are_placed_as_planned(storage).await;
     bad_parents_are_refused(storage).await;
     items_are_renamed(storage).await;
@@ -127,6 +128,26 @@ async fn collections_round_trip(storage: &Storage) {
     assert_eq!(updated.created_at, created.created_at);
     assert!(updated.updated_at >= created.updated_at);
     assert_eq!(storage.collections().get(created.id).await.expect("get"), updated);
+}
+
+async fn api_counts_are_per_project(storage: &Storage) {
+    let counted = new_collection(storage, "counted").await;
+    let empty = new_collection(storage, "no APIs").await;
+    let group = folder(storage, &counted, None, "group").await;
+    api(storage, &counted, None, "top").await;
+    let nested = api(storage, &counted, Some(&group.item.id), "nested").await;
+    folder(storage, &empty, None, "only a folder").await;
+    let counts = storage.collections().api_counts().await.expect("counts");
+    assert_eq!(counts.get(&counted.id), Some(&2), "an API in a folder counts");
+    assert_eq!(counts.get(&empty.id), None, "a project with no API is not there");
+
+    storage
+        .tree()
+        .delete(counted.id.clone(), nested.item.id)
+        .await
+        .expect("delete an API");
+    let counts = storage.collections().api_counts().await.expect("counts");
+    assert_eq!(counts.get(&counted.id), Some(&1), "a deleted API does not count");
 }
 
 async fn collection_names_are_required(storage: &Storage) {

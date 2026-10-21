@@ -1,9 +1,11 @@
-//! The pinned APIs as tags in the title bar (M12): `1: name`, the selected
-//! one marked; a click selects, the close button unpins.
+//! The pinned APIs as tags in the title bar (M12): the number, the method
+//! and the name, the selected one marked; a click selects, the close button
+//! unpins.
 
+use super::{method_color, method_label};
 use crate::states::WorkspaceState;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _,
@@ -54,7 +56,21 @@ impl Render for PinsBar {
                             .hover(|style| style.bg(theme.list_hover))
                     }
                 })
-                .child(div().min_w_0().truncate().child(format!("{}: {}", index + 1, api.name)))
+                .child(
+                    h_flex()
+                        .min_w_0()
+                        .gap_1p5()
+                        .items_center()
+                        .child(div().text_color(theme.muted_foreground).child(format!("{}", index + 1)))
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .font_bold()
+                                .text_color(method_color(api.request.method, cx))
+                                .child(method_label(api.request.method)),
+                        )
+                        .child(div().min_w_0().truncate().child(api.name.clone())),
+                )
                 .child(
                     Button::new(("unpin", index))
                         .ghost()
