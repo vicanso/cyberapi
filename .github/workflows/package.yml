@@ -1,8 +1,16 @@
 # The packages, built on the platform each is for and kept as artifacts:
-# the desktop app for macOS, Linux and Windows, and the bridge with the
-# browser build in it. Called by release.yml (a version tag) and nightly.yml;
-# what they do with the artifacts is theirs. Unsigned: signing and
-# notarization come later.
+# the desktop app for macOS (Apple silicon and Intel), Linux (x86_64 and
+# arm64) and Windows, and the bridge with the browser build in it. Called by
+# release.yml (a version tag) and nightly.yml, with `secrets: inherit`; what
+# they do with the artifacts is theirs.
+#
+# macOS is signed with a Developer ID and notarized when these secrets are
+# set, and ad-hoc signed when they are not:
+#   MACOS_CERTIFICATE       the "Developer ID Application" .p12, base64
+#   MACOS_CERTIFICATE_PWD   its password
+#   MACOS_CERTIFICATE_NAME  its identity, "Developer ID Application: Name (TEAMID)"
+#   AC_USERNAME, AC_PASSWORD (app-specific), AC_TEAM_ID   for notarization
+# Windows and Linux are unsigned.
 name: Package
 
 on:
@@ -18,14 +26,21 @@ env:
 
 jobs:
   desktop:
-    name: desktop (${{ matrix.os }})
+    name: desktop (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-24.04, windows-latest]
+        include:
+          - { name: macOS aarch64, os: macos-latest }
+          - { name: macOS x86_64, os: macos-15-intel }
+          # 22.04, not the newest: its glibc (2.35) is the oldest the
+          # binary then asks for.
+          - { name: Linux x86_64, os: ubuntu-22.04 }
+          - { name: Linux aarch64, os: ubuntu-22.04-arm }
+          - { name: Windows x86_64, os: windows-latest }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: system libraries
         if: runner.os == 'Linux'
         run: |
@@ -35,13 +50,47 @@ jobs:
         shell: bash
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-${{ matrix.os }}
       - name: cargo-bundle
         if: runner.os != 'Windows'
-        run: cargo install cargo-bundle --locked
+        # Pinned and locked: 0.12 reads [package.metadata.bundle]
+        # differently, and an unlocked install resolves the tool's own
+        # dependencies afresh each time.
+        run: cargo install --locked cargo-bundle@0.11.0
+      - name: signing certificate
+        id: certificate
+        if: runner.os == 'macOS'
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          if [ -z "$CERTIFICATE" ]; then
+            echo "::warning::MACOS_CERTIFICATE is not set — the app is ad-hoc signed"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "" "$keychain"
+          echo "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          echo "imported=true" >> "$GITHUB_OUTPUT"
       - name: package
         shell: bash
+        env:
+          # The C runtime linked in, so the Windows zip needs no Visual C++
+          # redistributable on the machine it is unpacked on.
+          RUSTFLAGS: ${{ runner.os == 'Windows' && '-C target-feature=+crt-static' || '' }}
+          CYBERAPI_SIGN_IDENTITY: ${{ steps.certificate.outputs.imported == 'true' && secrets.MACOS_CERTIFICATE_NAME || '' }}
+          CYBERAPI_NOTARY_APPLE_ID: ${{ secrets.AC_USERNAME }}
+          CYBERAPI_NOTARY_PASSWORD: ${{ secrets.AC_PASSWORD }}
+          CYBERAPI_NOTARY_TEAM_ID: ${{ secrets.AC_TEAM_ID }}
         run: scripts/desktop-dist.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.os }}
           path: |
@@ -54,9 +103,11 @@ jobs:
 
   web:
     name: browser build (Linux bridge)
+    # 24.04 for its binaryen (108): 22.04's is too old for the module. The
+    # bridge binary then asks for glibc 2.39.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: system libraries and wasm-opt
         run: |
           sudo apt-get update
@@ -66,11 +117,13 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           (cd cyberapi-web && (rustup show active-toolchain || rustup toolchain install))
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-web
       - name: wasm-pack
-        run: cargo install wasm-pack --locked
+        run: cargo install --locked wasm-pack
       - name: package
         run: scripts/web-dist.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: web-linux
           path: |

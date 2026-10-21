@@ -47,6 +47,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.build == 'true'
     uses: ./.github/workflows/package.yml
+    # The macOS signing secrets, when set (package.yml).
+    secrets: inherit
 
   publish:
     name: replace the nightly release
@@ -55,7 +57,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

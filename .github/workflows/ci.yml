@@ -16,7 +16,7 @@ jobs:
     name: desktop (macOS)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # rustup installs what rust-toolchain.toml names.
       - name: toolchain
         run: rustup show active-toolchain || rustup toolchain install
@@ -59,7 +59,7 @@ jobs:
           --health-timeout 5s
           --health-retries 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: system libraries
         run: |
           sudo apt-get update
@@ -78,7 +78,7 @@ jobs:
     name: browser build (wasm)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: system libraries
         run: |
           sudo apt-get update
