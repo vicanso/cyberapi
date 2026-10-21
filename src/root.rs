@@ -5,10 +5,11 @@ use crate::i18n;
 use crate::states::{AppEvent, AppStore, Route};
 use crate::views::{
     DashboardView, WorkspaceView, open_accounts_dialog, open_cookies_dialog, open_password_dialog,
-    open_settings_dialog, open_teams_dialog, open_variables_dialog,
+    open_settings_dialog, open_shortcuts_dialog, open_teams_dialog, open_variables_dialog,
 };
 use cyberapi_core::model::VariableCategory;
 use cyberapi_core::prefs::ThemeMode;
+use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -164,8 +165,11 @@ impl CyberApi {
                 )
                 .child(div().text_sm().text_color(cx.theme().muted_foreground).child("/"))
                 .child(
+                    // A long name gives way to the pins beside it.
                     div()
                         .flex_none()
+                        .max_w(px(240.))
+                        .truncate()
                         .mr_3()
                         .text_sm()
                         .font_medium()
@@ -218,43 +222,60 @@ impl CyberApi {
             .icon(IconName::Settings)
             .tooltip(t!("menu.settings").to_string())
             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu: PopupMenu, _, cx| {
-                let menu = match workspace.clone() {
-                    Some(workspace) => [
-                        (VariableCategory::Environment, t!("variables.env_title")),
-                        (VariableCategory::Custom, t!("variables.custom_title")),
-                        (VariableCategory::GlobalRequestHeader, t!("variables.headers_title")),
-                    ]
-                    .into_iter()
-                    .fold(menu, |menu, (category, label)| {
-                        let workspace = workspace.clone();
-                        menu.item(PopupMenuItem::new(label.to_string()).on_click(move |_, window, cx| {
-                            if let Some(workspace) = workspace.upgrade() {
-                                open_variables_dialog(&workspace, category, window, cx);
-                            }
-                        }))
-                    }),
-                    None if backs_up => menu
-                        .item(
-                            PopupMenuItem::new(t!("backup.back_up").to_string()).on_click(|_, _, cx| {
-                                let state = AppStore::global(cx).state().clone();
-                                state.update(cx, |state, cx| state.back_up(cx));
-                            }),
-                        )
-                        .item(
-                            PopupMenuItem::new(t!("backup.restore").to_string())
-                                .on_click(|_, window, cx| pick_backup(window, cx)),
-                        ),
-                    None => menu.item(PopupMenuItem::new(t!("menu.no_project").to_string()).disabled(true)),
-                };
+                let menu =
+                    match workspace.clone() {
+                        Some(workspace) => [
+                            (VariableCategory::Environment, t!("variables.env_title"), Icons::Globe),
+                            (VariableCategory::Custom, t!("variables.custom_title"), Icons::Braces),
+                            (
+                                VariableCategory::GlobalRequestHeader,
+                                t!("variables.headers_title"),
+                                Icons::Heading,
+                            ),
+                        ]
+                        .into_iter()
+                        .fold(menu, |menu, (category, label, icon)| {
+                            let workspace = workspace.clone();
+                            menu.item(PopupMenuItem::new(label.to_string()).icon(icon).on_click(
+                                move |_, window, cx| {
+                                    if let Some(workspace) = workspace.upgrade() {
+                                        open_variables_dialog(&workspace, category, window, cx);
+                                    }
+                                },
+                            ))
+                        }),
+                        None if backs_up => menu
+                            .item(
+                                PopupMenuItem::new(t!("backup.back_up").to_string())
+                                    .icon(Icons::DatabaseBackup)
+                                    .on_click(|_, _, cx| {
+                                        let state = AppStore::global(cx).state().clone();
+                                        state.update(cx, |state, cx| state.back_up(cx));
+                                    }),
+                            )
+                            .item(
+                                PopupMenuItem::new(t!("backup.restore").to_string())
+                                    .icon(Icons::ArchiveRestore)
+                                    .on_click(|_, window, cx| pick_backup(window, cx)),
+                            ),
+                        None => menu.item(PopupMenuItem::new(t!("menu.no_project").to_string()).disabled(true)),
+                    };
                 let menu = menu
                     .separator()
                     .item(
                         PopupMenuItem::new(t!("cookies.title").to_string())
+                            .icon(Icons::Cookie)
                             .on_click(|_, window, cx| open_cookies_dialog(window, cx)),
                     )
                     .item(
                         PopupMenuItem::new(t!("settings.title").to_string())
+                            .icon(Icons::Settings)
                             .on_click(|_, window, cx| open_settings_dialog(window, cx)),
+                    )
+                    .item(
+                        PopupMenuItem::new(t!("shortcuts.title").to_string())
+                            .icon(Icons::Keyboard)
+                            .on_click(|_, window, cx| open_shortcuts_dialog(window, cx)),
                     );
                 if signs_in { account_items(menu, cx) } else { menu }
             })
@@ -266,17 +287,22 @@ fn account_items(menu: PopupMenu, cx: &App) -> PopupMenu {
     let me = AppStore::global(cx).state().read(cx).me().map(|me| me.account.clone());
     let admin = me.as_ref().is_some_and(|me| me.admin);
     let menu = match &me {
-        Some(me) => menu
-            .separator()
-            .item(PopupMenuItem::new(t!("account.signed_in_as", name = me.label()).to_string()).disabled(true)),
+        Some(me) => menu.separator().item(
+            PopupMenuItem::new(t!("account.signed_in_as", name = me.label()).to_string())
+                .icon(Icons::CircleUser)
+                .disabled(true),
+        ),
         None => menu.separator(),
     };
     let menu = menu.item(
-        PopupMenuItem::new(t!("account.teams").to_string()).on_click(|_, window, cx| open_teams_dialog(window, cx)),
+        PopupMenuItem::new(t!("account.teams").to_string())
+            .icon(Icons::Users)
+            .on_click(|_, window, cx| open_teams_dialog(window, cx)),
     );
     let menu = if admin {
         menu.item(
             PopupMenuItem::new(t!("account.accounts").to_string())
+                .icon(Icons::UserCog)
                 .on_click(|_, window, cx| open_accounts_dialog(window, cx)),
         )
     } else {
@@ -284,13 +310,16 @@ fn account_items(menu: PopupMenu, cx: &App) -> PopupMenu {
     };
     menu.item(
         PopupMenuItem::new(t!("account.change_password").to_string())
+            .icon(Icons::KeyRound)
             .on_click(|_, window, cx| open_password_dialog(window, cx)),
     )
     .item(
-        PopupMenuItem::new(t!("account.sign_out").to_string()).on_click(|_, _, cx| {
-            let state = AppStore::global(cx).state().clone();
-            state.update(cx, |state, cx| state.sign_out(cx));
-        }),
+        PopupMenuItem::new(t!("account.sign_out").to_string())
+            .icon(Icons::LogOut)
+            .on_click(|_, _, cx| {
+                let state = AppStore::global(cx).state().clone();
+                state.update(cx, |state, cx| state.sign_out(cx));
+            }),
     )
 }
 

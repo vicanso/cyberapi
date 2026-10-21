@@ -65,7 +65,9 @@ percent-encoding = "2.3.2"
 pollster = "1.0.1"
 pretty_assertions = "1.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+# Objects keep their keys in the order written: a formatted body and a shown
+# response read as they were sent.
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.10.9"
 rust-i18n = "4.2.4"
 snafu = "0.9.2"
@@ -123,13 +125,14 @@ web-time = "1.1.0"
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 cyberapi-store-turso = { workspace = true }
 directories = { workspace = true }
-# JSON highlighting in the body editors. Asked for here only: on wasm,
-# gpui-component drops the grammar but still compiles the feature's code.
+# JSON and HTML highlighting in the body editors (HTML's grammar takes XML
+# too; there is none of XML's own). Asked for here only: on wasm,
+# gpui-component drops the grammars but still compiles the features' code.
 # And GPUI Fast as the desktop's engine (`gpui-fast`): gpui-kit then
 # re-exports Fast as `gpui_kit::*` and hands out its platform, so no import
 # changes. The browser build keeps the default engine, whose web platform
 # `cyberapi-web` builds by name; this table is not read for wasm.
-gpui-kit = { workspace = true, features = ["tree-sitter", "gpui-fast"] }
+gpui-kit = { workspace = true, features = ["tree-sitter", "tree-sitter-html", "gpui-fast"] }
 # The OS version, for the about section and the User-Agent (F1.7, F5.4).
 os_info = { version = "3.15.0", default-features = false }
 # Blocks on the store's first answers before the first window opens.

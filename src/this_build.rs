@@ -77,6 +77,26 @@ pub fn data_location() -> String {
     rust_i18n::t!("settings.on_the_server").to_string()
 }
 
+/// Whether the data folder can be shown (the settings' about section).
+#[cfg(not(target_family = "wasm"))]
+pub fn shows_data() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn shows_data() -> bool {
+    false
+}
+
+/// Opens the data folder in the system's file manager.
+#[cfg(not(target_family = "wasm"))]
+pub fn show_data(cx: &mut gpui_kit::App) {
+    if let Some(dir) = crate::paths::data_dir() {
+        cx.open_with_system(&dir);
+    }
+}
+#[cfg(target_family = "wasm")]
+pub fn show_data(_: &mut gpui_kit::App) {}
+
 /// Whether an export can be saved as a file (M11); a page copies it to the
 /// clipboard instead.
 #[cfg(not(target_family = "wasm"))]
@@ -98,6 +118,18 @@ pub fn save_to_downloads(name: &str, bytes: &[u8]) -> Result<String, String> {
 #[cfg(target_family = "wasm")]
 pub fn save_to_downloads(name: &str, bytes: &[u8]) -> Result<String, String> {
     web::download(name, bytes)
+}
+
+/// Whether Cmd/Ctrl-N and Shift-Cmd/Ctrl-N reach the app (F3.12), so they
+/// may be shown: a page on Windows or Linux has the browser take Ctrl-N
+/// for a window first. A Mac's browser leaves Ctrl-N to the page.
+#[cfg(not(target_family = "wasm"))]
+pub fn takes_new_keys() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn takes_new_keys() -> bool {
+    web::on_mac()
 }
 
 /// Whether this is a page in a Mac's browser, which binds the Cmd
@@ -138,6 +170,18 @@ pub fn view_outside(name: &str, _content_type: &str, bytes: &[u8], cx: &gpui_kit
 pub fn view_outside(_name: &str, content_type: &str, bytes: &[u8], cx: &gpui_kit::App) -> Result<(), String> {
     cx.open_url(&web::blob_url(content_type, bytes)?);
     Ok(())
+}
+
+/// Whether an HTML body may be opened as a page (F7.4): the desktop hands a
+/// file to the system's browser. A page does not: a tab of its own `blob:`
+/// would run the answer's scripts as the bridge's page, signed in.
+#[cfg(not(target_family = "wasm"))]
+pub fn opens_html() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn opens_html() -> bool {
+    false
 }
 
 /// A text file the reader picked.

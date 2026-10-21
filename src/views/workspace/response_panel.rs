@@ -1,27 +1,38 @@
 //! The selected API's response (M7): status, time and size, the body, the
 //! headers and cookies, where the time went, and the history.
 
+// The action, named apart from the `Send` trait.
+use super::{KEY_CONTEXT, Send as SendAction};
 use crate::states::ApiState;
+use crate::this_build;
 use cyberapi_core::response::{
     BodyKind, DISPLAY_LIMIT, HttpResponse, StatusLevel, clip_text, format_duration, format_size, status_level,
     status_text,
 };
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle};
+use gpui_kit::component::empty::{
+    Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
+};
 use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, Hsla, Image, ImageFormat, ImageSource,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, div, img, px,
+    Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, Hsla, Image, ImageFormat, ImageSource,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window,
+    div, img, px, relative,
 };
 use rust_i18n::t;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResponseTab {
@@ -82,10 +93,7 @@ impl ResponsePanel {
         }
         self.shown = id;
         let (language, text) = match &shown {
-            Some(response) => match response.body_kind() {
-                BodyKind::Json => ("json", response.body_text().unwrap_or_default()),
-                _ => ("text", response.body_text().unwrap_or_default()),
-            },
+            Some(response) => (language_of(response), response.body_text().unwrap_or_default()),
             None => ("text", String::new()),
         };
         // A body that would make the editor crawl shows its start (#17).
@@ -114,30 +122,55 @@ impl ResponsePanel {
     fn render_summary(&self, response: Option<&HttpResponse>, cx: &mut Context<Self>) -> AnyElement {
         let api = self.api.read(cx);
         let muted = cx.theme().muted_foreground;
-        let responses: Vec<HttpResponse> = api.responses().to_vec();
+        let today = chrono::Local::now().date_naive();
+        // Each answer as a line of the history: its status in its colour,
+        // how long it took, how big it was, when.
+        let entries: Vec<(String, Hsla, String, String, String)> = api
+            .responses()
+            .iter()
+            .map(|response| {
+                let (status, color) = match response.status {
+                    Some(code) => (code.to_string(), self.status_color(code, cx)),
+                    None => (t!("response.failed").to_string(), cx.theme().danger),
+                };
+                let at = response.created_at.get().with_timezone(&chrono::Local);
+                let when = if at.date_naive() == today {
+                    at.format("%H:%M:%S")
+                } else {
+                    at.format("%m-%d %H:%M")
+                };
+                (
+                    response.id.clone(),
+                    color,
+                    status,
+                    format!("{} · {}", format_duration(response.latency), body_size(response)),
+                    when.to_string(),
+                )
+            })
+            .collect();
         let sending = api.sending_since();
         let shown_id = response.map(|r| r.id.clone());
         let this = cx.entity().downgrade();
         let history_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
-            let menu = responses.iter().fold(menu, |menu, response| {
-                let (this, id) = (this.clone(), response.id.clone());
-                let status = match response.status {
-                    Some(status) => status.to_string(),
-                    None => t!("response.failed").to_string(),
-                };
-                let label = format!(
-                    "{status} · {} · {}",
-                    format_size(response.size()),
-                    response.created_at.get().format("%m-%d %H:%M:%S")
-                );
+            let menu = entries.iter().fold(menu, |menu, (id, color, status, measures, when)| {
+                let (this, id) = (this.clone(), id.clone());
+                let (color, status, measures, when) = (*color, status.clone(), measures.clone(), when.clone());
                 menu.item(
-                    PopupMenuItem::new(label)
-                        .checked(shown_id.as_deref() == Some(id.as_str()))
-                        .on_click(move |_, _, cx| {
-                            let _ = this.update(cx, |this, cx| {
-                                this.api.update(cx, |api, cx| api.choose_response(&id, cx));
-                            });
-                        }),
+                    PopupMenuItem::element(move |_, cx| {
+                        h_flex()
+                            .w(px(260.))
+                            .gap_3()
+                            .items_center()
+                            .child(div().w(px(36.)).font_semibold().text_color(color).child(status.clone()))
+                            .child(div().flex_1().child(measures.clone()))
+                            .child(div().text_color(cx.theme().muted_foreground).child(when.clone()))
+                    })
+                    .checked(shown_id.as_deref() == Some(id.as_str()))
+                    .on_click(move |_, _, cx| {
+                        let _ = this.update(cx, |this, cx| {
+                            this.api.update(cx, |api, cx| api.choose_response(&id, cx));
+                        });
+                    }),
                 )
             });
             let clear = this.clone();
@@ -192,10 +225,10 @@ impl ResponsePanel {
                 let size = match response.compression() {
                     Some((wire, percent)) => format!(
                         "{} ({})",
-                        format_size(response.body_omitted.unwrap_or(response.body.len() as u64)),
+                        body_size(response),
                         t!("response.compressed", size = format_size(wire), percent = percent)
                     ),
-                    None => format_size(response.size()),
+                    None => body_size(response),
                 };
                 h_flex()
                     .gap_3()
@@ -243,12 +276,56 @@ impl ResponsePanel {
             ResponseTab::Cookies => format!("{} ({})", t!("response.cookies"), response.cookies().len()),
             ResponseTab::Info => t!("response.info").to_string(),
         };
+        let copies = self.tab == ResponseTab::Body
+            && response.error.is_none()
+            && response.body_omitted.is_none()
+            && !response.body.is_empty()
+            && matches!(response.body_kind(), BodyKind::Json | BodyKind::Text);
         TabBar::new("response-tabs")
             .underline()
             .small()
             .px_2()
             .selected_index(TABS.iter().position(|tab| *tab == self.tab).unwrap_or(0))
             .children(TABS.iter().map(|tab| Tab::new().label(label(tab))))
+            .when(copies, |bar| {
+                let page = this_build::opens_html() && response.content_type().to_ascii_lowercase().contains("html");
+                bar.suffix(
+                    h_flex()
+                        .gap_0p5()
+                        // F7.4 for a page: drawn by the system's browser.
+                        .when(page, |this| {
+                            this.child(
+                                Button::new("response-open-page")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::ExternalLink)
+                                    .tooltip(t!("response.open_page").to_string())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.api.update(cx, |api, cx| api.view_body(cx));
+                                    })),
+                            )
+                        })
+                        .child(
+                            Button::new("response-copy-body")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .tooltip(t!("response.copy_body").to_string())
+                                // The body as text, whole: the editor may
+                                // show only its start.
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    let text = this
+                                        .api
+                                        .read(cx)
+                                        .shown_response()
+                                        .and_then(|response| response.body_text());
+                                    if let Some(text) = text {
+                                        copy(text, window, cx);
+                                    }
+                                })),
+                        ),
+                )
+            })
             .on_click(cx.listener(|this, index: &usize, _, cx| {
                 if let Some(tab) = TABS.get(*index) {
                     this.tab = *tab;
@@ -261,9 +338,23 @@ impl ResponsePanel {
     fn render_body(&self, response: &HttpResponse, cx: &mut Context<Self>) -> AnyElement {
         // F5.7: why it failed, as the failure it is.
         if let Some(error) = &response.error {
-            return div()
+            let copied = error.clone();
+            return v_flex()
                 .p_3()
+                .gap_2()
                 .child(Alert::error("response-error", error.clone()).title(t!("response.failed").to_string()))
+                // The reason, to search for or pass on: the text cannot be
+                // selected.
+                .child(
+                    h_flex().justify_end().child(
+                        Button::new("response-copy-error")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Copy)
+                            .label(t!("common.copy").to_string())
+                            .on_click(move |_, window, cx| copy(copied.clone(), window, cx)),
+                    ),
+                )
                 .into_any_element();
         }
         if let Some(size) = response.body_omitted {
@@ -272,6 +363,10 @@ impl ResponsePanel {
                 Vec::new(),
                 cx,
             );
+        }
+        // 204, a HEAD: nothing to show, said rather than an empty editor.
+        if response.body.is_empty() {
+            return note(t!("response.no_body").to_string(), Vec::new(), cx);
         }
         match response.body_kind() {
             BodyKind::Json | BodyKind::Text => v_flex()
@@ -318,53 +413,183 @@ impl ResponsePanel {
         }
     }
 
-    fn render_headers(rows: Vec<(String, String)>, cx: &mut Context<Self>) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
+    /// The rows, or `empty` said when there are none.
+    fn render_headers(
+        id: &'static str,
+        rows: Vec<(String, String)>,
+        empty: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if rows.is_empty() {
+            return note(empty, Vec::new(), cx);
+        }
         v_flex()
-            .id("response-headers")
+            .id(id)
             .size_full()
             .overflow_y_scrollbar()
-            .p_3()
-            .gap_1()
-            .text_sm()
-            .children(rows.into_iter().map(|(name, value)| {
-                h_flex()
-                    .gap_3()
-                    .items_start()
-                    .child(div().w(px(180.)).flex_none().text_color(muted).child(name))
-                    .child(div().flex_1().min_w_0().child(value))
-            }))
+            .p_2()
+            .child(field_rows(id, rows, cx))
             .into_any_element()
     }
 
-    /// F7.7: what the request was and where its time went.
+    /// F7.7: what the request was, then where its time went, each phase a
+    /// bar on the request's timeline.
     fn render_info(&self, response: &HttpResponse, cx: &mut Context<Self>) -> AnyElement {
         let stats = &response.stats;
-        let mut rows = vec![
+        let mut rows = Vec::new();
+        // Where it went, as sent: variables resolved, the query in it.
+        if !response.url.is_empty() {
+            let method = response.request.method.as_str();
+            rows.push((t!("response.url").to_string(), format!("{method} {}", response.url)));
+        }
+        rows.extend([
             (t!("response.api_id").to_string(), response.api.to_string()),
             (t!("response.remote").to_string(), stats.remote_addr.clone()),
-        ];
+        ]);
         if stats.is_https {
             rows.push((t!("response.cipher").to_string(), stats.cipher.clone()));
         }
-        for (label, duration) in [
-            (t!("response.dns"), stats.dns),
-            (t!("response.tcp"), stats.tcp),
-            (t!("response.tls"), stats.tls),
-            (t!("response.send"), stats.send),
-            (t!("response.server"), stats.server_processing),
-            (t!("response.transfer"), stats.content_transfer),
-            (t!("response.total"), stats.total),
-        ] {
-            // A phase that did not happen: TLS over plain HTTP, DNS for an address.
-            let shown = if duration.is_zero() {
-                "—".to_string()
-            } else {
-                format_duration(duration)
-            };
-            rows.push((label.to_string(), shown));
-        }
-        Self::render_headers(rows, cx)
+        let theme = cx.theme();
+        let phases = [
+            (t!("response.dns"), stats.dns, theme.cyan),
+            (t!("response.tcp"), stats.tcp, theme.blue),
+            (t!("response.tls"), stats.tls, theme.magenta),
+            (t!("response.send"), stats.send, theme.yellow),
+            (t!("response.server"), stats.server_processing, theme.green),
+            (t!("response.transfer"), stats.content_transfer, theme.red),
+        ];
+        // The phases may come to a little more than the total measured
+        // around them; the line is long enough for both.
+        let span = phases
+            .iter()
+            .map(|(_, duration, _)| *duration)
+            .sum::<Duration>()
+            .max(stats.total)
+            .as_secs_f32();
+        let (muted, track) = (theme.muted_foreground, theme.muted);
+        let whole = div().absolute().inset_0().rounded_sm().bg(muted.opacity(0.5));
+        let mut start = 0.;
+        let timeline = v_flex()
+            .gap_1()
+            .px_2()
+            .text_sm()
+            .children(phases.into_iter().map(|(label, duration, color)| {
+                let length = duration.as_secs_f32();
+                let bar = (length > 0. && span > 0.).then(|| {
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(start / span))
+                        .w(relative(length / span))
+                        .min_w(px(2.))
+                        .rounded_sm()
+                        .bg(color)
+                });
+                start += length;
+                timing_row(label.to_string(), duration, muted, bar, track)
+            }))
+            .child(
+                timing_row(t!("response.total").to_string(), stats.total, muted, Some(whole), track)
+                    .font_semibold()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .pt_1(),
+            );
+        v_flex()
+            .id("response-info")
+            .size_full()
+            .overflow_y_scrollbar()
+            .p_2()
+            .gap_3()
+            .child(field_rows("response-info-fields", rows, cx))
+            .child(timeline)
+            .into_any_element()
+    }
+}
+
+/// Names and values, each value copied by the button its row shows on
+/// hover: the text itself cannot be selected.
+fn field_rows(id: &'static str, rows: Vec<(String, String)>, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    let (muted, hover) = (theme.muted_foreground, theme.list_hover);
+    v_flex()
+        .text_sm()
+        .children(rows.into_iter().enumerate().map(move |(index, (name, value))| {
+            let group = SharedString::from(format!("{id}-{index}"));
+            let copied = value.clone();
+            h_flex()
+                .group(group.clone())
+                .px_2()
+                .py_1()
+                .gap_3()
+                .items_start()
+                .rounded(theme.radius)
+                .hover(move |style| style.bg(hover))
+                .child(div().w(px(180.)).flex_none().text_color(muted).child(name))
+                .child(div().flex_1().min_w_0().child(value))
+                .child(
+                    div()
+                        .flex_none()
+                        .invisible()
+                        .group_hover(group, |style| style.visible())
+                        .child(
+                            Button::new((id, index))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .tooltip(t!("common.copy").to_string())
+                                .on_click(move |_, window, cx| copy(copied.clone(), window, cx)),
+                        ),
+                )
+        }))
+}
+
+/// A phase of the timeline: its name, its bar where it fell, how long.
+fn timing_row(
+    label: String,
+    duration: Duration,
+    muted: Hsla,
+    bar: Option<gpui_kit::Div>,
+    track: Hsla,
+) -> gpui_kit::Div {
+    // A phase that did not happen: TLS over plain HTTP, DNS for an address.
+    let shown = if duration.is_zero() {
+        "—".to_string()
+    } else {
+        format_duration(duration)
+    };
+    h_flex()
+        .gap_3()
+        .py_0p5()
+        .items_center()
+        .child(div().w(px(180.)).flex_none().text_color(muted).child(label))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(60.))
+                .h(px(8.))
+                .relative()
+                .rounded_sm()
+                .bg(track)
+                .children(bar),
+        )
+        .child(div().w(px(80.)).flex_none().text_right().child(shown))
+}
+
+fn copy(text: String, window: &mut Window, cx: &mut App) {
+    cx.write_to_clipboard(ClipboardItem::new_string(text));
+    window.push_notification(Notification::success(t!("common.copied").to_string()), cx);
+}
+
+/// The grammar a text body is highlighted with, where it is compiled in
+/// (the desktop): HTML's takes XML too.
+fn language_of(response: &HttpResponse) -> &'static str {
+    let content_type = response.content_type().to_ascii_lowercase();
+    match response.body_kind() {
+        BodyKind::Json => "json",
+        _ if content_type.contains("html") || content_type.contains("xml") => "html",
+        _ => "text",
     }
 }
 
@@ -388,8 +613,13 @@ fn image_format(content_type: &str) -> Option<ImageFormat> {
     .map(|(_, format)| format)
 }
 
+/// F7.2: how big the body is — as it came, or as it was decoded from a
+/// compressed one.
 fn body_size(response: &HttpResponse) -> String {
-    format_size(response.body.len() as u64)
+    match response.compression() {
+        Some(_) => format_size(response.body_omitted.unwrap_or(response.body.len() as u64)),
+        None => format_size(response.size()),
+    }
 }
 
 /// F7.4: a body the app cannot draw, which something outside it can.
@@ -429,23 +659,30 @@ fn note(text: String, buttons: Vec<Button>, cx: &mut Context<ResponsePanel>) -> 
 }
 
 impl Render for ResponsePanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let response = self.api.read(cx).shown_response().cloned();
         let sending = self.api.read(cx).sending_since().is_some();
-        let summary = self.render_summary(response.as_ref(), cx);
+        let summary = self.render_summary(response.as_deref(), cx);
         let content: AnyElement = match &response {
             Some(response) => {
                 let content = match self.tab {
                     ResponseTab::Body => self.render_body(response, cx),
                     ResponseTab::Headers => Self::render_headers(
+                        "response-headers",
                         response
                             .display_headers()
                             .into_iter()
                             .map(|(name, values)| (name, values.join("\n")))
                             .collect(),
+                        t!("response.no_headers").to_string(),
                         cx,
                     ),
-                    ResponseTab::Cookies => Self::render_headers(response.cookies(), cx),
+                    ResponseTab::Cookies => Self::render_headers(
+                        "response-cookies",
+                        response.cookies(),
+                        t!("response.no_cookies").to_string(),
+                        cx,
+                    ),
                     ResponseTab::Info => self.render_info(response, cx),
                 };
                 v_flex()
@@ -455,24 +692,52 @@ impl Render for ResponsePanel {
                     .child(div().flex_1().min_h_0().child(content))
                     .into_any_element()
             }
-            None if sending => div().flex_1().into_any_element(),
-            None => v_flex()
+            // The first answer on its way, where it will show; the time it
+            // has taken is in the line above.
+            None if sending => v_flex()
                 .flex_1()
                 .justify_center()
                 .items_center()
-                .child(
-                    Empty::new().header(
-                        EmptyHeader::new()
-                            .media(
-                                EmptyMedia::new()
-                                    .with_variant(EmptyMediaVariant::Icon)
-                                    .child(Icon::new(gpui_kit::assets::IconName::Send)),
-                            )
-                            .title(EmptyTitle::new().child(t!("response.empty_title").to_string()))
-                            .description(EmptyDescription::new().child(t!("response.empty_description").to_string())),
-                    ),
-                )
+                .child(Spinner::new().large().color(cx.theme().muted_foreground))
                 .into_any_element(),
+            None => {
+                // The shortcut as this platform writes it: ⌘↵, Ctrl+Enter.
+                let shortcut = Kbd::binding_for_action(&SendAction, Some(KEY_CONTEXT), window);
+                let muted = cx.theme().muted_foreground;
+                v_flex()
+                    .flex_1()
+                    .justify_center()
+                    .items_center()
+                    .child(
+                        Empty::new()
+                            .header(
+                                EmptyHeader::new()
+                                    .media(
+                                        EmptyMedia::new()
+                                            .with_variant(EmptyMediaVariant::Icon)
+                                            .child(Icon::new(gpui_kit::assets::IconName::Send)),
+                                    )
+                                    .title(EmptyTitle::new().child(t!("response.empty_title").to_string()))
+                                    .description(
+                                        EmptyDescription::new().child(t!("response.empty_description").to_string()),
+                                    ),
+                            )
+                            .when_some(shortcut, |empty, shortcut| {
+                                empty.content(
+                                    EmptyContent::new().child(
+                                        h_flex()
+                                            .gap_2()
+                                            .items_center()
+                                            .text_sm()
+                                            .text_color(muted)
+                                            .child(shortcut)
+                                            .child(t!("editor.send").to_string()),
+                                    ),
+                                )
+                            }),
+                    )
+                    .into_any_element()
+            }
         };
         v_flex()
             .size_full()

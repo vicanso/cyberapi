@@ -1,10 +1,11 @@
 //! The pinned APIs as tags in the title bar (M12): the number, the method
-//! and the name, the selected one marked; a click selects, the close button
-//! unpins.
+//! and the name, the selected one marked; a click — or Cmd/Ctrl and the
+//! number — selects, the close button unpins.
 
-use super::{method_color, method_label};
+use super::{KEY_CONTEXT, method_color, method_label, pin_action};
 use crate::states::WorkspaceState;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -36,8 +37,18 @@ impl Render for PinsBar {
         let tags = state.pinned().into_iter().enumerate().map(|(index, api)| {
             let active = selected.as_ref() == Some(&api.id);
             let (select_id, unpin_id) = (api.id.clone(), api.id.clone());
+            // The whole name, and the key that selects it.
+            let (name, action) = (api.name.clone(), pin_action(index));
             h_flex()
                 .id(("pin", index))
+                .tooltip(move |window, cx| {
+                    let tooltip = Tooltip::new(name.clone());
+                    match &action {
+                        Some(action) => tooltip.action(action.as_ref(), Some(KEY_CONTEXT)),
+                        None => tooltip,
+                    }
+                    .build(window, cx)
+                })
                 .flex_none()
                 .max_w(px(200.))
                 .h(px(24.))

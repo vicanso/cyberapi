@@ -2,6 +2,7 @@
 //! "用户管理".
 
 use pinyin::ToPinyinMulti;
+use std::ops::Range;
 
 /// Whether `keyword` occurs in `content`, ignoring case, or in its pinyin:
 /// either the full spelling (`yonghuguanli`) or the initials (`yhgl`).
@@ -12,12 +13,30 @@ use pinyin::ToPinyinMulti;
 /// could match across two combinations. This walks the characters instead,
 /// trying each reading only where the keyword still fits.
 pub fn matches_text_or_pinyin(content: &str, keyword: &str) -> bool {
+    keyword.is_empty() || match_range(content, keyword).is_some()
+}
+
+/// Where [`matches_text_or_pinyin`] found `keyword` in `content`, counted in
+/// characters: the first place, by text before pinyin, the initials before
+/// the spelling. What a list marks in the name. `None` for no keyword.
+pub fn match_range(content: &str, keyword: &str) -> Option<Range<usize>> {
     let keyword = keyword.to_lowercase();
-    if keyword.is_empty() || content.to_lowercase().contains(&keyword) {
-        return true;
+    if keyword.is_empty() {
+        return None;
+    }
+    let lowered = content.to_lowercase();
+    if let Some(at) = lowered.find(&keyword) {
+        // Lower case keeps the characters one for one but in a few
+        // scripts; where it does not, the whole name stands for the place.
+        let count = content.chars().count();
+        if lowered.chars().count() != count {
+            return Some(0..count);
+        }
+        let start = lowered[..at].chars().count();
+        return Some(start..start + keyword.chars().count());
     }
     let readings: Vec<Vec<String>> = content.chars().map(readings_of).collect();
-    matches_initials(&readings, &keyword) || matches_spelling(&readings, &keyword)
+    initials_range(&readings, &keyword).or_else(|| spelling_range(&readings, &keyword))
 }
 
 /// The toneless readings of a character, or the character itself (lower
@@ -46,23 +65,25 @@ fn readings_of(ch: char) -> Vec<String> {
 
 /// The keyword, letter by letter, against consecutive characters' first
 /// letters.
-fn matches_initials(readings: &[Vec<String>], keyword: &str) -> bool {
+fn initials_range(readings: &[Vec<String>], keyword: &str) -> Option<Range<usize>> {
     let wanted: Vec<char> = keyword.chars().collect();
     if wanted.len() > readings.len() {
-        return false;
+        return None;
     }
-    (0..=readings.len() - wanted.len()).any(|start| {
-        wanted.iter().enumerate().all(|(offset, letter)| {
-            readings[start + offset]
-                .iter()
-                .any(|reading| reading.starts_with(*letter))
+    (0..=readings.len() - wanted.len())
+        .find(|&start| {
+            wanted.iter().enumerate().all(|(offset, letter)| {
+                readings[start + offset]
+                    .iter()
+                    .any(|reading| reading.starts_with(*letter))
+            })
         })
-    })
+        .map(|start| start..start + wanted.len())
 }
 
 /// The keyword against the spelling of consecutive characters. It may start
 /// inside the first character's reading and end inside the last one's.
-fn matches_spelling(readings: &[Vec<String>], keyword: &str) -> bool {
+fn spelling_range(readings: &[Vec<String>], keyword: &str) -> Option<Range<usize>> {
     // `failed[at][used]`: from character `at`, with `used` bytes of the
     // keyword matched, there is no way on. Each state is tried once.
     let mut failed = vec![vec![false; keyword.len() + 1]; readings.len() + 1];
@@ -71,40 +92,64 @@ fn matches_spelling(readings: &[Vec<String>], keyword: &str) -> bool {
             for (offset, _) in reading.char_indices() {
                 let tail = &reading[offset..];
                 if tail.starts_with(keyword) {
-                    return true;
+                    return Some(at..at + 1);
                 }
-                if keyword.starts_with(tail) && continues(readings, keyword, at + 1, tail.len(), &mut failed) {
-                    return true;
+                if keyword.starts_with(tail)
+                    && let Some(end) = continues(readings, keyword, at + 1, tail.len(), &mut failed)
+                {
+                    return Some(at..end);
                 }
             }
         }
     }
-    false
+    None
 }
 
-fn continues(readings: &[Vec<String>], keyword: &str, at: usize, used: usize, failed: &mut [Vec<bool>]) -> bool {
+/// Where the keyword's rest, from byte `used`, ends when spelt on from
+/// character `at`: the character after its last.
+fn continues(
+    readings: &[Vec<String>],
+    keyword: &str,
+    at: usize,
+    used: usize,
+    failed: &mut [Vec<bool>],
+) -> Option<usize> {
     let rest = &keyword[used..];
     if rest.is_empty() {
-        return true;
+        return Some(at);
     }
     if at == readings.len() || failed[at][used] {
-        return false;
+        return None;
     }
     for reading in &readings[at] {
         if reading.starts_with(rest) {
-            return true;
+            return Some(at + 1);
         }
-        if rest.starts_with(reading.as_str()) && continues(readings, keyword, at + 1, used + reading.len(), failed) {
-            return true;
+        if rest.starts_with(reading.as_str())
+            && let Some(end) = continues(readings, keyword, at + 1, used + reading.len(), failed)
+        {
+            return Some(end);
         }
     }
     failed[at][used] = true;
-    false
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_place_found_is_marked_in_characters() {
+        assert_eq!(match_range("User API", "api"), Some(5..8));
+        assert_eq!(match_range("获取token", "TOKEN"), Some(2..7));
+        assert_eq!(match_range("用户管理", "yhgl"), Some(0..4));
+        assert_eq!(match_range("用户管理", "guan"), Some(2..3));
+        assert_eq!(match_range("用户管理", "huguan"), Some(1..3));
+        assert_eq!(match_range("用户管理", "nghug"), Some(0..3));
+        assert_eq!(match_range("用户管理", "order"), None);
+        assert_eq!(match_range("anything", ""), None);
+    }
 
     #[test]
     fn plain_text_ignores_case() {

@@ -15,6 +15,8 @@ pub enum DashboardEvent {
     Failed(StoreError),
     /// A project is gone, and with it the reader's state of it.
     Deleted(CollectionId),
+    /// A project the reader made, to be opened.
+    Created(Collection),
 }
 
 pub struct DashboardState {
@@ -86,7 +88,8 @@ impl DashboardState {
             self.storage.collections().create(input),
             |this, result, cx| match result {
                 Ok(collection) => {
-                    this.collections.push(collection);
+                    this.collections.push(collection.clone());
+                    cx.emit(DashboardEvent::Created(collection));
                     cx.notify();
                 }
                 Err(error) => cx.emit(DashboardEvent::Failed(error)),

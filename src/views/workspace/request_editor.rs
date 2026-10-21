@@ -2,30 +2,46 @@
 //! button, and the Body / Query / Header / Auth tabs. One per selected API;
 //! everything it edits goes to the API's `ApiState`.
 
-use super::method_color;
+// The action, named apart from the `Send` trait.
+use super::{KEY_CONTEXT, Send as SendAction, method_color};
 use crate::states::{ApiEvent, ApiState, AppStore, WorkspaceState};
 use crate::this_build;
 use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::open_variables_dialog;
+use cyberapi_core::import::request_from_curl;
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
 use cyberapi_core::prefs::RequestTab;
 use cyberapi_core::send::{self, form_fields};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::dialog::ANIMATION_DURATION;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, TabSize};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, AnyElement, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _,
-    PathPromptOptions, Render, Styled as _, Subscription, Task, Window, div, px,
+    Anchor, AnyElement, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Task, Window, div, px,
 };
 use rust_i18n::t;
 use std::time::Duration;
+
+/// The headers one types most, offered in the header list's menu: the
+/// name, and the value's usual start.
+const COMMON_HEADERS: [(&str, &str); 7] = [
+    ("Content-Type", "application/json"),
+    ("Accept", "application/json"),
+    ("Authorization", "Bearer "),
+    ("Cache-Control", "no-cache"),
+    ("Cookie", ""),
+    ("User-Agent", ""),
+    ("X-Requested-With", "XMLHttpRequest"),
+];
 
 /// The editor column's share of what the tree leaves, as the presets set
 /// it (F4.14).
@@ -49,14 +65,17 @@ pub struct RequestEditor {
     auth: Entity<KvEditor>,
     /// Redraws the elapsed time while a request is out.
     ticker: Option<Task<()>>,
+    /// Why the JSON body would not parse, worked out as it changes.
+    json_problem: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
-/// The body editor for a content type: JSON is highlighted where the
-/// grammar is compiled in (the desktop).
+/// The body editor for a content type: JSON and XML (in HTML's grammar)
+/// are highlighted where the grammars are compiled in (the desktop).
 fn body_state(request: &HttpRequest, window: &mut Window, cx: &mut Context<RequestEditor>) -> Entity<EditorState> {
     let language = match request.content_type {
         ContentType::Json => "json",
+        ContentType::Xml => "html",
         _ => "text",
     };
     let text = if request.content_type.is_key_value() {
@@ -105,7 +124,15 @@ impl RequestEditor {
             cx,
         );
         let query = kv(&request.query, KvOptions::default(), window, cx);
-        let headers = kv(&request.headers, KvOptions::default(), window, cx);
+        let headers = kv(
+            &request.headers,
+            KvOptions {
+                presets: &COMMON_HEADERS,
+                ..Default::default()
+            },
+            window,
+            cx,
+        );
         let auth = kv(
             &request.auth,
             KvOptions {
@@ -140,11 +167,21 @@ impl RequestEditor {
             }),
             // F4.3: the URI is saved as the field is left, or on Enter —
             // which also sends it, when there is one (F3.12). Cmd/Ctrl+Enter
-            // is the workspace's own Send.
+            // is the workspace's own Send. A cURL command there becomes the
+            // request first.
             cx.subscribe_in(&uri, window, |this, _, event: &InputEvent, window, cx| match event {
-                InputEvent::Blur => this.save_uri(cx),
+                InputEvent::Blur => {
+                    if !this.take_curl(window, cx) {
+                        this.save_uri(cx);
+                    }
+                }
                 InputEvent::PressEnter { secondary, .. } => {
-                    this.save_uri(cx);
+                    // A cURL command typed, or pasted in a page (which hands
+                    // the field the text rather than the paste to the hook),
+                    // is the request Enter then sends.
+                    if !this.take_curl(window, cx) {
+                        this.save_uri(cx);
+                    }
                     let has_uri = !this.api.read(cx).request().uri.trim().is_empty();
                     if !*secondary && has_uri {
                         this.send(window, cx);
@@ -176,10 +213,36 @@ impl RequestEditor {
             headers,
             auth,
             ticker: None,
+            json_problem: None,
             _subscriptions: subscriptions,
         };
         editor.follow_sending(cx);
+        editor.check_json(cx);
         editor
+    }
+
+    fn check_json(&mut self, cx: &mut Context<Self>) {
+        let request = self.api.read(cx).request();
+        let problem = (request.content_type == ContentType::Json)
+            .then(|| send::json_problem(&request.body))
+            .flatten();
+        if problem != self.json_problem {
+            self.json_problem = problem;
+            cx.notify();
+        }
+    }
+
+    /// The keys to the URI field — once the name dialog that made the API
+    /// has closed: it hands focus back at the end of its animation, over
+    /// any given before.
+    pub fn focus_uri(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(*ANIMATION_DURATION).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.uri.update(cx, |input, cx| input.focus(window, cx));
+            });
+        })
+        .detach();
     }
 
     fn watch_body(body: &Entity<EditorState>, window: &mut Window, cx: &mut Context<Self>) -> Subscription {
@@ -187,6 +250,7 @@ impl RequestEditor {
             if matches!(event, InputEvent::Change) {
                 let text = body.read(cx).value().to_string();
                 this.api.update(cx, |api, cx| api.set_body(text, cx));
+                this.check_json(cx);
             }
         })
     }
@@ -204,6 +268,7 @@ impl RequestEditor {
         self.headers
             .update(cx, |kv, cx| kv.set_list(&request.headers, window, cx));
         self.auth.update(cx, |kv, cx| kv.set_list(&request.auth, window, cx));
+        self.check_json(cx);
         cx.notify();
     }
 
@@ -229,6 +294,22 @@ impl RequestEditor {
                 _ => {}
             }
         });
+    }
+
+    /// A cURL command in the URI field becomes the request (F10.3 in place):
+    /// method, URL, query, headers and body. Answers whether it was one.
+    fn take_curl(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let text = self.uri.read(cx).value().to_string();
+        self.fill_from_curl(&text, window, cx)
+    }
+
+    fn fill_from_curl(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(request) = request_from_curl(text) else {
+            return false;
+        };
+        self.api.update(cx, |api, cx| api.replace_request(request, cx));
+        window.push_notification(Notification::success(t!("editor.curl_filled").to_string()), cx);
+        true
     }
 
     /// The environment prefix, then what the field holds.
@@ -285,6 +366,7 @@ impl RequestEditor {
         let request = self.api.read(cx).request().clone();
         self.body = body_state(&request, window, cx);
         self._subscriptions.push(Self::watch_body(&self.body, window, cx));
+        self.check_json(cx);
         self.form = cx.new(|cx| {
             KvEditor::new(
                 &[],
@@ -303,14 +385,11 @@ impl RequestEditor {
         cx.notify();
     }
 
-    /// F4.7: JSON indented by two spaces.
+    /// F4.7: JSON indented by two spaces, its templates as written.
     fn format_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.body.read(cx).value().to_string();
-        match serde_json::from_str::<serde_json::Value>(&send::strip_json_comments(&text)) {
-            Ok(json) => {
-                let pretty = serde_json::to_string_pretty(&json).unwrap_or(text);
-                self.body.update(cx, |body, cx| body.set_value(pretty, window, cx));
-            }
+        match send::format_json(&text) {
+            Ok(pretty) => self.body.update(cx, |body, cx| body.set_value(pretty, window, cx)),
             Err(error) => {
                 window.push_notification(Notification::warning(format!("{}: {error}", t!("editor.not_json"))), cx);
             }
@@ -377,15 +456,37 @@ impl RequestEditor {
             .environments()
             .map(|variable| (variable.name.clone(), variable.value.clone()))
             .collect();
+        // What the prefix stands for: the address the request goes to.
+        // A prefix nothing enabled stands for is sent as it is written.
+        let env_value = env
+            .as_ref()
+            .and_then(|name| environments.iter().find(|(candidate, _)| candidate == name))
+            .map(|(_, value)| value.clone());
+        let env_tooltip = match (&env, &env_value) {
+            (Some(name), Some(value)) => format!("{{{{{name}}}}} = {value}"),
+            (Some(name), None) => t!("editor.environment_missing", name = name).to_string(),
+            (None, _) => t!("editor.environment").to_string(),
+        };
         let this = cx.entity().downgrade();
+        let paste = this.clone();
         let method_menu = {
             let this = this.clone();
+            let current = request.method;
             move |menu: gpui_kit::component::menu::PopupMenu,
                   _: &mut Window,
                   _: &mut Context<gpui_kit::component::menu::PopupMenu>| {
                 HttpMethod::EDITABLE.iter().fold(menu, |menu, method| {
                     let (this, method) = (this.clone(), *method);
-                    menu.item(PopupMenuItem::new(method.as_str()).on_click(move |_, _, cx| {
+                    // Each in the colour the tree gives it.
+                    let item = PopupMenuItem::element(move |_, cx| {
+                        div()
+                            .w(px(64.))
+                            .text_xs()
+                            .font_bold()
+                            .text_color(method_color(method, cx))
+                            .child(method.as_str())
+                    });
+                    menu.item(item.checked(method == current).on_click(move |_, _, cx| {
                         let _ = this.update(cx, |this, cx| {
                             this.api.update(cx, |api, cx| api.set_method(method, cx));
                         });
@@ -395,6 +496,7 @@ impl RequestEditor {
         };
         let env_menu = {
             let this = this.clone();
+            let env_now = env.clone();
             move |menu: gpui_kit::component::menu::PopupMenu,
                   _: &mut Window,
                   _: &mut Context<gpui_kit::component::menu::PopupMenu>| {
@@ -415,12 +517,25 @@ impl RequestEditor {
                     .iter()
                     .fold(menu, |menu, (name, value)| {
                         let (this, chosen) = (this.clone(), name.clone());
-                        menu.item(
-                            PopupMenuItem::new(format!("{name} | {value}")).on_click(move |_, _, cx| {
-                                let chosen = chosen.clone();
-                                let _ = this.update(cx, |this, cx| this.set_environment(Some(chosen), cx));
-                            }),
-                        )
+                        let (label, address) = (name.clone(), value.clone());
+                        // The name, and the address it stands for in grey.
+                        let item = PopupMenuItem::element(move |_, cx| {
+                            h_flex()
+                                .gap_3()
+                                .max_w(px(420.))
+                                .child(div().flex_none().child(label.clone()))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(address.clone()),
+                                )
+                        });
+                        menu.item(item.checked(env_now.as_ref() == Some(name)).on_click(move |_, _, cx| {
+                            let chosen = chosen.clone();
+                            let _ = this.update(cx, |this, cx| this.set_environment(Some(chosen), cx));
+                        }))
                     })
                     .separator()
                     // F4.4: the dialog the variables are kept in.
@@ -438,67 +553,78 @@ impl RequestEditor {
         let theme = cx.theme();
         let (border, muted) = (theme.border, theme.muted_foreground);
         let method_color = method_color(request.method, cx);
+        let env_color = if env_value.is_some() { theme.info } else { theme.warning };
         // F4.1–F4.4: the method, the environment and the URI read as one
         // address, the way a browser's bar does.
-        let address = h_flex()
-            .flex_1()
-            .min_w_0()
-            .h(px(30.))
-            .items_center()
-            .rounded(theme.radius)
-            .border_1()
-            .border_color(theme.input)
-            .bg(theme.background)
-            .child(
-                Button::new("request-method")
-                    .ghost()
-                    .small()
-                    .child(
-                        h_flex()
-                            .w(px(64.))
-                            .gap_1()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_bold()
-                                    .text_color(method_color)
-                                    .child(request.method.as_str()),
-                            )
-                            .child(Icon::new(IconName::ChevronDown).xsmall().text_color(muted)),
-                    )
-                    .dropdown_menu_with_anchor(Anchor::TopLeft, method_menu),
-            )
-            .child(div().w(px(1.)).h(px(16.)).bg(border))
-            .child(
-                Button::new("request-env")
-                    .ghost()
-                    .xsmall()
-                    .ml_1()
-                    .child(match &env {
-                        Some(name) => div()
-                            .px_1p5()
-                            .rounded(theme.radius)
-                            .bg(theme.info.opacity(0.14))
-                            .text_color(theme.info)
-                            .text_xs()
-                            .font_medium()
-                            .child(format!("{{{{{name}}}}}")),
-                        None => div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(t!("editor.environment").to_string()),
-                    })
-                    .tooltip(t!("editor.environment").to_string())
-                    .dropdown_menu_with_anchor(Anchor::TopLeft, env_menu),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(Input::new(&self.uri).small().appearance(false)),
-            );
+        let address =
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .h(px(30.))
+                .items_center()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.input)
+                .bg(theme.background)
+                .child(
+                    Button::new("request-method")
+                        .ghost()
+                        .small()
+                        .child(
+                            h_flex()
+                                .w(px(64.))
+                                .gap_1()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_bold()
+                                        .text_color(method_color)
+                                        .child(request.method.as_str()),
+                                )
+                                .child(Icon::new(IconName::ChevronDown).xsmall().text_color(muted)),
+                        )
+                        .dropdown_menu_with_anchor(Anchor::TopLeft, method_menu),
+                )
+                .child(div().w(px(1.)).h(px(16.)).bg(border))
+                .child(
+                    Button::new("request-env")
+                        .ghost()
+                        .xsmall()
+                        .ml_1()
+                        .child(match &env {
+                            Some(name) => div()
+                                .px_1p5()
+                                .rounded(theme.radius)
+                                .bg(env_color.opacity(0.14))
+                                .text_color(env_color)
+                                .text_xs()
+                                .font_medium()
+                                .child(format!("{{{{{name}}}}}")),
+                            None => div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(t!("editor.environment").to_string()),
+                        })
+                        .tooltip(env_tooltip)
+                        .dropdown_menu_with_anchor(Anchor::TopLeft, env_menu),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Input::new(&self.uri).small().appearance(false).on_paste(
+                            move |clipboard, window, cx| {
+                                // A pasted cURL command fills the request in rather
+                                // than landing in the field.
+                                let Some(text) = clipboard.text() else { return false };
+                                paste
+                                    .update(cx, |this, cx| this.fill_from_curl(&text, window, cx))
+                                    .unwrap_or(false)
+                            },
+                        )),
+                );
         h_flex()
             .h(px(44.))
             .px_3()
@@ -522,6 +648,7 @@ impl RequestEditor {
                     .small()
                     .icon(gpui_kit::assets::IconName::Send)
                     .label(t!("editor.send").to_string())
+                    .tooltip_with_action(t!("editor.send").to_string(), &SendAction, Some(KEY_CONTEXT))
                     .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
             })
     }
@@ -564,6 +691,7 @@ impl RequestEditor {
                     .xsmall()
                     .selected((share - preset).abs() < 0.01)
                     .label(format!("{:.0}%", preset * 100.))
+                    .tooltip(t!("editor.share_tooltip", share = format!("{:.0}%", preset * 100.)).to_string())
                     .on_click(cx.listener(move |_, _, _, cx| cx.emit(RequestEditorEvent::EditorShare(preset))))
             }));
         TabBar::new("request-tabs")
@@ -626,12 +754,36 @@ impl RequestEditor {
                         .label(t!("editor.format").to_string())
                         .on_click(cx.listener(|this, _, window, cx| this.format_json(window, cx))),
                 )
+            })
+            // Before it is sent: where the JSON goes wrong.
+            .when_some(self.json_problem.clone(), |this, problem| {
+                let warning = cx.theme().warning;
+                this.child(
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .justify_end()
+                        .gap_1()
+                        .items_center()
+                        .text_xs()
+                        .text_color(warning)
+                        .child(Icon::new(IconName::TriangleAlert).xsmall().text_color(warning))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(t!("editor.json_problem", why = problem).to_string()),
+                        ),
+                )
             });
         let content: AnyElement = if request.content_type.is_key_value() {
             div()
+                .id("request-form")
                 .flex_1()
                 .min_h_0()
+                .overflow_y_scrollbar()
                 .px_2()
+                .pb_2()
                 .child(self.form.clone())
                 .into_any_element()
         } else {
@@ -661,9 +813,25 @@ impl Render for RequestEditor {
         let tab = self.workspace.read(cx).tab(cx).unwrap_or(RequestTab::Query);
         let content: AnyElement = match tab {
             RequestTab::Body => self.render_body(cx),
-            RequestTab::Query => div().p_2().child(self.query.clone()).into_any_element(),
-            RequestTab::Headers => div().p_2().child(self.headers.clone()).into_any_element(),
+            // A long list scrolls rather than running off the column.
+            RequestTab::Query => div()
+                .id("request-query")
+                .size_full()
+                .overflow_y_scrollbar()
+                .p_2()
+                .child(self.query.clone())
+                .into_any_element(),
+            RequestTab::Headers => div()
+                .id("request-headers")
+                .size_full()
+                .overflow_y_scrollbar()
+                .p_2()
+                .child(self.headers.clone())
+                .into_any_element(),
             RequestTab::Auth => v_flex()
+                .id("request-auth")
+                .size_full()
+                .overflow_y_scrollbar()
                 .p_2()
                 .gap_2()
                 .child(

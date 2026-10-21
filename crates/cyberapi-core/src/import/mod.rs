@@ -152,6 +152,28 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     Ok(bundle)
 }
 
+/// The request of a cURL command pasted where a URI goes: the editor fills
+/// itself in from it, a JSON body indented as its Format button does.
+/// `None` for anything else.
+pub fn request_from_curl(text: &str) -> Option<HttpRequest> {
+    let text = text.trim_start();
+    let command = text.get(..4).is_some_and(|start| start.eq_ignore_ascii_case("curl"))
+        && text[4..].starts_with(char::is_whitespace);
+    if !command {
+        return None;
+    }
+    let ImportItem::Api { mut request, .. } = curl::parse(text).ok()?.items.into_iter().next()? else {
+        return None;
+    };
+    if request.content_type == ContentType::Json
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&request.body)
+        && let Ok(pretty) = serde_json::to_string_pretty(&json)
+    {
+        request.body = pretty;
+    }
+    Some(request)
+}
+
 /// A request's URL with its query moved to the query list, as every importer
 /// does (F10.3). A URL that does not parse — `{{HOST}}/a?b=1` — is split by
 /// hand.
@@ -222,6 +244,24 @@ fn kv(key: &str, value: &str, enabled: bool) -> KvParam {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn a_pasted_curl_command_is_a_request() {
+        let request = request_from_curl(" curl -X PUT 'https://a.test/x?y=1' -H 'X-A: 1'").expect("a request");
+        assert_eq!(request.method, HttpMethod::Put);
+        assert_eq!(request.uri, "https://a.test/x");
+        assert_eq!(request.query, [kv("y", "1", true)]);
+        assert_eq!(request.headers, [kv("X-A", "1", true)]);
+        // A JSON body comes indented, as the editor formats it.
+        let request = request_from_curl(r#"curl https://a.test -H 'Content-Type: application/json' -d '{"a":[1]}'"#)
+            .expect("a request");
+        assert_eq!(request.body, "{\n  \"a\": [\n    1\n  ]\n}");
+        // A URI, a word that only starts like one, a command without a URL.
+        assert_eq!(request_from_curl("https://a.test/curl"), None);
+        assert_eq!(request_from_curl("curly.test/a"), None);
+        assert_eq!(request_from_curl("curl -v"), None);
+        assert_eq!(request_from_curl("网厅"), None);
+    }
 
     #[test]
     fn formats_are_told_apart() {

@@ -6,6 +6,7 @@ use crate::states::AppStore;
 use crate::this_build;
 use crate::views::inline_confirm::inline_confirm;
 use cyberapi_core::prefs::{ThemeMode, Timeouts, WindowPrefs};
+use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -19,6 +20,9 @@ use gpui_kit::{
 };
 use rust_i18n::t;
 use std::time::Duration;
+
+/// The project's home: its releases (and the nightly), its issues.
+const HOMEPAGE: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// The languages offered (F15.2): `None` follows the system.
 const LANGUAGES: [(Option<&str>, &str); 4] = [
@@ -37,10 +41,6 @@ pub fn open_settings_dialog(window: &mut Window, cx: &mut App) {
             .child(view.clone())
     });
 }
-
-/// The smallest window the settings allow (F14.2).
-const MIN_WIDTH: u32 = 900;
-const MIN_HEIGHT: u32 = 600;
 
 /// What the dialog clears or resets, once confirmed (F15.3).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,18 +69,19 @@ const COMMIT_DELAY: Duration = Duration::from_millis(600);
 impl SettingsView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
-        let number = |value: u32, window: &mut Window, cx: &mut Context<Self>| {
+        // Empty is the default, which the field shows greyed.
+        let number = |value: u32, default: u32, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("0")
+                    .placeholder(default.to_string())
                     .default_value(if value == 0 { String::new() } else { value.to_string() })
             })
         };
-        let connect = number(prefs.timeouts.connect, window, cx);
-        let write = number(prefs.timeouts.write, window, cx);
-        let read = number(prefs.timeouts.read, window, cx);
-        let width = number(prefs.window.width, window, cx);
-        let height = number(prefs.window.height, window, cx);
+        let connect = number(prefs.timeouts.connect, Timeouts::DEFAULT_CONNECT, window, cx);
+        let write = number(prefs.timeouts.write, Timeouts::DEFAULT_WRITE, window, cx);
+        let read = number(prefs.timeouts.read, Timeouts::DEFAULT_READ, window, cx);
+        let width = number(prefs.window.width, WindowPrefs::DEFAULT_WIDTH, window, cx);
+        let height = number(prefs.window.height, WindowPrefs::DEFAULT_HEIGHT, window, cx);
         let mut subscriptions = Vec::new();
         for (input, size) in [
             (&connect, false),
@@ -153,8 +154,16 @@ impl SettingsView {
         };
         let app = AppStore::global(cx).state().clone();
         let mut prefs = app.read(cx).prefs().window;
-        prefs.width = if width == 0 { 0 } else { width.max(MIN_WIDTH) };
-        prefs.height = if height == 0 { 0 } else { height.max(MIN_HEIGHT) };
+        prefs.width = if width == 0 {
+            0
+        } else {
+            width.max(WindowPrefs::MIN_WIDTH)
+        };
+        prefs.height = if height == 0 {
+            0
+        } else {
+            height.max(WindowPrefs::MIN_HEIGHT)
+        };
         app.update(cx, |app, cx| app.set_window(prefs, cx));
         apply_window(prefs, window);
         cx.notify();
@@ -299,25 +308,29 @@ fn apply_window(prefs: WindowPrefs, window: &mut Window) {
     }
 }
 
-/// A row of choices, the chosen one filled.
+/// A row of choices, the chosen one filled, each with its icon if it has
+/// one.
 fn choices<T: PartialEq + Clone + 'static>(
     id: &'static str,
-    options: Vec<(T, String)>,
+    options: Vec<(T, String, Option<Icons>)>,
     chosen: T,
     on_choose: impl Fn(T, &mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
-    h_flex()
-        .gap_1()
-        .flex_wrap()
-        .children(options.into_iter().enumerate().map(move |(index, (value, label))| {
-            let on_choose = on_choose.clone();
-            let selected = value == chosen;
-            Button::new((id, index))
-                .small()
-                .label(label)
-                .map(|button| if selected { button.primary() } else { button.outline() })
-                .on_click(move |_, window, cx| on_choose(value.clone(), window, cx))
-        }))
+    h_flex().gap_1().flex_wrap().children(
+        options
+            .into_iter()
+            .enumerate()
+            .map(move |(index, (value, label, icon))| {
+                let on_choose = on_choose.clone();
+                let selected = value == chosen;
+                Button::new((id, index))
+                    .small()
+                    .label(label)
+                    .when_some(icon, |button, icon| button.icon(icon))
+                    .map(|button| if selected { button.primary() } else { button.outline() })
+                    .on_click(move |_, window, cx| on_choose(value.clone(), window, cx))
+            }),
+    )
 }
 
 fn section(title: String, content: impl IntoElement) -> impl IntoElement {
@@ -334,9 +347,21 @@ impl Render for SettingsView {
         let theme = choices(
             "settings-theme",
             vec![
-                (ThemeMode::System, t!("settings.theme_system").to_string()),
-                (ThemeMode::Light, t!("settings.theme_light").to_string()),
-                (ThemeMode::Dark, t!("settings.theme_dark").to_string()),
+                (
+                    ThemeMode::System,
+                    t!("settings.theme_system").to_string(),
+                    Some(Icons::Monitor),
+                ),
+                (
+                    ThemeMode::Light,
+                    t!("settings.theme_light").to_string(),
+                    Some(Icons::Sun),
+                ),
+                (
+                    ThemeMode::Dark,
+                    t!("settings.theme_dark").to_string(),
+                    Some(Icons::Moon),
+                ),
             ],
             prefs.theme,
             |theme, _, cx| {
@@ -354,7 +379,7 @@ impl Render for SettingsView {
                     } else {
                         name.to_string()
                     };
-                    (code.map(str::to_string), label)
+                    (code.map(str::to_string), label, None)
                 })
                 .collect(),
             prefs.language.clone(),
@@ -422,15 +447,46 @@ impl Render for SettingsView {
             ("User-Agent".to_string(), this_build::user_agent().into()),
             (t!("settings.data").to_string(), this_build::data_location().into()),
         ]);
+        let data_row = about_rows.len() - 1;
+        // Where the app comes from: releases, nightly builds, issues.
+        let homepage = h_flex()
+            .gap_3()
+            .text_sm()
+            .child(
+                div()
+                    .w(px(110.))
+                    .flex_none()
+                    .text_color(muted)
+                    .child(t!("settings.homepage").to_string()),
+            )
+            .child(
+                Button::new("settings-homepage")
+                    .link()
+                    .small()
+                    .label(HOMEPAGE.trim_start_matches("https://"))
+                    .on_click(|_, _, cx| cx.open_url(HOMEPAGE)),
+            );
         let about = v_flex()
             .gap_1()
             .text_sm()
-            .children(about_rows.into_iter().map(|(label, value)| {
+            .children(about_rows.into_iter().enumerate().map(|(index, (label, value))| {
                 h_flex()
                     .gap_3()
+                    .items_start()
                     .child(div().w(px(110.)).flex_none().text_color(muted).child(label))
                     .child(div().flex_1().min_w_0().child(value))
-            }));
+                    // The folder, opened where the system shows files.
+                    .when(index == data_row && this_build::shows_data(), |row| {
+                        row.child(
+                            Button::new("settings-show-data")
+                                .outline()
+                                .xsmall()
+                                .label(t!("settings.show_data").to_string())
+                                .on_click(|_, _, cx| this_build::show_data(cx)),
+                        )
+                    })
+            }))
+            .child(homepage);
         // Scrolls inside the dialog rather than running off the window.
         let room = (window.viewport_size().height - px(220.)).max(px(240.));
         v_flex()

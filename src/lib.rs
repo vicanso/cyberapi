@@ -24,7 +24,7 @@ pub use crate::pacing::set_page_visible;
 use crate::root::CyberApi;
 use crate::states::AppStore;
 use crate::views::StartupError;
-use cyberapi_core::prefs::AppPrefs;
+use cyberapi_core::prefs::{AppPrefs, WindowPrefs};
 use cyberapi_http::HttpEngine;
 use cyberapi_store::{BackupStore, DirectoryStore, Storage};
 use gpui_kit::component::TitleBar;
@@ -176,12 +176,15 @@ pub fn launch(cx: &mut App, storage: Storage, engine: Arc<dyn HttpEngine>, prefs
     i18n::apply(prefs.language.as_deref());
     this_build::add_fonts(cx);
     AppStore::init(storage, engine, prefs, extras, cx);
-    views::bind_workspace_keys(cx);
-    views::bind_dashboard_keys(cx);
+    // A Mac page's Cmd keys first: both sets work, and the shortcuts shown
+    // are the last bound. The kit writes Cmd in a page as "Win", so a hint
+    // reads Ctrl+F, which works there too, rather than a wrong Win+F.
     if this_build::mac_page() {
         views::bind_mac_page_keys(cx);
         views::bind_dashboard_mac_page_keys(cx);
     }
+    views::bind_workspace_keys(cx);
+    views::bind_dashboard_keys(cx);
     open_main_window(cx, |window, cx| cx.new(|cx| CyberApi::new(window, cx)));
 }
 
@@ -230,10 +233,14 @@ fn main_window_options(cx: &App) -> WindowOptions {
         .map(|store| store.state().read(cx).prefs().window)
         .unwrap_or_default();
     let (width, height) = if window.width > 0 && window.height > 0 {
-        (window.width.max(900) as f32, window.height.max(600) as f32)
+        (
+            window.width.max(WindowPrefs::MIN_WIDTH),
+            window.height.max(WindowPrefs::MIN_HEIGHT),
+        )
     } else {
-        (1280., 800.)
+        (WindowPrefs::DEFAULT_WIDTH, WindowPrefs::DEFAULT_HEIGHT)
     };
+    let (width, height) = (width as f32, height as f32);
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let window_bounds = if window.maximized {
         WindowBounds::Maximized(bounds)
@@ -247,7 +254,10 @@ fn main_window_options(cx: &App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(window_bounds),
         // F14.2: the smallest size the settings allow.
-        window_min_size: Some(size(px(900.), px(600.))),
+        window_min_size: Some(size(
+            px(WindowPrefs::MIN_WIDTH as f32),
+            px(WindowPrefs::MIN_HEIGHT as f32),
+        )),
         titlebar: Some(titlebar),
         app_id: Some(APP_ID.to_string()),
         // Only macOS paints a hidden window. Windows drives frames with

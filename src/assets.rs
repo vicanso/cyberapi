@@ -7,7 +7,32 @@ use std::borrow::Cow;
 
 gpui_kit::assets::icon_assets!(
     AppIcons,
-    [Clock, Infinity, Paperclip, Send, Terminal, Trash, WandSparkles]
+    [
+        ArchiveRestore,
+        Braces,
+        Clock,
+        Cookie,
+        CopyPlus,
+        DatabaseBackup,
+        Download,
+        FilePlus,
+        FolderInput,
+        FolderPlus,
+        Heading,
+        Import,
+        Infinity,
+        Keyboard,
+        ListPlus,
+        Monitor,
+        Paperclip,
+        Pencil,
+        Send,
+        Table,
+        Terminal,
+        Trash,
+        Users,
+        WandSparkles
+    ]
 );
 
 pub struct Assets;
@@ -37,12 +62,29 @@ mod tests {
     #[test]
     fn every_icon_the_app_uses_is_embedded() {
         for icon in [
+            IconName::ArchiveRestore,
+            IconName::Braces,
             IconName::Clock,
+            IconName::Cookie,
+            IconName::CopyPlus,
+            IconName::DatabaseBackup,
+            IconName::Download,
+            IconName::FilePlus,
+            IconName::FolderInput,
+            IconName::FolderPlus,
+            IconName::Heading,
+            IconName::Import,
             IconName::Infinity,
+            IconName::Keyboard,
+            IconName::ListPlus,
+            IconName::Monitor,
             IconName::Paperclip,
+            IconName::Pencil,
             IconName::Send,
+            IconName::Table,
             IconName::Terminal,
             IconName::Trash,
+            IconName::Users,
             IconName::WandSparkles,
             IconName::FolderOpen,
         ] {

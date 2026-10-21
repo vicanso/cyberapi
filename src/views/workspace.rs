@@ -3,6 +3,7 @@
 //! title bar shows.
 
 mod import_dialog;
+mod move_dialog;
 mod pins;
 mod request_editor;
 mod response_panel;
@@ -17,23 +18,51 @@ use cyberapi_core::prefs::ColumnWidths;
 use cyberapi_core::tree::ItemKind;
 use cyberapi_core::{CollectionId, ItemId};
 use gpui_kit::component::button::ButtonVariant;
-use gpui_kit::component::empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle};
+use gpui_kit::component::empty::{
+    Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
+};
+use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, WindowExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EntityId, FocusHandle, Focusable, Hsla, InteractiveElement as _,
     IntoElement, KeyBinding, ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, px,
 };
 pub use pins::PinsBar;
+// For the shortcuts' list.
 use request_editor::{RequestEditor, RequestEditorEvent};
 use response_panel::ResponsePanel;
 use rust_i18n::t;
 use tree_panel::TreePanel;
+pub(crate) use tree_panel::{
+    Close as TreeClose, KEY_CONTEXT as TREE_CONTEXT, Next as TreeNext, Open as TreeOpen, Previous as TreePrevious,
+    Rename as TreeRename, Toggle as TreeToggle,
+};
 
 gpui_kit::actions!(workspace, [NewApi, NewFolder, Send]);
 
-const KEY_CONTEXT: &str = "Workspace";
+// F12.2 from the keyboard: Cmd/Ctrl and a pin's number selects it.
+gpui_kit::actions!(workspace, [Pin1, Pin2, Pin3, Pin4, Pin5, Pin6, Pin7, Pin8, Pin9]);
+
+/// The action of the pin at `index` (counting from 0), for the first nine.
+pub fn pin_action(index: usize) -> Option<Box<dyn gpui_kit::Action>> {
+    let actions: [Box<dyn gpui_kit::Action>; 9] = [
+        Box::new(Pin1),
+        Box::new(Pin2),
+        Box::new(Pin3),
+        Box::new(Pin4),
+        Box::new(Pin5),
+        Box::new(Pin6),
+        Box::new(Pin7),
+        Box::new(Pin8),
+        Box::new(Pin9),
+    ];
+    actions.into_iter().nth(index)
+}
+
+pub(crate) const KEY_CONTEXT: &str = "Workspace";
 
 /// F3.12, for both platforms: `secondary` is Cmd on macOS and Ctrl elsewhere
 /// (#22 — the old app listened for Cmd alone).
@@ -46,7 +75,17 @@ pub fn bind_keys(cx: &mut App) {
         // so it wins over the kit's).
         KeyBinding::new("secondary-enter", Send, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-enter", Send, Some("Workspace > Input")),
+        KeyBinding::new("secondary-1", Pin1, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-2", Pin2, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-3", Pin3, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-4", Pin4, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-5", Pin5, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-6", Pin6, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-7", Pin7, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-8", Pin8, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-9", Pin9, Some(KEY_CONTEXT)),
     ]);
+    tree_panel::bind_keys(cx);
 }
 
 /// A page in a Mac's browser: `secondary` is Ctrl in any page, and the
@@ -177,12 +216,45 @@ fn confirm_delete(
     window: &mut Window,
     cx: &mut App,
 ) {
+    // What goes with a folder, counted.
+    let (apis, folders) = state
+        .upgrade()
+        .map(|state| {
+            let tree = state.read(cx).tree();
+            let inside = tree.descendants(&id);
+            let folders = inside
+                .iter()
+                .filter(|item| tree.get(item).is_some_and(|node| node.is_folder()))
+                .count();
+            (inside.len() - folders, folders)
+        })
+        .unwrap_or_default();
     let state = state.clone();
     let (title, description) = match kind {
-        ItemKind::Folder => (
+        ItemKind::Folder if apis + folders == 0 => (
             t!("workspace.delete_folder_title", name = name),
-            t!("workspace.delete_folder_description"),
+            t!("workspace.delete_empty_folder_description"),
         ),
+        ItemKind::Folder => {
+            // Only what there is: "3 APIs", "3 APIs, 1 folder".
+            let count = |count: usize, one: &str, other: &str| match count {
+                0 => None,
+                1 => Some(t!(one).to_string()),
+                count => Some(t!(other, count = count).to_string()),
+            };
+            let what = [
+                count(apis, "workspace.api_one", "workspace.api_other"),
+                count(folders, "workspace.folder_one", "workspace.folder_other"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(&t!("workspace.list_separator"));
+            (
+                t!("workspace.delete_folder_title", name = name),
+                t!("workspace.delete_folder_description", what = what),
+            )
+        }
         ItemKind::Api => (
             t!("workspace.delete_api_title", name = name),
             t!("workspace.delete_api_description"),
@@ -309,6 +381,11 @@ impl WorkspaceView {
             Some(api) if self.selected.as_ref().map(|s| s.api) != Some(api.entity_id()) => {
                 let state = self.state.clone();
                 let editor = cx.new(|cx| RequestEditor::new(state, api.clone(), window, cx));
+                // An API just made: its address is what comes next.
+                let id = api.read(cx).api().clone();
+                if self.state.update(cx, |state, _| state.take_created(&id)) {
+                    editor.update(cx, |editor, cx| editor.focus_uri(window, cx));
+                }
                 let response = cx.new(|cx| ResponsePanel::new(api.clone(), window, cx));
                 let editor_events = cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
                     RequestEditorEvent::EditorShare(share) => this.set_editor_share(*share, window, cx),
@@ -376,6 +453,14 @@ impl WorkspaceView {
         self.columns_resized(&columns, window, cx);
     }
 
+    /// F12.2: the pin with this number (from 0), if there is one.
+    fn select_pin(&mut self, index: usize, cx: &mut Context<Self>) {
+        let id = self.state.read(cx).pinned().get(index).map(|api| api.id.clone());
+        if let Some(id) = id {
+            self.state.update(cx, |state, cx| state.select(&id, cx));
+        }
+    }
+
     pub fn collection_id(&self) -> &CollectionId {
         &self.id
     }
@@ -390,19 +475,46 @@ impl WorkspaceView {
         &self.state
     }
 
-    fn render_nothing_selected(&self, _: &App) -> impl IntoElement {
+    fn render_nothing_selected(&self, window: &Window, cx: &App) -> impl IntoElement {
+        // F3.12's shortcuts, as this platform writes them, for a reader who
+        // may change the tree.
+        let muted = cx.theme().muted_foreground;
+        let shortcuts: Vec<_> = [
+            (&NewApi as &dyn gpui_kit::Action, t!("workspace.new_api")),
+            (&NewFolder, t!("workspace.new_folder")),
+        ]
+        .into_iter()
+        .filter(|_| self.state.read(cx).editable() && crate::this_build::takes_new_keys())
+        .filter_map(|(action, label)| {
+            let shortcut = Kbd::binding_for_action(action, Some(KEY_CONTEXT), window)?;
+            Some(
+                h_flex()
+                    .w(px(200.))
+                    .justify_between()
+                    .items_center()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(label.to_string())
+                    .child(shortcut),
+            )
+        })
+        .collect();
         v_flex().size_full().justify_center().items_center().child(
             v_flex().max_w(px(420.)).px_8().items_center().child(
-                Empty::new().header(
-                    EmptyHeader::new()
-                        .media(
-                            EmptyMedia::new()
-                                .with_variant(EmptyMediaVariant::Icon)
-                                .child(Icon::new(IconName::FileText)),
-                        )
-                        .title(EmptyTitle::new().child(t!("workspace.nothing_selected").to_string()))
-                        .description(EmptyDescription::new().child(t!("workspace.select_hint").to_string())),
-                ),
+                Empty::new()
+                    .header(
+                        EmptyHeader::new()
+                            .media(
+                                EmptyMedia::new()
+                                    .with_variant(EmptyMediaVariant::Icon)
+                                    .child(Icon::new(IconName::FileText)),
+                            )
+                            .title(EmptyTitle::new().child(t!("workspace.nothing_selected").to_string()))
+                            .description(EmptyDescription::new().child(t!("workspace.select_hint").to_string())),
+                    )
+                    .when(!shortcuts.is_empty(), |empty| {
+                        empty.content(EmptyContent::new().child(v_flex().gap_2().children(shortcuts)))
+                    }),
             ),
         )
     }
@@ -446,13 +558,22 @@ impl Render for WorkspaceView {
                         .size_range(px(240.)..px(4000.))
                         .child(selected.response.clone()),
                 ),
-            None => group.child(resizable_panel().child(self.render_nothing_selected(cx))),
+            None => group.child(resizable_panel().child(self.render_nothing_selected(window, cx))),
         };
         let editor = self.selected.as_ref().map(|selected| selected.editor.downgrade());
         h_flex()
             .size_full()
             .track_focus(&self.focus)
             .key_context(KEY_CONTEXT)
+            .on_action(cx.listener(|this, _: &Pin1, _, cx| this.select_pin(0, cx)))
+            .on_action(cx.listener(|this, _: &Pin2, _, cx| this.select_pin(1, cx)))
+            .on_action(cx.listener(|this, _: &Pin3, _, cx| this.select_pin(2, cx)))
+            .on_action(cx.listener(|this, _: &Pin4, _, cx| this.select_pin(3, cx)))
+            .on_action(cx.listener(|this, _: &Pin5, _, cx| this.select_pin(4, cx)))
+            .on_action(cx.listener(|this, _: &Pin6, _, cx| this.select_pin(5, cx)))
+            .on_action(cx.listener(|this, _: &Pin7, _, cx| this.select_pin(6, cx)))
+            .on_action(cx.listener(|this, _: &Pin8, _, cx| this.select_pin(7, cx)))
+            .on_action(cx.listener(|this, _: &Pin9, _, cx| this.select_pin(8, cx)))
             .on_action(move |_: &NewApi, window, cx| new_item(&state, None, ItemKind::Api, window, cx))
             .on_action(move |_: &NewFolder, window, cx| new_item(&folder_state, None, ItemKind::Folder, window, cx))
             .on_action(move |_: &Send, window, cx| {

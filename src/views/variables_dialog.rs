@@ -14,10 +14,11 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Styled as _, Subscription, Window, div, px,
+    Styled as _, Subscription, Task, Window, div, px,
 };
 use rust_i18n::t;
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// The title and what the category is for.
 fn describe(category: VariableCategory) -> (String, String) {
@@ -65,8 +66,14 @@ struct VariablesEditor {
     /// A viewer reads them only (§9.2).
     editable: bool,
     rows: HashMap<VariableId, Row>,
+    /// The variable whose delete button was clicked once, and the wait for
+    /// the second click, as the request's lists have it (F4.10).
+    removing: Option<(VariableId, Task<()>)>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// How long a first click on delete waits for the second.
+const REMOVE_WAIT: Duration = Duration::from_secs(3);
 
 impl VariablesEditor {
     fn new(state: Entity<VariablesState>, editable: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -82,8 +89,27 @@ impl VariablesEditor {
             state,
             editable,
             rows: HashMap::new(),
+            removing: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The first click asks, the second deletes.
+    fn remove(&mut self, id: VariableId, cx: &mut Context<Self>) {
+        if matches!(&self.removing, Some((asked, _)) if *asked == id) {
+            self.removing = None;
+            self.state.update(cx, |state, cx| state.delete(&id, cx));
+            return;
+        }
+        let wait = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(REMOVE_WAIT).await;
+            let _ = this.update(cx, |this, cx| {
+                this.removing = None;
+                cx.notify();
+            });
+        });
+        self.removing = Some((id, wait));
+        cx.notify();
     }
 
     /// Inputs for variables that have none yet; a row keeps its inputs while
@@ -140,65 +166,113 @@ impl Render for VariablesEditor {
         let (_, hint) = describe(state.category());
         let editable = self.editable;
         let muted = cx.theme().muted_foreground;
-        let body: gpui_kit::AnyElement = match state.load() {
-            Load::Loading => h_flex()
-                .gap_2()
-                .text_sm()
-                .text_color(muted)
-                .child(Spinner::new().small())
-                .into_any_element(),
-            _ if state.variables().is_empty() => div()
-                .py_4()
-                .text_sm()
-                .text_color(muted)
-                .child(t!("variables.empty").to_string())
-                .into_any_element(),
-            _ => v_flex()
-                .gap_1()
-                .children(state.variables().iter().enumerate().filter_map(|(index, variable)| {
-                    let row = self.rows.get(&variable.id)?;
-                    let (toggle_id, delete_id) = (variable.id.clone(), variable.id.clone());
-                    Some(
-                        h_flex()
-                            .id(("variable", index))
-                            .gap_1()
-                            .items_center()
-                            .child(
-                                Checkbox::new(("variable-enabled", index))
-                                    .checked(variable.enabled)
-                                    .disabled(!editable)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.state.update(cx, |state, cx| state.toggle(&toggle_id, cx));
-                                    })),
+        let body: gpui_kit::AnyElement =
+            match state.load() {
+                Load::Loading => h_flex()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(Spinner::new().small())
+                    .into_any_element(),
+                _ if state.variables().is_empty() => div()
+                    .py_4()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(t!("variables.empty").to_string())
+                    .into_any_element(),
+                _ => {
+                    let theme = cx.theme();
+                    let border = theme.border;
+                    // The request's key / value table (`KvEditor`): fields in
+                    // its cells without frames, the lines drawing the grid.
+                    let cell = move || div().h_full().flex().items_center().border_l_1().border_color(border);
+                    let actions = move || h_flex().w(px(32.)).flex_none().justify_end().pr_0p5();
+                    let header = h_flex()
+                        .h(px(26.))
+                        .bg(theme.muted)
+                        .text_xs()
+                        .text_color(muted)
+                        .child(div().w_8().flex_none())
+                        .child(
+                            cell()
+                                .w(px(200.))
+                                .flex_none()
+                                .px_2()
+                                .child(t!("variables.name").to_string()),
+                        )
+                        .child(
+                            cell()
+                                .flex_1()
+                                .min_w_0()
+                                .px_2()
+                                .child(t!("variables.value").to_string()),
+                        )
+                        .when(editable, |this| this.child(actions()));
+                    let removing = self.removing.as_ref().map(|(id, _)| id.clone());
+                    let rows =
+                        state.variables().iter().enumerate().filter_map(|(index, variable)| {
+                            let row = self.rows.get(&variable.id)?;
+                            let (toggle_id, delete_id) = (variable.id.clone(), variable.id.clone());
+                            let asked = removing.as_ref() == Some(&variable.id);
+                            Some(
+                                h_flex()
+                                    .id(("variable", index))
+                                    .h(px(30.))
+                                    .items_center()
+                                    .border_t_1()
+                                    .border_color(border)
+                                    .child(
+                                        div().w_8().flex_none().flex().justify_center().child(
+                                            Checkbox::new(("variable-enabled", index))
+                                                .checked(variable.enabled)
+                                                .disabled(!editable)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.state.update(cx, |state, cx| state.toggle(&toggle_id, cx));
+                                                })),
+                                        ),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .h_full()
+                                            .when(!variable.enabled, |this| this.opacity(0.45))
+                                            .child(cell().w(px(200.)).flex_none().child(
+                                                Input::new(&row.name).small().appearance(false).disabled(!editable),
+                                            ))
+                                            .child(cell().flex_1().min_w_0().child(
+                                                Input::new(&row.value).small().appearance(false).disabled(!editable),
+                                            )),
+                                    )
+                                    .when(editable, |this| {
+                                        let button = Button::new(("variable-delete", index)).xsmall();
+                                        let button = if asked {
+                                            button
+                                                .danger()
+                                                .icon(gpui_kit::assets::IconName::Trash)
+                                                .tooltip(t!("editor.remove_again").to_string())
+                                        } else {
+                                            button
+                                                .ghost()
+                                                .icon(IconName::Close)
+                                                .tooltip(t!("common.delete").to_string())
+                                        };
+                                        this.child(actions().child(button.on_click(
+                                            cx.listener(move |this, _, _, cx| this.remove(delete_id.clone(), cx)),
+                                        )))
+                                    }),
                             )
-                            .child(
-                                div()
-                                    .w(px(200.))
-                                    .flex_none()
-                                    .child(Input::new(&row.name).small().disabled(!editable)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(Input::new(&row.value).small().disabled(!editable)),
-                            )
-                            .when(editable, |this| {
-                                this.child(
-                                    Button::new(("variable-delete", index))
-                                        .ghost()
-                                        .small()
-                                        .icon(IconName::Close)
-                                        .tooltip(t!("common.delete").to_string())
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.state.update(cx, |state, cx| state.delete(&delete_id, cx));
-                                        })),
-                                )
-                            }),
-                    )
-                }))
-                .into_any_element(),
-        };
+                        });
+                    v_flex()
+                        .rounded(theme.radius)
+                        .border_1()
+                        .border_color(border)
+                        .overflow_hidden()
+                        .child(header)
+                        .children(rows.collect::<Vec<_>>())
+                        .into_any_element()
+                }
+            };
         v_flex()
             .gap_3()
             .child(div().text_sm().text_color(muted).child(hint))

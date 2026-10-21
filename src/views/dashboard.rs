@@ -5,6 +5,7 @@
 use crate::i18n;
 use crate::states::{AppStore, DashboardEvent, DashboardState, Load};
 use crate::views::group_dialog::open_group_dialog;
+use crate::views::marked::marked;
 use crate::views::name_dialog::ok_button;
 use crate::views::open_access_dialog;
 use crate::views::pick::pick;
@@ -14,6 +15,7 @@ use cyberapi_core::format::{Ago, ago};
 use cyberapi_core::model::Collection;
 use cyberapi_core::{TeamId, Timestamp};
 use cyberapi_store::{CollectionEdit, NewCollection};
+use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::empty::{
@@ -21,18 +23,19 @@ use gpui_kit::component::empty::{
 };
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement as _,
-    IntoElement, KeyBinding, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, WeakEntity, Window, div, px,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, Hsla,
+    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, px,
 };
 use rust_i18n::t;
 use std::cell::{Cell, RefCell};
@@ -40,7 +43,7 @@ use std::rc::Rc;
 
 gpui_kit::actions!(dashboard, [FocusSearch]);
 
-const KEY_CONTEXT: &str = "Dashboard";
+pub(crate) const KEY_CONTEXT: &str = "Dashboard";
 
 /// `secondary-f` puts the caret in the search box, as zedis's list does.
 pub fn bind_keys(cx: &mut App) {
@@ -103,11 +106,16 @@ impl DashboardView {
                     let app = AppStore::global(cx).state().clone();
                     app.update(cx, |app, cx| app.forget_project(id, cx));
                 }
-            }),
-            cx.subscribe(&search, |_, _, event, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
+                // A new project is made to be worked in: it opens.
+                DashboardEvent::Created(collection) => {
+                    let app = AppStore::global(cx).state().clone();
+                    app.update(cx, |app, cx| app.open_collection(collection.clone(), cx));
                 }
+            }),
+            cx.subscribe(&search, |this, _, event, cx| match event {
+                InputEvent::Change => cx.notify(),
+                InputEvent::PressEnter { .. } => this.open_first_found(cx),
+                _ => {}
             }),
         ];
         let focus = cx.focus_handle();
@@ -117,6 +125,28 @@ impl DashboardView {
             search,
             focus,
             _subscriptions: subscriptions,
+        }
+    }
+
+    /// Enter in the search: the first project it found, as the list
+    /// shows them.
+    fn open_first_found(&mut self, cx: &mut Context<Self>) {
+        let keyword = self.search.read(cx).value().to_string();
+        if keyword.trim().is_empty() {
+            return;
+        }
+        let app = AppStore::global(cx).state().clone();
+        let prefs = app.read(cx).prefs();
+        let first = grouped(
+            self.state.read(cx).collections(),
+            &prefs.project_groups,
+            &keyword,
+            prefs.collection_sort,
+        )
+        .into_iter()
+        .find_map(|group| group.collections.first().map(|collection| (*collection).clone()));
+        if let Some(collection) = first {
+            app.update(cx, |app, cx| app.open_collection(collection, cx));
         }
     }
 
@@ -261,11 +291,21 @@ impl DashboardView {
 
     fn confirm_delete(&mut self, collection: Collection, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.clone();
+        // How many APIs go, when that was read and there are some.
+        let description = match self.state.read(cx).api_count(&collection.id) {
+            Some(0) | None => t!("dashboard.delete_description").to_string(),
+            Some(1) => t!("dashboard.delete_description_count", apis = t!("workspace.api_one")).to_string(),
+            Some(count) => t!(
+                "dashboard.delete_description_count",
+                apis = t!("workspace.api_other", count = count)
+            )
+            .to_string(),
+        };
         window.open_alert_dialog(cx, move |alert, _, _| {
             let (state, id) = (state.clone(), collection.id.clone());
             alert
                 .title(t!("dashboard.delete_title", name = collection.name).to_string())
-                .description(t!("dashboard.delete_description").to_string())
+                .description(description.clone())
                 .confirm()
                 .ok_text(t!("common.delete").to_string())
                 .ok_variant(ButtonVariant::Danger)
@@ -342,6 +382,7 @@ impl DashboardView {
     fn render_card(
         &self,
         collection: &Collection,
+        keyword: &str,
         now: Timestamp,
         view: WeakEntity<Self>,
         cx: &mut Context<Self>,
@@ -361,6 +402,8 @@ impl DashboardView {
             manages: collection.role.can_manage(),
             shares: AppStore::global(cx).directory().is_some(),
         };
+        // The same menu on a right click, as the tree's rows have theirs.
+        let context_actions = actions.clone();
         let place = place_of(collection, cx);
         // Every card of a row as tall as the row, the time at the bottom.
         v_flex()
@@ -378,6 +421,7 @@ impl DashboardView {
                 let state = AppStore::global(cx).state().clone();
                 state.update(cx, |state, cx| state.open_collection(opened.clone(), cx));
             })
+            .context_menu(move |menu, _, _| card_menu(menu, &context_actions))
             .child(
                 h_flex()
                     .gap_3()
@@ -387,7 +431,7 @@ impl DashboardView {
                         v_flex()
                             .flex_1()
                             .min_w_0()
-                            .gap_1p5()
+                            .gap_0p5()
                             .child(
                                 h_flex()
                                     .items_center()
@@ -399,7 +443,7 @@ impl DashboardView {
                                             .truncate()
                                             .text_base()
                                             .font_semibold()
-                                            .child(collection.name.clone()),
+                                            .child(marked(&collection.name, keyword, cx)),
                                     )
                                     .child(
                                         // The menu's own clicks must not open the project.
@@ -417,15 +461,7 @@ impl DashboardView {
                                             ),
                                     ),
                             )
-                            .when(!collection.description.trim().is_empty(), |column| {
-                                column.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .line_clamp(2)
-                                        .child(collection.description.clone()),
-                                )
-                            }),
+                            .child(description_line(&key, &collection.description, muted)),
                     ),
             )
             .child(
@@ -517,12 +553,12 @@ impl DashboardView {
                 // No groups yet: the plain grid, without a heading over it.
                 let body = if groups.iter().all(|(name, _, _)| name.is_none()) {
                     let collections: Vec<Collection> = groups.into_iter().flat_map(|(_, list, _)| list).collect();
-                    self.render_grid(&collections, columns, now, cx)
+                    self.render_grid(&collections, &keyword, columns, now, cx)
                 } else {
                     let mut sections = Vec::new();
                     for (index, (name, collections, folded)) in groups.into_iter().enumerate() {
                         let header = self.render_group_header(index, name, collections.len(), folded, cx);
-                        let grid = (!folded).then(|| self.render_grid(&collections, columns, now, cx));
+                        let grid = (!folded).then(|| self.render_grid(&collections, &keyword, columns, now, cx));
                         sections.push(v_flex().gap_3().child(header).children(grid));
                     }
                     v_flex().gap_6().children(sections).into_any_element()
@@ -543,6 +579,7 @@ impl DashboardView {
     fn render_grid(
         &self,
         collections: &[Collection],
+        keyword: &str,
         columns: u16,
         now: Timestamp,
         cx: &mut Context<Self>,
@@ -550,7 +587,10 @@ impl DashboardView {
         let view = cx.entity().downgrade();
         let cards: Vec<AnyElement> = collections
             .iter()
-            .map(|collection| self.render_card(collection, now, view.clone(), cx).into_any_element())
+            .map(|collection| {
+                self.render_card(collection, keyword, now, view.clone(), cx)
+                    .into_any_element()
+            })
             .collect();
         div()
             .grid()
@@ -616,13 +656,15 @@ impl DashboardView {
                                 .icon(IconName::Ellipsis)
                                 .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
                                     let (name, view) = (name.clone(), view.clone());
-                                    menu.item(PopupMenuItem::new(t!("dashboard.rename_group").to_string()).on_click(
-                                        move |_, window, cx| {
-                                            let _ = view.update(cx, |this, cx| {
-                                                this.open_rename_group(name.clone(), window, cx)
-                                            });
-                                        },
-                                    ))
+                                    menu.item(
+                                        PopupMenuItem::new(t!("dashboard.rename_group").to_string())
+                                            .icon(Icons::Pencil)
+                                            .on_click(move |_, window, cx| {
+                                                let _ = view.update(cx, |this, cx| {
+                                                    this.open_rename_group(name.clone(), window, cx)
+                                                });
+                                            }),
+                                    )
                                 }),
                         ),
                 )
@@ -644,6 +686,7 @@ fn updated_label(at: Timestamp, now: Timestamp) -> String {
 }
 
 /// What a card's menu acts on.
+#[derive(Clone)]
 struct CardActions {
     collection: Collection,
     view: WeakEntity<DashboardView>,
@@ -665,42 +708,49 @@ fn card_menu(menu: PopupMenu, actions: &CardActions) -> PopupMenu {
     if *manages {
         let (edited, edit_view) = (collection.clone(), view.clone());
         menu = menu.item(
-            PopupMenuItem::new(t!("common.edit").to_string()).on_click(move |_, window, cx| {
-                let _ = edit_view.update(cx, |this, cx| this.open_editor(Some(edited.clone()), window, cx));
-            }),
+            PopupMenuItem::new(t!("common.edit").to_string())
+                .icon(Icons::Pencil)
+                .on_click(move |_, window, cx| {
+                    let _ = edit_view.update(cx, |this, cx| this.open_editor(Some(edited.clone()), window, cx));
+                }),
         );
         if *shares {
             let (shared, share_view) = (collection.clone(), view.clone());
             menu = menu.item(
-                PopupMenuItem::new(t!("access.menu").to_string()).on_click(move |_, window, cx| {
-                    let reload = share_view.clone();
-                    open_access_dialog(
-                        shared.clone(),
-                        move |cx| {
-                            let _ = reload.update(cx, |this, cx| this.state.update(cx, |state, cx| state.reload(cx)));
-                        },
-                        window,
-                        cx,
-                    );
-                }),
+                PopupMenuItem::new(t!("access.menu").to_string())
+                    .icon(Icons::Users)
+                    .on_click(move |_, window, cx| {
+                        let reload = share_view.clone();
+                        open_access_dialog(
+                            shared.clone(),
+                            move |cx| {
+                                let _ =
+                                    reload.update(cx, |this, cx| this.state.update(cx, |state, cx| state.reload(cx)));
+                            },
+                            window,
+                            cx,
+                        );
+                    }),
             );
         }
     }
     let (grouped, group_view) = (collection.clone(), view.clone());
     menu = menu.item(
-        PopupMenuItem::new(t!("dashboard.group").to_string()).on_click(move |_, window, cx| {
-            let _ = group_view.update(cx, |this, cx| this.open_group(grouped.clone(), window, cx));
-        }),
+        PopupMenuItem::new(t!("dashboard.group").to_string())
+            .icon(Icons::FolderInput)
+            .on_click(move |_, window, cx| {
+                let _ = group_view.update(cx, |this, cx| this.open_group(grouped.clone(), window, cx));
+            }),
     );
     if *manages {
         let (deleted, delete_view) = (collection.clone(), view.clone());
-        menu = menu
-            .separator()
-            .item(
-                PopupMenuItem::new(t!("common.delete").to_string()).on_click(move |_, window, cx| {
+        menu = menu.separator().item(
+            PopupMenuItem::new(t!("common.delete").to_string())
+                .icon(Icons::Trash)
+                .on_click(move |_, window, cx| {
                     let _ = delete_view.update(cx, |this, cx| this.confirm_delete(deleted.clone(), window, cx));
                 }),
-            );
+        );
     }
     menu
 }
@@ -762,10 +812,28 @@ impl Render for DashboardView {
     }
 }
 
+/// A card's description on one line under the name, the whole of it on
+/// hover. The line is there without one too, so every card is as tall.
+fn description_line(key: &str, description: &str, muted: Hsla) -> impl IntoElement {
+    let description = SharedString::from(description.trim().to_string());
+    div()
+        .id(SharedString::from(format!("collection-description-{key}")))
+        .h(px(18.))
+        .text_xs()
+        .text_color(muted)
+        .truncate()
+        .child(description.clone())
+        .when(!description.is_empty(), |this| {
+            this.tooltip(move |window, cx| Tooltip::new(description.clone()).build(window, cx))
+        })
+}
+
 /// A stable tinted initial, so neighbouring projects are not the same slab.
+/// Hues only: the theme's primary is a grey in the dark theme, which read
+/// as a project switched off.
 fn project_mark(name: &str, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    let palette = [theme.info, theme.success, theme.warning, theme.primary];
+    let palette = [theme.blue, theme.green, theme.yellow, theme.magenta, theme.cyan];
     let index = name.bytes().fold(0usize, |sum, byte| sum.wrapping_add(byte as usize));
     let color = palette[index % palette.len()];
     let letter = name.chars().next().unwrap_or('·').to_uppercase().to_string();

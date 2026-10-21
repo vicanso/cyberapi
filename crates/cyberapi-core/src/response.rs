@@ -70,6 +70,9 @@ pub struct HttpResponse {
     /// The request as the API held it, before variables and functions: what
     /// choosing this entry puts back in the editor (F7.10).
     pub request: HttpRequest,
+    /// The URL it went to: variables resolved, the query in it. Empty in
+    /// entries kept before this was.
+    pub url: String,
     /// `None` when the request failed; [`Self::error`] says why (F5.7).
     pub status: Option<u16>,
     pub headers: Vec<(String, String)>,
@@ -146,7 +149,17 @@ impl HttpResponse {
         }
         let extension = match self.body_kind() {
             BodyKind::Json => "json".to_string(),
-            BodyKind::Text => "txt".to_string(),
+            // A page opens as one, in the system's browser (F7.4).
+            BodyKind::Text => {
+                let content_type = self.content_type().to_ascii_lowercase();
+                if content_type.contains("html") {
+                    "html".to_string()
+                } else if content_type.contains("xml") {
+                    "xml".to_string()
+                } else {
+                    "txt".to_string()
+                }
+            }
             BodyKind::Image | BodyKind::Pdf | BodyKind::Binary => {
                 let content_type = self.content_type();
                 let subtype = content_type
@@ -173,6 +186,7 @@ impl HttpResponse {
             api: self.api.clone(),
             collection: self.collection.clone(),
             request: self.request.clone(),
+            url: self.url.clone(),
             status: self.status,
             headers: self.headers.clone(),
             body: Vec::new(),
@@ -478,6 +492,10 @@ mod tests {
         assert_eq!(
             response(&[("content-type", "application/json")], b"{}").file_name(),
             "response.json"
+        );
+        assert_eq!(
+            response(&[("content-type", "text/html; charset=utf-8")], b"<p>").file_name(),
+            "response.html"
         );
         assert_eq!(
             response(&[("content-type", "image/png")], b"").file_name(),

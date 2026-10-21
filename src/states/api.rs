@@ -21,6 +21,7 @@ use cyberapi_core::{CollectionId, ItemId};
 use cyberapi_service::{SendFailure, Sender};
 use cyberapi_store::StoreError;
 use gpui_kit::{AppContext as _, Context, EventEmitter, Task, WeakEntity};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
 use web_time::Instant;
@@ -67,8 +68,9 @@ pub struct ApiState {
     save_task: Option<Task<()>>,
     sending: Option<Sending>,
     last_send: Option<Instant>,
-    /// Newest first (F7.9).
-    responses: Vec<HttpResponse>,
+    /// Newest first (F7.9). Shared, so the panel takes one for each frame
+    /// without copying its body.
+    responses: Vec<Arc<HttpResponse>>,
     history: Load,
     /// The response the panel shows: the newest unless one was chosen.
     shown: Option<String>,
@@ -128,7 +130,7 @@ impl ApiState {
         &self.request
     }
 
-    pub fn responses(&self) -> &[HttpResponse] {
+    pub fn responses(&self) -> &[Arc<HttpResponse>] {
         &self.responses
     }
 
@@ -137,7 +139,7 @@ impl ApiState {
     }
 
     /// F7.12: the newest response, or the one chosen from the history.
-    pub fn shown_response(&self) -> Option<&HttpResponse> {
+    pub fn shown_response(&self) -> Option<&Arc<HttpResponse>> {
         match &self.shown {
             Some(id) => self.responses.iter().find(|response| &response.id == id),
             None => self.responses.first(),
@@ -158,7 +160,7 @@ impl ApiState {
         run_store(cx, call, |this, result, cx| {
             match result {
                 Ok(responses) => {
-                    this.responses = responses;
+                    this.responses = responses.into_iter().map(Arc::new).collect();
                     this.history = Load::Loaded;
                 }
                 Err(error) => {
@@ -212,6 +214,24 @@ impl ApiState {
             self.request.body = body;
             self.save_later(cx);
         }
+    }
+
+    /// The whole request at once (a cURL command pasted as the URI), saved
+    /// at once; the editor reads it back.
+    pub fn replace_request(&mut self, request: HttpRequest, cx: &mut Context<Self>) {
+        if self.request == request {
+            return;
+        }
+        let method_changed = self.request.method != request.method;
+        self.request = request;
+        self.save_now(cx);
+        if method_changed {
+            let api = self.api.clone();
+            let _ = self
+                .workspace
+                .update(cx, |workspace, cx| workspace.method_changed(&api, cx));
+        }
+        cx.emit(ApiEvent::RequestReplaced);
     }
 
     /// F4.8: a form or multipart body's fields.
@@ -322,7 +342,7 @@ impl ApiState {
                 if response.error.is_none() && !response.body.is_empty() && response.attachment_name().is_some() {
                     self.save(response.file_name(), response.body.clone(), cx);
                 }
-                self.responses.insert(0, response);
+                self.responses.insert(0, Arc::new(response));
                 self.responses.truncate(HISTORY_LIMIT);
                 self.shown = None;
             }

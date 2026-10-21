@@ -297,6 +297,15 @@ impl Tree {
         found
     }
 
+    /// How many APIs are inside `id`, at any depth: what a folder's row
+    /// counts.
+    pub fn api_count(&self, id: &ItemId) -> usize {
+        self.descendants(id)
+            .iter()
+            .filter(|child| self.get(child).is_some_and(|node| node.kind == ItemKind::Api))
+            .count()
+    }
+
     /// The item after `id` among its siblings: in its folder, or on the top
     /// level.
     pub fn next_sibling(&self, id: &ItemId) -> Option<&ItemId> {
@@ -613,6 +622,9 @@ mod tests {
         assert!(!tree.is_inside(&"users".into(), &"users".into()));
         assert!(!tree.is_inside(&"list".into(), &"users".into()));
         assert_eq!(tree.descendants(&"users".into()), ids(&["login", "profile", "me"]));
+        assert_eq!(tree.api_count(&"users".into()), 2);
+        assert_eq!(tree.api_count(&"orders".into()), 1);
+        assert_eq!(tree.api_count(&"health".into()), 0);
         assert_eq!(tree.next_sibling(&"login".into()), Some(&"profile".into()));
         assert_eq!(tree.next_sibling(&"profile".into()), None);
         assert_eq!(tree.next_sibling(&"orders".into()), Some(&"health".into()));

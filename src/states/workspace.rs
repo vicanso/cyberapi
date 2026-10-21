@@ -13,7 +13,7 @@ use super::{ApiState, Load, run_serial, run_store};
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::ItemId;
-use cyberapi_core::import::ImportBundle;
+use cyberapi_core::import::{ImportBundle, ImportItem};
 use cyberapi_core::model::{ApiSetting, Collection, Folder, Variable, VariableCategory};
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
@@ -53,6 +53,9 @@ pub struct WorkspaceState {
     saves: Arc<Mutex<()>>,
     /// The selected API's editor, while one is selected.
     api: Option<Entity<ApiState>>,
+    /// The API the reader just made, until its editor is up: its URI is
+    /// what they type next.
+    created: Option<ItemId>,
     /// The project's environment variables, for the URI's prefix (F4.4).
     environment: Vec<Variable>,
     /// The project's global request headers, for the file an `openFile`
@@ -83,6 +86,7 @@ impl WorkspaceState {
             gate: Arc::default(),
             saves: Arc::default(),
             api: None,
+            created: None,
             environment: Vec::new(),
             global_headers: Vec::new(),
             _poll: poll.map(|every| Self::poll(every, cx)),
@@ -401,6 +405,7 @@ impl WorkspaceState {
                 this.data.apply(&inserted.change);
                 this.tree = Tree::build(&this.data);
                 this.open_folder(parent.as_ref());
+                this.created = Some(inserted.item.id.clone());
                 this.prefs.selected = Some(inserted.item.id);
                 this.sync_api(cx);
                 this.save_prefs(cx);
@@ -408,6 +413,15 @@ impl WorkspaceState {
             }
             Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
         });
+    }
+
+    /// Whether `id` is the API just made, asked once by its editor.
+    pub fn take_created(&mut self, id: &ItemId) -> bool {
+        if self.created.as_ref() == Some(id) {
+            self.created = None;
+            return true;
+        }
+        false
     }
 
     /// F3.4.
@@ -475,6 +489,43 @@ impl WorkspaceState {
                 this.tree = Tree::build(&this.data);
                 this.open_folder(to.parent.as_ref());
                 this.save_prefs(cx);
+                cx.notify();
+            }
+            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+        });
+    }
+
+    /// A copy of the API named `name`, right after it in its folder, and
+    /// selected. Its request is the one in the editor, when the API is the
+    /// one open — edits not saved yet go too; its history starts empty.
+    pub fn duplicate(&mut self, id: &ItemId, name: String, cx: &mut Context<Self>) {
+        let Some(stored) = self.data.apis.iter().find(|api| &api.id == id) else {
+            return;
+        };
+        let request = match &self.api {
+            Some(open) if open.read(cx).api() == id => open.read(cx).request().clone(),
+            _ => stored.request.clone(),
+        };
+        let items = vec![ImportItem::Api { name, request }];
+        let parent = self.tree.get(id).and_then(|node| node.parent()).cloned();
+        let before = self.tree.next_sibling(id).cloned();
+        let call = self
+            .sender
+            .storage
+            .tree()
+            .import(self.collection.id.clone(), parent.clone(), items);
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(imported) => {
+                let copy = imported.apis.first().map(|api| api.id.clone());
+                this.data.apis.extend(imported.apis);
+                this.data.apply(&imported.change);
+                this.tree = Tree::build(&this.data);
+                let Some(copy) = copy else { return };
+                // Imported last in the folder: moved up beside the original.
+                if before.is_some() {
+                    this.move_item(copy.clone(), Placement { parent, before }, cx);
+                }
+                this.select(&copy, cx);
                 cx.notify();
             }
             Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
@@ -762,6 +813,11 @@ mod tests {
             assert_eq!(state.selected(), Some(&login));
             assert_eq!(state.selected_api().map(|api| api.name.as_str()), Some("login"));
         });
+        // Its editor asks once whether it is new (the URI takes the keys).
+        state.update(cx, |state, _| {
+            assert!(state.take_created(&login));
+            assert!(!state.take_created(&login));
+        });
     }
 
     /// Each change saves the whole state; the last one made is the one kept,
@@ -958,6 +1014,88 @@ mod tests {
         assert_eq!(stored(&storage, &collection, &id).query, [header("q", "x")]);
         let other = editor(&state, cx);
         assert_ne!(other.read_with(cx, |api, _| api.api().clone()), id);
+    }
+
+    /// A pasted cURL command replaces the request whole, saved at once, and
+    /// the tree's label follows its method.
+    #[gpui_kit::test]
+    async fn a_replaced_request_is_saved_at_once(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_api(None, "login".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        let id = api.read_with(cx, |api, _| api.api().clone());
+        let replaced = Rc::new(RefCell::new(0));
+        let counted = replaced.clone();
+        let _events = cx.update(|cx| {
+            cx.subscribe(&api, move |_, event, _| {
+                if matches!(event, ApiEvent::RequestReplaced) {
+                    *counted.borrow_mut() += 1;
+                }
+            })
+        });
+
+        let request = HttpRequest {
+            method: HttpMethod::Delete,
+            uri: "https://a.test/x".into(),
+            headers: vec![header("X-A", "1")],
+            ..Default::default()
+        };
+        api.update(cx, |api, cx| api.replace_request(request.clone(), cx));
+        cx.run_until_parked();
+        assert_eq!(stored(&storage, &collection, &id), request);
+        assert_eq!(*replaced.borrow(), 1);
+        state.read_with(cx, |state, _| {
+            assert_eq!(
+                state.tree().get(&id).map(|node| node.method()),
+                Some(HttpMethod::Delete)
+            );
+        });
+
+        // The same request again changes nothing.
+        api.update(cx, |api, cx| api.replace_request(request, cx));
+        cx.run_until_parked();
+        assert_eq!(*replaced.borrow(), 1);
+    }
+
+    /// A copy sits right after its API, with its request, selected.
+    #[gpui_kit::test]
+    async fn a_copy_goes_beside_its_api(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        for name in ["a", "b"] {
+            state.update(cx, |state, cx| state.create_api(None, name.into(), cx));
+            cx.run_until_parked();
+        }
+        let a = find(&state, "a", cx);
+        state.update(cx, |state, cx| state.select(&a, cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| api.set_method(HttpMethod::Post, cx));
+        cx.run_until_parked();
+        // Typed, and not saved yet: the copy has it all the same.
+        api.update(cx, |api, cx| api.set_headers(vec![header("X-A", "1")], cx));
+
+        // A new API goes first on the top level: "b" is above "a".
+        assert_eq!(row_names(&state, cx), ["b", "a"]);
+
+        // The last item's copy is imported where it belongs, last.
+        state.update(cx, |state, cx| state.duplicate(&a, "a copy".into(), cx));
+        cx.run_until_parked();
+        assert_eq!(row_names(&state, cx), ["b", "a", "a copy"]);
+        let copy = find(&state, "a copy", cx);
+        assert_eq!(stored(&storage, &collection, &copy).method, HttpMethod::Post);
+        assert_eq!(stored(&storage, &collection, &copy).headers, [header("X-A", "1")]);
+        state.read_with(cx, |state, _| assert_eq!(state.selected(), Some(&copy)));
+
+        // Any other's is moved up beside it.
+        let b = find(&state, "b", cx);
+        state.update(cx, |state, cx| state.duplicate(&b, "b copy".into(), cx));
+        cx.run_until_parked();
+        assert_eq!(row_names(&state, cx), ["b", "b copy", "a", "a copy"]);
     }
 
     /// §9.2: a viewer edits and sends, but nothing it changes is saved.

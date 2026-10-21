@@ -115,6 +115,41 @@ pub struct KvParam {
     pub enabled: bool,
 }
 
+/// A key / value list as text, one `key: value` per line and a disabled
+/// row behind `//`: the lists' bulk edit, as other clients write it, and
+/// the way headers are copied out of a browser.
+pub fn kv_text(list: &[KvParam]) -> String {
+    list.iter()
+        .map(|kv| {
+            let off = if kv.enabled { "" } else { "//" };
+            format!("{off}{}: {}", kv.key, kv.value)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// [`kv_text`] read back. A line without `:` is a key alone; blank lines
+/// are skipped. A value keeps any `:` after the first (`Host: a:8080`).
+pub fn kv_from_text(text: &str) -> Vec<KvParam> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let (enabled, line) = match line.strip_prefix("//") {
+                Some(rest) => (false, rest.trim_start()),
+                None => (true, line),
+            };
+            let (key, value) = line.split_once(':').unwrap_or((line, ""));
+            KvParam {
+                key: key.trim().to_string(),
+                value: value.trim().to_string(),
+                enabled,
+            }
+        })
+        .filter(|kv| !kv.key.is_empty() || !kv.value.is_empty())
+        .collect()
+}
+
 /// The request method. The old app stored the text and sent anything it did
 /// not know as GET (F5.5); this keeps that, so an odd value reads as GET.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -353,6 +388,46 @@ pub mod legacy {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn key_value_lists_go_to_text_and_back() {
+        let list = vec![
+            KvParam {
+                key: "Host".into(),
+                value: "a.test:8080".into(),
+                enabled: true,
+            },
+            KvParam {
+                key: "X-Off".into(),
+                value: "1".into(),
+                enabled: false,
+            },
+        ];
+        let text = kv_text(&list);
+        assert_eq!(text, "Host: a.test:8080\n//X-Off: 1");
+        assert_eq!(kv_from_text(&text), list);
+        // As copied from a browser: spaces, blank lines, a key alone.
+        assert_eq!(
+            kv_from_text("  accept:  */*  \n\n// x-a :b\nflag"),
+            [
+                KvParam {
+                    key: "accept".into(),
+                    value: "*/*".into(),
+                    enabled: true,
+                },
+                KvParam {
+                    key: "x-a".into(),
+                    value: "b".into(),
+                    enabled: false,
+                },
+                KvParam {
+                    key: "flag".into(),
+                    value: String::new(),
+                    enabled: true,
+                },
+            ]
+        );
+    }
 
     #[test]
     fn a_partial_request_reads_with_defaults() {

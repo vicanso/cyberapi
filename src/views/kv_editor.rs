@@ -2,12 +2,17 @@
 //! row is always last, and typing in it adds the next; each row can be
 //! turned off or removed, the second click on its remove button removing it.
 //! Changes are reported 200 ms after the last one.
+//!
+//! The list can also be edited as text, a `key: value` a line (`kv_text`),
+//! which takes a block of headers pasted whole.
 
 use crate::this_build;
-use cyberapi_core::model::KvParam;
+use cyberapi_core::model::{KvParam, kv_from_text, kv_text};
+use gpui_kit::base::input::Position;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -28,10 +33,14 @@ pub enum KvEvent {
 /// What kind of list it is.
 #[derive(Clone, Copy, Default)]
 pub struct KvOptions {
-    /// Values shown as dots: Basic auth's password.
+    /// Basic auth's: the columns are user and password, the password shown
+    /// as dots.
     pub masked: bool,
     /// Rows can take a file (multipart, F4.8), where files can be read.
     pub files: bool,
+    /// Rows offered ready made, name and a start of the value: the
+    /// headers one types most.
+    pub presets: &'static [(&'static str, &'static str)],
 }
 
 struct Row {
@@ -41,8 +50,15 @@ struct Row {
     _subscriptions: [Subscription; 2],
 }
 
+/// The list as text, while it is edited so.
+struct Bulk {
+    text: Entity<EditorState>,
+    _events: Subscription,
+}
+
 pub struct KvEditor {
     rows: Vec<Row>,
+    bulk: Option<Bulk>,
     options: KvOptions,
     report: Option<Task<()>>,
     /// The row whose remove button was clicked once, and the wait for the
@@ -56,6 +72,7 @@ impl KvEditor {
     pub fn new(list: &[KvParam], options: KvOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut editor = Self {
             rows: Vec::new(),
+            bulk: None,
             options,
             report: None,
             removing: None,
@@ -66,6 +83,7 @@ impl KvEditor {
 
     /// Shows `list` in place of what the rows hold, without reporting it.
     pub fn set_list(&mut self, list: &[KvParam], window: &mut Window, cx: &mut Context<Self>) {
+        self.bulk = None;
         self.rows.clear();
         for kv in list {
             self.push_row(kv, window, cx);
@@ -83,16 +101,26 @@ impl KvEditor {
         cx.notify();
     }
 
+    /// What the two columns are called.
+    fn labels(&self) -> (String, String) {
+        if self.options.masked {
+            (t!("editor.user").to_string(), t!("editor.password").to_string())
+        } else {
+            (t!("editor.key").to_string(), t!("editor.value").to_string())
+        }
+    }
+
     fn push_row(&mut self, kv: &KvParam, window: &mut Window, cx: &mut Context<Self>) {
+        let (key_label, value_label) = self.labels();
         let key = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(t!("editor.key").to_string())
+                .placeholder(key_label)
                 .default_value(kv.key.clone())
         });
         let masked = self.options.masked;
         let value = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(t!("editor.value").to_string())
+                .placeholder(value_label)
                 .masked(masked)
                 .default_value(kv.value.clone())
         });
@@ -114,6 +142,9 @@ impl KvEditor {
 
     /// The rows as a list; the blank last one is not part of it.
     pub fn list(&self, cx: &gpui_kit::App) -> Vec<KvParam> {
+        if let Some(bulk) = &self.bulk {
+            return kv_from_text(&bulk.text.read(cx).value());
+        }
         self.rows
             .iter()
             .map(|row| KvParam {
@@ -182,6 +213,64 @@ impl KvEditor {
         cx.notify();
     }
 
+    /// A preset row, before the blank one, its value's end taking the keys:
+    /// the rest of it is the reader's to type.
+    fn add_preset(&mut self, key: &str, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let at = self.rows.len().saturating_sub(1);
+        self.push_row(
+            &KvParam {
+                key: key.into(),
+                value: value.into(),
+                enabled: true,
+            },
+            window,
+            cx,
+        );
+        if let Some(row) = self.rows.pop() {
+            let input = row.value.downgrade();
+            self.rows.insert(at, row);
+            // Once the row is drawn: a field not drawn yet loses focus.
+            window.on_next_frame(move |window, cx| {
+                if let Some(input) = input.upgrade() {
+                    input.update(cx, |input, cx| {
+                        // The presets' values are ASCII: characters are columns.
+                        let end = input.value().chars().count() as u32;
+                        input.set_cursor_position(Position::new(0, end), window, cx);
+                    });
+                }
+            });
+        }
+        self.report_later(cx);
+    }
+
+    /// From rows to text and back; the text, read, becomes the rows.
+    fn toggle_bulk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.bulk.is_some() {
+            let list = self.list(cx);
+            self.set_list(&list, window, cx);
+            // What was typed last may not have been reported yet.
+            self.report_later(cx);
+            return;
+        }
+        let text = kv_text(&self.list(cx));
+        let text = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("text")
+                .soft_wrap(true)
+                .placeholder(t!("editor.bulk_placeholder").to_string())
+                .default_value(text)
+        });
+        text.update(cx, |text, cx| text.focus(window, cx));
+        let events = cx.subscribe(&text, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.report_later(cx);
+            }
+        });
+        self.bulk = Some(Bulk { text, _events: events });
+        self.removing = None;
+        cx.notify();
+    }
+
     /// F4.8: a file for a multipart field, as `file://` and its path.
     fn pick_file(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
@@ -211,7 +300,71 @@ impl KvEditor {
 
 impl Render for KvEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A password's list is not shown as text.
+        let toggle = (!self.options.masked).then(|| {
+            Button::new("kv-bulk")
+                .ghost()
+                .xsmall()
+                .icon(if self.bulk.is_some() {
+                    gpui_kit::assets::IconName::Table
+                } else {
+                    gpui_kit::assets::IconName::FileText
+                })
+                .tooltip(if self.bulk.is_some() {
+                    t!("editor.table_edit").to_string()
+                } else {
+                    t!("editor.bulk_edit").to_string()
+                })
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_bulk(window, cx)))
+        });
+        if let Some(bulk) = &self.bulk {
+            let theme = cx.theme();
+            return v_flex()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .overflow_hidden()
+                .child(
+                    h_flex()
+                        .h(px(26.))
+                        .pl_2()
+                        .pr_0p5()
+                        .bg(theme.muted)
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(div().flex_1().child(t!("editor.bulk_hint").to_string()))
+                        .children(toggle),
+                )
+                .child(
+                    div()
+                        .h(px(240.))
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .child(Editor::new(&bulk.text).w_full().h_full().bordered(false)),
+                )
+                .into_any_element();
+        }
+        let (key_label, value_label) = self.labels();
         let last = self.rows.len().saturating_sub(1);
+        // A row of the common ones, from a menu.
+        let presets = (!self.options.presets.is_empty()).then(|| {
+            let (view, presets) = (cx.entity().downgrade(), self.options.presets);
+            Button::new("kv-presets")
+                .ghost()
+                .xsmall()
+                .icon(gpui_kit::assets::IconName::ListPlus)
+                .tooltip(t!("editor.common_headers").to_string())
+                .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, _| {
+                    presets.iter().fold(menu, |menu, (key, value)| {
+                        let view = view.clone();
+                        menu.item(
+                            PopupMenuItem::new(format!("{key}: {value}")).on_click(move |_, window, cx| {
+                                let _ = view.update(cx, |this, cx| this.add_preset(key, value, window, cx));
+                            }),
+                        )
+                    })
+                })
+        });
         let removing = self.removing.as_ref().map(|(index, _)| *index);
         let files = self.options.files && this_build::reads_files();
         let theme = cx.theme();
@@ -219,9 +372,11 @@ impl Render for KvEditor {
         // A table: the fields sit in its cells without frames of their own,
         // the lines between the cells drawing the grid.
         let cell = move || div().h_full().flex().items_center().border_l_1().border_color(border);
+        // Room for the file button on a row, or the presets' in the header.
+        let wide = files || !self.options.presets.is_empty();
         let actions = move || {
             h_flex()
-                .w(px(if files { 56. } else { 32. }))
+                .w(px(if wide { 56. } else { 32. }))
                 .flex_none()
                 .justify_end()
                 .pr_0p5()
@@ -237,10 +392,10 @@ impl Render for KvEditor {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .child(cell().w_2_5().flex_none().px_2().child(t!("editor.key").to_string()))
-                    .child(cell().flex_1().min_w_0().px_2().child(t!("editor.value").to_string())),
+                    .child(cell().w_2_5().flex_none().px_2().child(key_label))
+                    .child(cell().flex_1().min_w_0().px_2().child(value_label)),
             )
-            .child(actions());
+            .child(actions().children(presets).children(toggle));
         let rows = self.rows.iter().enumerate().map(|(index, row)| {
             let blank = index == last;
             let remove = if removing == Some(index) {
@@ -314,5 +469,6 @@ impl Render for KvEditor {
             .overflow_hidden()
             .child(header)
             .children(rows.collect::<Vec<_>>())
+            .into_any_element()
     }
 }

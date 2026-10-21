@@ -69,6 +69,15 @@ pub struct WindowPrefs {
     pub height: u32,
 }
 
+impl WindowPrefs {
+    /// The size the app chooses.
+    pub const DEFAULT_WIDTH: u32 = 1280;
+    pub const DEFAULT_HEIGHT: u32 = 800;
+    /// The smallest the window is made (F14.2).
+    pub const MIN_WIDTH: u32 = 900;
+    pub const MIN_HEIGHT: u32 = 600;
+}
+
 /// Request timeouts in seconds; `0` is the default (F5.4).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]

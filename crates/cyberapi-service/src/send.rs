@@ -70,6 +70,7 @@ pub async fn send(
     picked_file: Option<String>,
 ) -> Result<HttpResponse, SendFailure> {
     let prepared = prepare(&sender, &collection, &request, picked_file).await?;
+    let sent_to = prepared.url.clone();
     let url = url::Url::parse(&prepared.url).ok();
     let started = Instant::now();
     let answered = sender.engine.send(prepared).await;
@@ -94,6 +95,7 @@ pub async fn send(
             api: api.clone(),
             collection: collection.clone(),
             request,
+            url: sent_to,
             status: Some(exchange.status),
             headers: exchange.headers,
             body: exchange.body,
@@ -107,6 +109,7 @@ pub async fn send(
             api: api.clone(),
             collection: collection.clone(),
             request,
+            url: sent_to,
             error: Some(error.to_string()),
             latency: floor(started.elapsed()),
             ..Default::default()
@@ -392,8 +395,10 @@ mod tests {
             r#"{"file": "from-file", "picked": "/tmp/a.png"}"#
         );
 
-        // The history keeps the request as the API held it.
+        // The history keeps the request as the API held it, and where it
+        // went.
         assert_eq!(second.request, request);
+        assert_eq!(second.url, "https://api.test/me");
         assert!(second.latency >= Duration::from_millis(1));
         let history = pollster::block_on(setup.storage.history().list(setup.collection.clone(), me)).expect("list");
         assert_eq!(history, [second]);
@@ -479,6 +484,7 @@ mod tests {
         .expect("an answer, of a kind");
         assert_eq!(response.status, None);
         assert_eq!(response.error.as_deref(), Some("could not connect: refused"));
+        assert_eq!(response.url, "http://down.test/", "where it was going");
         assert!(response.latency >= Duration::from_millis(1));
         let history = pollster::block_on(setup.storage.history().list(setup.collection.clone(), api)).expect("list");
         assert_eq!(history.len(), 1);

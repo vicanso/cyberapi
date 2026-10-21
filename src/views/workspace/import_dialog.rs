@@ -15,7 +15,7 @@ use gpui_kit::{
     App, AppContext as _, Entity, ParentElement as _, PathPromptOptions, Styled as _, WeakEntity, Window, div, px,
 };
 use rust_i18n::t;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// F10.1: what the clipboard holds, when it looks like something to import
@@ -47,6 +47,32 @@ fn format_name(format: Format) -> &'static str {
     }
 }
 
+/// What a text would import, said in a line; or why it would not.
+type Found = Result<String, String>;
+
+/// F10.2 before importing: what the text is and what it holds, or why it
+/// is nothing to import. `None` for no text.
+fn describe(text: &str) -> Option<Found> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    let format = match import::detect(text) {
+        Ok((format, _)) => format_name(format),
+        Err(failure) => return Some(Err(t!("import.unreadable", why = failure.to_string()).to_string())),
+    };
+    Some(match import::parse(text) {
+        Ok(bundle) => {
+            let (apis, folders) = bundle.counts();
+            let mut found = t!("import.found", format = format, apis = apis, folders = folders).to_string();
+            if !bundle.environment.is_empty() {
+                found += &t!("import.found_variables", count = bundle.environment.len());
+            }
+            Ok(found)
+        }
+        Err(failure) => Err(t!("import.unreadable", why = failure.to_string()).to_string()),
+    })
+}
+
 pub fn open_import_dialog(
     state: WeakEntity<WorkspaceState>,
     parent: Option<ItemId>,
@@ -62,25 +88,42 @@ pub fn open_import_dialog(
             .placeholder(t!("import.placeholder").to_string())
             .default_value(text)
     });
+    // A picked file that could not be read.
     let error: Rc<RefCell<Option<String>>> = Rc::default();
+    // What the text would import, worked out again only when it changes.
+    let preview: Rc<RefCell<(String, Option<Found>)>> = Rc::default();
+    let highlighted = Rc::new(Cell::new("json"));
     let reads_files = this_build::reads_files();
     window.open_dialog(cx, move |dialog, _, cx| {
         let text = editor.read(cx).value().to_string();
-        let detected = import::detect(&text).ok().map(|(format, _)| format_name(format));
+        let found = {
+            let mut preview = preview.borrow_mut();
+            if preview.0 != text {
+                *preview = (text.clone(), describe(&text));
+                // A cURL command is no JSON to colour.
+                let curl = text
+                    .trim_start()
+                    .get(..4)
+                    .is_some_and(|start| start.eq_ignore_ascii_case("curl"));
+                let language = if curl { "text" } else { "json" };
+                if language != highlighted.get() {
+                    highlighted.set(language);
+                    editor.update(cx, |editor, cx| editor.set_highlighter(language, cx));
+                }
+            }
+            preview.1.clone()
+        };
         let submit = {
-            let (editor, error, state, parent) = (editor.clone(), error.clone(), state.clone(), parent.clone());
-            move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+            let (editor, state, parent) = (editor.clone(), state.clone(), parent.clone());
+            move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
                 let text = editor.read(cx).value().to_string();
                 match import::parse(&text) {
                     Ok(bundle) => {
                         let _ = state.update(cx, |state, cx| state.import(parent.clone(), bundle, cx));
                         true
                     }
-                    Err(failure) => {
-                        *error.borrow_mut() = Some(failure.to_string());
-                        window.refresh();
-                        false
-                    }
+                    // Why shows under the text already (`describe`).
+                    Err(_) => false,
                 }
             }
         };
@@ -116,7 +159,7 @@ pub fn open_import_dialog(
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
         dialog
-            .title(t!("import.title").to_string())
+            .title(t!("import.dialog_title").to_string())
             .w(px(720.))
             .child(
                 v_flex()
@@ -141,8 +184,10 @@ pub fn open_import_dialog(
                             .gap_2()
                             .items_center()
                             .justify_between()
-                            .child(div().text_xs().text_color(muted).when_some(detected, |this, format| {
-                                this.child(t!("import.detected", format = format).to_string())
+                            .child(div().text_xs().map(|this| match found {
+                                Some(Ok(found)) => this.text_color(muted).child(found),
+                                Some(Err(why)) => this.text_color(danger).child(why),
+                                None => this,
                             }))
                             .when(reads_files, |this| {
                                 this.child(

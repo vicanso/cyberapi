@@ -172,6 +172,86 @@ pub fn strip_json_comments(body: &str) -> String {
         .join("\n")
 }
 
+/// A JSON body indented by two spaces, as the editor's Format does it
+/// (F4.7). Comment lines go, as sending drops them; `{{…}}` templates stay
+/// as written, in a string or in place of a value. `Err` says why the body
+/// is no JSON.
+pub fn format_json(body: &str) -> Result<String, String> {
+    let text = strip_json_comments(body);
+    // Each template stands in as something JSON takes — its own string
+    // outside a string, plain text inside one — and is put back after.
+    let token = |n: usize| format!("\u{E000}{n}\u{E001}");
+    let mut templates: Vec<(&str, bool)> = Vec::new();
+    let mut held = String::with_capacity(text.len());
+    let (mut in_string, mut escaped) = (false, false);
+    let mut at = 0;
+    while at < text.len() {
+        if text[at..].starts_with("{{")
+            && let Some(end) = text[at..].find("}}").map(|found| at + found + 2)
+        {
+            let stand_in = token(templates.len());
+            if in_string {
+                held.push_str(&stand_in);
+            } else {
+                held.push_str(&format!("\"{stand_in}\""));
+            }
+            templates.push((&text[at..end], in_string));
+            at = end;
+            continue;
+        }
+        let Some(ch) = text[at..].chars().next() else { break };
+        match ch {
+            '\\' if in_string => escaped = !escaped,
+            '"' if !escaped => in_string = !in_string,
+            _ => escaped = false,
+        }
+        if ch != '\\' {
+            escaped = false;
+        }
+        held.push(ch);
+        at += ch.len_utf8();
+    }
+    let value: serde_json::Value = serde_json::from_str(&held).map_err(|error| error.to_string())?;
+    let mut pretty = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
+    for (n, (template, in_string)) in templates.into_iter().enumerate() {
+        let stand_in = if in_string {
+            token(n)
+        } else {
+            format!("\"{}\"", token(n))
+        };
+        pretty = pretty.replacen(&stand_in, template, 1);
+    }
+    Ok(pretty)
+}
+
+/// Why a JSON body would not parse, as serde words it, its line and column
+/// those the editor shows: comment lines and `{{…}}` templates are taken as
+/// what they become (nothing, a value). `None` for a body that parses, or
+/// an empty one.
+pub fn json_problem(body: &str) -> Option<String> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    // Blanked rather than taken out, so the places stay where they were.
+    let mut text: String = body
+        .split('\n')
+        .map(|line| if line.trim_start().starts_with("//") { "" } else { line })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut from = 0;
+    while let Some(start) = text[from..].find("{{").map(|at| from + at) {
+        let Some(end) = text[start..].find("}}").map(|at| start + at + 2) else {
+            break;
+        };
+        let value = format!("0{}", " ".repeat(text[start..end].chars().count() - 1));
+        text.replace_range(start..end, &value);
+        from = start + value.len();
+    }
+    serde_json::from_str::<serde_json::Value>(&text)
+        .err()
+        .map(|error| error.to_string())
+}
+
 /// Where a URI without a scheme goes: plain HTTP, as a browser's address bar
 /// would. The old app refused it.
 fn with_scheme(uri: &str) -> String {
@@ -386,6 +466,29 @@ mod tests {
                 boundary: "XYZ",
             },
         )
+    }
+
+    #[test]
+    fn json_is_formatted_with_its_templates_as_written() {
+        let body =
+            "{\"z\":1,\n// a note\n\"a\":{{value(x)}},\"c\":\"id-{{get(01J, token)}}\",\"q\":\"say \\\"{{hi}}\\\"\"}";
+        assert_eq!(
+            format_json(body),
+            Ok("{\n  \"z\": 1,\n  \"a\": {{value(x)}},\n  \"c\": \"id-{{get(01J, token)}}\",\n  \"q\": \"say \\\"{{hi}}\\\"\"\n}".to_string())
+        );
+        assert!(format_json("{\"a\": 1 \"b\": 2}").is_err());
+    }
+
+    #[test]
+    fn a_json_body_s_problem_is_placed_where_the_editor_shows_it() {
+        // Comments and templates are what they become: this parses.
+        let fine = "{\n  // the tenant\n  \"a\": {{value(id)}},\n  \"b\": \"{{get(01J, token)}}\"\n}";
+        assert_eq!(json_problem(fine), None);
+        assert_eq!(json_problem("  "), None);
+        // A comma missing on line 4, counted with the comment line in.
+        let broken = "{\n  // the tenant\n  \"a\": 1\n  \"b\": 2\n}";
+        let problem = json_problem(broken).expect("a problem");
+        assert!(problem.contains("line 4 column 3"), "{problem}");
     }
 
     #[test]

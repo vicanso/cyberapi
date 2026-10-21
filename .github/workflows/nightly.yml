@@ -27,6 +27,9 @@ jobs:
   changes:
     name: anything new?
     runs-on: ubuntu-24.04
+    # The tag is created here. contents: read cannot do that.
+    permissions:
+      contents: write
     outputs:
       build: ${{ steps.compare.outputs.build }}
     steps:
@@ -38,6 +41,40 @@ jobs:
           built=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
           if [ "$FORCE" = true ] || [ "$built" != "$GITHUB_SHA" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"
+            # Packaging takes long enough for the branch to move. GITHUB_TOKEN
+            # can create the nightly tag only while this commit is still the
+            # branch head; `gh release create --target` afterwards returns 403
+            # (Resource not accessible by integration). Point the tag here, and
+            # only attach the release once the packages exist. The previous
+            # release is removed only after the new tag exists, so a refusal
+            # leaves the current nightly in place. A failed package leaves the
+            # tag moved and no nightly release.
+            if [ "$built" != "$GITHUB_SHA" ]; then
+              src="nightly-src-$GITHUB_SHA"
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$src" >/dev/null 2>&1 || true
+              if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                -f ref="refs/tags/$src" \
+                -f sha="$GITHUB_SHA" >/dev/null; then
+                echo "could not point a tag at $GITHUB_SHA" >&2
+                echo "GITHUB_TOKEN can create that tag only while this commit is still the branch head." >&2
+                exit 1
+              fi
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" >/dev/null 2>&1 || true
+              if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                -f ref=refs/tags/nightly \
+                -f sha="$GITHUB_SHA" >/dev/null; then
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$src" >/dev/null 2>&1 || true
+                if [ -n "$built" ]; then
+                  gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                    -f ref=refs/tags/nightly \
+                    -f sha="$built" >/dev/null 2>&1 || true
+                fi
+                echo "could not point the nightly tag at $GITHUB_SHA" >&2
+                exit 1
+              fi
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$src" >/dev/null 2>&1 || true
+            fi
+            gh release delete nightly --yes 2>/dev/null || true
           else
             echo "the nightly is $GITHUB_SHA already"
             echo "build=false" >> "$GITHUB_OUTPUT"
@@ -70,10 +107,16 @@ jobs:
 
           A development build, replaced every night. The macOS app is signed and
           notarized; the Windows and Linux packages are not signed."
-          # Deleted and made again, so no asset of an older build is left.
-          gh release delete nightly --cleanup-tag --yes || true
+          # The tag was created before packaging. Do not pass --target: that
+          # would try to create it again, and 403 once the branch has moved.
+          have=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha)
+          if [ "$have" != "$GITHUB_SHA" ]; then
+            echo "the nightly tag is $have, this build is $GITHUB_SHA" >&2
+            exit 1
+          fi
+          gh release delete nightly --yes 2>/dev/null || true
           gh release create nightly dist/* \
-            --target "$GITHUB_SHA" \
+            --verify-tag \
             --prerelease \
             --latest=false \
             --title "Nightly $(date -u +%Y-%m-%d) (${GITHUB_SHA::7})" \

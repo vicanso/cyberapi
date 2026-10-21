@@ -3,10 +3,14 @@
 //! state's and core's; this draws the rows and turns pointer and keyboard
 //! input into intent.
 
-use super::{confirm_delete, export, method_color, method_label, new_item, open_import_dialog};
+use super::move_dialog::open_move_dialog;
+use super::{NewApi, NewFolder, confirm_delete, export, method_color, method_label, new_item, open_import_dialog};
 use crate::states::{Load, WorkspaceState};
+use crate::this_build;
+use crate::views::marked::marked;
 use cyberapi_core::ItemId;
 use cyberapi_core::tree::{DropPosition, ItemKind, Placement, Row};
+use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::empty::{
     Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
@@ -21,15 +25,34 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent, Entity, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, px,
+    Anchor, AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent, Entity, FocusHandle, Focusable as _,
+    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Pixels, Point, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, px,
 };
 use rust_i18n::t;
 
 /// How far each level of the tree is indented.
 const INDENT: f32 = 14.;
 const ROW_HEIGHT: f32 = 28.;
+
+gpui_kit::actions!(tree, [Previous, Next, Close, Open, Toggle, Rename]);
+
+pub(crate) const KEY_CONTEXT: &str = "Tree";
+
+/// The tree from the keyboard, as a file list is walked: up and down move
+/// (an API reached is opened), left closes a folder or goes to the one
+/// above, right opens one or goes into it, Enter opens or closes, F2
+/// renames. A field in the tree keeps these keys for itself.
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("up", Previous, Some(KEY_CONTEXT)),
+        KeyBinding::new("down", Next, Some(KEY_CONTEXT)),
+        KeyBinding::new("left", Close, Some(KEY_CONTEXT)),
+        KeyBinding::new("right", Open, Some(KEY_CONTEXT)),
+        KeyBinding::new("enter", Toggle, Some(KEY_CONTEXT)),
+        KeyBinding::new("f2", Rename, Some(KEY_CONTEXT)),
+    ]);
+}
 
 /// An item whose name is being edited in place (F3.5).
 struct Renaming {
@@ -81,6 +104,14 @@ pub struct TreePanel {
     /// The rows as last drawn; the pointer is read against them.
     drawn: Vec<Row>,
     drop_target: Option<DropTarget>,
+    /// The tree's own focus, for its keys.
+    focus: FocusHandle,
+    /// The row the keys act on: an API or a folder. The selected API's row
+    /// when there is none (or it has gone).
+    cursor: Option<ItemId>,
+    /// The selection the cursor was last put beside: one made elsewhere (a
+    /// pin) takes the cursor with it.
+    seen_selection: Option<ItemId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -92,12 +123,28 @@ impl TreePanel {
                 .clean_on_escape()
         });
         let subscriptions = vec![
-            cx.observe(&state, |_, _, cx| cx.notify()),
-            cx.subscribe(&search, |this, search, event, cx| {
-                if matches!(event, InputEvent::Change) {
+            cx.observe(&state, |this, state, cx| {
+                let selected = state.read(cx).selected().cloned();
+                if selected != this.seen_selection {
+                    this.seen_selection = selected;
+                    this.cursor = None;
+                }
+                cx.notify();
+            }),
+            cx.subscribe_in(&search, window, |this, search, event, window, cx| match event {
+                InputEvent::Change => {
                     let keyword = search.read(cx).value().to_string();
                     this.state.update(cx, |state, cx| state.set_keyword(keyword, cx));
                 }
+                // What was searched for, opened: the first API found.
+                InputEvent::PressEnter { .. } => {
+                    let rows = this.state.read(cx).rows();
+                    if let Some(index) = rows.iter().position(|row| row.kind == ItemKind::Api) {
+                        this.focus.focus(window, cx);
+                        this.put_cursor(&rows, index, cx);
+                    }
+                }
+                _ => {}
             }),
         ];
         Self {
@@ -107,7 +154,97 @@ impl TreePanel {
             scroll: ScrollHandle::new(),
             drawn: Vec::new(),
             drop_target: None,
+            focus: cx.focus_handle(),
+            cursor: None,
+            seen_selection: None,
             _subscriptions: subscriptions,
+        }
+    }
+
+    /// Where the cursor is among `rows`.
+    fn cursor_at(&self, rows: &[Row], cx: &App) -> Option<usize> {
+        let selected = self.state.read(cx).selected();
+        let find = |id: Option<&ItemId>| id.and_then(|id| rows.iter().position(|row| &row.id == id));
+        find(self.cursor.as_ref()).or_else(|| find(selected))
+    }
+
+    /// Moves the cursor to `rows[index]`, in view; an API there is opened.
+    fn put_cursor(&mut self, rows: &[Row], index: usize, cx: &mut Context<Self>) {
+        let Some(row) = rows.get(index) else { return };
+        if row.kind == ItemKind::Api {
+            self.state.update(cx, |state, cx| state.select(&row.id, cx));
+        }
+        self.cursor = Some(row.id.clone());
+        self.scroll.scroll_to_item(index);
+        cx.notify();
+    }
+
+    fn step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) {
+            return;
+        }
+        let rows = self.state.read(cx).rows();
+        let last = rows.len().saturating_sub(1);
+        let index = match self.cursor_at(&rows, cx) {
+            Some(index) if forward => (index + 1).min(last),
+            Some(index) => index.saturating_sub(1),
+            None if forward => 0,
+            None => last,
+        };
+        self.put_cursor(&rows, index, cx);
+    }
+
+    /// Left: an open folder closes; anything else goes to its folder.
+    /// Right: a closed folder opens; an open one is gone into. A search
+    /// opens every folder, so it only moves.
+    fn close_or_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) {
+            return;
+        }
+        let rows = self.state.read(cx).rows();
+        let Some(index) = self.cursor_at(&rows, cx) else { return };
+        let row = &rows[index];
+        let searching = !self.state.read(cx).keyword().trim().is_empty();
+        let folder = row.kind == ItemKind::Folder;
+        if folder && row.open != open && !searching {
+            let id = row.id.clone();
+            self.cursor = Some(id.clone());
+            self.state.update(cx, |state, cx| state.toggle_folder(&id, cx));
+        } else if open {
+            if folder && rows.get(index + 1).is_some_and(|next| next.depth > row.depth) {
+                self.put_cursor(&rows, index + 1, cx);
+            }
+        } else if let Some(parent) = rows
+            .iter()
+            .position(|candidate| Some(&candidate.id) == row.parent.as_ref())
+        {
+            self.put_cursor(&rows, parent, cx);
+        }
+    }
+
+    fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) {
+            return;
+        }
+        let rows = self.state.read(cx).rows();
+        if let Some(row) = self.cursor_at(&rows, cx).map(|index| &rows[index])
+            && row.kind == ItemKind::Folder
+        {
+            let id = row.id.clone();
+            self.state.update(cx, |state, cx| state.toggle_folder(&id, cx));
+        }
+    }
+
+    fn rename_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) || !self.state.read(cx).editable() {
+            return;
+        }
+        let rows = self.state.read(cx).rows();
+        let Some(index) = self.cursor_at(&rows, cx) else { return };
+        let id = rows[index].id.clone();
+        let name = self.state.read(cx).tree().get(&id).map(|node| node.name().to_string());
+        if let Some(name) = name {
+            self.start_rename(id, name, window, cx);
         }
     }
 
@@ -235,13 +372,27 @@ impl TreePanel {
             .border_b_1()
             .border_color(border)
             .child(
-                div().flex_1().min_w_0().child(
-                    Input::new(&self.search)
-                        .small()
-                        .w_full()
-                        .cleanable(true)
-                        .prefix(Icon::new(IconName::Search).text_color(muted)),
-                ),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    // Down from the search goes on into what it found.
+                    .capture_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                        let keystroke = &event.keystroke;
+                        if keystroke.key == "down" && !keystroke.modifiers.modified() {
+                            cx.stop_propagation();
+                            this.focus.focus(window, cx);
+                            let rows = this.state.read(cx).rows();
+                            let index = this.cursor_at(&rows, cx).unwrap_or(0);
+                            this.put_cursor(&rows, index, cx);
+                        }
+                    }))
+                    .child(
+                        Input::new(&self.search)
+                            .small()
+                            .w_full()
+                            .cleanable(true)
+                            .prefix(Icon::new(IconName::Search).text_color(muted)),
+                    ),
             )
             .child(
                 Button::new("tree-new")
@@ -263,17 +414,28 @@ impl TreePanel {
                         let menu = if editable {
                             menu.item(
                                 PopupMenuItem::new(t!("workspace.new_api").to_string())
+                                    .icon(Icons::FilePlus)
+                                    // Its shortcut beside it, where it reaches the app;
+                                    // the click is the handler's.
+                                    .when(this_build::takes_new_keys(), |item| item.action(Box::new(NewApi)))
                                     .on_click(move |_, window, cx| new_item(&for_api, None, ItemKind::Api, window, cx)),
                             )
-                            .item(PopupMenuItem::new(t!("workspace.new_folder").to_string()).on_click(
-                                move |_, window, cx| new_item(&for_folder, None, ItemKind::Folder, window, cx),
-                            ))
+                            .item(
+                                PopupMenuItem::new(t!("workspace.new_folder").to_string())
+                                    .icon(Icons::FolderPlus)
+                                    .when(this_build::takes_new_keys(), |item| item.action(Box::new(NewFolder)))
+                                    .on_click(move |_, window, cx| {
+                                        new_item(&for_folder, None, ItemKind::Folder, window, cx)
+                                    }),
+                            )
                             .separator()
                             // F10.1.
                             .item(
-                                PopupMenuItem::new(t!("import.title").to_string()).on_click(move |_, window, cx| {
-                                    open_import_dialog(for_import.clone(), None, window, cx)
-                                }),
+                                PopupMenuItem::new(t!("import.title").to_string())
+                                    .icon(Icons::Import)
+                                    .on_click(move |_, window, cx| {
+                                        open_import_dialog(for_import.clone(), None, window, cx)
+                                    }),
                             )
                         } else {
                             menu
@@ -281,6 +443,7 @@ impl TreePanel {
                         // F11.1: a viewer may export too.
                         menu.item(
                             PopupMenuItem::new(t!("export.project").to_string())
+                                .icon(Icons::Download)
                                 .on_click(move |_, window, cx| export(&for_export, None, window, cx)),
                         )
                     }),
@@ -297,7 +460,7 @@ impl TreePanel {
             )
     }
 
-    fn render_row(&self, row: &Row, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(&self, row: &Row, cursor: bool, cx: &mut Context<Self>) -> AnyElement {
         let state = self.state.read(cx);
         let Some(node) = state.tree().get(&row.id) else {
             return div().into_any_element();
@@ -306,6 +469,10 @@ impl TreePanel {
         let theme = cx.theme();
         let selected = state.selected() == Some(&row.id);
         let pinned = state.is_pinned(&row.id);
+        // What a folder holds, folded or not.
+        let count = (row.kind == ItemKind::Folder)
+            .then(|| state.tree().api_count(&row.id))
+            .filter(|count| *count > 0);
         let (id, name, kind) = (row.id.clone(), node.name().to_string(), row.kind);
         let key = SharedString::from(format!("tree-row-{id}"));
 
@@ -364,7 +531,7 @@ impl TreePanel {
                 .min_w_0()
                 .truncate()
                 .when(selected, |this| this.font_medium())
-                .child(name.clone())
+                .child(marked(&name, state.keyword(), cx))
                 .into_any_element(),
         };
 
@@ -381,6 +548,7 @@ impl TreePanel {
             _ => None,
         };
         // A line between rows, indented to the level the item would join.
+        let guide = theme.foreground.opacity(0.1);
         let line_depth = match drop {
             Some(DropPosition::Below) if kind == ItemKind::Folder && row.open => row.depth + 1,
             _ => row.depth,
@@ -417,29 +585,77 @@ impl TreePanel {
             .when(!renaming && editable, |this| {
                 this.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
             })
+            // A line down each level the row is inside, under its folder's
+            // chevron: where a folder's contents end shows at a glance.
+            .children((0..row.depth).map(|level| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(8. + INDENT * level as f32 + 5.5))
+                    .w(px(1.))
+                    .bg(guide)
+            }))
+            // Where the keys are, while they reach the tree.
+            .when(cursor, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(theme.radius)
+                        .border_1()
+                        .border_color(theme.ring),
+                )
+            })
             .child(icon)
             .child(label)
+            .when_some(count, |this, count| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(count.to_string()),
+                )
+            })
             .when(pinned, |this| {
                 this.child(Icon::new(IconName::StarFill).xsmall().text_color(theme.warning))
             })
-            .on_click(
-                cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| match kind {
-                    ItemKind::Folder => {
-                        this.state.update(cx, |state, cx| state.toggle_folder(&id, cx));
-                    }
-                    ItemKind::Api if event.click_count() >= 2 && editable => {
-                        this.start_rename(id.clone(), name.clone(), window, cx);
-                    }
-                    ItemKind::Api => this.state.update(cx, |state, cx| state.select(&id, cx)),
-                }),
-            )
+            .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                // A click hands the keys to the tree, at this row.
+                this.focus.focus(window, cx);
+                this.cursor = Some(id.clone());
+                this.click(&id, kind, event.click_count(), editable, &name, window, cx);
+            }))
             .context_menu(move |menu, _, cx| {
                 item_menu(menu, &view, &menu_state, &menu_id, &menu_name, kind, editable, cx)
             })
             .into_any_element()
     }
 
-    fn render_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    #[allow(clippy::too_many_arguments)]
+    fn click(
+        &mut self,
+        id: &ItemId,
+        kind: ItemKind,
+        clicks: usize,
+        editable: bool,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match kind {
+            ItemKind::Folder => {
+                self.state.update(cx, |state, cx| state.toggle_folder(id, cx));
+            }
+            ItemKind::Api if clicks >= 2 && editable => {
+                self.start_rename(id.clone(), name.to_string(), window, cx);
+            }
+            ItemKind::Api => self.state.update(cx, |state, cx| state.select(id, cx)),
+        }
+    }
+
+    fn render_body(&mut self, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let state = self.state.read(cx);
         let load = state.load().clone();
         let empty = state.tree().is_empty();
@@ -460,38 +676,54 @@ impl TreePanel {
                 IconName::CircleX,
                 t!("workspace.load_failed").to_string(),
                 crate::i18n::store_error(&error),
-                Some(
+                vec![
                     Button::new("tree-retry")
                         .outline()
                         .small()
                         .label(t!("common.retry").to_string())
                         .on_click(cx.listener(|this, _, _, cx| this.state.update(cx, |state, cx| state.reload(cx)))),
-                ),
+                ],
             ),
             _ if empty => {
-                let state = self.state.downgrade();
-                notice(
-                    IconName::Inbox,
-                    t!("workspace.empty_title").to_string(),
-                    t!("workspace.empty_description").to_string(),
-                    Some(
+                let (state, for_import) = (self.state.downgrade(), self.state.downgrade());
+                // A viewer's empty project has nothing to offer.
+                let actions = self.state.read(cx).editable().then(|| {
+                    vec![
                         Button::new("tree-empty-new")
                             .primary()
                             .small()
                             .icon(IconName::Plus)
                             .label(t!("workspace.new_api").to_string())
                             .on_click(move |_, window, cx| new_item(&state, None, ItemKind::Api, window, cx)),
-                    ),
+                        // F10.1: a cURL command, a Postman or OpenAPI file…
+                        Button::new("tree-empty-import")
+                            .outline()
+                            .small()
+                            .icon(Icons::Import)
+                            .label(t!("import.title").to_string())
+                            .on_click(move |_, window, cx| open_import_dialog(for_import.clone(), None, window, cx)),
+                    ]
+                });
+                notice(
+                    IconName::Inbox,
+                    t!("workspace.empty_title").to_string(),
+                    t!("workspace.empty_description").to_string(),
+                    actions.unwrap_or_default(),
                 )
             }
             _ if rows.is_empty() => notice(
                 IconName::Search,
                 t!("workspace.no_match", keyword = keyword).to_string(),
                 String::new(),
-                None,
+                Vec::new(),
             ),
             _ => {
-                let elements: Vec<AnyElement> = rows.iter().map(|row| self.render_row(row, cx)).collect();
+                let cursor = focused.then(|| self.cursor_at(&rows, cx)).flatten();
+                let elements: Vec<AnyElement> = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| self.render_row(row, cursor == Some(index), cx))
+                    .collect();
                 let end = self.drop_target == Some(DropTarget::End);
                 let primary = cx.theme().primary;
                 self.drawn = rows;
@@ -544,25 +776,32 @@ fn item_menu(
             let (for_export, exported) = (state.clone(), id.clone());
             let menu = if editable {
                 menu.item(
-                    PopupMenuItem::new(t!("workspace.new_api").to_string()).on_click(move |_, window, cx| {
-                        new_item(&for_api, Some(parent.clone()), ItemKind::Api, window, cx)
-                    }),
+                    PopupMenuItem::new(t!("workspace.new_api").to_string())
+                        .icon(Icons::FilePlus)
+                        .on_click(move |_, window, cx| {
+                            new_item(&for_api, Some(parent.clone()), ItemKind::Api, window, cx)
+                        }),
                 )
                 .item(
-                    PopupMenuItem::new(t!("workspace.new_folder").to_string()).on_click(move |_, window, cx| {
-                        new_item(&for_folder, Some(folder.clone()), ItemKind::Folder, window, cx)
-                    }),
+                    PopupMenuItem::new(t!("workspace.new_folder").to_string())
+                        .icon(Icons::FolderPlus)
+                        .on_click(move |_, window, cx| {
+                            new_item(&for_folder, Some(folder.clone()), ItemKind::Folder, window, cx)
+                        }),
                 )
                 .item(
-                    PopupMenuItem::new(t!("import.into_folder").to_string()).on_click(move |_, window, cx| {
-                        open_import_dialog(for_import.clone(), Some(into.clone()), window, cx)
-                    }),
+                    PopupMenuItem::new(t!("import.into_folder").to_string())
+                        .icon(Icons::Import)
+                        .on_click(move |_, window, cx| {
+                            open_import_dialog(for_import.clone(), Some(into.clone()), window, cx)
+                        }),
                 )
             } else {
                 menu
             };
             menu.item(
                 PopupMenuItem::new(t!("export.folder").to_string())
+                    .icon(Icons::Download)
                     .on_click(move |_, window, cx| export(&for_export, Some(exported.clone()), window, cx)),
             )
         }
@@ -570,32 +809,40 @@ fn item_menu(
             let (state, id) = (state.clone(), id.clone());
             let (config_state, config_id) = (state.clone(), id.clone());
             let (curl_state, curl_id) = (state.clone(), id.clone());
-            let label = if pinned {
-                t!("workspace.unpin")
+            let (label, pin_icon) = if pinned {
+                (t!("workspace.unpin"), Icons::StarOff)
             } else {
-                t!("workspace.pin")
+                (t!("workspace.pin"), Icons::Star)
             };
             // F3.9: what a viewer may do too.
             menu.item(
-                PopupMenuItem::new(t!("workspace.copy_config").to_string()).on_click(move |_, window, cx| {
-                    let config = config_state
-                        .upgrade()
-                        .and_then(|state| state.read(cx).api_config(&config_id));
-                    if let Some(config) = config {
-                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(config));
-                        let copied = t!("workspace.config_copied").to_string();
-                        window.push_notification(Notification::success(copied), cx);
-                    }
-                }),
+                PopupMenuItem::new(t!("workspace.copy_config").to_string())
+                    .icon(Icons::Copy)
+                    .on_click(move |_, window, cx| {
+                        let config = config_state
+                            .upgrade()
+                            .and_then(|state| state.read(cx).api_config(&config_id));
+                        if let Some(config) = config {
+                            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(config));
+                            let copied = t!("workspace.config_copied").to_string();
+                            window.push_notification(Notification::success(copied), cx);
+                        }
+                    }),
             )
             .item(
-                PopupMenuItem::new(t!("response.copy_curl").to_string()).on_click(move |_, _, cx| {
-                    let _ = curl_state.update(cx, |state, cx| state.copy_curl(&curl_id, cx));
-                }),
+                PopupMenuItem::new(t!("response.copy_curl").to_string())
+                    .icon(Icons::Terminal)
+                    .on_click(move |_, _, cx| {
+                        let _ = curl_state.update(cx, |state, cx| state.copy_curl(&curl_id, cx));
+                    }),
             )
-            .item(PopupMenuItem::new(label.to_string()).on_click(move |_, _, cx| {
-                let _ = state.update(cx, |state, cx| state.set_pinned(&id, !pinned, cx));
-            }))
+            .item(
+                PopupMenuItem::new(label.to_string())
+                    .icon(pin_icon)
+                    .on_click(move |_, _, cx| {
+                        let _ = state.update(cx, |state, cx| state.set_pinned(&id, !pinned, cx));
+                    }),
+            )
         }
     };
     if !editable {
@@ -603,23 +850,50 @@ fn item_menu(
     }
     let (rename_view, rename_id, rename_name) = (view.clone(), id.clone(), name.to_string());
     let (delete_state, delete_id, delete_name) = (state.clone(), id.clone(), name.to_string());
-    menu.separator()
-        .item(
-            PopupMenuItem::new(t!("workspace.rename").to_string()).on_click(move |_, window, cx| {
+    let (move_state, move_id, move_name) = (state.clone(), id.clone(), name.to_string());
+    let menu = menu.separator().item(
+        PopupMenuItem::new(t!("workspace.move_to").to_string())
+            .icon(Icons::FolderInput)
+            .on_click(move |_, window, cx| {
+                open_move_dialog(move_state.clone(), move_id.clone(), move_name.clone(), window, cx)
+            }),
+    );
+    // An API's copy, to change beside it.
+    let menu = match kind {
+        ItemKind::Api => {
+            let (copy_state, copy_id) = (state.clone(), id.clone());
+            let copy_name = t!("workspace.copy_name", name = name).to_string();
+            menu.item(
+                PopupMenuItem::new(t!("workspace.duplicate").to_string())
+                    .icon(Icons::CopyPlus)
+                    .on_click(move |_, _, cx| {
+                        let _ = copy_state.update(cx, |state, cx| state.duplicate(&copy_id, copy_name.clone(), cx));
+                    }),
+            )
+        }
+        ItemKind::Folder => menu,
+    };
+    menu.item(
+        PopupMenuItem::new(t!("workspace.rename").to_string())
+            .icon(Icons::Pencil)
+            .action(Box::new(Rename))
+            .on_click(move |_, window, cx| {
                 let _ = rename_view.update(cx, |this, cx| {
                     this.start_rename(rename_id.clone(), rename_name.clone(), window, cx)
                 });
             }),
-        )
-        .item(
-            PopupMenuItem::new(t!("common.delete").to_string()).on_click(move |_, window, cx| {
+    )
+    .item(
+        PopupMenuItem::new(t!("common.delete").to_string())
+            .icon(Icons::Trash)
+            .on_click(move |_, window, cx| {
                 confirm_delete(&delete_state, delete_id.clone(), &delete_name, kind, window, cx)
             }),
-        )
+    )
 }
 
 /// A centred state of the whole tree: empty, failed, nothing found.
-fn notice(icon: IconName, title: String, description: String, action: Option<Button>) -> AnyElement {
+fn notice(icon: IconName, title: String, description: String, actions: Vec<Button>) -> AnyElement {
     v_flex()
         .flex_1()
         .justify_center()
@@ -639,21 +913,32 @@ fn notice(icon: IconName, title: String, description: String, action: Option<But
                             header.description(EmptyDescription::new().child(description))
                         }),
                 )
-                .when_some(action, |empty, action| empty.content(EmptyContent::new().child(action))),
+                .when(!actions.is_empty(), |empty| {
+                    empty.content(EmptyContent::new().child(h_flex().gap_2().children(actions)))
+                }),
         )
         .into_any_element()
 }
 
 impl Render for TreePanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // A drag let go outside the tree leaves no target behind.
         if !cx.has_active_drag() {
             self.drop_target = None;
         }
+        let focused = self.focus.is_focused(window);
         v_flex()
             .size_full()
             .bg(cx.theme().muted)
+            .key_context(KEY_CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &Previous, window, cx| this.step(false, window, cx)))
+            .on_action(cx.listener(|this, _: &Next, window, cx| this.step(true, window, cx)))
+            .on_action(cx.listener(|this, _: &Close, window, cx| this.close_or_open(false, window, cx)))
+            .on_action(cx.listener(|this, _: &Open, window, cx| this.close_or_open(true, window, cx)))
+            .on_action(cx.listener(|this, _: &Toggle, window, cx| this.toggle(window, cx)))
+            .on_action(cx.listener(|this, _: &Rename, window, cx| this.rename_at_cursor(window, cx)))
             .child(self.render_header(cx))
-            .child(self.render_body(cx))
+            .child(self.render_body(focused, cx))
     }
 }

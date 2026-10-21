@@ -11,7 +11,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
@@ -74,6 +74,8 @@ struct NewCookie {
 
 struct CookiesEditor {
     state: Entity<CookiesState>,
+    /// Narrows the jar to the cookies whose name, domain or value has it.
+    search: Entity<InputState>,
     /// Asking whether to clear the jar.
     confirming_clear: bool,
     rows: HashMap<CookieKey, Row>,
@@ -98,8 +100,18 @@ impl CookiesEditor {
             path: input(t!("cookies.path").to_string(), "/", window, cx),
             expires: input(t!("cookies.expires_placeholder").to_string(), "", window, cx),
         };
+        let search = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("cookies.search").to_string())
+                .clean_on_escape()
+        });
         let subscriptions = vec![
             cx.observe_in(&state, window, |this, _, window, cx| this.sync_rows(window, cx)),
+            cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&state, window, |_, _, event, window, cx| match event {
                 CookiesEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);
@@ -108,6 +120,7 @@ impl CookiesEditor {
         ];
         Self {
             state,
+            search,
             confirming_clear: false,
             rows: HashMap::new(),
             new,
@@ -252,6 +265,14 @@ impl Render for CookiesEditor {
             .child(div().w(px(70.)).child(t!("cookies.path").to_string()))
             .child(div().w(px(170.)).child(t!("cookies.expires").to_string()))
             .child(div().w(px(64.)));
+        let keyword = self.search.read(cx).value().trim().to_lowercase();
+        let shown = |cookie: &&Cookie| {
+            keyword.is_empty()
+                || [&cookie.name, &cookie.domain, &cookie.value]
+                    .iter()
+                    .any(|text| text.to_lowercase().contains(&keyword))
+        };
+        let found = state.cookies().iter().filter(shown).count();
         let body: gpui_kit::AnyElement = match state.load() {
             Load::Loading => h_flex().child(Spinner::new().small()).into_any_element(),
             _ if state.cookies().is_empty() => div()
@@ -260,44 +281,57 @@ impl Render for CookiesEditor {
                 .text_color(muted)
                 .child(t!("cookies.empty").to_string())
                 .into_any_element(),
+            _ if found == 0 => div()
+                .py_3()
+                .text_sm()
+                .text_color(muted)
+                .child(t!("cookies.no_match", keyword = keyword).to_string())
+                .into_any_element(),
             _ => v_flex()
                 .gap_1()
-                .children(state.cookies().iter().enumerate().filter_map(|(index, cookie)| {
-                    let key = cookie_key(cookie);
-                    let row = self.rows.get(&key)?;
-                    let never_key = key.clone();
-                    Some(
-                        h_flex()
-                            .id(("cookie", index))
-                            .gap_2()
-                            .items_center()
-                            .text_sm()
-                            .child(div().w(px(130.)).truncate().child(cookie.name.clone()))
-                            .child(div().flex_1().min_w_0().child(Input::new(&row.value).small()))
-                            .child(
-                                div()
-                                    .w(px(150.))
-                                    .truncate()
-                                    .text_color(muted)
-                                    .child(cookie.domain.clone()),
+                .children(
+                    state
+                        .cookies()
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, cookie)| shown(cookie))
+                        .filter_map(|(index, cookie)| {
+                            let key = cookie_key(cookie);
+                            let row = self.rows.get(&key)?;
+                            let never_key = key.clone();
+                            Some(
+                                h_flex()
+                                    .id(("cookie", index))
+                                    .gap_2()
+                                    .items_center()
+                                    .text_sm()
+                                    .child(div().w(px(130.)).truncate().child(cookie.name.clone()))
+                                    .child(div().flex_1().min_w_0().child(Input::new(&row.value).small()))
+                                    .child(
+                                        div()
+                                            .w(px(150.))
+                                            .truncate()
+                                            .text_color(muted)
+                                            .child(cookie.domain.clone()),
+                                    )
+                                    .child(div().w(px(70.)).truncate().text_color(muted).child(cookie.path.clone()))
+                                    .child(div().w(px(170.)).child(Input::new(&row.expires).small()))
+                                    .child(never_button(("cookie-never", index)).on_click(cx.listener(
+                                        move |this, _, window, cx| this.never_expires(&never_key, window, cx),
+                                    )))
+                                    .child(
+                                        Button::new(("cookie-delete", index))
+                                            .ghost()
+                                            .small()
+                                            .icon(IconName::Close)
+                                            .tooltip(t!("common.delete").to_string())
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.state.update(cx, |state, cx| state.delete(&key, cx));
+                                            })),
+                                    ),
                             )
-                            .child(div().w(px(70.)).truncate().text_color(muted).child(cookie.path.clone()))
-                            .child(div().w(px(170.)).child(Input::new(&row.expires).small()))
-                            .child(never_button(("cookie-never", index)).on_click(
-                                cx.listener(move |this, _, window, cx| this.never_expires(&never_key, window, cx)),
-                            ))
-                            .child(
-                                Button::new(("cookie-delete", index))
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::Close)
-                                    .tooltip(t!("common.delete").to_string())
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.state.update(cx, |state, cx| state.delete(&key, cx));
-                                    })),
-                            ),
-                    )
-                }))
+                        }),
+                )
                 .into_any_element(),
         };
         let new = &self.new;
@@ -329,7 +363,26 @@ impl Render for CookiesEditor {
             );
         v_flex()
             .gap_2()
-            .child(div().text_sm().text_color(muted).child(t!("cookies.hint").to_string()))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(t!("cookies.hint").to_string()),
+                    )
+                    .child(
+                        Input::new(&self.search)
+                            .small()
+                            .w(px(220.))
+                            .cleanable(true)
+                            .prefix(Icon::new(IconName::Search).text_color(muted)),
+                    ),
+            )
             .child(header)
             .child(div().id("cookies").max_h(px(360.)).overflow_y_scrollbar().child(body))
             .child(add_form)
