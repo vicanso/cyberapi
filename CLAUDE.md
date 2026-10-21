@@ -66,7 +66,8 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 - 浏览器版的登录在 `www/index.html` 里完成：先查 `/v1/session`，未登录时按 `/v1/setup` 显示初始化或登录表单，登录后取 `prefsApp` 再加载 wasm，调用 `run(origin, ui_font, prefs)`。`cyberapi-web` 用 `FetchTransport`（gpui 的 fetch 客户端）创建 `BridgeStore`，收到 401 时刷新页面重新登录；`assets.rs` 是从 zedis 移植的图标重绘观察器。
 - `cyberapi-web`：浏览器入口。把 GUI crate 编译成 wasm，只负责平台、UI 字体和资源来源；通过 `cyberapi_gui::launch` 进入应用。有自己的 `rust-toolchain.toml`（nightly + wasm32），必须在该目录下构建。`www/index.html` 拉取 `fonts/IBMPlexSans.ttf` 和 wasm 后调用 `run(origin, ui_font)`。
 - UI 只依赖 `gpui-kit` 一个 crate：GPUI 是 `gpui_kit::*`，组件是 `gpui_kit::component`，图标是 `gpui_kit::assets`，平台是 `gpui_kit::platform`（wasm 上还有 `gpui_kit::web`）。不要再单独引入 `gpui-pre-*`。
-  - **锁文件的两个精确版本**：gpui-kit 可选的 GPUI Fast 后端把 `cocoa` 锁在 `=0.26.0`、`unicode-properties` 锁在 `=0.1.3`，而锁文件也要满足可选依赖。不要用 `cargo update` 把这两个包升上去；打开 gpui-kit 的新 feature（例如 `test-support`）时如果报 “failed to select a version for `cocoa`”，说明锁文件里是更高的版本，需要重新生成锁文件（`cargo generate-lockfile`）。
+  - **桌面版的引擎是 GPUI Fast**：桌面依赖表里的 gpui-kit 打开了 `gpui-fast`，`gpui_kit::*` 和 `gpui_kit::platform` 随之换成 Fast，代码不用改。浏览器版仍是默认的 gpui-pre（wasm 不读那张表，`cyberapi-web` 按名字构建 gpui-pre 的 web 平台），所以别把 `gpui-fast` 加到普通 `[dependencies]` 或 workspace 依赖上。
+  - **锁文件的两个精确版本**：gpui-kit 的 GPUI Fast 后端把 `cocoa` 锁在 `=0.26.0`、`unicode-properties` 锁在 `=0.1.3`。不要用 `cargo update` 把这两个包升上去；打开 gpui-kit 的新 feature（例如 `test-support`）时如果报 “failed to select a version for `cocoa`”，说明锁文件里是更高的版本，需要重新生成锁文件（`cargo generate-lockfile`）。
 
 ## 一份代码，两个目标
 

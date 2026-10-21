@@ -125,7 +125,11 @@ cyberapi-store-turso = { workspace = true }
 directories = { workspace = true }
 # JSON highlighting in the body editors. Asked for here only: on wasm,
 # gpui-component drops the grammar but still compiles the feature's code.
-gpui-kit = { workspace = true, features = ["tree-sitter"] }
+# And GPUI Fast as the desktop's engine (`gpui-fast`): gpui-kit then
+# re-exports Fast as `gpui_kit::*` and hands out its platform, so no import
+# changes. The browser build keeps the default engine, whose web platform
+# `cyberapi-web` builds by name; this table is not read for wasm.
+gpui-kit = { workspace = true, features = ["tree-sitter", "gpui-fast"] }
 # The OS version, for the about section and the User-Agent (F1.7, F5.4).
 os_info = { version = "3.15.0", default-features = false }
 # Blocks on the store's first answers before the first window opens.
