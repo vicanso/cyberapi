@@ -34,10 +34,13 @@ desktop-dist:
 icons:
 	scripts/icons.sh
 
-# The nightly build of the gpui branch, started now and built even if the
-# branch has not moved (.github/workflows/nightly.yml). Needs `gh`, signed in.
+# The nightly build, started now and built even if the branch has not moved
+# (.github/workflows/nightly.yml): of main, or of the pushed branch NIGHTLY_REF
+# names. Needs `gh`, signed in.
+NIGHTLY_REF ?= main
+
 nightly:
-	gh workflow run nightly.yml --ref gpui -f force=true
+	gh workflow run nightly.yml --ref $(NIGHTLY_REF) -f force=true
 
 # The SQL store against real databases: `make db-up` starts PostgreSQL and
 # MySQL in local containers (Apple's `container`), `make test-sql` runs the

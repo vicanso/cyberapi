@@ -1,14 +1,8 @@
-# The gpui branch, packaged every night (package.yml) into the `nightly`
+# The default branch, packaged every night (package.yml) into the `nightly`
 # prerelease, replaced each time: its tag moves to the commit built and its
 # assets are that build's. A night with nothing new on the branch builds
-# nothing; a manual run with `force` builds anyway.
-#
-# GitHub runs a schedule, and offers a dispatch, only for a workflow file on
-# the default branch, which is still the Tauri app's `main`. So `main` keeps a
-# small .github/workflows/nightly.yml of its own that, each night, dispatches
-# this file on gpui (`gh workflow run nightly.yml --ref gpui`). Once gpui is
-# the default branch this file replaces that one, and the schedule below
-# runs it directly.
+# nothing; a manual run with `force` builds anyway, and may name another
+# branch (`gh workflow run nightly.yml --ref <branch>`).
 name: Nightly
 
 on:

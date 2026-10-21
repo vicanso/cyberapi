@@ -306,7 +306,7 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 第 11 步落地时的做法：
 
 - **bridge 是浏览器版的全部部署。** release 构建用 `rust-embed` 把 `cyberapi-web/www` 编进二进制，页面和 API 同源（登录 cookie 保持 `SameSite=Strict`）。`scripts/web-bundle.sh --release` 同时生成 `.wasm.gz`，bridge 按 `Accept-Encoding` 发送；每个文件带内容哈希的 ETag 并要求重新验证（模块的文件名不随版本变）。debug 构建从磁盘读，开发时 `make web-bundle` 后无需重编 bridge。`make web-dist` 打出 `bridge + LICENSE + README.txt` 的 tarball。
-- **桌面版用 cargo-bundle 出包**，沿用 Tauri 版的 identifier（`com.bigtree.cyberapi`），图标（`resources/icons/`）由 `icons/cyberapi.png` 生成（`make icons`），Windows 的 exe 由 `build.rs` 嵌入图标。macOS 的 `.app` 是 ad-hoc 签名，分发给他人还需要 Developer ID 签名和公证；Linux 出 `.deb`，Windows 目前只是 zip。包都在构建所在的平台上产出，交叉编译和 CI 未做。
+- **桌面版用 cargo-bundle 出包**，沿用 Tauri 版的 identifier（`com.bigtree.cyberapi`），图标（`resources/icons/`）由 `icons/cyberapi.png` 生成（`make icons`），Windows 的 exe 由 `build.rs` 嵌入图标。macOS 的 `.app` 是 ad-hoc 签名，分发给他人还需要 Developer ID 签名和公证；Linux 出 `.deb`，Windows 目前只是 zip。包都在构建所在的平台上产出，不做交叉编译：CI 在三个平台上各自打包（`.github/workflows/package.yml`），版本 tag 挂到对应的 Release，`main` 每晚更新名为 `nightly` 的预发布。
 
 ## 9. 账号、团队与授权（浏览器版，D1）
 
