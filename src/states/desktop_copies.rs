@@ -409,3 +409,48 @@ async fn a_level_copy_follows_the_server_and_an_unsynced_one_stays(cx: &mut Test
     );
     assert_eq!(dashboard.read_with(cx, |state, _| state.unsynced(&level.id)), None);
 }
+
+/// The project open when the app last left reopens once it is known who is
+/// signed in and which projects are copies — a copy as one, and another
+/// account's copy not at all.
+#[gpui_kit::test]
+async fn the_last_copy_reopens_once_the_server_is_known(cx: &mut TestAppContext) {
+    use crate::Extras;
+    use crate::states::{AppStore, Route};
+    use cyberapi_core::prefs::AppPrefs;
+
+    let machine = Machine::signed_in(cx);
+    let theirs = machine.on_server("orders").await;
+    machine.dashboard(cx);
+    let (local, bridge) = (machine.local.clone(), machine.bridge.clone());
+    let state = cx.update(|cx| {
+        gpui_kit::init(cx);
+        let extras = Extras {
+            copies: Some(Arc::new(local.clone())),
+            ..Default::default()
+        };
+        let prefs = AppPrefs {
+            last_collection: Some(theirs.id.clone()),
+            ..Default::default()
+        };
+        AppStore::init(local.storage(), bridge, prefs, extras, cx);
+        AppStore::global(cx).state().clone()
+    });
+    cx.run_until_parked();
+    match state.read_with(cx, |state, _| state.route().clone()) {
+        Route::Workspace(collection) => assert_eq!(collection.id, theirs.id),
+        other => panic!("expected the copy open, got {other:?}"),
+    }
+    assert_eq!(
+        state.read_with(cx, |state, _| state.me().map(|me| me.account.name.clone())),
+        Some("alice".to_string()),
+        "who is signed in, as the bridge says"
+    );
+
+    // Signed out, the copy is no longer the reader's to have open.
+    let server = cx.update(|cx| AppStore::global(cx).server().cloned().expect("the desktop's server"));
+    server.update(cx, |server, cx| server.sign_out(cx));
+    cx.run_until_parked();
+    assert_eq!(state.read_with(cx, |state, _| state.route().clone()), Route::Dashboard);
+    assert_eq!(state.read_with(cx, |state, _| state.me().cloned()), None);
+}

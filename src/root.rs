@@ -369,7 +369,7 @@ impl CyberApi {
             Page::Dashboard(_) => None,
         };
         let backs_up = AppStore::global(cx).backups().is_some();
-        let signs_in = AppStore::global(cx).signs_in();
+        let signs_in = AppStore::global(cx).has_account(cx);
         Button::new("title-settings")
             .ghost()
             .small()

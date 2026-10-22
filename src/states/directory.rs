@@ -264,7 +264,8 @@ impl DirectoryState {
             self.directory.create_invite(place),
             |this, result, cx| match result {
                 Ok(made) => {
-                    let link = this_build::invite_link(&made.token);
+                    let server = cx.try_global::<AppStore>().and_then(|store| store.server_address(cx));
+                    let link = this_build::invite_link(server.as_deref(), &made.token);
                     this.made = Some((made.invite.id.clone(), link.clone()));
                     this.invites.push(made.invite);
                     cx.emit(DirectoryEvent::Done(DirectoryDone::InviteCreated(link)));

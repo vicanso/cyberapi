@@ -30,7 +30,7 @@ use std::rc::Rc;
 const ROLES: [TeamRole; 3] = [TeamRole::Member, TeamRole::Admin, TeamRole::Owner];
 
 pub fn open_teams_dialog(window: &mut Window, cx: &mut App) {
-    let Some(directory) = AppStore::global(cx).directory().cloned() else {
+    let Some(directory) = AppStore::global(cx).directory(cx) else {
         return;
     };
     let state = cx.new(|_| DirectoryState::new(directory));

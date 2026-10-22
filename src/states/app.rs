@@ -1,7 +1,7 @@
 //! What the whole application shares: the stores, where the reader is, and
 //! their settings.
 
-use super::{ServerState, run_serial, run_store};
+use super::{ServerState, ServerStatus, run_serial, run_store};
 use crate::json_view_local::JsonView;
 use crate::{Extras, this_build};
 use async_lock::Mutex;
@@ -80,9 +80,30 @@ impl AppStore {
         self.extras.backups.as_ref()
     }
 
-    /// The browser's accounts and teams (§9.4); the desktop has none.
-    pub fn directory(&self) -> Option<&Arc<dyn DirectoryStore>> {
-        self.extras.directory.as_ref()
+    /// The accounts and teams (§9.4): the page's, or — the desktop signed
+    /// in to a bridge — that bridge's (`docs/server-sync.md` §1).
+    pub fn directory(&self, cx: &App) -> Option<Arc<dyn DirectoryStore>> {
+        if let Some(directory) = &self.extras.directory {
+            return Some(directory.clone());
+        }
+        self.server.as_ref()?.read(cx).directory()
+    }
+
+    /// Whether an account is signed in: always in a page, and on the
+    /// desktop while its bridge knows the session.
+    pub fn has_account(&self, cx: &App) -> bool {
+        self.signs_in()
+            || self
+                .server
+                .as_ref()
+                .is_some_and(|server| matches!(server.read(cx).status(), ServerStatus::SignedIn(_)))
+    }
+
+    /// The desktop's bridge, while signed in to it.
+    pub fn server_address(&self, cx: &App) -> Option<String> {
+        let server = self.server.as_ref()?.read(cx);
+        server.account()?;
+        Some(server.address().to_string())
     }
 
     /// Whether this build signs in (the browser).
@@ -185,7 +206,7 @@ impl AppState {
     /// Reads who is signed in again: their teams change as they make,
     /// leave and are added to them.
     pub fn reload_me(&mut self, cx: &mut Context<Self>) {
-        let Some(directory) = AppStore::global(cx).directory().cloned() else {
+        let Some(directory) = AppStore::global(cx).directory(cx) else {
             return;
         };
         run_store(cx, directory.me(), |this, result, cx| match result {
@@ -200,9 +221,31 @@ impl AppState {
     }
 
     /// Ends the browser's login; the page signs in again.
+    /// The page's login ends and it signs in again; the desktop's ends
+    /// at its bridge.
     pub fn sign_out(&mut self, cx: &mut Context<Self>) {
-        if let Some(sign_out) = AppStore::global(cx).extras.sign_out.clone() {
-            cx.background_spawn(sign_out()).detach();
+        let store = AppStore::global(cx);
+        if let Some(sign_out) = store.extras.sign_out.clone() {
+            return cx.background_spawn(sign_out()).detach();
+        }
+        if let Some(server) = store.server().cloned() {
+            server.update(cx, |server, cx| server.sign_out(cx));
+        }
+    }
+
+    /// Who is signed in, as the desktop's bridge says. A copy of a server
+    /// project open that is no longer theirs closes.
+    pub fn set_me(&mut self, me: Option<Me>, cx: &mut Context<Self>) {
+        if self.me != me {
+            self.me = me;
+            cx.notify();
+        }
+        if let Route::Workspace(collection) = &self.route
+            && AppStore::global(cx)
+                .server()
+                .is_some_and(|server| server.read(cx).hides(&collection.id))
+        {
+            self.go_home(cx);
         }
     }
 

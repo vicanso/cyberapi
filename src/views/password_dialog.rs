@@ -18,7 +18,7 @@ use gpui_kit::{
 use rust_i18n::t;
 
 pub fn open_password_dialog(window: &mut Window, cx: &mut App) {
-    let Some(directory) = AppStore::global(cx).directory().cloned() else {
+    let Some(directory) = AppStore::global(cx).directory(cx) else {
         return;
     };
     let state = cx.new(|_| DirectoryState::new(directory));

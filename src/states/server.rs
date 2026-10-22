@@ -12,7 +12,7 @@ use cyberapi_core::directory::Me;
 use cyberapi_core::sync::CopyBinding;
 use cyberapi_core::{AccountId, CollectionId};
 use cyberapi_http::HttpEngine;
-use cyberapi_store::{ServerCopyStore, Storage};
+use cyberapi_store::{DirectoryStore, ServerCopyStore, Storage};
 use cyberapi_store_bridge::{
     BridgeStore, EngineTransport, LoginForm, SignInError, bridge_address, session_me, sign_in, sign_out,
 };
@@ -84,13 +84,15 @@ impl ServerState {
         self.checked && (self.copies.is_none() || self.bound.is_some())
     }
 
+    /// The project waiting to open may now. After this update: opening
+    /// reads this state.
     fn became_ready(&mut self, was: bool, cx: &mut Context<Self>) {
         if !was
             && self.ready()
             && let Some(store) = cx.try_global::<AppStore>()
         {
             let app = store.state().clone();
-            app.update(cx, |app, cx| app.open_waiting(cx));
+            cx.defer(move |cx| app.update(cx, |app, cx| app.open_waiting(cx)));
         }
     }
 
@@ -104,6 +106,25 @@ impl ServerState {
     /// The server's stores, as the signed-in account.
     pub fn storage(&self) -> Option<Storage> {
         Some(BridgeStore::new(Arc::new(self.transport()?)).storage())
+    }
+
+    /// The server's accounts and teams (§9.4), as the signed-in account.
+    pub fn directory(&self) -> Option<Arc<dyn DirectoryStore>> {
+        Some(BridgeStore::new(Arc::new(self.transport()?)).directory())
+    }
+
+    /// The application's copy of who is signed in follows: the menu's
+    /// account, the cards' teams.
+    fn tell_app(&self, cx: &mut Context<Self>) {
+        let me = match &self.status {
+            ServerStatus::SignedIn(me) => Some(me.clone()),
+            ServerStatus::SignedOut => None,
+            ServerStatus::Checking | ServerStatus::Unreachable(_) => return,
+        };
+        if let Some(store) = cx.try_global::<AppStore>() {
+            let app = store.state().clone();
+            cx.defer(move |cx| app.update(cx, |app, cx| app.set_me(me, cx)));
+        }
     }
 
     pub fn copies(&self) -> Option<&Arc<dyn ServerCopyStore>> {
@@ -221,6 +242,7 @@ impl ServerState {
                 };
                 this.checked = true;
                 this.became_ready(was, cx);
+                this.tell_app(cx);
                 cx.notify();
             });
         })
@@ -280,6 +302,7 @@ impl ServerState {
         }
         self.forget_token();
         self.status = ServerStatus::SignedOut;
+        self.tell_app(cx);
         cx.notify();
     }
 

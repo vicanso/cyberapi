@@ -460,7 +460,8 @@ impl DashboardView {
             // Changing the project is its managers' (§9.2); the desktop's
             // only reader manages everything. Its group is the reader's own.
             manages: collection.role.can_manage(),
-            shares: AppStore::global(cx).directory().is_some(),
+            // Only a server's project is given to others.
+            shares: collection.owner.is_some() && AppStore::global(cx).directory(cx).is_some(),
             unsynced: unsynced.is_some(),
         };
         // The same menu on a right click, as the tree's rows have theirs.
@@ -984,10 +985,10 @@ fn project_mark(name: &str, cx: &App) -> impl IntoElement {
         .child(letter)
 }
 
-/// The browser build's: the team a project belongs to, unless the reader's
-/// own space, and the reader's role where it is less than managing.
+/// A server project's: the team it belongs to, unless the reader's own
+/// space, and the reader's role where it is less than managing.
 fn place_of(collection: &Collection, cx: &App) -> Option<String> {
-    AppStore::global(cx).directory()?;
+    collection.owner.as_ref()?;
     let me = AppStore::global(cx).state().read(cx).me()?;
     let team = me.teams.iter().find(|team| Some(&team.id) == collection.owner.as_ref());
     let team = match team {
@@ -1008,7 +1009,7 @@ fn team_field(team: &Rc<RefCell<Option<TeamId>>>, cx: &App) -> Option<AnyElement
     // A page's projects are its teams'; the desktop's, signed in, this
     // machine's (`None`) or a team's on its server (`docs/server-sync.md`
     // §2).
-    let (teams, here) = if store.directory().is_some() {
+    let (teams, here) = if store.signs_in() {
         (store.state().read(cx).me()?.teams.clone(), None)
     } else {
         let server = store.server()?.read(cx);

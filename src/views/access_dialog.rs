@@ -38,7 +38,7 @@ pub fn open_access_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let Some(directory) = AppStore::global(cx).directory().cloned() else {
+    let Some(directory) = AppStore::global(cx).directory(cx) else {
         return;
     };
     let state = cx.new(|_| DirectoryState::new(directory));

@@ -184,16 +184,15 @@ pub fn opens_html() -> bool {
     false
 }
 
-/// The link that opens an invitation (`docs/server-sync.md` §5): this
-/// page's address, with the token after `#`, which no server sees or logs.
-/// The desktop sends none — accounts are made on the web — so it has only
-/// the fragment.
+/// The link that opens an invitation (`docs/server-sync.md` §5): the
+/// bridge's page, with the token after `#`, which no server sees or logs.
+/// The desktop names its bridge (`server`); a page is on it.
 #[cfg(not(target_family = "wasm"))]
-pub fn invite_link(token: &str) -> String {
-    format!("#invite={token}")
+pub fn invite_link(server: Option<&str>, token: &str) -> String {
+    format!("{}/#invite={token}", server.unwrap_or_default())
 }
 #[cfg(target_family = "wasm")]
-pub fn invite_link(token: &str) -> String {
+pub fn invite_link(_server: Option<&str>, token: &str) -> String {
     let page = web_sys::window()
         .and_then(|window| window.location().href().ok())
         .unwrap_or_default();

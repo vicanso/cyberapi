@@ -10,6 +10,7 @@ gpui_kit::assets::icon_assets!(
     [
         ArchiveRestore,
         Braces,
+        CircleUser,
         Clock,
         CloudUpload,
         Cookie,
@@ -22,8 +23,10 @@ gpui_kit::assets::icon_assets!(
         Heading,
         Import,
         Infinity,
+        KeyRound,
         Keyboard,
         ListPlus,
+        LogOut,
         Monitor,
         Paperclip,
         Pencil,
@@ -32,6 +35,7 @@ gpui_kit::assets::icon_assets!(
         Terminal,
         Trash,
         Undo2,
+        UserCog,
         Users,
         WandSparkles
     ]
@@ -66,6 +70,7 @@ mod tests {
         for icon in [
             IconName::ArchiveRestore,
             IconName::Braces,
+            IconName::CircleUser,
             IconName::Clock,
             IconName::CloudUpload,
             IconName::Cookie,
@@ -78,8 +83,10 @@ mod tests {
             IconName::Heading,
             IconName::Import,
             IconName::Infinity,
+            IconName::KeyRound,
             IconName::Keyboard,
             IconName::ListPlus,
+            IconName::LogOut,
             IconName::Monitor,
             IconName::Paperclip,
             IconName::Pencil,
@@ -88,6 +95,7 @@ mod tests {
             IconName::Terminal,
             IconName::Trash,
             IconName::Undo2,
+            IconName::UserCog,
             IconName::Users,
             IconName::WandSparkles,
             IconName::FolderOpen,
