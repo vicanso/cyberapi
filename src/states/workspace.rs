@@ -9,17 +9,27 @@
 //!
 //! In the browser build other readers change the project too: the state
 //! polls its revision and loads the tree again when it moved (§7).
+//!
+//! There the project is the server's, and the reader edits a working copy
+//! of it (`docs/server-sync.md` §3–4, `super::copy`): their changes wait in
+//! this browser until they sync. Opening, the poll and syncing do what
+//! `cyberapi_core::sync::step` says, with the server's content or the
+//! draft's.
 
+use super::copy::{self, Pushed, ServerCopy};
 use super::{ApiState, AppStore, Load, run_serial, run_store};
+use crate::drafts_local::Draft;
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::ItemId;
 use cyberapi_core::import::{ImportBundle, ImportItem};
 use cyberapi_core::model::{ApiSetting, Collection, Folder, Variable, VariableCategory};
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
+use cyberapi_core::sync::{self, ConfigAt, Moment, Step};
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
 use cyberapi_service::Sender;
 use cyberapi_store::{Storage, StoreError};
+use futures::StreamExt as _;
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, Task};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -37,6 +47,40 @@ pub enum WorkspaceEvent {
     Curl(String),
     /// The command could not be made: why.
     CurlFailed(String),
+    /// The reader's first change this opening: it waits in this browser
+    /// until they sync (server-sync §3.2).
+    FirstChange,
+    /// This browser could not keep the changes: a refresh loses them (§4).
+    NotKept,
+    /// Opened over a draft the server has not had; the server moved on too
+    /// when `behind` (§3.1).
+    KeptUnsynced { behind: bool },
+    /// The server's content could not be read: the draft shows (§3.1).
+    NotPulled(StoreError),
+    /// The server has the reader's changes (§3.3).
+    Synced,
+    /// The server moved on since the copy's base: the reader chooses.
+    Conflict,
+    /// The server's content is the copy's now, the reader's changes gone.
+    TookServers,
+}
+
+/// A server project's working copy, as the workspace keeps it.
+struct CopyState {
+    copy: ServerCopy,
+    /// The server's stores, for what the copy does not answer.
+    server: Storage,
+    /// The server moved on while the copy has unsynced changes.
+    behind: bool,
+    /// The reader was told, this opening, that their changes wait here.
+    told: bool,
+    told_not_kept: bool,
+    /// A pull, a push or giving changes up on its way.
+    busy: bool,
+    /// A push waiting for the writes on their way: over the server's
+    /// whatever it has, or only at the copy's base.
+    push: Option<bool>,
+    _news: Task<()>,
 }
 
 pub struct WorkspaceState {
@@ -62,6 +106,9 @@ pub struct WorkspaceState {
     /// The project's global request headers, for the file an `openFile`
     /// in one of them asks for before a send.
     global_headers: Vec<Variable>,
+    /// A server project's working copy; `None` for a project of this
+    /// machine's, whose changes are written at once.
+    copy: Option<CopyState>,
     _poll: Option<Task<()>>,
 }
 
@@ -71,11 +118,45 @@ impl WorkspaceState {
     /// F2.7: the tree and the reader's state of it. `sender` holds the
     /// stores and the engine the selected API sends with.
     pub fn new(sender: Sender, collection: Collection, cx: &mut Context<Self>) -> Self {
-        Self::with_poll(sender, collection, pacing::REVISION_POLL, cx)
+        Self::with_poll(sender, collection, None, pacing::REVISION_POLL, cx)
+    }
+
+    /// A server project, edited in a working copy that waits for the reader
+    /// to sync it (server-sync §3–4); `scope` is whose drafts.
+    pub fn server_copy(sender: Sender, collection: Collection, scope: String, cx: &mut Context<Self>) -> Self {
+        Self::with_poll(sender, collection, Some(scope), pacing::REVISION_POLL, cx)
     }
 
     /// Asks every `poll` whether another reader changed the project.
-    fn with_poll(sender: Sender, collection: Collection, poll: Option<Duration>, cx: &mut Context<Self>) -> Self {
+    fn with_poll(
+        mut sender: Sender,
+        collection: Collection,
+        scope: Option<String>,
+        poll: Option<Duration>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let copy = scope.map(|scope| {
+            let (copy, mut news) = ServerCopy::new(&collection, scope);
+            let server = sender.storage.clone();
+            sender.storage = copy.storage(&server);
+            let news = cx.spawn(async move |this, cx| {
+                while news.next().await.is_some() {
+                    if this.update(cx, |this, cx| this.copy_written(cx)).is_err() {
+                        return;
+                    }
+                }
+            });
+            CopyState {
+                copy,
+                server,
+                behind: false,
+                told: false,
+                told_not_kept: false,
+                busy: false,
+                push: None,
+                _news: news,
+            }
+        });
         let mut state = Self {
             sender,
             collection,
@@ -90,6 +171,7 @@ impl WorkspaceState {
             created: None,
             environment: Vec::new(),
             global_headers: Vec::new(),
+            copy,
             _poll: poll.map(|every| Self::poll(every, cx)),
         };
         state.reload(cx);
@@ -127,6 +209,9 @@ impl WorkspaceState {
             // Asked again next beat.
             Err(error) => return warn!(%error, "the project's revision could not be read"),
         };
+        if self.copy.is_some() {
+            return self.copy_looked(collection, cx);
+        }
         if collection.revision == self.collection.revision {
             return;
         }
@@ -140,6 +225,277 @@ impl WorkspaceState {
             }
             Err(error) => warn!(%error, "the project's tree could not be read again"),
         });
+    }
+
+    /// Opening a server project (server-sync §3.1): the server's content,
+    /// or the draft of changes it has not had. A viewer changes nothing,
+    /// so no draft counts for them.
+    fn open_copy(&mut self, cx: &mut Context<Self>) {
+        let Some(copy) = &self.copy else { return };
+        let draft = if self.editable() { copy.copy.draft() } else { None };
+        let call = copy.server.tree().config(self.collection.id.clone());
+        run_serial(cx, &self.gate, call, move |this, result, cx| {
+            this.copy_opened(result, draft, cx)
+        });
+    }
+
+    fn copy_opened(&mut self, result: Result<ConfigAt, StoreError>, draft: Option<Draft>, cx: &mut Context<Self>) {
+        let collection = self.collection.clone();
+        let Some(copy) = self.copy.as_mut() else { return };
+        let held = match (result, draft) {
+            (Ok(at), Some(draft)) => {
+                let step = sync::step(Moment::Look, draft.base, at.revision, true);
+                copy.behind = step == Step::KeepUnsyncedBehind;
+                copy.told = true;
+                cx.emit(WorkspaceEvent::KeptUnsynced { behind: copy.behind });
+                Ok((draft, true))
+            }
+            (Ok(at), None) => Ok((
+                Draft {
+                    base: Some(at.revision),
+                    config: at.config,
+                },
+                false,
+            )),
+            // Not reachable, or not the reader's any more: what this
+            // browser kept shows, as long as there is that.
+            (Err(error), Some(draft)) => {
+                copy.told = true;
+                cx.emit(WorkspaceEvent::NotPulled(error));
+                Ok((draft, true))
+            }
+            (Err(error), None) => Err(error),
+        };
+        let held = held.and_then(|(draft, unsynced)| {
+            let (name, description) = (draft.config.name.clone(), draft.config.description.clone());
+            copy.copy.hold(collection, draft.config, draft.base, unsynced)?;
+            Ok((name, description))
+        });
+        match held {
+            Ok((name, description)) => {
+                self.collection.name = name;
+                self.collection.description = description;
+                self.load_all(cx);
+            }
+            Err(error) => {
+                self.load = Load::Failed(error);
+                cx.notify();
+            }
+        }
+    }
+
+    /// The poll of a server project: what [`sync::step`] says about the
+    /// copy and the server's revision. The copy's name stays its own.
+    fn copy_looked(&mut self, collection: Collection, cx: &mut Context<Self>) {
+        let (name, description) = (
+            std::mem::take(&mut self.collection.name),
+            std::mem::take(&mut self.collection.description),
+        );
+        self.collection = Collection {
+            name,
+            description,
+            ..collection
+        };
+        let Some(copy) = self.copy.as_mut() else { return };
+        let step = copy.copy.look(self.collection.revision);
+        let behind = match step {
+            Step::Pull => return self.pull(cx),
+            Step::KeepUnsyncedBehind => true,
+            _ => false,
+        };
+        if copy.behind != behind {
+            copy.behind = behind;
+            cx.notify();
+        }
+    }
+
+    /// The server's content replaces a copy with nothing unsynced. A change
+    /// the reader made meanwhile, or one still in the editor, keeps the copy
+    /// as it is: it is theirs, and the next look tells them the server moved.
+    fn pull(&mut self, cx: &mut Context<Self>) {
+        let id = self.collection.id.clone();
+        let Some(copy) = self.copy.as_mut().filter(|copy| !copy.busy) else {
+            return;
+        };
+        copy.busy = true;
+        let call = copy.server.tree().config(id);
+        run_serial(cx, &self.gate, call, |this, result, cx| {
+            if let Some(copy) = this.copy.as_mut() {
+                copy.busy = false;
+            }
+            match result {
+                Ok(at) if !this.keeps_changes(cx) => this.take(at, false, cx),
+                Ok(_) => {}
+                Err(error) => warn!(%error, "the server's project could not be pulled"),
+            }
+        });
+    }
+
+    fn keeps_changes(&self, cx: &gpui_kit::App) -> bool {
+        self.copy.as_ref().is_some_and(|copy| copy.copy.unsynced())
+            || self.api.as_ref().is_some_and(|api| api.read(cx).has_unsaved())
+    }
+
+    /// The server's content becomes the copy, level with it. The editor
+    /// starts again from it when its request changed — or always, when the
+    /// reader gave their changes up (`forget`).
+    fn take(&mut self, at: ConfigAt, forget: bool, cx: &mut Context<Self>) {
+        let Some(copy) = self.copy.as_mut() else { return };
+        let data = at.config.tree();
+        let (name, description) = (at.config.name.clone(), at.config.description.clone());
+        let collection = Collection {
+            name: name.clone(),
+            description: description.clone(),
+            ..self.collection.clone()
+        };
+        if let Err(error) = copy.copy.hold(collection, at.config, Some(at.revision), false) {
+            return cx.emit(WorkspaceEvent::Failed(error));
+        }
+        copy.behind = false;
+        self.collection.name = name;
+        self.collection.description = description;
+        let editor = self.api.as_ref().map(|api| api.read(cx).api().clone());
+        let request = |data: &TreeData, id: &ItemId| {
+            data.apis
+                .iter()
+                .find(|api| &api.id == id)
+                .map(|api| api.request.clone())
+        };
+        if let Some(id) = editor
+            && (forget || request(&self.data, &id) != request(&data, &id))
+            && let Some(api) = self.api.take()
+        {
+            api.update(cx, |api, _| api.forget_unsaved());
+        }
+        if self.load == Load::Loaded {
+            self.set_data(data, cx);
+            self.refresh_kept_variables(cx);
+        } else {
+            self.load_all(cx);
+        }
+        cx.notify();
+    }
+
+    /// A write into the copy finished.
+    fn copy_written(&mut self, cx: &mut Context<Self>) {
+        let Some(copy) = self.copy.as_mut() else { return };
+        if copy.copy.unsynced() && !copy.told {
+            copy.told = true;
+            cx.emit(WorkspaceEvent::FirstChange);
+        }
+        if !copy.copy.kept() && !copy.told_not_kept {
+            copy.told_not_kept = true;
+            cx.emit(WorkspaceEvent::NotKept);
+        }
+        self.push_when_settled(cx);
+        cx.notify();
+    }
+
+    /// Whether the reader syncs this project: a server project they may
+    /// change (server-sync §3.2). A viewer has nothing to sync.
+    pub fn syncs(&self) -> bool {
+        self.copy.is_some() && self.editable()
+    }
+
+    /// Changes the server has not had.
+    pub fn unsynced(&self) -> bool {
+        self.syncs() && self.copy.as_ref().is_some_and(|copy| copy.copy.unsynced())
+    }
+
+    /// Unsynced changes, and the server moved on too.
+    pub fn server_moved(&self) -> bool {
+        self.unsynced() && self.copy.as_ref().is_some_and(|copy| copy.behind)
+    }
+
+    /// A push, a pull or giving changes up is on its way.
+    pub fn syncing(&self) -> bool {
+        self.copy.as_ref().is_some_and(|copy| copy.busy)
+    }
+
+    /// Pushes the copy whole (server-sync §3.3): only where the server is
+    /// still at the copy's base, or `over` whatever it has ("mine over the
+    /// server's"). What the editor holds goes in first.
+    pub fn sync(&mut self, over: bool, cx: &mut Context<Self>) {
+        if !self.syncs() {
+            return;
+        }
+        let Some(copy) = self.copy.as_mut().filter(|copy| !copy.busy) else {
+            return;
+        };
+        copy.busy = true;
+        copy.push = Some(over);
+        if let Some(api) = self.api.clone() {
+            api.update(cx, |api, cx| api.save_now(cx));
+        }
+        self.push_when_settled(cx);
+        cx.notify();
+    }
+
+    /// The waiting push goes once no write is on its way: then the copy
+    /// holds all the reader did. Each write that finishes asks again.
+    fn push_when_settled(&mut self, cx: &mut Context<Self>) {
+        let id = self.collection.id.clone();
+        let Some(copy) = self.copy.as_mut().filter(|copy| copy.copy.settled()) else {
+            return;
+        };
+        let Some(over) = copy.push.take() else { return };
+        let (config, base, landed) = match copy.copy.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                copy.busy = false;
+                return cx.emit(WorkspaceEvent::Failed(error));
+            }
+        };
+        let server = copy.server.clone();
+        let call = if over {
+            copy::push_over(server, id, config)
+        } else {
+            copy::push(server, id, config, base)
+        };
+        run_store(cx, call, move |this, result, cx| this.pushed(result, landed, cx));
+    }
+
+    fn pushed(&mut self, result: Result<Pushed, StoreError>, landed: u64, cx: &mut Context<Self>) {
+        let Some(copy) = self.copy.as_mut() else { return };
+        copy.busy = false;
+        match result {
+            Ok(Pushed::Written(revision)) => {
+                copy.copy.pushed(revision, landed);
+                copy.behind = false;
+                cx.emit(WorkspaceEvent::Synced);
+            }
+            Ok(Pushed::Conflict) => cx.emit(WorkspaceEvent::Conflict),
+            // Not the reader's to change any more, or not reachable: the
+            // changes stay, unsynced.
+            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+        }
+        cx.notify();
+    }
+
+    /// The server's content in place of the reader's unsynced changes
+    /// (server-sync §3.3: "use the server's", "discard my changes"). When it
+    /// cannot be read, the copy stays as it is.
+    pub fn take_server(&mut self, cx: &mut Context<Self>) {
+        let id = self.collection.id.clone();
+        let Some(copy) = self.copy.as_mut().filter(|copy| !copy.busy) else {
+            return;
+        };
+        copy.busy = true;
+        let call = copy.server.tree().config(id);
+        run_serial(cx, &self.gate, call, |this, result, cx| {
+            if let Some(copy) = this.copy.as_mut() {
+                copy.busy = false;
+            }
+            match result {
+                Ok(at) => {
+                    this.take(at, true, cx);
+                    cx.emit(WorkspaceEvent::TookServers);
+                }
+                Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+            }
+            cx.notify();
+        });
+        cx.notify();
     }
 
     pub fn collection(&self) -> &Collection {
@@ -297,8 +653,16 @@ impl WorkspaceState {
         self.tree.rows(&expanded, &self.keyword)
     }
 
-    /// Loads (or loads again) the tree and the reader's state of it.
+    /// Loads (or loads again) the tree and the reader's state of it. A
+    /// server project's copy that holds nothing yet is opened first.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        if self.copy.is_some() && self.load != Load::Loaded {
+            return self.open_copy(cx);
+        }
+        self.load_all(cx);
+    }
+
+    fn load_all(&mut self, cx: &mut Context<Self>) {
         self.refresh_kept_variables(cx);
         let id = self.collection.id.clone();
         run_store(cx, self.sender.storage.tree().load(id.clone()), |this, result, cx| {
@@ -1019,7 +1383,8 @@ mod tests {
         let storage = MemoryStore::new().storage();
         let collection = project(&storage).await;
         let every = Duration::from_secs(10);
-        let state = cx.new(|cx| WorkspaceState::with_poll(sender(&storage, true), collection.clone(), Some(every), cx));
+        let state =
+            cx.new(|cx| WorkspaceState::with_poll(sender(&storage, true), collection.clone(), None, Some(every), cx));
         cx.run_until_parked();
         assert!(row_names(&state, cx).is_empty());
 
@@ -1364,5 +1729,227 @@ mod tests {
         // And from the store: a reopening finds nothing either.
         let again = open(&storage, collection, cx);
         assert!(row_names(&again, cx).is_empty());
+    }
+
+    /// Server-sync §3–4: a server project in a page.
+    mod copies {
+        use super::*;
+        use crate::drafts_local;
+
+        const BEAT: Duration = Duration::from_secs(10);
+        const READER: &str = "alice";
+
+        /// A server project opened as a page opens it, and what it said.
+        fn open_copy(
+            server: &Storage,
+            collection: Collection,
+            cx: &mut TestAppContext,
+        ) -> (Entity<WorkspaceState>, Rc<RefCell<Vec<String>>>) {
+            let state = cx.new(|cx| {
+                WorkspaceState::with_poll(sender(server, true), collection, Some(READER.into()), Some(BEAT), cx)
+            });
+            let told: Rc<RefCell<Vec<String>>> = Rc::default();
+            let heard = told.clone();
+            cx.update(|cx| {
+                cx.subscribe(&state, move |_, event: &WorkspaceEvent, _| {
+                    heard.borrow_mut().push(format!("{event:?}"));
+                })
+                .detach();
+            });
+            cx.run_until_parked();
+            (state, told)
+        }
+
+        fn server_rows(server: &Storage, collection: &Collection) -> Vec<String> {
+            let data = pollster::block_on(server.tree().load(collection.id.clone())).expect("load");
+            let mut names: Vec<String> = data.apis.into_iter().map(|api| api.name).collect();
+            names.sort();
+            names
+        }
+
+        fn unsynced(state: &Entity<WorkspaceState>, cx: &mut TestAppContext) -> bool {
+            state.read_with(cx, |state, _| state.unsynced())
+        }
+
+        fn beat(cx: &mut TestAppContext) {
+            cx.executor().advance_clock(BEAT);
+            cx.run_until_parked();
+        }
+
+        #[gpui_kit::test]
+        async fn changes_wait_in_the_draft_until_synced(cx: &mut TestAppContext) {
+            let server = MemoryStore::new().storage();
+            let collection = project(&server).await;
+            let (state, told) = open_copy(&server, collection.clone(), cx);
+            assert!(state.read_with(cx, |state, _| state.syncs()));
+            assert!(!unsynced(&state, cx));
+
+            state.update(cx, |state, cx| state.create_api(None, "mine".into(), cx));
+            state.update(cx, |state, cx| state.create_folder(None, "users".into(), cx));
+            cx.run_until_parked();
+            assert_eq!(row_names(&state, cx), ["users", "mine"]);
+            assert!(server_rows(&server, &collection).is_empty(), "not on the server");
+            assert!(unsynced(&state, cx));
+            assert_eq!(told.borrow().as_slice(), ["FirstChange"], "told once");
+            let draft = drafts_local::get(READER, &collection.id).expect("a draft");
+            assert_eq!(draft.base, Some(collection.revision));
+            assert_eq!(draft.config.apis.len(), 1);
+            // A beat keeps it: the server has not moved.
+            beat(cx);
+            assert_eq!(row_names(&state, cx), ["users", "mine"]);
+
+            // A refresh finds it.
+            drop(state);
+            let (again, told) = open_copy(&server, collection.clone(), cx);
+            assert_eq!(row_names(&again, cx), ["users", "mine"]);
+            assert_eq!(told.borrow().as_slice(), ["KeptUnsynced { behind: false }"]);
+
+            // The editor's typing goes too, without its pause.
+            let mine = find(&again, "mine", cx);
+            again.update(cx, |state, cx| state.select(&mine, cx));
+            cx.run_until_parked();
+            editor(&again, cx).update(cx, |api, cx| api.set_headers(vec![header("X-A", "1")], cx));
+            again.update(cx, |state, cx| state.sync(false, cx));
+            cx.run_until_parked();
+            assert_eq!(server_rows(&server, &collection), ["mine"]);
+            assert_eq!(stored(&server, &collection, &mine).headers, [header("X-A", "1")]);
+            assert!(!unsynced(&again, cx));
+            assert_eq!(drafts_local::get(READER, &collection.id), None, "the draft goes");
+            assert!(told.borrow().iter().any(|event| event == "Synced"));
+            // Its own push is no news on the next beat.
+            beat(cx);
+            assert!(!again.read_with(cx, |state, _| state.server_moved()));
+        }
+
+        #[gpui_kit::test]
+        async fn nothing_unsynced_follows_the_server(cx: &mut TestAppContext) {
+            let server = MemoryStore::new().storage();
+            let collection = project(&server).await;
+            let (state, _) = open_copy(&server, collection.clone(), cx);
+            server
+                .tree()
+                .create_api(collection.id.clone(), None, "theirs".into())
+                .await
+                .expect("create");
+            beat(cx);
+            assert_eq!(row_names(&state, cx), ["theirs"]);
+            assert!(!unsynced(&state, cx));
+        }
+
+        /// An edit made while a pull is out is the reader's: the pull does
+        /// not land over it.
+        #[gpui_kit::test]
+        async fn a_pull_does_not_land_over_an_edit(cx: &mut TestAppContext) {
+            let server = MemoryStore::new().storage();
+            let collection = project(&server).await;
+            let api = server
+                .tree()
+                .create_api(collection.id.clone(), None, "login".into())
+                .await
+                .expect("create");
+            let (state, _) = open_copy(&server, collection.clone(), cx);
+            state.update(cx, |state, cx| state.select(&api.item.id, cx));
+            cx.run_until_parked();
+            state.update(cx, |state, cx| state.pull(cx));
+            editor(&state, cx).update(cx, |api, cx| api.set_method(HttpMethod::Post, cx));
+            cx.run_until_parked();
+            assert!(unsynced(&state, cx));
+            let draft = drafts_local::get(READER, &collection.id).expect("a draft");
+            assert_eq!(draft.config.apis[0].request.method, HttpMethod::Post);
+            let copy = state.read_with(cx, |state, _| state.data.apis[0].request.method);
+            assert_eq!(copy, HttpMethod::Post);
+        }
+
+        #[gpui_kit::test]
+        async fn a_conflict_waits_for_the_readers_choice(cx: &mut TestAppContext) {
+            let server = MemoryStore::new().storage();
+            let collection = project(&server).await;
+            let (state, told) = open_copy(&server, collection.clone(), cx);
+            state.update(cx, |state, cx| state.create_api(None, "mine".into(), cx));
+            cx.run_until_parked();
+            server
+                .tree()
+                .create_api(collection.id.clone(), None, "theirs".into())
+                .await
+                .expect("create");
+
+            // The look keeps the reader's and says the server moved.
+            beat(cx);
+            assert_eq!(row_names(&state, cx), ["mine"]);
+            assert!(state.read_with(cx, |state, _| state.server_moved()));
+
+            state.update(cx, |state, cx| state.sync(false, cx));
+            cx.run_until_parked();
+            assert_eq!(told.borrow().last().map(String::as_str), Some("Conflict"));
+            assert_eq!(server_rows(&server, &collection), ["theirs"], "nothing written");
+            assert!(unsynced(&state, cx));
+
+            // Mine over the server's.
+            state.update(cx, |state, cx| state.sync(true, cx));
+            cx.run_until_parked();
+            assert_eq!(server_rows(&server, &collection), ["mine"]);
+            assert!(!unsynced(&state, cx));
+            assert!(!state.read_with(cx, |state, _| state.server_moved()));
+        }
+
+        #[gpui_kit::test]
+        async fn taking_the_servers_drops_the_readers_changes(cx: &mut TestAppContext) {
+            let server = MemoryStore::new().storage();
+            let collection = project(&server).await;
+            let api = server
+                .tree()
+                .create_api(collection.id.clone(), None, "login".into())
+                .await
+                .expect("create");
+            let collection = server.collections().get(collection.id.clone()).await.expect("get");
+            let (state, told) = open_copy(&server, collection.clone(), cx);
+            state.update(cx, |state, cx| state.select(&api.item.id, cx));
+            cx.run_until_parked();
+            editor(&state, cx).update(cx, |api, cx| api.set_method(HttpMethod::Post, cx));
+            cx.run_until_parked();
+            // Typing that waits for its pause goes too.
+            editor(&state, cx).update(cx, |api, cx| api.set_query(vec![header("q", "x")], cx));
+            assert!(unsynced(&state, cx));
+
+            state.update(cx, |state, cx| state.take_server(cx));
+            cx.executor().advance_clock(SAVE_DELAY);
+            cx.run_until_parked();
+            assert!(!unsynced(&state, cx));
+            assert_eq!(drafts_local::get(READER, &collection.id), None);
+            let request = editor(&state, cx).read_with(cx, |api, _| api.request().clone());
+            assert_eq!((request.method, request.query.len()), (HttpMethod::Get, 0));
+            assert!(told.borrow().iter().any(|event| event == "TookServers"));
+        }
+
+        #[gpui_kit::test]
+        async fn an_api_made_here_has_no_history_yet(cx: &mut TestAppContext) {
+            let server = MemoryStore::new().storage();
+            let collection = project(&server).await;
+            let (state, _) = open_copy(&server, collection.clone(), cx);
+            state.update(cx, |state, cx| state.create_api(None, "mine".into(), cx));
+            cx.run_until_parked();
+            let history = editor(&state, cx).read_with(cx, |api, _| api.history().clone());
+            assert_eq!(history, Load::Loaded, "not a failure: the server has none");
+        }
+
+        #[gpui_kit::test]
+        async fn a_viewer_has_nothing_to_sync(cx: &mut TestAppContext) {
+            let server = MemoryStore::new().storage();
+            let collection = project(&server).await;
+            let (editor_state, _) = open_copy(&server, collection.clone(), cx);
+            editor_state.update(cx, |state, cx| state.create_api(None, "mine".into(), cx));
+            cx.run_until_parked();
+            drop(editor_state);
+
+            let viewer = Collection {
+                role: CollectionRole::Viewer,
+                ..collection.clone()
+            };
+            let (state, told) = open_copy(&server, viewer, cx);
+            assert!(row_names(&state, cx).is_empty(), "the server's, not the draft");
+            assert!(!state.read_with(cx, |state, _| state.syncs()));
+            assert!(!unsynced(&state, cx));
+            assert!(told.borrow().is_empty());
+        }
     }
 }

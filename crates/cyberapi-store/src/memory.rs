@@ -73,6 +73,55 @@ impl MemoryStore {
         Storage::from_backend(Arc::new(self.clone()))
     }
 
+    /// Holds `collection` with `config` as all it has, in place of whatever
+    /// the store had of it: a page's working copy of a server project
+    /// (`docs/server-sync.md` §4), filled from the server or from a draft.
+    /// Ids and times stay as they come, and the project's responses go.
+    pub fn hold(&self, collection: Collection, config: ProjectConfig) -> Result<(), StoreError> {
+        let mut state = self.lock()?;
+        let id = collection.id.clone();
+        let owned = |found: &CollectionId| found == &id;
+        state.collections.retain(|found| !owned(&found.id));
+        state.folders.retain(|folder| !owned(&folder.collection));
+        state.apis.retain(|api| !owned(&api.collection));
+        state.variables.retain(|variable| !owned(&variable.collection));
+        state.responses.retain(|response| !owned(&response.collection));
+        state.folders.extend(config.folders.into_iter().map(|folder| Folder {
+            collection: id.clone(),
+            ..folder
+        }));
+        state.apis.extend(config.apis.into_iter().map(|api| ApiSetting {
+            collection: id.clone(),
+            ..api
+        }));
+        state
+            .variables
+            .extend(config.variables.into_iter().map(|variable| Variable {
+                collection: id.clone(),
+                ..variable
+            }));
+        state.top_orders.insert(id, config.top_order);
+        state.collections.push(Collection {
+            name: config.name,
+            description: config.description,
+            ..collection
+        });
+        Ok(())
+    }
+
+    /// What the store has of `collection` now, whole: a working copy as it
+    /// is kept and pushed.
+    pub fn project(&self, collection: &CollectionId) -> Result<ProjectConfig, StoreError> {
+        Ok(self.lock()?.config_of(collection)?.config)
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>, StoreError> {
+        self.inner
+            .state
+            .lock()
+            .map_err(|_| StoreError::backend("the memory store's lock was poisoned"))
+    }
+
     fn run<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut State, Timestamp) -> Result<T, StoreError> + Send + 'static,
@@ -115,6 +164,27 @@ impl State {
         collection.updated_at = now;
         collection.revision += 1;
         Ok(())
+    }
+
+    fn config_of(&self, collection: &CollectionId) -> Result<ConfigAt, StoreError> {
+        let found = self.collection(collection)?;
+        let tree = self.tree_data(collection);
+        Ok(ConfigAt {
+            revision: found.revision,
+            config: ProjectConfig {
+                name: found.name.clone(),
+                description: found.description.clone(),
+                folders: tree.folders,
+                apis: tree.apis,
+                top_order: tree.top_order,
+                variables: self
+                    .variables
+                    .iter()
+                    .filter(|variable| &variable.collection == collection)
+                    .cloned()
+                    .collect(),
+            },
+        })
     }
 
     fn tree_data(&self, id: &CollectionId) -> TreeData {
@@ -396,26 +466,7 @@ impl TreeStore for MemoryStore {
     }
 
     fn config(&self, collection: CollectionId) -> StoreFuture<ConfigAt> {
-        self.run(move |state, _| {
-            let found = state.collection(&collection)?;
-            let tree = state.tree_data(&collection);
-            Ok(ConfigAt {
-                revision: found.revision,
-                config: ProjectConfig {
-                    name: found.name.clone(),
-                    description: found.description.clone(),
-                    folders: tree.folders,
-                    apis: tree.apis,
-                    top_order: tree.top_order,
-                    variables: state
-                        .variables
-                        .iter()
-                        .filter(|variable| variable.collection == collection)
-                        .cloned()
-                        .collect(),
-                },
-            })
-        })
+        self.run(move |state, _| state.config_of(&collection))
     }
 
     fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64> {
@@ -821,5 +872,58 @@ mod tests {
             let after_prefs = storage.collections().get(collection.id).await.expect("get");
             assert_eq!(after_prefs.updated_at, after_save.updated_at);
         });
+    }
+
+    #[test]
+    fn a_held_project_is_what_it_was_given() {
+        let server = ticking();
+        let storage = server.storage();
+        let (collection, config) = pollster::block_on(async {
+            let collection = storage
+                .collections()
+                .create(NewCollection {
+                    name: "shop".into(),
+                    ..Default::default()
+                })
+                .await
+                .expect("create");
+            let api = storage
+                .tree()
+                .create_api(collection.id.clone(), None, "login".into())
+                .await
+                .expect("api");
+            storage
+                .history()
+                .add(HttpResponse {
+                    collection: collection.id.clone(),
+                    api: api.item.id,
+                    ..Default::default()
+                })
+                .await
+                .expect("history");
+            let at = storage.tree().config(collection.id.clone()).await.expect("config");
+            (collection, at.config)
+        });
+
+        let copy = ticking();
+        copy.hold(collection.clone(), config.clone()).expect("hold");
+        assert_eq!(copy.project(&collection.id).expect("held"), config);
+        let held = pollster::block_on(copy.storage().collections().get(collection.id.clone())).expect("get");
+        assert_eq!(held.revision, collection.revision, "as it came");
+
+        // Held again: in place of what it had, and none of its history.
+        copy.hold(
+            collection.clone(),
+            ProjectConfig {
+                name: "shop 2".into(),
+                ..ProjectConfig::default()
+            },
+        )
+        .expect("hold again");
+        let again = copy.project(&collection.id).expect("held");
+        assert_eq!((again.name.as_str(), again.apis.len()), ("shop 2", 0));
+        let projects = pollster::block_on(copy.storage().collections().list()).expect("list");
+        assert_eq!(projects.len(), 1);
+        assert!(copy.project(&CollectionId::new("other")).is_err());
     }
 }

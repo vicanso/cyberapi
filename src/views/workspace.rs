@@ -5,6 +5,7 @@
 mod import_dialog;
 mod move_dialog;
 mod pins;
+mod project_title;
 mod request_editor;
 mod response_panel;
 mod selection_title;
@@ -14,6 +15,7 @@ use crate::APP_NAME;
 use crate::i18n;
 use crate::states::{ApiState, AppStore, WorkspaceEvent, WorkspaceState};
 use crate::views::name_dialog::open_name_dialog;
+use crate::views::sync_dialog::open_conflict_dialog;
 use cyberapi_core::model::{Collection, HttpMethod};
 use cyberapi_core::prefs::ColumnWidths;
 use cyberapi_core::tree::ItemKind;
@@ -32,6 +34,7 @@ use gpui_kit::{
     IntoElement, KeyBinding, ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, px,
 };
 pub use pins::PinsBar;
+pub use project_title::ProjectTitle;
 use selection_title::SelectionTitle;
 // For the shortcuts' list.
 use request_editor::{RequestEditor, RequestEditorEvent};
@@ -292,6 +295,7 @@ pub struct WorkspaceView {
     state: Entity<WorkspaceState>,
     tree: Entity<TreePanel>,
     pins: Entity<PinsBar>,
+    title_name: Entity<ProjectTitle>,
     selection_title: Entity<SelectionTitle>,
     selected: Option<Selected>,
     columns: Entity<ResizableState>,
@@ -304,10 +308,15 @@ pub struct WorkspaceView {
 impl WorkspaceView {
     pub fn new(collection: Collection, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let id = collection.id.clone();
-        let sender = AppStore::global(cx).sender(cx);
-        let state = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
+        let store = AppStore::global(cx);
+        let sender = store.sender(cx);
+        let state = match store.draft_scope(cx) {
+            Some(scope) => cx.new(|cx| WorkspaceState::server_copy(sender, collection, scope, cx)),
+            None => cx.new(|cx| WorkspaceState::new(sender, collection, cx)),
+        };
         let tree = cx.new(|cx| TreePanel::new(state.clone(), window, cx));
         let pins = cx.new(|cx| PinsBar::new(state.clone(), cx));
+        let title_name = cx.new(|cx| ProjectTitle::new(state.clone(), cx));
         let selection_title = cx.new(|cx| SelectionTitle::new(state.clone(), cx));
         let subscriptions = vec![
             cx.observe_in(&state, window, |this, _, window, cx| {
@@ -315,7 +324,7 @@ impl WorkspaceView {
                 this.follow_title(window, cx);
                 cx.notify();
             }),
-            cx.subscribe_in(&state, window, |_, _, event, window, cx| match event {
+            cx.subscribe_in(&state, window, |_, this_state, event, window, cx| match event {
                 WorkspaceEvent::Imported { apis, folders } => {
                     window.push_notification(
                         Notification::success(t!("import.done", apis = apis, folders = folders).to_string()),
@@ -332,6 +341,45 @@ impl WorkspaceView {
                 WorkspaceEvent::CurlFailed(message) => {
                     window.push_notification(Notification::error(message.clone()), cx);
                 }
+                WorkspaceEvent::FirstChange => {
+                    window.push_notification(Notification::info(t!("sync.first_change").to_string()), cx);
+                }
+                WorkspaceEvent::NotKept => {
+                    window.push_notification(Notification::warning(t!("sync.not_kept").to_string()), cx);
+                }
+                WorkspaceEvent::KeptUnsynced { behind } => {
+                    let message = if *behind {
+                        Notification::warning(t!("sync.kept_unsynced_behind").to_string())
+                    } else {
+                        Notification::info(t!("sync.kept_unsynced").to_string())
+                    };
+                    window.push_notification(message, cx);
+                }
+                WorkspaceEvent::NotPulled(error) => {
+                    let reason = i18n::store_error(error);
+                    window.push_notification(
+                        Notification::warning(t!("sync.not_pulled", reason = reason).to_string()),
+                        cx,
+                    );
+                }
+                WorkspaceEvent::Synced => {
+                    window.push_notification(Notification::success(t!("sync.synced").to_string()), cx);
+                }
+                WorkspaceEvent::TookServers => {
+                    window.push_notification(Notification::success(t!("sync.took_servers").to_string()), cx);
+                }
+                WorkspaceEvent::Conflict => {
+                    let state = this_state.clone();
+                    let name = state.read(cx).collection().name.clone();
+                    let theirs = state.clone();
+                    open_conflict_dialog(
+                        &name,
+                        window,
+                        cx,
+                        move |cx| state.update(cx, |state, cx| state.sync(true, cx)),
+                        move |cx| theirs.update(cx, |state, cx| state.take_server(cx)),
+                    );
+                }
             }),
         ];
         // The shortcuts reach the workspace from wherever focus is inside it.
@@ -343,6 +391,7 @@ impl WorkspaceView {
             state,
             tree,
             pins,
+            title_name,
             selection_title,
             selected: None,
             columns,
@@ -473,6 +522,11 @@ impl WorkspaceView {
     /// F12.2: the pins, for the title bar.
     pub fn pins(&self) -> &Entity<PinsBar> {
         &self.pins
+    }
+
+    /// The project's name and its sync, for the title bar.
+    pub fn title_name(&self) -> &Entity<ProjectTitle> {
+        &self.title_name
     }
 
     /// The selection and the folders around it, drawn in the middle of the title bar.

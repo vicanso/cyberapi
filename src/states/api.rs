@@ -126,6 +126,19 @@ impl ApiState {
         &self.api
     }
 
+    /// Whether the editor holds a change the store has not had.
+    pub fn has_unsaved(&self) -> bool {
+        self.editable && self.saved.as_ref() != Some(&self.request)
+    }
+
+    /// Drops the change not saved yet, so the state goes without saving it:
+    /// what it would be saved into is being replaced (`docs/server-sync.md`
+    /// §3.3, the server's over the reader's).
+    pub fn forget_unsaved(&mut self) {
+        self.save_task = None;
+        self.saved = Some(self.request.clone());
+    }
+
     pub fn request(&self) -> &HttpRequest {
         &self.request
     }

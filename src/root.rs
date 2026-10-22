@@ -2,7 +2,7 @@
 
 use crate::APP_NAME;
 use crate::i18n;
-use crate::states::{AppEvent, AppStore, Route};
+use crate::states::{AppEvent, AppStore, Route, WorkspaceState};
 use crate::views::{
     DashboardView, WorkspaceView, open_accounts_dialog, open_cookies_dialog, open_password_dialog,
     open_settings_dialog, open_shortcuts_dialog, open_teams_dialog, open_variables_dialog,
@@ -16,12 +16,12 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, Theme, ThemeMode as ComponentThemeMode, TitleBar,
-    WindowExt as _, h_flex, try_parse_color, v_flex,
+    ActiveTheme as _, IconName, Sizable as _, Theme, ThemeMode as ComponentThemeMode, TitleBar, WindowExt as _, h_flex,
+    try_parse_color, v_flex,
 };
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions,
-    Render, Styled as _, Subscription, Window, div, hsla, px,
+    Render, Styled as _, Subscription, WeakEntity, Window, div, hsla, px,
 };
 #[cfg(not(target_family = "wasm"))]
 use gpui_kit::{Pixels, Task};
@@ -291,15 +291,18 @@ impl CyberApi {
     }
 
     fn render_title(&self, cx: &mut Context<Self>) -> AnyElement {
-        let pins = match &self.page {
-            Page::Workspace(view) => Some(view.read(cx).pins().clone()),
-            Page::Dashboard(_) => None,
+        let (pins, title) = match &self.page {
+            Page::Workspace(view) => (
+                Some(view.read(cx).pins().clone()),
+                Some(view.read(cx).title_name().clone()),
+            ),
+            Page::Dashboard(_) => (None, None),
         };
         match AppStore::global(cx).state().read(cx).route() {
             Route::Dashboard => div().text_sm().child(APP_NAME).into_any_element(),
             // F1.9: Home > project, then the pins (F12.2). The selected
             // request is a sibling of this row, so it can sit in the middle.
-            Route::Workspace(collection) => h_flex()
+            Route::Workspace(_) => h_flex()
                 .flex_1()
                 .min_w_0()
                 .items_center()
@@ -316,17 +319,7 @@ impl CyberApi {
                         }),
                 )
                 .child(div().text_sm().text_color(cx.theme().muted_foreground).child("/"))
-                .child(
-                    // A long name gives way to the pins beside it.
-                    div()
-                        .flex_none()
-                        .max_w(px(240.))
-                        .truncate()
-                        .mr_3()
-                        .text_sm()
-                        .font_medium()
-                        .child(collection.name.clone()),
-                )
+                .children(title)
                 .children(pins)
                 .into_any_element(),
         }
@@ -383,9 +376,9 @@ impl CyberApi {
             .icon(IconName::Settings)
             .tooltip(t!("menu.settings").to_string())
             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu: PopupMenu, _, cx| {
-                let menu =
-                    match workspace.clone() {
-                        Some(workspace) => [
+                let menu = match workspace.clone() {
+                    Some(workspace) => discard_item(
+                        [
                             (VariableCategory::Environment, t!("variables.env_title"), Icons::Globe),
                             (VariableCategory::Custom, t!("variables.custom_title"), Icons::Braces),
                             (
@@ -405,22 +398,25 @@ impl CyberApi {
                                 },
                             ))
                         }),
-                        None if backs_up => menu
-                            .item(
-                                PopupMenuItem::new(t!("backup.back_up").to_string())
-                                    .icon(Icons::DatabaseBackup)
-                                    .on_click(|_, _, cx| {
-                                        let state = AppStore::global(cx).state().clone();
-                                        state.update(cx, |state, cx| state.back_up(cx));
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new(t!("backup.restore").to_string())
-                                    .icon(Icons::ArchiveRestore)
-                                    .on_click(|_, window, cx| pick_backup(window, cx)),
-                            ),
-                        None => menu.item(PopupMenuItem::new(t!("menu.no_project").to_string()).disabled(true)),
-                    };
+                        workspace,
+                        cx,
+                    ),
+                    None if backs_up => menu
+                        .item(
+                            PopupMenuItem::new(t!("backup.back_up").to_string())
+                                .icon(Icons::DatabaseBackup)
+                                .on_click(|_, _, cx| {
+                                    let state = AppStore::global(cx).state().clone();
+                                    state.update(cx, |state, cx| state.back_up(cx));
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new(t!("backup.restore").to_string())
+                                .icon(Icons::ArchiveRestore)
+                                .on_click(|_, window, cx| pick_backup(window, cx)),
+                        ),
+                    None => menu.item(PopupMenuItem::new(t!("menu.no_project").to_string()).disabled(true)),
+                };
                 let menu = menu
                     .separator()
                     .item(
@@ -441,6 +437,38 @@ impl CyberApi {
                 if signs_in { account_items(menu, cx) } else { menu }
             })
     }
+}
+
+/// A server project's unsynced changes given up, once asked
+/// (`docs/server-sync.md` §3.3); nothing when there are none.
+fn discard_item(menu: PopupMenu, workspace: WeakEntity<WorkspaceState>, cx: &App) -> PopupMenu {
+    if !workspace
+        .upgrade()
+        .is_some_and(|workspace| workspace.read(cx).unsynced())
+    {
+        return menu;
+    }
+    menu.separator().item(
+        PopupMenuItem::new(t!("sync.discard").to_string())
+            .icon(Icons::Undo2)
+            .on_click(move |_, window, cx| {
+                let Some(workspace) = workspace.upgrade() else { return };
+                window.open_alert_dialog(cx, move |alert, _, _| {
+                    let workspace = workspace.clone();
+                    alert
+                        .title(t!("sync.discard_title").to_string())
+                        .description(t!("sync.discard_description").to_string())
+                        .confirm()
+                        .ok_text(t!("sync.discard").to_string())
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text(t!("common.cancel").to_string())
+                        .on_ok(move |_, _, cx| {
+                            workspace.update(cx, |state, cx| state.take_server(cx));
+                            true
+                        })
+                });
+            }),
+    )
 }
 
 /// Who is signed in, and what they do about it (§9).

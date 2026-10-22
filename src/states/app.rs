@@ -42,6 +42,7 @@ impl AppStore {
             // The signed-in account is read next, and replaces this on a page.
             json_view: crate::json_view_local::get(&crate::pins_local::scope(None)),
             me: None,
+            opening: None,
             save_task: None,
             saves: Arc::default(),
         });
@@ -78,6 +79,14 @@ impl AppStore {
     /// Whether this build signs in (the browser).
     pub fn signs_in(&self) -> bool {
         self.extras.sign_out.is_some()
+    }
+
+    /// Whose drafts the projects' unsynced changes are, where the projects
+    /// are the server's and edited in a working copy (`docs/server-sync.md`
+    /// §4): the signed-in reader's, in a page. `None` where changes are
+    /// written at once.
+    pub fn draft_scope(&self, cx: &App) -> Option<String> {
+        self.signs_in().then(|| self.state.read(cx).pin_scope())
     }
 
     /// What sending needs, with the reader's settings as they are now.
@@ -129,6 +138,9 @@ pub struct AppState {
     json_view: JsonView,
     /// Who is signed in, and their teams: the browser's, once read.
     me: Option<Me>,
+    /// A project to open once it is known who is signed in: their drafts
+    /// are what it opens over.
+    opening: Option<Collection>,
     /// A save waiting for a drag or a resize to settle.
     save_task: Option<Task<()>>,
     /// The saves of the settings, one at a time in the order made: each
@@ -166,6 +178,9 @@ impl AppState {
             Ok(me) => {
                 this.me = Some(me);
                 this.json_view = crate::json_view_local::get(&this.pin_scope());
+                if let Some(collection) = this.opening.take() {
+                    this.open_collection(collection, cx);
+                }
                 cx.notify();
             }
             Err(error) => warn!(%error, "who is signed in could not be read"),
@@ -181,6 +196,10 @@ impl AppState {
 
     /// F2.7.
     pub fn open_collection(&mut self, collection: Collection, cx: &mut Context<Self>) {
+        if self.me.is_none() && AppStore::global(cx).signs_in() {
+            self.opening = Some(collection);
+            return;
+        }
         self.remember_page(Some(collection.id.clone()), cx);
         self.route = Route::Workspace(collection);
         cx.notify();
@@ -287,9 +306,10 @@ impl AppState {
         self.prefs.folded_groups.iter().any(|folded| folded == key)
     }
 
-    /// A deleted project leaves its group, and its pins.
+    /// A deleted project leaves its group, its pins and its draft.
     pub fn forget_project(&mut self, project: &CollectionId, cx: &mut Context<Self>) {
         crate::pins_local::remove(&self.pin_scope(), project);
+        crate::drafts_local::remove(&self.pin_scope(), project);
         if self.prefs.project_groups.remove(project).is_some() {
             self.save_prefs(cx);
             cx.notify();
@@ -394,7 +414,8 @@ impl AppState {
         });
     }
 
-    fn pin_scope(&self) -> String {
+    /// Whose pins, JSON view and drafts are kept on this machine.
+    pub(crate) fn pin_scope(&self) -> String {
         crate::pins_local::scope(self.me().map(|me| me.account.id.as_str()))
     }
 

@@ -11,6 +11,7 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 #[cfg(not(target_family = "wasm"))]
 mod assets;
+mod drafts_local;
 mod i18n;
 mod json_view_local;
 mod pacing;

@@ -16,6 +16,7 @@ mod pick;
 mod settings_dialog;
 mod shortcuts_dialog;
 mod startup;
+mod sync_dialog;
 mod teams_dialog;
 mod variables_dialog;
 mod workspace;

@@ -9,11 +9,12 @@ use crate::views::marked::marked;
 use crate::views::name_dialog::ok_button;
 use crate::views::open_access_dialog;
 use crate::views::pick::pick;
+use crate::views::sync_dialog::open_conflict_dialog;
 use cyberapi_core::access::CollectionRole;
 use cyberapi_core::collection::{SortOrder, group_names, group_of, grouped};
 use cyberapi_core::format::{Ago, ago};
 use cyberapi_core::model::Collection;
-use cyberapi_core::{TeamId, Timestamp};
+use cyberapi_core::{CollectionId, TeamId, Timestamp};
 use cyberapi_store::{CollectionEdit, NewCollection};
 use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
@@ -27,6 +28,7 @@ use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMen
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
@@ -88,7 +90,8 @@ pub struct DashboardView {
 impl DashboardView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = AppStore::global(cx).clone();
-        let state = cx.new(|cx| DashboardState::new(store.storage().clone(), cx));
+        let scope = store.draft_scope(cx);
+        let state = cx.new(|cx| DashboardState::new(store.storage().clone(), scope, cx));
         let search = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("dashboard.search").to_string())
@@ -96,9 +99,14 @@ impl DashboardView {
         });
         let subscriptions = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
-            // The sort order lives in the application's settings.
-            cx.observe(store.state(), |_, _, cx| cx.notify()),
-            cx.subscribe_in(&state, window, |_, _, event, window, cx| match event {
+            // The sort order lives in the application's settings, and the
+            // drafts are the signed-in reader's.
+            cx.observe(store.state(), |this, _, cx| {
+                let scope = AppStore::global(cx).draft_scope(cx);
+                this.state.update(cx, |state, cx| state.set_scope(scope, cx));
+                cx.notify();
+            }),
+            cx.subscribe_in(&state, window, |_, this_state, event, window, cx| match event {
                 DashboardEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);
                 }
@@ -110,6 +118,29 @@ impl DashboardView {
                 DashboardEvent::Created(collection) => {
                     let app = AppStore::global(cx).state().clone();
                     app.update(cx, |app, cx| app.open_collection(collection.clone(), cx));
+                }
+                DashboardEvent::Unsynced => {
+                    window.push_notification(Notification::info(t!("sync.first_change").to_string()), cx);
+                }
+                DashboardEvent::NotKept => {
+                    window.push_notification(Notification::warning(t!("sync.not_kept").to_string()), cx);
+                }
+                DashboardEvent::Synced(collection) => {
+                    window.push_notification(
+                        Notification::success(t!("sync.synced_project", name = collection.name).to_string()),
+                        cx,
+                    );
+                }
+                DashboardEvent::Conflict(collection) => {
+                    let (state, theirs) = (this_state.clone(), this_state.clone());
+                    let (id, their_id) = (collection.id.clone(), collection.id.clone());
+                    open_conflict_dialog(
+                        &collection.name,
+                        window,
+                        cx,
+                        move |cx| state.update(cx, |state, cx| state.sync(&id, true, cx)),
+                        move |cx| theirs.update(cx, |state, cx| state.discard(&their_id, cx)),
+                    );
                 }
             }),
             cx.subscribe(&search, |this, _, event, cx| match event {
@@ -289,6 +320,25 @@ impl DashboardView {
         );
     }
 
+    /// Server-sync §3.3: the project's unsynced changes given up.
+    fn confirm_discard(&mut self, collection: Collection, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.state.clone();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let (state, id) = (state.clone(), collection.id.clone());
+            alert
+                .title(t!("sync.discard_title").to_string())
+                .description(t!("sync.discard_description").to_string())
+                .confirm()
+                .ok_text(t!("sync.discard").to_string())
+                .ok_variant(ButtonVariant::Danger)
+                .cancel_text(t!("common.cancel").to_string())
+                .on_ok(move |_, _, cx| {
+                    state.update(cx, |state, cx| state.discard(&id, cx));
+                    true
+                })
+        });
+    }
+
     fn confirm_delete(&mut self, collection: Collection, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.clone();
         // How many APIs go, when that was read and there are some.
@@ -300,6 +350,11 @@ impl DashboardView {
                 apis = t!("workspace.api_other", count = count)
             )
             .to_string(),
+        };
+        // Server-sync §2: the changes not synced go with it.
+        let description = match self.state.read(cx).unsynced(&collection.id) {
+            Some(_) => format!("{description}\n{}", t!("sync.delete_loses_draft")),
+            None => description,
         };
         window.open_alert_dialog(cx, move |alert, _, _| {
             let (state, id) = (state.clone(), collection.id.clone());
@@ -388,6 +443,9 @@ impl DashboardView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let api_count = self.state.read(cx).api_count(&collection.id);
+        let unsynced = self.state.read(cx).unsynced(&collection.id);
+        let syncing = self.state.read(cx).syncing(&collection.id);
+        let sync = unsynced.map(|behind| sync_chip(collection.id.clone(), behind, syncing, &self.state));
         let theme = cx.theme();
         let (ring, muted) = (theme.ring, theme.muted_foreground);
         let surface = card_surface(cx);
@@ -402,6 +460,7 @@ impl DashboardView {
             // only reader manages everything. Its group is the reader's own.
             manages: collection.role.can_manage(),
             shares: AppStore::global(cx).directory().is_some(),
+            unsynced: unsynced.is_some(),
         };
         // The same menu on a right click, as the tree's rows have theirs.
         let context_actions = actions.clone();
@@ -472,6 +531,7 @@ impl DashboardView {
                     .text_xs()
                     .text_color(muted)
                     .child(div().flex_1().child(updated_label(collection.updated_at, now)))
+                    .children(sync)
                     .when_some(place, |this, place| this.child(div().truncate().child(place)))
                     .when_some(api_count, |this, count| {
                         this.child(
@@ -693,6 +753,44 @@ struct CardActions {
     view: WeakEntity<DashboardView>,
     manages: bool,
     shares: bool,
+    /// The project has changes the server has not had.
+    unsynced: bool,
+}
+
+/// A card's word that its changes are not on the server yet — and that the
+/// server moved on too, when it did — and the button that syncs them
+/// (`docs/server-sync.md` §3.2, §3.3).
+fn sync_chip(id: CollectionId, behind: bool, syncing: bool, state: &Entity<DashboardState>) -> impl IntoElement {
+    let key = id.to_string();
+    let (label, hint) = if behind {
+        (t!("sync.unsynced_behind"), t!("sync.unsynced_behind_hint"))
+    } else {
+        (t!("sync.unsynced"), t!("sync.unsynced_hint"))
+    };
+    let hint = hint.to_string();
+    let state = state.clone();
+    h_flex()
+        .id(SharedString::from(format!("collection-sync-{key}")))
+        .flex_none()
+        .items_center()
+        .gap_1()
+        // Its clicks must not open the project.
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .id(SharedString::from(format!("collection-unsynced-{key}")))
+                .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+                .child(Tag::warning().small().rounded_full().child(label.to_string())),
+        )
+        .child(
+            Button::new(SharedString::from(format!("collection-push-{key}")))
+                .ghost()
+                .xsmall()
+                .icon(Icons::CloudUpload)
+                .tooltip(t!("sync.sync").to_string())
+                .loading(syncing)
+                .on_click(move |_, _, cx| state.update(cx, |state, cx| state.sync(&id, false, cx))),
+        )
 }
 
 /// A card's menu: changing the project for its managers (F2.3, §9.2), its
@@ -704,8 +802,31 @@ fn card_menu(menu: PopupMenu, actions: &CardActions) -> PopupMenu {
         view,
         manages,
         shares,
+        unsynced,
     } = actions;
     let mut menu = menu;
+    if *unsynced {
+        let (synced, sync_view) = (collection.id.clone(), view.clone());
+        let (discarded, discard_view) = (collection.clone(), view.clone());
+        menu = menu
+            .item(
+                PopupMenuItem::new(t!("sync.sync").to_string())
+                    .icon(Icons::CloudUpload)
+                    .on_click(move |_, _, cx| {
+                        let _ = sync_view.update(cx, |this, cx| {
+                            this.state.update(cx, |state, cx| state.sync(&synced, false, cx))
+                        });
+                    }),
+            )
+            .item(
+                PopupMenuItem::new(t!("sync.discard").to_string())
+                    .icon(Icons::Undo2)
+                    .on_click(move |_, window, cx| {
+                        let _ = discard_view.update(cx, |this, cx| this.confirm_discard(discarded.clone(), window, cx));
+                    }),
+            )
+            .separator();
+    }
     if *manages {
         let (edited, edit_view) = (collection.clone(), view.clone());
         menu = menu.item(

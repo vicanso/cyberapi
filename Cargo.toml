@@ -96,8 +96,8 @@ url = "2.5.8"
 # The desktop's backups (M13): the old app's zip of JSON tables, deflated.
 # Pure Rust zlib, and none of the other methods.
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
-# Record ids. Native only: `generate` reads the system clock and its RNG,
-# neither of which a wasm32 page has.
+# Record ids. In a page `generate` reads the browser's clock and, with
+# getrandom's `wasm_js` (`cyberapi-store`), its crypto.
 ulid = "3.0.0"
 
 # A crate in plain `[dependencies]` must build for `wasm32-unknown-unknown`;
@@ -112,6 +112,9 @@ cyberapi-core = { workspace = true }
 cyberapi-http = { workspace = true }
 cyberapi-service = { workspace = true }
 cyberapi-store = { workspace = true }
+# A server project's working copy tells its workspace each write it took
+# (`states::copy`).
+futures = { workspace = true }
 gpui-kit = { workspace = true }
 # Shared with gpui-component (same major), so one `set_locale` translates both
 # the app's strings and the components' own.

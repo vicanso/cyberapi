@@ -11,6 +11,7 @@ gpui_kit::assets::icon_assets!(
         ArchiveRestore,
         Braces,
         Clock,
+        CloudUpload,
         Cookie,
         CopyPlus,
         DatabaseBackup,
@@ -30,6 +31,7 @@ gpui_kit::assets::icon_assets!(
         Table,
         Terminal,
         Trash,
+        Undo2,
         Users,
         WandSparkles
     ]
@@ -65,6 +67,7 @@ mod tests {
             IconName::ArchiveRestore,
             IconName::Braces,
             IconName::Clock,
+            IconName::CloudUpload,
             IconName::Cookie,
             IconName::CopyPlus,
             IconName::DatabaseBackup,
@@ -84,6 +87,7 @@ mod tests {
             IconName::Table,
             IconName::Terminal,
             IconName::Trash,
+            IconName::Undo2,
             IconName::Users,
             IconName::WandSparkles,
             IconName::FolderOpen,

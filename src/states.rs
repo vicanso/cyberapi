@@ -5,6 +5,7 @@
 mod api;
 mod app;
 mod cookies;
+mod copy;
 mod dashboard;
 mod directory;
 mod variables;

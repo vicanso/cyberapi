@@ -6,7 +6,7 @@
 //! | `TursoStore` (`cyberapi-store-turso`) | the desktop |
 //! | `SqlStore` (`cyberapi-store-sql`) | the bridge, over PostgreSQL / MySQL |
 //! | `BridgeStore` (`cyberapi-web`) | the browser, through the bridge |
-//! | [`MemoryStore`] | tests |
+//! | [`MemoryStore`] | tests; a page's working copy of a server project |
 //!
 //! The rules every backend keeps are written once, as the `conformance`
 //! suite (feature `conformance`), and each backend's tests run it.
@@ -20,12 +20,10 @@
 #[cfg(feature = "conformance")]
 pub mod conformance;
 mod error;
-#[cfg(not(target_family = "wasm"))]
 mod memory;
 pub mod rules;
 
 pub use error::{Entity, Refusal, StoreError};
-#[cfg(not(target_family = "wasm"))]
 pub use memory::MemoryStore;
 
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
@@ -347,6 +345,23 @@ impl Storage {
             backend.clone(),
             backend,
         )
+    }
+
+    /// These stores with a project's tree, variables and history answered
+    /// elsewhere: a page's working copy of a server project
+    /// (`docs/server-sync.md` §4).
+    pub fn with_project(
+        &self,
+        tree: Arc<dyn TreeStore>,
+        variables: Arc<dyn VariableStore>,
+        history: Arc<dyn HistoryStore>,
+    ) -> Self {
+        Self {
+            tree,
+            variables,
+            history,
+            ..self.clone()
+        }
     }
 
     pub fn collections(&self) -> &dyn CollectionStore {
