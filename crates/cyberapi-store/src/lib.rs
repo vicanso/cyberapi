@@ -34,7 +34,7 @@ use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
-use cyberapi_core::sync::{ConfigAt, ProjectConfig};
+use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, InviteId, ItemId, TeamId, VariableId};
 use serde::{Deserialize, Serialize};
@@ -235,6 +235,25 @@ pub trait BackupStore: Send + Sync {
     /// Replaces them all with `backup` at once: a restore that fails leaves
     /// everything as it was (#8). The responses kept for APIs go too.
     fn restore(&self, backup: Backup) -> StoreFuture<()>;
+}
+
+/// The desktop's copies of server projects (`docs/server-sync.md` §6):
+/// which of its projects are whose server's, and keeping them as the server
+/// has them. A copy is a project like any other in the other stores — sent
+/// from, with its history and cookies here. Not part of [`Storage`]: only
+/// the desktop keeps copies, beside its own projects.
+pub trait ServerCopyStore: Send + Sync {
+    /// Every copy's binding, of every account.
+    fn copies(&self) -> StoreFuture<Vec<CopyBinding>>;
+    /// In place of the project's binding, if it had one.
+    fn bind(&self, binding: CopyBinding) -> StoreFuture<()>;
+    /// The project is no copy any more; one that was not is no error.
+    fn unbind(&self, collection: CollectionId) -> StoreFuture<()>;
+    /// The server's `collection`, with `config` as all it has: made here,
+    /// with the server's id, when it is not. As [`TreeStore::replace`]
+    /// without a base: ids are kept, another project's are refused, and
+    /// what stays keeps its history. The copy's revision is its own.
+    fn keep_copy(&self, collection: Collection, config: ProjectConfig) -> StoreFuture<()>;
 }
 
 /// The order cookies are listed in (F9.4).

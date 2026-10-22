@@ -63,6 +63,13 @@ fn turso_store_backs_up() {
 }
 
 #[test]
+fn turso_store_keeps_copies() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let store = open(&dir.path().join("copies.db"));
+    pollster::block_on(conformance::copies(&store.storage(), &store));
+}
+
+#[test]
 fn content_changes_move_the_collection_forward() {
     let dir = tempfile::tempdir().expect("temp dir");
     let seconds = Arc::new(AtomicI64::new(1_700_000_000));

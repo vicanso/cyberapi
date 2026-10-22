@@ -1607,3 +1607,123 @@ async fn configs_keep_their_ids_to_themselves(storage: &Storage) {
         "the other project keeps its API"
     );
 }
+
+/// The desktop's copies of server projects (`docs/server-sync.md` §6):
+/// kept whole with the server's ids, and bound to an account.
+pub async fn copies(storage: &Storage, copies: &dyn crate::ServerCopyStore) {
+    use cyberapi_core::AccountId;
+    use cyberapi_core::sync::CopyBinding;
+
+    // What a server has: a project made here and gone again, so its ids are
+    // free for the copy.
+    let server = new_collection(storage, "on the server").await;
+    let users = folder(storage, &server, None, "users").await;
+    let login = api(storage, &server, Some(&users.item.id), "login").await;
+    let logout = api(storage, &server, None, "logout").await;
+    storage
+        .variables()
+        .create(NewVariable {
+            collection: server.id.clone(),
+            category: VariableCategory::Environment,
+            name: "HOST".into(),
+            value: "https://a.test".into(),
+            enabled: true,
+        })
+        .await
+        .expect("a variable");
+    let mut config = storage
+        .tree()
+        .config(server.id.clone())
+        .await
+        .expect("its configuration")
+        .config;
+    storage.collections().delete(server.id.clone()).await.expect("gone");
+    config.name = "the server's".into();
+    config.description = "theirs".into();
+    let copy = Collection {
+        name: config.name.clone(),
+        description: config.description.clone(),
+        revision: 7,
+        ..server.clone()
+    };
+
+    // A project here like any other, with the server's id.
+    copies.keep_copy(copy.clone(), config.clone()).await.expect("kept");
+    let here = storage.collections().get(copy.id.clone()).await.expect("here");
+    assert_eq!(
+        (here.name.as_str(), here.description.as_str()),
+        ("the server's", "theirs")
+    );
+    let held = storage.tree().config(copy.id.clone()).await.expect("held").config;
+    assert_eq!(held, config, "as the server has it");
+
+    // Kept again: what goes, goes with its history; what stays keeps it.
+    for id in [&login.item.id, &logout.item.id] {
+        storage.history().add(response(&copy, id, 1)).await.expect("a response");
+    }
+    let mut fewer = config.clone();
+    fewer.apis.retain(|api| api.id != logout.item.id);
+    fewer.top_order.retain(|id| id != &logout.item.id);
+    copies.keep_copy(copy.clone(), fewer.clone()).await.expect("kept again");
+    assert_eq!(
+        storage.tree().config(copy.id.clone()).await.expect("held").config,
+        fewer
+    );
+    let kept = storage.history().list(copy.id.clone(), login.item.id.clone()).await;
+    assert_eq!(kept.expect("history").len(), 1, "an API that stays keeps its history");
+    not_found(
+        storage.history().list(copy.id.clone(), logout.item.id.clone()).await,
+        Entity::Api,
+    );
+
+    // Another project's id is not the copy's.
+    let other = new_collection(storage, "another").await;
+    let theirs = api(storage, &other, None, "theirs").await;
+    let mut taken = fewer.clone();
+    taken.apis.push(ApiSetting {
+        collection: copy.id.clone(),
+        ..theirs.item.clone()
+    });
+    taken.top_order.push(theirs.item.id.clone());
+    match copies.keep_copy(copy.clone(), taken).await {
+        Err(StoreError::IdTaken { .. }) => {}
+        other => panic!("expected the id refused, got {other:?}"),
+    }
+    assert_eq!(
+        storage.tree().config(copy.id.clone()).await.expect("held").config,
+        fewer
+    );
+
+    // Bound to an account, at a base; in place of the binding it had.
+    let bound = |all: Vec<CopyBinding>| -> Vec<CopyBinding> {
+        all.into_iter()
+            .filter(|binding| binding.collection == copy.id)
+            .collect()
+    };
+    let binding = CopyBinding {
+        collection: copy.id.clone(),
+        account: AccountId::new("conformance-account"),
+        base: Some(7),
+        unsynced: false,
+    };
+    copies.bind(binding.clone()).await.expect("bound");
+    assert_eq!(
+        bound(copies.copies().await.expect("copies")),
+        std::slice::from_ref(&binding)
+    );
+    let moved = CopyBinding {
+        base: Some(8),
+        unsynced: true,
+        ..binding.clone()
+    };
+    copies.bind(moved.clone()).await.expect("bound again");
+    assert_eq!(bound(copies.copies().await.expect("copies")), [moved]);
+    copies.unbind(copy.id.clone()).await.expect("unbound");
+    assert!(bound(copies.copies().await.expect("copies")).is_empty());
+    copies.unbind(copy.id.clone()).await.expect("no binding is no error");
+
+    // A copy deleted takes its binding.
+    copies.bind(binding).await.expect("bound");
+    storage.collections().delete(copy.id.clone()).await.expect("deleted");
+    assert!(bound(copies.copies().await.expect("copies")).is_empty());
+}

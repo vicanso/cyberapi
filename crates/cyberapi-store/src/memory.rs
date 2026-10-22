@@ -5,7 +5,8 @@
 use crate::rules::{project_config, required_name};
 use crate::{
     BackupStore, CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection,
-    NewVariable, PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
+    NewVariable, PrefStore, ServerCopyStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
+    sort_cookies,
 };
 use chrono::Utc;
 use cyberapi_core::backup::Backup;
@@ -14,7 +15,7 @@ use cyberapi_core::import::{ImportItem, assign_ids};
 use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
-use cyberapi_core::sync::{ConfigAt, ProjectConfig};
+use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, Timestamp, VariableId};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -45,6 +46,8 @@ struct State {
     /// Oldest first.
     responses: Vec<HttpResponse>,
     cookies: Vec<Cookie>,
+    /// The desktop's copies of server projects.
+    copies: Vec<CopyBinding>,
 }
 
 impl Default for MemoryStore {
@@ -187,6 +190,65 @@ impl State {
         })
     }
 
+    /// A configuration in place of the project's (`TreeStore::replace`).
+    fn replace_project(
+        &mut self,
+        collection: CollectionId,
+        config: ProjectConfig,
+        base: Option<u64>,
+        now: Timestamp,
+    ) -> Result<u64, StoreError> {
+        let revision = self.collection(&collection)?.revision;
+        let config = project_config(&collection, config)?;
+        if let Some(base) = base
+            && base != revision
+        {
+            return Err(StoreError::Stale { base, revision });
+        }
+        let elsewhere = |id: &ItemId| {
+            self.folders
+                .iter()
+                .any(|folder| &folder.id == id && folder.collection != collection)
+                || self
+                    .apis
+                    .iter()
+                    .any(|api| &api.id == id && api.collection != collection)
+        };
+        let items = config.folders.iter().map(|folder| &folder.id);
+        if let Some(id) = items
+            .chain(config.apis.iter().map(|api| &api.id))
+            .find(|id| elsewhere(id))
+        {
+            return Err(StoreError::IdTaken { id: id.to_string() });
+        }
+        if let Some(variable) = config.variables.iter().find(|variable| {
+            self.variables
+                .iter()
+                .any(|found| found.id == variable.id && found.collection != collection)
+        }) {
+            return Err(StoreError::IdTaken {
+                id: variable.id.to_string(),
+            });
+        }
+        // The history of an API that stays stays; of one that goes, goes.
+        let staying: HashSet<&ItemId> = config.apis.iter().map(|api| &api.id).collect();
+        self.responses
+            .retain(|response| response.collection != collection || staying.contains(&response.api));
+        self.folders.retain(|folder| folder.collection != collection);
+        self.folders.extend(config.folders);
+        self.apis.retain(|api| api.collection != collection);
+        self.apis.extend(config.apis);
+        self.variables.retain(|variable| variable.collection != collection);
+        self.variables.extend(config.variables);
+        self.top_orders.insert(collection.clone(), config.top_order);
+        let found = self.collection_mut(&collection)?;
+        found.name = config.name;
+        found.description = config.description;
+        found.updated_at = now;
+        found.revision += 1;
+        Ok(found.revision)
+    }
+
     fn tree_data(&self, id: &CollectionId) -> TreeData {
         TreeData {
             folders: self
@@ -286,6 +348,7 @@ impl CollectionStore for MemoryStore {
             state.top_orders.remove(&id);
             state.workspaces.remove(&id);
             state.responses.retain(|response| response.collection != id);
+            state.copies.retain(|binding| binding.collection != id);
             Ok(())
         })
     }
@@ -470,60 +533,7 @@ impl TreeStore for MemoryStore {
     }
 
     fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64> {
-        self.run(move |state, now| {
-            let revision = state.collection(&collection)?.revision;
-            let config = project_config(&collection, config)?;
-            if let Some(base) = base
-                && base != revision
-            {
-                return Err(StoreError::Stale { base, revision });
-            }
-            let elsewhere = |id: &ItemId| {
-                state
-                    .folders
-                    .iter()
-                    .any(|folder| &folder.id == id && folder.collection != collection)
-                    || state
-                        .apis
-                        .iter()
-                        .any(|api| &api.id == id && api.collection != collection)
-            };
-            let items = config.folders.iter().map(|folder| &folder.id);
-            if let Some(id) = items
-                .chain(config.apis.iter().map(|api| &api.id))
-                .find(|id| elsewhere(id))
-            {
-                return Err(StoreError::IdTaken { id: id.to_string() });
-            }
-            if let Some(variable) = config.variables.iter().find(|variable| {
-                state
-                    .variables
-                    .iter()
-                    .any(|found| found.id == variable.id && found.collection != collection)
-            }) {
-                return Err(StoreError::IdTaken {
-                    id: variable.id.to_string(),
-                });
-            }
-            // The history of an API that stays stays; of one that goes, goes.
-            let staying: HashSet<&ItemId> = config.apis.iter().map(|api| &api.id).collect();
-            state
-                .responses
-                .retain(|response| response.collection != collection || staying.contains(&response.api));
-            state.folders.retain(|folder| folder.collection != collection);
-            state.folders.extend(config.folders);
-            state.apis.retain(|api| api.collection != collection);
-            state.apis.extend(config.apis);
-            state.variables.retain(|variable| variable.collection != collection);
-            state.variables.extend(config.variables);
-            state.top_orders.insert(collection.clone(), config.top_order);
-            let found = state.collection_mut(&collection)?;
-            found.name = config.name;
-            found.description = config.description;
-            found.updated_at = now;
-            found.revision += 1;
-            Ok(found.revision)
-        })
+        self.run(move |state, now| state.replace_project(collection, config, base, now))
     }
 }
 
@@ -710,6 +720,37 @@ impl HistoryStore for MemoryStore {
         self.run(|state, _| {
             state.responses.clear();
             Ok(())
+        })
+    }
+}
+
+impl ServerCopyStore for MemoryStore {
+    fn copies(&self) -> StoreFuture<Vec<CopyBinding>> {
+        self.run(|state, _| Ok(state.copies.clone()))
+    }
+
+    fn bind(&self, binding: CopyBinding) -> StoreFuture<()> {
+        self.run(move |state, _| {
+            state.copies.retain(|found| found.collection != binding.collection);
+            state.copies.push(binding);
+            Ok(())
+        })
+    }
+
+    fn unbind(&self, collection: CollectionId) -> StoreFuture<()> {
+        self.run(move |state, _| {
+            state.copies.retain(|found| found.collection != collection);
+            Ok(())
+        })
+    }
+
+    fn keep_copy(&self, collection: Collection, config: ProjectConfig) -> StoreFuture<()> {
+        self.run(move |state, now| {
+            let id = collection.id.clone();
+            if state.collection(&id).is_err() {
+                state.collections.push(collection);
+            }
+            state.replace_project(id, config, None, now).map(|_| ())
         })
     }
 }

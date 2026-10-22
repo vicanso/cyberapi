@@ -103,6 +103,14 @@ const MIGRATIONS: &[&[&str]] = &[
             key TEXT PRIMARY KEY NOT NULL,
             doc TEXT NOT NULL
         )"],
+    // 5: which projects are copies of server projects, and whose
+    // (`docs/server-sync.md` §6). A project of the machine's own has no row.
+    &["CREATE TABLE IF NOT EXISTS server_copies (
+            collection TEXT PRIMARY KEY NOT NULL,
+            account TEXT NOT NULL,
+            base INTEGER,
+            unsynced INTEGER NOT NULL DEFAULT 0
+        )"],
 ];
 
 /// The schema version this build writes.

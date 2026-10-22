@@ -2,9 +2,9 @@
 //! the part of a project that travels whole between a reader's copy and the
 //! server, and what a copy does when the two have moved apart.
 
-use crate::ItemId;
 use crate::model::{ApiSetting, Folder, Variable};
 use crate::tree::TreeData;
+use crate::{AccountId, CollectionId, ItemId};
 use serde::{Deserialize, Serialize};
 
 /// A project's configuration, whole (server-sync §2): its name and
@@ -42,6 +42,18 @@ impl ProjectConfig {
 pub struct ConfigAt {
     pub revision: u64,
     pub config: ProjectConfig,
+}
+
+/// The desktop's copy of a server project (server-sync §6): whose it is,
+/// the server's revision it was last level with, and whether it has changes
+/// the server has not had. A project of the machine's own has none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyBinding {
+    pub collection: CollectionId,
+    pub account: AccountId,
+    pub base: Option<u64>,
+    pub unsynced: bool,
 }
 
 /// When a copy of a server project looks at the server's revision.

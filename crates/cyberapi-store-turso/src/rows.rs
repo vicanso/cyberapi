@@ -5,7 +5,8 @@
 use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory, legacy,
 };
-use cyberapi_core::{CollectionId, ItemId, Timestamp, VariableId};
+use cyberapi_core::sync::CopyBinding;
+use cyberapi_core::{AccountId, CollectionId, ItemId, Timestamp, VariableId};
 use turso::{Row, Value};
 
 /// A column as text: `NULL` is empty, numbers are spelled out.
@@ -52,6 +53,19 @@ pub fn collection(row: &Row) -> Collection {
         // No teams on the desktop, and its one reader manages everything.
         owner: None,
         role: Default::default(),
+    }
+}
+
+/// `collection, account, base, unsynced` of `server_copies`.
+pub fn copy_binding(row: &Row) -> CopyBinding {
+    CopyBinding {
+        collection: CollectionId::new(text(row, 0)),
+        account: AccountId::new(text(row, 1)),
+        base: match row.get_value(2) {
+            Ok(Value::Integer(base)) => u64::try_from(base).ok(),
+            _ => None,
+        },
+        unsynced: count(row, 3) != 0,
     }
 }
 
