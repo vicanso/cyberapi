@@ -38,7 +38,8 @@ impl Render for PinsBar {
             let (select_id, unpin_id) = (api.id.clone(), api.id.clone());
             // The whole name, and the key that selects it. The current pin
             // is the brighter label; the others stay quiet, with no box.
-            let (name, action) = (api.name.clone(), pin_action(index));
+            let action = pin_action(index).filter(|_| crate::this_build::takes_pin_keys());
+            let name = api.name.clone();
             let ink = if active {
                 theme.foreground
             } else {

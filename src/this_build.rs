@@ -132,6 +132,19 @@ pub fn takes_new_keys() -> bool {
     web::on_mac()
 }
 
+/// Whether Cmd/Ctrl and a digit reach the app (F12.2), so a pin's key may
+/// be shown: a page on Windows or Linux has the browser take Ctrl-1 to
+/// Ctrl-9 for its tabs first. A Mac's browser switches tabs with Cmd and
+/// leaves Ctrl and a digit to the page.
+#[cfg(not(target_family = "wasm"))]
+pub fn takes_pin_keys() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn takes_pin_keys() -> bool {
+    web::on_mac()
+}
+
 /// Whether this is a page in a Mac's browser, which binds the Cmd
 /// shortcuts the kit gives only its macOS build
 /// (`views::bind_mac_page_keys`). The desktop has them already.

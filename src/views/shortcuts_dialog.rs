@@ -39,17 +39,17 @@ fn shortcuts(window: &mut Window, cx: &mut App) -> impl IntoElement {
             keys(&NewFolder, WORKSPACE, window),
         ));
     }
-    workspace.extend([
-        (t!("shortcuts.send").to_string(), keys(&SendAction, WORKSPACE, window)),
-        (t!("shortcuts.pins").to_string(), {
+    workspace.push((t!("shortcuts.send").to_string(), keys(&SendAction, WORKSPACE, window)));
+    if this_build::takes_pin_keys() {
+        workspace.push((t!("shortcuts.pins").to_string(), {
             let mut both = keys(&Pin1, WORKSPACE, window);
             if !both.is_empty() {
                 both.push(div().child("–").into_any_element());
                 both.extend(keys(&Pin9, WORKSPACE, window));
             }
             both
-        }),
-    ]);
+        }));
+    }
     let tree = vec![
         (t!("shortcuts.tree_move").to_string(), {
             let mut both = keys(&TreePrevious, TREE, window);
