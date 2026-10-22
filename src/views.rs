@@ -7,6 +7,7 @@ mod cookies_dialog;
 mod dashboard;
 mod group_dialog;
 mod inline_confirm;
+mod json_tree;
 mod kv_editor;
 mod marked;
 mod name_dialog;

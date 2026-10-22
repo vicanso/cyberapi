@@ -1,4 +1,4 @@
-.PHONY: dev debug check fmt lint test release desktop-dist icons nightly check-web web-bundle web-release web-serve web-dist db-up db-down test-sql bridge
+.PHONY: dev debug check fmt lint test release desktop-dist bundle icons nightly check-web web-bundle web-release web-serve web-dist db-up db-down test-sql bridge
 
 # The desktop app.
 dev:
@@ -28,6 +28,13 @@ release:
 # and a tarball on Linux, a zip on Windows, in <target dir>/desktop-dist.
 desktop-dist:
 	scripts/desktop-dist.sh
+
+# The macOS app only (cargo-bundle 0.11): CyberAPI.app in
+# <target dir>/release/bundle/osx. Ad-hoc signed so this Mac can open it;
+# CYBERAPI_SIGN_IDENTITY signs with a Developer ID instead. The .dmg is
+# desktop-dist.
+bundle:
+	scripts/bundle.sh
 
 # Every platform's icon (resources/icons, the page's) made again from
 # icons/cyberapi.png. Run on macOS.

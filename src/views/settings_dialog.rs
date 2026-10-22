@@ -2,16 +2,17 @@
 //! timeouts, the window's size on the desktop, what this build is, and a way
 //! back to the defaults.
 
+use crate::json_view_local::JsonView;
 use crate::states::AppStore;
 use crate::this_build;
 use crate::views::inline_confirm::inline_confirm;
+use crate::views::json_tree::json_view_switch;
 use cyberapi_core::prefs::{ThemeMode, Timeouts, WindowPrefs};
 use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -341,7 +342,7 @@ fn section(title: String, content: impl IntoElement) -> impl IntoElement {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
         let muted = cx.theme().muted_foreground;
         let theme = choices(
@@ -388,6 +389,29 @@ impl Render for SettingsView {
                 app.update(cx, |app, cx| app.set_language(language, cx));
             },
         );
+        let json_view = AppStore::global(cx).state().read(cx).json_view();
+        let json_view = v_flex()
+            .gap_1()
+            .child(json_view_switch(
+                "settings-json-view",
+                json_view == JsonView::Tree,
+                cx.listener(|_, picks: &Vec<usize>, _, cx| {
+                    let view = if picks.first().copied() == Some(1) {
+                        JsonView::Tree
+                    } else {
+                        JsonView::Text
+                    };
+                    let app = AppStore::global(cx).state().clone();
+                    app.update(cx, |app, cx| app.set_json_view(view, cx));
+                    cx.notify();
+                }),
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(t!("settings.json_view_desc").to_string()),
+            );
         let field = |label: String, input: &Entity<InputState>| {
             h_flex()
                 .gap_2()
@@ -487,16 +511,16 @@ impl Render for SettingsView {
                     })
             }))
             .child(homepage);
-        // Scrolls inside the dialog rather than running off the window.
-        let room = (window.viewport_size().height - px(220.)).max(px(240.));
+        // The dialog scrolls its body once this column is taller than the
+        // window. A max height on the same element as `overflow_y_scrollbar`
+        // also caps the scroll content, so the bar never appears and the
+        // rest of the settings are clipped.
         v_flex()
             .id("settings")
-            .max_h(room)
-            .overflow_y_scrollbar()
-            .pr_2()
             .gap_5()
             .child(section(t!("settings.theme").to_string(), theme))
             .child(section(t!("settings.language").to_string(), language))
+            .child(section(t!("settings.json_view").to_string(), json_view))
             .child(section(t!("settings.timeouts").to_string(), timeouts))
             .children(window_size)
             .child(section(t!("settings.about").to_string(), about))

@@ -1,12 +1,13 @@
 //! A project's workspace: the tree, the selected API's request editor and
-//! its response side by side in resizable columns (F14.5), and the pins the
-//! title bar shows.
+//! its response side by side in resizable columns (F14.5), and the pins and
+//! the selected request the title bar shows.
 
 mod import_dialog;
 mod move_dialog;
 mod pins;
 mod request_editor;
 mod response_panel;
+mod selection_title;
 mod tree_panel;
 
 use crate::APP_NAME;
@@ -31,6 +32,7 @@ use gpui_kit::{
     IntoElement, KeyBinding, ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, px,
 };
 pub use pins::PinsBar;
+use selection_title::SelectionTitle;
 // For the shortcuts' list.
 use request_editor::{RequestEditor, RequestEditorEvent};
 use response_panel::ResponsePanel;
@@ -290,6 +292,7 @@ pub struct WorkspaceView {
     state: Entity<WorkspaceState>,
     tree: Entity<TreePanel>,
     pins: Entity<PinsBar>,
+    selection_title: Entity<SelectionTitle>,
     selected: Option<Selected>,
     columns: Entity<ResizableState>,
     focus: FocusHandle,
@@ -305,6 +308,7 @@ impl WorkspaceView {
         let state = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
         let tree = cx.new(|cx| TreePanel::new(state.clone(), window, cx));
         let pins = cx.new(|cx| PinsBar::new(state.clone(), cx));
+        let selection_title = cx.new(|cx| SelectionTitle::new(state.clone(), cx));
         let subscriptions = vec![
             cx.observe_in(&state, window, |this, _, window, cx| {
                 this.follow_selection(window, cx);
@@ -339,6 +343,7 @@ impl WorkspaceView {
             state,
             tree,
             pins,
+            selection_title,
             selected: None,
             columns,
             focus,
@@ -468,6 +473,11 @@ impl WorkspaceView {
     /// F12.2: the pins, for the title bar.
     pub fn pins(&self) -> &Entity<PinsBar> {
         &self.pins
+    }
+
+    /// The selection and the folders around it, drawn in the middle of the title bar.
+    pub fn selection_title(&self) -> &Entity<SelectionTitle> {
+        &self.selection_title
     }
 
     /// The workspace's state, for the title bar's menu.

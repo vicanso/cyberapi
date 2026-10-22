@@ -7,7 +7,6 @@ use crate::states::WorkspaceState;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _,
     Styled as _, Subscription, Window, div, px,
@@ -37,8 +36,16 @@ impl Render for PinsBar {
         let tags = state.pinned().into_iter().enumerate().map(|(index, api)| {
             let active = selected.as_ref() == Some(&api.id);
             let (select_id, unpin_id) = (api.id.clone(), api.id.clone());
-            // The whole name, and the key that selects it.
+            // The whole name, and the key that selects it. The current pin
+            // is the brighter label; the others stay quiet, with no box.
             let (name, action) = (api.name.clone(), pin_action(index));
+            let ink = if active {
+                theme.foreground
+            } else {
+                theme.muted_foreground
+            };
+            let method_ink = method_color(api.request.method, cx);
+            let method_ink = if active { method_ink } else { method_ink.opacity(0.55) };
             h_flex()
                 .id(("pin", index))
                 .tooltip(move |window, cx| {
@@ -56,28 +63,21 @@ impl Render for PinsBar {
                 .gap_0p5()
                 .items_center()
                 .rounded(theme.radius)
-                .border_1()
                 .text_xs()
+                .text_color(ink)
                 .cursor_pointer()
-                .map(|this| {
-                    if active {
-                        this.border_color(theme.primary).bg(theme.list_active)
-                    } else {
-                        this.border_color(theme.border)
-                            .hover(|style| style.bg(theme.list_hover))
-                    }
-                })
+                .hover(|style| style.bg(theme.list_hover))
                 .child(
                     h_flex()
                         .min_w_0()
                         .gap_1p5()
                         .items_center()
-                        .child(div().text_color(theme.muted_foreground).child(format!("{}", index + 1)))
+                        .child(div().child(format!("{}", index + 1)))
                         .child(
                             div()
                                 .text_size(px(10.))
                                 .font_bold()
-                                .text_color(method_color(api.request.method, cx))
+                                .text_color(method_ink)
                                 .child(method_label(api.request.method)),
                         )
                         .child(div().min_w_0().truncate().child(api.name.clone())),

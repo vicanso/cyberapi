@@ -12,6 +12,7 @@ pub mod directory;
 pub mod format;
 mod id;
 pub mod import;
+pub mod json_view;
 pub mod model;
 pub mod prefs;
 pub mod response;

@@ -9,20 +9,59 @@ use crate::views::{
 };
 use cyberapi_core::model::VariableCategory;
 use cyberapi_core::prefs::ThemeMode;
+#[cfg(not(target_family = "wasm"))]
+use cyberapi_core::prefs::{MonitorPlacement, fills_monitor};
 use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _, StyledExt as _, Theme, ThemeMode as ComponentThemeMode, TitleBar,
-    WindowExt as _, h_flex, v_flex,
+    WindowExt as _, h_flex, try_parse_color, v_flex,
 };
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions,
     Render, Styled as _, Subscription, Window, div, hsla, px,
 };
+#[cfg(not(target_family = "wasm"))]
+use gpui_kit::{Pixels, Task};
 use rust_i18n::t;
 use std::path::PathBuf;
+#[cfg(not(target_family = "wasm"))]
+use std::time::Duration;
+
+#[cfg(not(target_family = "wasm"))]
+fn monitor_id(window: &Window, cx: &App) -> Option<String> {
+    Some(window.display(cx)?.uuid().ok()?.to_string())
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn window_is_zoomed(window: &Window, cx: &App) -> bool {
+    if window.is_maximized() || window.is_fullscreen() || window.is_simple_fullscreen() {
+        return true;
+    }
+    let Some(display) = window.display(cx) else {
+        return false;
+    };
+    let visible = display.visible_bounds().size;
+    fills_monitor(
+        px_u32(window.bounds().size.width),
+        px_u32(window.bounds().size.height),
+        px_u32(visible.width),
+        px_u32(visible.height),
+    )
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn px_i32(value: Pixels) -> i32 {
+    f32::from(value).round() as i32
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn px_u32(value: Pixels) -> u32 {
+    let rounded = f32::from(value).round();
+    if rounded.is_sign_negative() { 0 } else { rounded as u32 }
+}
 
 enum Page {
     Dashboard(Entity<DashboardView>),
@@ -35,6 +74,15 @@ pub struct CyberApi {
     theme: ThemeMode,
     language: Option<String>,
     _subscriptions: Vec<Subscription>,
+    /// A windowed position waiting until it stops moving. A zoom drops it,
+    /// so an animation frame never becomes the size to restore.
+    #[cfg(not(target_family = "wasm"))]
+    pending_window: Option<(String, MonitorPlacement)>,
+    #[cfg(not(target_family = "wasm"))]
+    window_save: Option<Task<()>>,
+    /// The latest sample was a zoom or a frame that fills the monitor.
+    #[cfg(not(target_family = "wasm"))]
+    zoomed: bool,
 }
 
 impl CyberApi {
@@ -83,9 +131,112 @@ impl CyberApi {
             theme: prefs.theme,
             language: prefs.language,
             _subscriptions: subscriptions,
+            #[cfg(not(target_family = "wasm"))]
+            pending_window: None,
+            #[cfg(not(target_family = "wasm"))]
+            window_save: None,
+            #[cfg(not(target_family = "wasm"))]
+            zoomed: false,
         };
-        root.set_title(window, cx);
-        root
+        Self::open(root, window, cx)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn open(mut self, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        self.watch_window(window, cx);
+        self.set_title(window, cx);
+        self
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn open(self, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        self.set_title(window, cx);
+        self
+    }
+
+    /// The window's position on its monitor, written once it settles.
+    /// macOS close only hides, so quitting flushes whatever is still waiting.
+    #[cfg(not(target_family = "wasm"))]
+    fn watch_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._subscriptions
+            .push(cx.observe_window_bounds(window, |this, window, cx| {
+                this.sample_window(window, cx);
+            }));
+        self._subscriptions
+            .push(cx.observe_window_display(window, |this, window, cx| {
+                this.sample_window(window, cx);
+            }));
+        self._subscriptions.push(cx.on_app_quit(|this, cx| {
+            if !this.zoomed {
+                this.commit_pending(cx);
+            }
+            this.pending_window = None;
+            this.window_save = None;
+            let state = AppStore::global(cx).state().clone();
+            let (prefs, gate) = state.update(cx, |state, _| state.prefs_to_flush());
+            let call = AppStore::global(cx).storage().prefs().set_app(prefs);
+            let turn = gate.lock_arc();
+            async move {
+                let _turn = turn.await;
+                if let Err(error) = call.await {
+                    tracing::warn!(%error, "the settings could not be saved");
+                }
+            }
+        }));
+    }
+
+    /// A settled windowed frame is kept. A zoom, a fullscreen, or a frame
+    /// that already fills the monitor is not: that would replace the size
+    /// from before the double-click.
+    #[cfg(not(target_family = "wasm"))]
+    fn sample_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = monitor_id(window, cx) else {
+            return;
+        };
+        let zoomed = window_is_zoomed(window, cx);
+        self.zoomed = zoomed;
+        if zoomed {
+            self.pending_window = None;
+            self.window_save = None;
+            let state = AppStore::global(cx).state().clone();
+            state.update(cx, |state, cx| {
+                state.note_monitor(&id, MonitorPlacement::default(), true, cx);
+            });
+            return;
+        }
+        let placement = MonitorPlacement {
+            x: px_i32(window.bounds().origin.x),
+            y: px_i32(window.bounds().origin.y),
+            width: px_u32(window.viewport_size().width),
+            height: px_u32(window.viewport_size().height),
+        };
+        if !placement.usable() {
+            return;
+        }
+        if self
+            .pending_window
+            .as_ref()
+            .is_some_and(|(pending_id, pending)| pending_id == &id && *pending == placement)
+        {
+            return;
+        }
+        self.pending_window = Some((id, placement));
+        self.window_save = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(500)).await;
+            let _ = this.update(cx, |this, cx| this.commit_pending(cx));
+        }));
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn commit_pending(&mut self, cx: &mut Context<Self>) {
+        let Some((id, placement)) = self.pending_window.take() else {
+            return;
+        };
+        self.window_save = None;
+        let state = AppStore::global(cx).state().clone();
+        state.update(cx, |state, cx| {
+            state.note_monitor(&id, placement, false, cx);
+        });
     }
 
     fn page_for(route: Route, window: &mut Window, cx: &mut Context<Self>) -> Page {
@@ -146,7 +297,8 @@ impl CyberApi {
         };
         match AppStore::global(cx).state().read(cx).route() {
             Route::Dashboard => div().text_sm().child(APP_NAME).into_any_element(),
-            // F1.9: Home > project, then the pins (F12.2).
+            // F1.9: Home > project, then the pins (F12.2). The selected
+            // request is a sibling of this row, so it can sit in the middle.
             Route::Workspace(collection) => h_flex()
                 .flex_1()
                 .min_w_0()
@@ -194,14 +346,23 @@ fn apply_theme(mode: ThemeMode, window: &mut Window, cx: &mut App) {
         ThemeMode::Dark => Theme::change(ComponentThemeMode::Dark, Some(window), cx),
     }
     // A theme change may set its own size and faces; these stay.
-    let theme = Theme::global_mut(cx);
-    theme.font_size = px(UI_FONT_SIZE);
-    theme.mono_font_family = MONO_FONT.into();
-    // The dark theme's backdrop hardly darkens a page that is dark already;
-    // a dialog should stand off it as it does in the light one.
-    if theme.mode.is_dark() {
-        theme.overlay = hsla(0., 0., 0., 0.55);
-    }
+    // Ghost hover paints `accent`, and the dark variant then halves its alpha.
+    // The stock accent sits on the page, so the wash disappears. A list row
+    // paints the same token solid, so the step stops at neutral-200 / 600:
+    // neutral-300 / 500 read as a bar. `Theme::update` copies the color onto
+    // `tokens.accent`, which is what the button reads.
+    let dark = Theme::global(cx).mode.is_dark();
+    let accent = try_parse_color(if dark { "neutral-600" } else { "neutral-200" }).expect("neutral scale");
+    Theme::update(cx, |theme| {
+        theme.font_size = px(UI_FONT_SIZE);
+        theme.mono_font_family = MONO_FONT.into();
+        theme.accent = accent;
+        // The dark theme's backdrop hardly darkens a page that is dark already;
+        // a dialog should stand off it as it does in the light one.
+        if dark {
+            theme.overlay = hsla(0., 0., 0., 0.55);
+        }
+    });
     window.refresh();
 }
 
@@ -368,6 +529,13 @@ impl Render for CyberApi {
             Page::Dashboard(view) => view.clone().into_any_element(),
             Page::Workspace(view) => view.clone().into_any_element(),
         };
+        // Equal sides keep the selected request in the middle of the bar.
+        // On the project list the middle is empty, so the name stays left
+        // and the menu stays right.
+        let selection = match &self.page {
+            Page::Workspace(view) => Some(view.read(cx).selection_title().clone()),
+            Page::Dashboard(_) => None,
+        };
         let theme = cx.theme();
         v_flex()
             .size_full()
@@ -378,11 +546,23 @@ impl Render for CyberApi {
                     h_flex()
                         .flex_1()
                         .min_w_0()
-                        .pr_2()
                         .items_center()
-                        .justify_between()
-                        .child(self.render_title(cx))
-                        .child(self.render_menu(cx)),
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .child(self.render_title(cx)),
+                        )
+                        .children(selection)
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .justify_end()
+                                .pr_2()
+                                .child(self.render_menu(cx)),
+                        ),
                 ),
             )
             .child(div().flex_1().min_h_0().child(page))

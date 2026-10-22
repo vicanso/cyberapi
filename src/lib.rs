@@ -12,9 +12,11 @@ rust_i18n::i18n!("locales", fallback = "en");
 #[cfg(not(target_family = "wasm"))]
 mod assets;
 mod i18n;
+mod json_view_local;
 mod pacing;
 #[cfg(not(target_family = "wasm"))]
 mod paths;
+mod pins_local;
 mod root;
 pub mod states;
 mod this_build;
@@ -24,11 +26,14 @@ pub use crate::pacing::set_page_visible;
 use crate::root::CyberApi;
 use crate::states::AppStore;
 use crate::views::StartupError;
-use cyberapi_core::prefs::{AppPrefs, WindowPrefs};
+use cyberapi_core::prefs::{AppPrefs, WindowPrefs, placement_for};
 use cyberapi_http::HttpEngine;
 use cyberapi_store::{BackupStore, DirectoryStore, Storage};
 use gpui_kit::component::TitleBar;
-use gpui_kit::{App, AppContext as _, Bounds, Entity, Render, Window, WindowBounds, WindowOptions, px, size};
+use gpui_kit::{
+    App, AppContext as _, Bounds, DisplayId, Entity, Pixels, Render, Window, WindowBounds, WindowOptions, point, px,
+    size,
+};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -227,7 +232,9 @@ fn open_main_window<V: Render>(cx: &mut App, build: impl FnOnce(&mut Window, &mu
 }
 
 fn main_window_options(cx: &App) -> WindowOptions {
-    // F1.3: the size the settings name, at least 900 × 600.
+    // F1.3: the size the settings name, at least 900 × 600. A monitor that
+    // still has a recorded position uses that instead; one that is gone
+    // falls back here.
     let window = cx
         .try_global::<AppStore>()
         .map(|store| store.state().read(cx).prefs().window)
@@ -240,8 +247,12 @@ fn main_window_options(cx: &App) -> WindowOptions {
     } else {
         (WindowPrefs::DEFAULT_WIDTH, WindowPrefs::DEFAULT_HEIGHT)
     };
-    let (width, height) = (width as f32, height as f32);
-    let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
+    let (display_id, bounds) = remembered_bounds(cx).unwrap_or_else(|| {
+        (
+            None,
+            Bounds::centered(None, size(px(width as f32), px(height as f32)), cx),
+        )
+    });
     let window_bounds = if window.maximized {
         WindowBounds::Maximized(bounds)
     } else {
@@ -253,6 +264,7 @@ fn main_window_options(cx: &App) -> WindowOptions {
     titlebar.title = Some(APP_NAME.into());
     WindowOptions {
         window_bounds: Some(window_bounds),
+        display_id,
         // F14.2: the smallest size the settings allow.
         window_min_size: Some(size(
             px(WindowPrefs::MIN_WIDTH as f32),
@@ -266,6 +278,27 @@ fn main_window_options(cx: &App) -> WindowOptions {
         show: cfg!(not(target_os = "macos")),
         ..TitleBar::window_options()
     }
+}
+
+/// The position recorded for the monitor the window was on last, when that
+/// monitor is still connected. The id is the display's stable id.
+fn remembered_bounds(cx: &App) -> Option<(Option<DisplayId>, Bounds<Pixels>)> {
+    let (wanted, placement) = {
+        let prefs = cx.try_global::<AppStore>()?.state().read(cx).prefs();
+        let placement = *placement_for(&prefs.monitors, &prefs.last_monitor)?;
+        (prefs.last_monitor.clone(), placement)
+    };
+    let display = cx
+        .displays()
+        .into_iter()
+        .find(|display| display.uuid().is_ok_and(|id| id.to_string() == wanted))?;
+    Some((
+        Some(display.id()),
+        Bounds {
+            origin: point(px(placement.x as f32), px(placement.y as f32)),
+            size: size(px(placement.width as f32), px(placement.height as f32)),
+        },
+    ))
 }
 
 /// The menu bar. Closing the window only hides the app on macOS, so the

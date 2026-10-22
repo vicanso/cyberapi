@@ -3,8 +3,10 @@
 
 // The action, named apart from the `Send` trait.
 use super::{KEY_CONTEXT, Send as SendAction};
-use crate::states::ApiState;
+use crate::json_view_local::JsonView;
+use crate::states::{ApiState, AppStore};
 use crate::this_build;
+use crate::views::json_tree::{JsonTree, json_view_switch};
 use cyberapi_core::response::{
     BodyKind, DISPLAY_LIMIT, HttpResponse, StatusLevel, clip_text, format_duration, format_size, status_level,
     status_text,
@@ -58,6 +60,10 @@ pub struct ResponsePanel {
     /// The editor holds only the start of a body over `DISPLAY_LIMIT`.
     clipped: bool,
     tab: ResponseTab,
+    /// The body as a tree, when this response's JSON is shown that way.
+    json_tree: Entity<JsonTree>,
+    /// Bound to one response. Another response opens in the saved default.
+    body_as_tree: Option<(String, bool)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -70,17 +76,53 @@ impl ResponsePanel {
                 .soft_wrap(true)
                 .searchable(true)
         });
-        let subscriptions = vec![cx.observe_in(&api, window, |this, _, window, cx| this.sync(window, cx))];
+        let app = AppStore::global(cx).state().clone();
+        let subscriptions = vec![
+            cx.observe_in(&api, window, |this, _, window, cx| this.sync(window, cx)),
+            cx.observe(&app, |this, _, cx| {
+                this.sync_response_tree(cx);
+                cx.notify();
+            }),
+        ];
+        let json_tree = cx.new(JsonTree::new);
         let mut panel = Self {
             api,
             body,
             shown: None,
             clipped: false,
             tab: ResponseTab::Body,
+            json_tree,
+            body_as_tree: None,
             _subscriptions: subscriptions,
         };
         panel.sync(window, cx);
         panel
+    }
+
+    /// The tree, when this response was switched to it; otherwise the default.
+    fn response_shows_tree(&self, cx: &App) -> bool {
+        let default = AppStore::global(cx).state().read(cx).json_view() == JsonView::Tree;
+        match (&self.shown, &self.body_as_tree) {
+            (Some(id), Some((bound, tree))) if bound == id => *tree,
+            _ => default,
+        }
+    }
+
+    fn shown_json(&self, cx: &App) -> bool {
+        self.api.read(cx).shown_response().is_some_and(|response| {
+            response.error.is_none()
+                && response.body_omitted.is_none()
+                && !response.body.is_empty()
+                && response.body_kind() == BodyKind::Json
+        })
+    }
+
+    fn sync_response_tree(&mut self, cx: &mut Context<Self>) {
+        if !(self.shown_json(cx) && self.response_shows_tree(cx)) {
+            return;
+        }
+        let text = self.body.read(cx).value().to_string();
+        self.json_tree.update(cx, |tree, cx| tree.set_text(&text, cx));
     }
 
     /// Puts the shown response's body in the editor when it changes.
@@ -107,6 +149,7 @@ impl ResponsePanel {
                 .searchable(true)
                 .default_value(text)
         });
+        self.sync_response_tree(cx);
         cx.notify();
     }
 
@@ -289,9 +332,26 @@ impl ResponsePanel {
             .children(TABS.iter().map(|tab| Tab::new().label(label(tab))))
             .when(copies, |bar| {
                 let page = this_build::opens_html() && response.content_type().to_ascii_lowercase().contains("html");
+                let json = response.body_kind() == BodyKind::Json;
                 bar.suffix(
                     h_flex()
                         .gap_0p5()
+                        .items_center()
+                        .when(json, |this| {
+                            let tree = self.response_shows_tree(cx);
+                            this.child(json_view_switch(
+                                "response-json-view",
+                                tree,
+                                cx.listener(|this, picks: &Vec<usize>, _, cx| {
+                                    let Some(id) = this.shown.clone() else {
+                                        return;
+                                    };
+                                    this.body_as_tree = Some((id, picks.first().copied() == Some(1)));
+                                    this.sync_response_tree(cx);
+                                    cx.notify();
+                                }),
+                            ))
+                        })
                         // F7.4 for a page: drawn by the system's browser.
                         .when(page, |this| {
                             this.child(
@@ -369,22 +429,34 @@ impl ResponsePanel {
             return note(t!("response.no_body").to_string(), Vec::new(), cx);
         }
         match response.body_kind() {
-            BodyKind::Json | BodyKind::Text => v_flex()
-                .size_full()
-                .when(self.clipped, |this| {
-                    let shown = format_size(DISPLAY_LIMIT as u64);
-                    let text = t!("response.clipped", size = shown).to_string();
-                    this.child(note(text, vec![save_button(cx)], cx))
-                })
-                .child(
-                    div().flex_1().min_h_0().relative().child(
+            BodyKind::Json | BodyKind::Text => {
+                let tree = response.body_kind() == BodyKind::Json && self.response_shows_tree(cx);
+                let body: AnyElement = if tree {
+                    div().size_full().child(self.json_tree.clone()).into_any_element()
+                } else {
+                    Editor::new(&self.body)
+                        .w_full()
+                        .h_full()
+                        .readonly(true)
+                        .bordered(false)
+                        .into_any_element()
+                };
+                v_flex()
+                    .size_full()
+                    .when(self.clipped, |this| {
+                        let shown = format_size(DISPLAY_LIMIT as u64);
+                        let text = t!("response.clipped", size = shown).to_string();
+                        this.child(note(text, vec![save_button(cx)], cx))
+                    })
+                    .child(
                         div()
-                            .absolute()
-                            .inset_0()
-                            .child(Editor::new(&self.body).w_full().h_full().readonly(true).bordered(false)),
-                    ),
-                )
-                .into_any_element(),
+                            .flex_1()
+                            .min_h_0()
+                            .relative()
+                            .child(div().absolute().inset_0().child(body)),
+                    )
+                    .into_any_element()
+            }
             // F7.4.
             BodyKind::Image => match image_format(&response.content_type()) {
                 Some(format) => div()

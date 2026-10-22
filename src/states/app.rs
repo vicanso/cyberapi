@@ -2,12 +2,15 @@
 //! their settings.
 
 use super::{run_serial, run_store};
+use crate::json_view_local::JsonView;
 use crate::{Extras, this_build};
 use async_lock::Mutex;
 use cyberapi_core::collection::SortOrder;
 use cyberapi_core::directory::Me;
 use cyberapi_core::model::Collection;
 use cyberapi_core::prefs::{AppPrefs, ColumnWidths, ThemeMode, Timeouts, WindowPrefs};
+#[cfg(not(target_family = "wasm"))]
+use cyberapi_core::prefs::{MonitorPlacement, remember_monitor};
 use cyberapi_core::{CollectionId, Timestamp};
 use cyberapi_http::HttpEngine;
 use cyberapi_service::Sender;
@@ -36,6 +39,8 @@ impl AppStore {
         let state = cx.new(|_| AppState {
             route: Route::Dashboard,
             prefs,
+            // The signed-in account is read next, and replaces this on a page.
+            json_view: crate::json_view_local::get(&crate::pins_local::scope(None)),
             me: None,
             save_task: None,
             saves: Arc::default(),
@@ -120,9 +125,11 @@ impl EventEmitter<AppEvent> for AppState {}
 pub struct AppState {
     route: Route,
     prefs: AppPrefs,
+    /// How JSON opens. On this machine, not in the settings document.
+    json_view: JsonView,
     /// Who is signed in, and their teams: the browser's, once read.
     me: Option<Me>,
-    /// A save waiting for a drag to settle.
+    /// A save waiting for a drag or a resize to settle.
     save_task: Option<Task<()>>,
     /// The saves of the settings, one at a time in the order made: each
     /// writes the whole document, so a later one landing first would be
@@ -139,6 +146,12 @@ impl AppState {
         &self.prefs
     }
 
+    /// How JSON opens, until a panel's Text / Tree switch says otherwise
+    /// for the document on screen.
+    pub fn json_view(&self) -> JsonView {
+        self.json_view
+    }
+
     pub fn me(&self) -> Option<&Me> {
         self.me.as_ref()
     }
@@ -152,6 +165,7 @@ impl AppState {
         run_store(cx, directory.me(), |this, result, cx| match result {
             Ok(me) => {
                 this.me = Some(me);
+                this.json_view = crate::json_view_local::get(&this.pin_scope());
                 cx.notify();
             }
             Err(error) => warn!(%error, "who is signed in could not be read"),
@@ -273,12 +287,27 @@ impl AppState {
         self.prefs.folded_groups.iter().any(|folded| folded == key)
     }
 
-    /// A deleted project leaves its group.
+    /// A deleted project leaves its group, and its pins.
     pub fn forget_project(&mut self, project: &CollectionId, cx: &mut Context<Self>) {
+        crate::pins_local::remove(&self.pin_scope(), project);
         if self.prefs.project_groups.remove(project).is_some() {
             self.save_prefs(cx);
             cx.notify();
         }
+    }
+
+    /// The default for every JSON document. A panel switch does not call
+    /// this: that choice lasts only while that document is on screen.
+    pub fn set_json_view(&mut self, view: JsonView, cx: &mut Context<Self>) {
+        if self.json_view == view {
+            return;
+        }
+        if !crate::json_view_local::set(&self.pin_scope(), view) {
+            warn!("the json view could not be saved");
+            return;
+        }
+        self.json_view = view;
+        cx.notify();
     }
 
     /// F14.1.
@@ -328,6 +357,10 @@ impl AppState {
             folded_groups: std::mem::take(&mut self.prefs.folded_groups),
             ..AppPrefs::default()
         };
+        self.json_view = JsonView::Text;
+        if !crate::json_view_local::set(&self.pin_scope(), JsonView::Text) {
+            warn!("the json view could not be saved");
+        }
         self.save_prefs(cx);
         cx.notify();
     }
@@ -335,26 +368,56 @@ impl AppState {
     /// F15.3: every response the reader keeps, of every project.
     pub fn clear_history(&mut self, cx: &mut Context<Self>) {
         let call = AppStore::global(cx).storage().history().clear_all();
-        self.clear(call, cx);
+        self.clear(call, false, cx);
     }
 
     /// F15.3: the reader's state of every project — pins, open folders,
-    /// the selection, tabs.
+    /// the selection, tabs. Pins are on this machine, so they go with the
+    /// stored state, once that clear has landed.
     pub fn clear_workspaces(&mut self, cx: &mut Context<Self>) {
         let call = AppStore::global(cx).storage().prefs().clear_workspaces();
-        self.clear(call, cx);
+        self.clear(call, true, cx);
     }
 
     /// Then the project list again, built anew: an open project would show
     /// what was cleared, and keep it.
-    fn clear(&mut self, call: StoreFuture<()>, cx: &mut Context<Self>) {
-        run_store(cx, call, |this, result, cx| match result {
+    fn clear(&mut self, call: StoreFuture<()>, forget_pins: bool, cx: &mut Context<Self>) {
+        run_store(cx, call, move |this, result, cx| match result {
             Ok(()) => {
+                if forget_pins {
+                    crate::pins_local::clear_scope(&this.pin_scope());
+                }
                 this.go_home(cx);
                 cx.emit(AppEvent::Cleared);
             }
             Err(error) => cx.emit(AppEvent::Failed(error)),
         });
+    }
+
+    fn pin_scope(&self) -> String {
+        crate::pins_local::scope(self.me().map(|me| me.account.id.as_str()))
+    }
+
+    /// The window moved or settled on a monitor. A zoom remembers the monitor
+    /// and leaves the size from before it. Nothing is notified: a settings
+    /// field is a snapshot and must not be rewritten while it is typed in.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn note_monitor(&mut self, id: &str, placement: MonitorPlacement, zoomed: bool, cx: &mut Context<Self>) {
+        let Some(next) = remember_monitor(&self.prefs.monitors, &self.prefs.last_monitor, id, placement, zoomed) else {
+            return;
+        };
+        self.prefs.monitors = next.monitors;
+        self.prefs.last_monitor = next.last_monitor;
+        self.schedule_save(cx);
+    }
+
+    /// The document to write before the process exits, and the gate the
+    /// other saves wait on. A save still waiting is dropped: this write is
+    /// the last one.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn prefs_to_flush(&mut self) -> (AppPrefs, Arc<Mutex<()>>) {
+        self.save_task = None;
+        (self.prefs.clone(), self.saves.clone())
     }
 
     /// F14.5: the workspace's columns, saved once a drag settles.
@@ -363,6 +426,10 @@ impl AppState {
             return;
         }
         self.prefs.columns = columns;
+        self.schedule_save(cx);
+    }
+
+    fn schedule_save(&mut self, cx: &mut Context<Self>) {
         self.save_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(Duration::from_millis(500)).await;
             let _ = this.update(cx, |this, cx| this.save_prefs(cx));
@@ -526,6 +593,28 @@ mod tests {
         );
     }
 
+    /// The way JSON opens lives on this machine. Resetting settings puts it
+    /// back, and never writes it into the settings document.
+    #[gpui_kit::test]
+    async fn the_json_view_stays_on_this_machine(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let (state, _) = launch(&store, cx);
+        state.update(cx, |state, cx| {
+            state.set_json_view(crate::json_view_local::JsonView::Tree, cx)
+        });
+        cx.run_until_parked();
+        let kept = pollster::block_on(store.storage().prefs().app()).expect("prefs");
+        assert_eq!(kept, AppPrefs::default(), "the server's settings do not gain it");
+        assert_eq!(crate::json_view_local::get(""), crate::json_view_local::JsonView::Tree);
+        state.update(cx, |state, cx| state.reset_prefs(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            state.read_with(cx, |state, _| state.json_view()),
+            crate::json_view_local::JsonView::Text
+        );
+        assert_eq!(crate::json_view_local::get(""), crate::json_view_local::JsonView::Text);
+    }
+
     /// The reader's groups: set, renamed, folded, kept by a reset, and left
     /// by a deleted project.
     #[gpui_kit::test]
@@ -559,10 +648,20 @@ mod tests {
         );
         assert_eq!(kept.folded_groups, ["jobs"], "folded as it was, under its new name");
 
+        assert!(crate::pins_local::set(
+            "",
+            &shop.id,
+            &[cyberapi_core::ItemId::new("login")]
+        ));
         state.update(cx, |state, cx| state.forget_project(&shop.id, cx));
         cx.run_until_parked();
         let kept = pollster::block_on(store.storage().prefs().app()).expect("prefs");
         assert!(kept.project_groups.is_empty());
+        assert_eq!(
+            crate::pins_local::get("", &shop.id),
+            None,
+            "a deleted project leaves no pins"
+        );
     }
 
     /// F15.3: the history of every project goes, and the state of every
@@ -588,6 +687,7 @@ mod tests {
             ..Default::default()
         };
         pollster::block_on(storage.prefs().set_workspace(shop.id.clone(), pinned.clone())).expect("pins");
+        assert!(crate::pins_local::set("", &shop.id, std::slice::from_ref(&api)));
 
         let (state, events) = launch(&store, cx);
         state.update(cx, |state, cx| state.open_collection(shop.clone(), cx));
@@ -595,15 +695,21 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(*events.borrow(), ["cleared"]);
         assert_eq!(state.read_with(cx, |state, _| state.route().clone()), Route::Dashboard);
-        let history = pollster::block_on(storage.history().list(shop.id.clone(), api)).expect("list");
+        let history = pollster::block_on(storage.history().list(shop.id.clone(), api.clone())).expect("list");
         assert!(history.is_empty());
         let kept = pollster::block_on(storage.prefs().workspace(shop.id.clone())).expect("prefs");
         assert_eq!(kept, pinned, "the pins are another thing to clear");
+        assert_eq!(
+            crate::pins_local::get("", &shop.id),
+            Some(vec![api.clone()]),
+            "clearing history leaves the pins on this machine"
+        );
 
         state.update(cx, |state, cx| state.clear_workspaces(cx));
         cx.run_until_parked();
         let kept = pollster::block_on(storage.prefs().workspace(shop.id.clone())).expect("prefs");
         assert_eq!(kept, WorkspacePrefs::default());
+        assert_eq!(crate::pins_local::get("", &shop.id), None);
     }
 
     #[gpui_kit::test]

@@ -2,8 +2,14 @@
 
 use std::path::PathBuf;
 
-/// The database file inside [`data_dir`].
+/// The database file inside [`data_dir`]. A debug build (`make dev`) uses
+/// its own file, so it does not open the installed app's `cyberapi.db`.
+#[cfg(not(debug_assertions))]
 pub const DATABASE_FILE: &str = "cyberapi.db";
+
+/// See [`DATABASE_FILE`].
+#[cfg(debug_assertions)]
+pub const DATABASE_FILE: &str = "cyberapi-dev.db";
 
 /// This app's data directory: the platform's data directory plus `CyberAPI`
 /// (`cyberapi` on Linux, where directories are lower case). Never the Tauri

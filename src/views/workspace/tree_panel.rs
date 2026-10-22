@@ -549,12 +549,14 @@ impl TreePanel {
         };
         // A line between rows, indented to the level the item would join.
         let guide = theme.foreground.opacity(0.1);
+        let pin_group = SharedString::from(format!("tree-pin-{id}"));
         let line_depth = match drop {
             Some(DropPosition::Below) if kind == ItemKind::Folder && row.open => row.depth + 1,
             _ => row.depth,
         };
         h_flex()
             .id(key)
+            .group(pin_group.clone())
             .relative()
             .h(px(ROW_HEIGHT))
             .pl(px(8. + INDENT * row.depth as f32))
@@ -618,8 +620,49 @@ impl TreePanel {
                         .child(count.to_string()),
                 )
             })
-            .when(pinned, |this| {
-                this.child(Icon::new(IconName::StarFill).xsmall().text_color(theme.warning))
+            .when(kind == ItemKind::Api, |this| {
+                let pin_id = id.clone();
+                let tip = if pinned {
+                    t!("workspace.unpin")
+                } else {
+                    t!("workspace.pin")
+                }
+                .to_string();
+                let (icon, color) = if pinned {
+                    (IconName::StarFill, theme.warning)
+                } else {
+                    (IconName::Star, theme.muted_foreground)
+                };
+                // Faint until the row is hovered, so a long list is not a column
+                // of stars. Pinned ones stay lit. The click is the star's,
+                // not the row's.
+                this.child(
+                    div()
+                        .flex_none()
+                        .when(!pinned, |star| {
+                            star.opacity(0.45)
+                                .group_hover(pin_group.clone(), |style| style.opacity(1.))
+                        })
+                        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .child(
+                            Button::new(SharedString::from(format!("tree-pin-{pin_id}")))
+                                .ghost()
+                                .xsmall()
+                                .compact()
+                                .tooltip(tip.clone())
+                                .accessibility_label(tip)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.state.update(cx, |state, cx| {
+                                        let pinned = state.is_pinned(&pin_id);
+                                        state.set_pinned(&pin_id, !pinned, cx);
+                                    });
+                                }))
+                                .child(Icon::new(icon).xsmall().text_color(color)),
+                        ),
+                )
             })
             .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                 // A click hands the keys to the tree, at this row.

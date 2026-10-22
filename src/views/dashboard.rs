@@ -29,7 +29,7 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -389,9 +389,10 @@ impl DashboardView {
     ) -> impl IntoElement {
         let api_count = self.state.read(cx).api_count(&collection.id);
         let theme = cx.theme();
-        let (ring, muted, surface) = (theme.ring, theme.muted_foreground, theme.muted);
+        let (ring, muted) = (theme.ring, theme.muted_foreground);
+        let surface = card_surface(cx);
         let hover_bg = theme.list_hover;
-        let border = theme.foreground.opacity(0.12);
+        let border = theme.border;
         let key = collection.id.to_string();
         let opened = collection.clone();
         let actions = CardActions {
@@ -809,6 +810,17 @@ impl Render for DashboardView {
             }))
             .child(self.render_toolbar(sort, total, window, cx))
             .child(self.render_body(sort, window, cx))
+    }
+}
+
+/// One step off the page, the same lift zedis gives a connection card.
+/// `muted` is a whole panel and sat too far from the theme background.
+fn card_surface(cx: &App) -> Hsla {
+    let theme = cx.theme();
+    if theme.is_dark() {
+        theme.background.lighten(1.0)
+    } else {
+        theme.background.darken(0.02)
     }
 }
 

@@ -49,29 +49,9 @@ need_bundle() {
 
 case "$(uname -s)" in
   Darwin)
-    need_bundle
-    # No `--bin`: with it cargo-bundle ignores [package.metadata.bundle].
-    cargo bundle --release
+    # The .app (scripts/bundle.sh), then the disk image around it.
+    scripts/bundle.sh
     APP="$TARGET_DIR/release/bundle/osx/CyberAPI.app"
-    if [ -n "${CYBERAPI_SIGN_IDENTITY:-}" ]; then
-      # The hardened runtime and a secure timestamp are what notarization
-      # asks for. Apple's timestamp server fails now and then, so retry.
-      for attempt in 1 2 3 4 5; do
-        if codesign --force --deep --options runtime --timestamp \
-          --entitlements Entitlements.plist --sign "$CYBERAPI_SIGN_IDENTITY" "$APP"; then
-          break
-        fi
-        [ "$attempt" -eq 5 ] && { echo "codesign kept failing" >&2; exit 1; }
-        echo "codesign attempt $attempt failed; retrying in 15s" >&2
-        sleep 15
-      done
-      codesign -dvv "$APP" 2>&1 | grep -q "^Timestamp=" || { echo "no secure timestamp in the signature" >&2; exit 1; }
-    else
-      # Apple silicon runs no unsigned code; an ad-hoc signature is enough to
-      # start on the machine that built it, and for Gatekeeper's "Open" on
-      # another. Distribution beyond that needs a Developer ID.
-      codesign --force --deep --sign - "$APP"
-    fi
     STAGE=$(mktemp -d)
     trap 'rm -rf "$STAGE"' EXIT
     cp -R "$APP" "$STAGE/"

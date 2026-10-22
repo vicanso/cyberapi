@@ -4,15 +4,17 @@
 
 // The action, named apart from the `Send` trait.
 use super::{KEY_CONTEXT, Send as SendAction, method_color};
+use crate::json_view_local::JsonView;
 use crate::states::{ApiEvent, ApiState, AppStore, WorkspaceState};
 use crate::this_build;
+use crate::views::json_tree::{JsonTree, json_view_switch};
 use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::open_variables_dialog;
 use cyberapi_core::import::request_from_curl;
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
 use cyberapi_core::prefs::RequestTab;
 use cyberapi_core::send::{self, form_fields};
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::ANIMATION_DURATION;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, TabSize};
 use gpui_kit::component::menu::DropdownMenu as _;
@@ -25,7 +27,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, AnyElement, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Task, Window, div, px,
 };
 use rust_i18n::t;
@@ -47,6 +49,12 @@ const COMMON_HEADERS: [(&str, &str); 7] = [
 /// it (F4.14).
 pub const EDITOR_SHARES: [f32; 3] = [0.3, 0.5, 0.7];
 
+/// Two letters of an environment name for the address bar (`onlinehall2` → `ON`).
+/// The menu keeps the full name.
+fn env_mark(name: &str) -> String {
+    name.chars().take(2).collect::<String>().to_uppercase()
+}
+
 pub enum RequestEditorEvent {
     /// A preset asks for the editor column at this share (F4.14).
     EditorShare(f32),
@@ -67,6 +75,11 @@ pub struct RequestEditor {
     ticker: Option<Task<()>>,
     /// Why the JSON body would not parse, worked out as it changes.
     json_problem: Option<String>,
+    /// The body as a tree, when this API's JSON is shown that way.
+    json_tree: Entity<JsonTree>,
+    /// `Some` while this API is showing the reader's choice. `None` follows
+    /// the saved default, including when that default changes.
+    body_as_tree: Option<bool>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -203,6 +216,12 @@ impl RequestEditor {
             }),
         ];
         subscriptions.push(Self::watch_body(&body, window, cx));
+        let app = AppStore::global(cx).state().clone();
+        subscriptions.push(cx.observe(&app, |this, _, cx| {
+            this.sync_body_tree_if_shown(cx);
+            cx.notify();
+        }));
+        let json_tree = cx.new(JsonTree::new);
         let mut editor = Self {
             workspace,
             api,
@@ -214,10 +233,13 @@ impl RequestEditor {
             auth,
             ticker: None,
             json_problem: None,
+            json_tree,
+            body_as_tree: None,
             _subscriptions: subscriptions,
         };
         editor.follow_sending(cx);
         editor.check_json(cx);
+        editor.sync_body_tree_if_shown(cx);
         editor
     }
 
@@ -229,6 +251,24 @@ impl RequestEditor {
         if problem != self.json_problem {
             self.json_problem = problem;
             cx.notify();
+        }
+    }
+
+    /// The tree, when this API was switched to it; otherwise the default.
+    fn body_shows_tree(&self, cx: &App) -> bool {
+        self.body_as_tree
+            .unwrap_or(AppStore::global(cx).state().read(cx).json_view() == JsonView::Tree)
+    }
+
+    fn sync_body_tree(&mut self, cx: &mut Context<Self>) {
+        let text = self.body.read(cx).value().to_string();
+        self.json_tree.update(cx, |tree, cx| tree.set_text(&text, cx));
+    }
+
+    /// Fill the tree from the editor when this body is actually drawn as one.
+    fn sync_body_tree_if_shown(&mut self, cx: &mut Context<Self>) {
+        if self.api.read(cx).request().content_type == ContentType::Json && self.body_shows_tree(cx) {
+            self.sync_body_tree(cx);
         }
     }
 
@@ -251,6 +291,7 @@ impl RequestEditor {
                 let text = body.read(cx).value().to_string();
                 this.api.update(cx, |api, cx| api.set_body(text, cx));
                 this.check_json(cx);
+                this.sync_body_tree_if_shown(cx);
             }
         })
     }
@@ -269,6 +310,7 @@ impl RequestEditor {
             .update(cx, |kv, cx| kv.set_list(&request.headers, window, cx));
         self.auth.update(cx, |kv, cx| kv.set_list(&request.auth, window, cx));
         self.check_json(cx);
+        self.sync_body_tree_if_shown(cx);
         cx.notify();
     }
 
@@ -367,6 +409,7 @@ impl RequestEditor {
         self.body = body_state(&request, window, cx);
         self._subscriptions.push(Self::watch_body(&self.body, window, cx));
         self.check_json(cx);
+        self.sync_body_tree_if_shown(cx);
         self.form = cx.new(|cx| {
             KvEditor::new(
                 &[],
@@ -389,7 +432,11 @@ impl RequestEditor {
     fn format_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.body.read(cx).value().to_string();
         match send::format_json(&text) {
-            Ok(pretty) => self.body.update(cx, |body, cx| body.set_value(pretty, window, cx)),
+            Ok(pretty) => {
+                // set_value does not emit Change, so the tree reads the editor itself.
+                self.body.update(cx, |body, cx| body.set_value(pretty, window, cx));
+                self.sync_body_tree_if_shown(cx);
+            }
             Err(error) => {
                 window.push_notification(Notification::warning(format!("{}: {error}", t!("editor.not_json"))), cx);
             }
@@ -570,12 +617,11 @@ impl RequestEditor {
                     Button::new("request-method")
                         .ghost()
                         .small()
+                        .compact()
                         .child(
                             h_flex()
-                                .w(px(64.))
                                 .gap_1()
                                 .items_center()
-                                .justify_between()
                                 .child(
                                     div()
                                         .text_xs()
@@ -601,7 +647,7 @@ impl RequestEditor {
                                 .text_color(env_color)
                                 .text_xs()
                                 .font_medium()
-                                .child(format!("{{{{{name}}}}}")),
+                                .child(env_mark(name)),
                             None => div()
                                 .text_xs()
                                 .text_color(muted)
@@ -624,33 +670,37 @@ impl RequestEditor {
                                     .unwrap_or(false)
                             },
                         )),
+                )
+                // Send sits in the bar, not in `Input::suffix`. The field is 24px
+                // tall once its own padding is in, and suffix is for an icon.
+                .child(
+                    match sending {
+                        Some(started) => Button::new("request-send")
+                            .danger()
+                            .small()
+                            .label(format!(
+                                "{} {:.1}s",
+                                t!("editor.cancel_send"),
+                                started.elapsed().as_secs_f32()
+                            ))
+                            .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
+                        None => Button::new("request-send")
+                            .primary()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Send)
+                            .label(t!("editor.send").to_string())
+                            .tooltip_with_action(t!("editor.send").to_string(), &SendAction, Some(KEY_CONTEXT))
+                            .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
+                    }
+                    .mr_1(),
                 );
         h_flex()
             .h(px(44.))
             .px_3()
-            .gap_2()
             .items_center()
             .border_b_1()
             .border_color(border)
             .child(address)
-            .child(match sending {
-                Some(started) => Button::new("request-send")
-                    .danger()
-                    .small()
-                    .label(format!(
-                        "{} {:.1}s",
-                        t!("editor.cancel_send"),
-                        started.elapsed().as_secs_f32()
-                    ))
-                    .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
-                None => Button::new("request-send")
-                    .primary()
-                    .small()
-                    .icon(gpui_kit::assets::IconName::Send)
-                    .label(t!("editor.send").to_string())
-                    .tooltip_with_action(t!("editor.send").to_string(), &SendAction, Some(KEY_CONTEXT))
-                    .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
-            })
     }
 
     fn render_tabs(&self, tab: RequestTab, cx: &mut Context<Self>) -> impl IntoElement {
@@ -681,18 +731,23 @@ impl RequestEditor {
         let workspace = self.workspace.downgrade();
         let owned: Vec<RequestTab> = tabs.to_vec();
         // F4.14: the column at 30%, 50% or 70% of what the tree leaves.
+        // One outline group, the chosen share painted pressed.
         let share = AppStore::global(cx).state().read(cx).prefs().columns.editor_ratio;
-        let presets = h_flex()
-            .gap_0p5()
+        let presets = ButtonGroup::new("editor-share")
+            .compact()
+            .small()
+            .outline()
             .children(EDITOR_SHARES.iter().enumerate().map(|(index, preset)| {
                 let preset = *preset;
                 Button::new(("editor-share", index))
-                    .ghost()
-                    .xsmall()
-                    .selected((share - preset).abs() < 0.01)
                     .label(format!("{:.0}%", preset * 100.))
+                    .selected((share - preset).abs() < 0.01)
                     .tooltip(t!("editor.share_tooltip", share = format!("{:.0}%", preset * 100.)).to_string())
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(RequestEditorEvent::EditorShare(preset))))
+            }))
+            .on_click(cx.listener(|_, picks: &Vec<usize>, _, cx| {
+                if let Some(&preset) = picks.first().and_then(|index| EDITOR_SHARES.get(*index)) {
+                    cx.emit(RequestEditorEvent::EditorShare(preset));
+                }
             }));
         TabBar::new("request-tabs")
             .underline()
@@ -746,6 +801,7 @@ impl RequestEditor {
                     .dropdown_menu_with_anchor(Anchor::TopLeft, type_menu),
             )
             .when(request.content_type == ContentType::Json, |this| {
+                let tree = self.body_shows_tree(cx);
                 this.child(
                     Button::new("body-format")
                         .ghost()
@@ -754,6 +810,15 @@ impl RequestEditor {
                         .label(t!("editor.format").to_string())
                         .on_click(cx.listener(|this, _, window, cx| this.format_json(window, cx))),
                 )
+                .child(json_view_switch(
+                    "request-json-view",
+                    tree,
+                    cx.listener(|this, picks: &Vec<usize>, _, cx| {
+                        this.body_as_tree = Some(picks.first().copied() == Some(1));
+                        this.sync_body_tree_if_shown(cx);
+                        cx.notify();
+                    }),
+                ))
             })
             // Before it is sent: where the JSON goes wrong.
             .when_some(self.json_problem.clone(), |this, problem| {
@@ -785,6 +850,13 @@ impl RequestEditor {
                 .px_2()
                 .pb_2()
                 .child(self.form.clone())
+                .into_any_element()
+        } else if request.content_type == ContentType::Json && self.body_shows_tree(cx) {
+            div()
+                .flex_1()
+                .min_h_0()
+                .relative()
+                .child(div().absolute().inset_0().child(self.json_tree.clone()))
                 .into_any_element()
         } else {
             div()

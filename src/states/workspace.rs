@@ -1,5 +1,6 @@
 //! One project's workspace (M3, M12): its tree, and what the reader keeps of
-//! it — open folders, the selected API, pins.
+//! it — open folders, the selected API. Pins are kept on this machine
+//! (`crate::pins_local`); the document stored for the project leaves them out.
 //!
 //! The tree's rules are `cyberapi_core::tree`'s. A change is the store's
 //! answer applied to the copy here — the same plan the store wrote — so the
@@ -9,7 +10,7 @@
 //! In the browser build other readers change the project too: the state
 //! polls its revision and loads the tree again when it moved (§7).
 
-use super::{ApiState, Load, run_serial, run_store};
+use super::{ApiState, AppStore, Load, run_serial, run_store};
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::ItemId;
@@ -312,9 +313,20 @@ impl WorkspaceState {
         });
         run_store(cx, self.sender.storage.prefs().workspace(id), |this, result, cx| {
             match result {
-                Ok(prefs) => {
+                Ok(mut prefs) => {
+                    // Pins live on this machine. A list already here wins,
+                    // including an empty one. No list yet, and the document
+                    // still has the old pins: adopt them, then store the
+                    // document without that field.
+                    let on_server = !prefs.pinned.is_empty();
+                    if let Some(pinned) = crate::pins_local::get(&pin_scope(cx), &this.collection.id) {
+                        prefs.pinned = pinned;
+                    }
                     this.prefs = prefs;
                     this.sync_api(cx);
+                    if on_server {
+                        this.save_prefs(cx);
+                    }
                 }
                 // The tree still works without them; the reader starts from
                 // a closed tree.
@@ -644,19 +656,35 @@ impl WorkspaceState {
     }
 
     /// The reader's state is saved in the background; a failure costs them
-    /// the state next visit, not now, so it is only logged.
+    /// the state next visit, not now, so it is only logged. Pins are written
+    /// on this machine first. The document then goes out without them, so
+    /// the browser build does not leave them on the server. When they could
+    /// not be written here, they stay in the document rather than be lost.
     fn save_prefs(&self, cx: &mut Context<Self>) {
+        let mut stored = self.prefs.clone();
+        if crate::pins_local::set(&pin_scope(cx), &self.collection.id, &stored.pinned) {
+            stored.pinned.clear();
+        }
         let call = self
             .sender
             .storage
             .prefs()
-            .set_workspace(self.collection.id.clone(), self.prefs.clone());
+            .set_workspace(self.collection.id.clone(), stored);
         run_serial(cx, &self.saves, call, |_, result, _| {
             if let Err(error) = result {
                 warn!(%error, "the workspace state could not be saved");
             }
         });
     }
+}
+
+/// Whose pins. Tests build a workspace with no application installed; that
+/// reader is the desktop's one reader.
+fn pin_scope(cx: &gpui_kit::App) -> String {
+    let account = cx
+        .try_global::<AppStore>()
+        .and_then(|store| store.state().read(cx).me().map(|me| me.account.id.as_str().to_string()));
+    crate::pins_local::scope(account.as_deref())
 }
 
 #[cfg(test)]
@@ -855,6 +883,9 @@ mod tests {
         let login = find(&state, "login", cx);
         state.update(cx, |state, cx| state.set_pinned(&login, true, cx));
         cx.run_until_parked();
+        let kept = storage.prefs().workspace(collection.id.clone()).await.expect("prefs");
+        assert!(kept.pinned.is_empty(), "pins stay on this machine");
+        assert_eq!(crate::pins_local::get("", &collection.id), Some(vec![login.clone()]));
 
         let again = open(&storage, collection, cx);
         assert_eq!(row_names(&again, cx), ["users", "  login"], "the folder stays open");
@@ -870,6 +901,55 @@ mod tests {
         // Chosen from its pin, the API shows again.
         again.update(cx, |state, cx| state.select(&login, cx));
         assert_eq!(row_names(&again, cx), ["users", "  login"]);
+    }
+
+    /// A document that still carries pins (the old place) is copied onto
+    /// this machine and then stored without them. An empty list here is the
+    /// reader's, and is not filled back in from that document.
+    #[gpui_kit::test]
+    async fn pins_in_the_document_move_onto_this_machine(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let api = storage
+            .tree()
+            .create_api(collection.id.clone(), None, "login".into())
+            .await
+            .expect("an API")
+            .item
+            .id;
+        storage
+            .prefs()
+            .set_workspace(
+                collection.id.clone(),
+                WorkspacePrefs {
+                    pinned: vec![api.clone()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("prefs");
+
+        let state = open(&storage, collection.clone(), cx);
+        state.read_with(cx, |state, _| assert_eq!(state.pinned().len(), 1));
+        let kept = storage.prefs().workspace(collection.id.clone()).await.expect("prefs");
+        assert!(kept.pinned.is_empty());
+        assert_eq!(crate::pins_local::get("", &collection.id), Some(vec![api.clone()]));
+
+        state.update(cx, |state, cx| state.set_pinned(&api, false, cx));
+        cx.run_until_parked();
+        storage
+            .prefs()
+            .set_workspace(
+                collection.id.clone(),
+                WorkspacePrefs {
+                    pinned: vec![api.clone()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("the old pins");
+        let again = open(&storage, collection, cx);
+        again.read_with(cx, |state, _| assert!(state.pinned().is_empty()));
     }
 
     #[gpui_kit::test]

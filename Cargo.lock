@@ -1790,6 +1790,7 @@ dependencies = [
  "os_info",
  "pollster 1.0.1",
  "rust-i18n",
+ "serde",
  "serde_json",
  "sys-locale",
  "tempfile",
