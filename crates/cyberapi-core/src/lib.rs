@@ -18,6 +18,7 @@ pub mod prefs;
 pub mod response;
 pub mod search;
 pub mod send;
+pub mod sync;
 pub mod template;
 mod time;
 pub mod tree;

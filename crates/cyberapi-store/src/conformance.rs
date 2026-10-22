@@ -18,6 +18,7 @@ use cyberapi_core::model::{
 };
 use cyberapi_core::prefs::{AppPrefs, ThemeMode, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse, HttpStats};
+use cyberapi_core::sync::ProjectConfig;
 use cyberapi_core::tree::{Placement, Tree, TreeData, TreeError};
 use cyberapi_core::{CollectionId, ItemId, VariableId};
 
@@ -54,6 +55,9 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     cookies_are_kept_by_key(storage).await;
     imports_get_new_ids_at_the_end(storage).await;
     the_readers_state_clears(storage).await;
+    configs_are_read_whole(storage).await;
+    configs_replace_at_their_base(storage).await;
+    configs_keep_their_ids_to_themselves(storage).await;
 }
 
 const MISSING: &str = "conformance-missing";
@@ -1353,5 +1357,253 @@ pub async fn backup(storage: &Storage, backups: &dyn crate::BackupStore) {
         backups.snapshot().await.expect("snapshot"),
         snapshot,
         "a restore is the snapshot"
+    );
+}
+
+/// A configuration with its records in id order: a store keeps them in an
+/// order of its own (the one rows were written in), which the tree and the
+/// variables' lists do not read.
+fn by_id(mut config: ProjectConfig) -> ProjectConfig {
+    config.folders.sort_by(|a, b| a.id.cmp(&b.id));
+    config.apis.sort_by(|a, b| a.id.cmp(&b.id));
+    config.variables.sort_by(|a, b| a.id.cmp(&b.id));
+    config
+}
+
+/// A project's configuration is everything its readers share, read at once
+/// with its revision (server-sync §2, §3.1).
+async fn configs_are_read_whole(storage: &Storage) {
+    let collection = new_collection(storage, "config read").await;
+    let users = folder(storage, &collection, None, "users").await;
+    api(storage, &collection, Some(&users.item.id), "login").await;
+    api(storage, &collection, None, "health").await;
+    for category in [
+        VariableCategory::Environment,
+        VariableCategory::Custom,
+        VariableCategory::GlobalRequestHeader,
+    ] {
+        storage
+            .variables()
+            .create(NewVariable {
+                collection: collection.id.clone(),
+                category,
+                name: format!("{category:?}"),
+                value: "v".into(),
+                enabled: true,
+            })
+            .await
+            .expect("create a variable");
+    }
+
+    let read = storage.tree().config(collection.id.clone()).await.expect("config");
+    let now = storage.collections().get(collection.id.clone()).await.expect("get");
+    assert_eq!(read.revision, now.revision, "read with the revision it is at");
+    assert_eq!(
+        (read.config.name.as_str(), read.config.description.as_str()),
+        (now.name.as_str(), now.description.as_str())
+    );
+    let tree = load(storage, &collection).await;
+    assert_eq!(read.config.tree(), tree, "the tree as load reads it");
+    assert_eq!(read.config.variables.len(), 3, "variables of every category");
+    not_found(
+        storage.tree().config(CollectionId::new(MISSING)).await,
+        Entity::Collection,
+    );
+}
+
+/// A configuration replaces the project's whole, only at the base it was
+/// read at, keeping the ids it brings and the history of the APIs that stay
+/// (server-sync §3.3).
+async fn configs_replace_at_their_base(storage: &Storage) {
+    let collection = new_collection(storage, "config replace").await;
+    let users = folder(storage, &collection, None, "users").await;
+    let login = api(storage, &collection, Some(&users.item.id), "login").await;
+    let gone = api(storage, &collection, None, "gone").await;
+    let token = storage
+        .variables()
+        .create(NewVariable {
+            collection: collection.id.clone(),
+            category: VariableCategory::Environment,
+            name: "HOST".into(),
+            value: "https://a.test".into(),
+            enabled: true,
+        })
+        .await
+        .expect("create a variable");
+    let history = storage.history();
+    history
+        .add(response(&collection, &login.item.id, 1))
+        .await
+        .expect("history");
+    history
+        .add(response(&collection, &gone.item.id, 2))
+        .await
+        .expect("history");
+    let read = storage.tree().config(collection.id.clone()).await.expect("config");
+
+    // Renamed, rewritten and reordered; one API gone, one new with an id of
+    // the copy's making; the variable changed, one more beside it.
+    let mut wanted = read.config.clone();
+    wanted.description = "synced".into();
+    let at = login.item.created_at;
+    let made = ItemId::new(format!("{}-made-here", collection.id));
+    wanted.apis.retain(|found| found.id != gone.item.id);
+    for found in &mut wanted.apis {
+        found.request.uri = "{{HOST}}/login".into();
+    }
+    wanted.apis.push(ApiSetting {
+        id: made.clone(),
+        collection: collection.id.clone(),
+        name: "made here".into(),
+        category: ApiCategory::Http,
+        request: HttpRequest {
+            method: HttpMethod::Post,
+            ..Default::default()
+        },
+        created_at: at,
+        updated_at: at,
+    });
+    wanted.folders[0].name = "people".into();
+    wanted.folders[0].children = vec![made.clone(), login.item.id.clone()];
+    wanted.top_order = vec![users.item.id.clone()];
+    wanted.variables[0].value = "https://b.test".into();
+    let mut second = wanted.variables[0].clone();
+    second.id = VariableId::new(format!("{}-variable", collection.id));
+    second.name = "TOKEN".into();
+    wanted.variables.push(second);
+
+    // Stale: nothing written.
+    match storage
+        .tree()
+        .replace(collection.id.clone(), wanted.clone(), Some(read.revision + 1))
+        .await
+    {
+        Err(StoreError::Stale { base, revision }) => {
+            assert_eq!((base, revision), (read.revision + 1, read.revision));
+        }
+        other => panic!("a stale base is refused, got {other:?}"),
+    }
+    assert_eq!(
+        storage.tree().config(collection.id.clone()).await.expect("config"),
+        read,
+        "a refused replace changes nothing"
+    );
+
+    // At its base: written whole, the revision once on.
+    let revision = storage
+        .tree()
+        .replace(collection.id.clone(), wanted.clone(), Some(read.revision))
+        .await
+        .expect("replace at the base");
+    assert_eq!(revision, read.revision + 1, "the revision moves on once");
+    let now = storage.tree().config(collection.id.clone()).await.expect("config");
+    assert_eq!(now.revision, revision);
+    assert_eq!(
+        by_id(now.config.clone()),
+        by_id(wanted.clone()),
+        "the configuration as given"
+    );
+    assert!(
+        now.config.variables.iter().any(|variable| variable.id == token.id),
+        "an id given is kept"
+    );
+    assert_eq!(
+        history
+            .list(collection.id.clone(), login.item.id.clone())
+            .await
+            .expect("history")
+            .len(),
+        1,
+        "an API that stays keeps its history"
+    );
+    not_found(
+        history.list(collection.id.clone(), gone.item.id.clone()).await,
+        Entity::Api,
+    );
+
+    // Forced: whatever revision it is at.
+    let mut mine = wanted.clone();
+    mine.apis.retain(|found| found.id == made);
+    mine.folders[0].children = vec![made.clone()];
+    let forced = storage
+        .tree()
+        .replace(collection.id.clone(), mine.clone(), None)
+        .await
+        .expect("a forced replace");
+    assert_eq!(forced, revision + 1);
+    let now = storage.tree().config(collection.id.clone()).await.expect("config");
+    assert_eq!(by_id(now.config), by_id(mine.clone()));
+
+    // A nameless item is refused, and nothing written.
+    let mut nameless = mine.clone();
+    nameless.apis[0].name = "  ".into();
+    assert_eq!(
+        storage.tree().replace(collection.id.clone(), nameless, None).await,
+        Err(StoreError::NameRequired)
+    );
+    assert_eq!(revision_of_config(storage, &collection).await, forced);
+    not_found(
+        storage.tree().replace(CollectionId::new(MISSING), mine, None).await,
+        Entity::Collection,
+    );
+}
+
+async fn revision_of_config(storage: &Storage, collection: &Collection) -> u64 {
+    storage
+        .tree()
+        .config(collection.id.clone())
+        .await
+        .expect("config")
+        .revision
+}
+
+/// An id another project's item or variable has cannot be brought in (the
+/// ids are the server's, one space for every project).
+async fn configs_keep_their_ids_to_themselves(storage: &Storage) {
+    let theirs = new_collection(storage, "config theirs").await;
+    let their_api = api(storage, &theirs, None, "theirs").await;
+    let their_variable = storage
+        .variables()
+        .create(NewVariable {
+            collection: theirs.id.clone(),
+            category: VariableCategory::Custom,
+            name: "theirs".into(),
+            value: String::new(),
+            enabled: true,
+        })
+        .await
+        .expect("create a variable");
+    let mine = new_collection(storage, "config mine").await;
+    let read = storage.tree().config(mine.id.clone()).await.expect("config");
+
+    let mut taking_an_api = read.config.clone();
+    taking_an_api.apis.push(ApiSetting {
+        name: "mine now".into(),
+        ..their_api.item.clone()
+    });
+    taking_an_api.top_order = vec![their_api.item.id.clone()];
+    assert_eq!(
+        storage.tree().replace(mine.id.clone(), taking_an_api, None).await,
+        Err(StoreError::IdTaken {
+            id: their_api.item.id.to_string()
+        })
+    );
+    let mut taking_a_variable = read.config.clone();
+    taking_a_variable.variables.push(their_variable.clone());
+    assert_eq!(
+        storage.tree().replace(mine.id.clone(), taking_a_variable, None).await,
+        Err(StoreError::IdTaken {
+            id: their_variable.id.to_string()
+        })
+    );
+    assert_eq!(
+        storage.tree().config(mine.id.clone()).await.expect("config"),
+        read,
+        "a refused replace changes nothing"
+    );
+    assert_eq!(
+        load(storage, &theirs).await.apis,
+        vec![their_api.item],
+        "the other project keeps its API"
     );
 }

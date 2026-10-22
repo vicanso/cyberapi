@@ -23,9 +23,10 @@ use cyberapi_core::model::{
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
+use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, Timestamp, VariableId};
-use cyberapi_store::rules::required_name;
+use cyberapi_store::rules::{project_config, required_name};
 use cyberapi_store::{
     BackupStore, CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection,
     NewVariable, PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
@@ -644,6 +645,166 @@ impl TreeStore for TursoStore {
             touch(&tx, &collection, now).await?;
             tx.commit().await.map_err(backend)?;
             Ok(removal)
+        })
+    }
+
+    fn config(&self, collection: CollectionId) -> StoreFuture<ConfigAt> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            let found = get_collection(&conn, &collection).await?;
+            let tree = tree_data(&conn, &collection).await?;
+            let variables = query_all(
+                &conn,
+                &format!("SELECT {VARIABLE_COLUMNS} FROM variables WHERE collection = ?1 ORDER BY rowid"),
+                (collection.as_str(),),
+                rows::variable,
+            )
+            .await?;
+            Ok(ConfigAt {
+                revision: found.revision,
+                config: ProjectConfig {
+                    name: found.name,
+                    description: found.description,
+                    folders: tree.folders,
+                    apis: tree.apis,
+                    top_order: tree.top_order,
+                    variables: variables.into_iter().flatten().collect(),
+                },
+            })
+        })
+    }
+
+    /// The project's rows go and the configuration's are written in their
+    /// place, in its order; the responses of the APIs that stay are left
+    /// as they are (nothing here ties them to the API's row).
+    fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64> {
+        self.run(move |inner, now| async move {
+            let mut conn = inner.conn.lock().await;
+            let tx = conn.transaction().await.map_err(backend)?;
+            let revision = get_collection(&tx, &collection).await?.revision;
+            let config = project_config(&collection, config)?;
+            if let Some(base) = base
+                && base != revision
+            {
+                return Err(StoreError::Stale { base, revision });
+            }
+            let items = config.folders.iter().map(|folder| folder.id.as_str());
+            let items = items.chain(config.apis.iter().map(|api| api.id.as_str()));
+            for (id, tables) in items.map(|id| (id, ["api_folders", "api_settings"].as_slice())).chain(
+                config
+                    .variables
+                    .iter()
+                    .map(|variable| (variable.id.as_str(), ["variables"].as_slice())),
+            ) {
+                for table in tables {
+                    let owner = query_one(
+                        &tx,
+                        &format!("SELECT collection FROM {table} WHERE id = ?1"),
+                        (id,),
+                        |row| rows::text(row, 0),
+                    )
+                    .await?;
+                    if owner.is_some_and(|owner| owner != collection.as_str()) {
+                        return Err(StoreError::IdTaken { id: id.to_string() });
+                    }
+                }
+            }
+            let staying: Vec<&str> = config.apis.iter().map(|api| api.id.as_str()).collect();
+            let kept_apis = query_all(
+                &tx,
+                "SELECT id FROM api_settings WHERE collection = ?1",
+                (collection.as_str(),),
+                |row| rows::text(row, 0),
+            )
+            .await?;
+            for gone in kept_apis.iter().filter(|id| !staying.contains(&id.as_str())) {
+                execute(
+                    &tx,
+                    "DELETE FROM responses WHERE api = ?1 AND collection = ?2",
+                    (gone.as_str(), collection.as_str()),
+                )
+                .await?;
+            }
+            for sql in [
+                "DELETE FROM api_folders WHERE collection = ?1",
+                "DELETE FROM api_settings WHERE collection = ?1",
+                "DELETE FROM variables WHERE collection = ?1",
+            ] {
+                execute(&tx, sql, (collection.as_str(),)).await?;
+            }
+            for folder in &config.folders {
+                execute(
+                    &tx,
+                    "INSERT INTO api_folders (id, collection, children, name, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (
+                        folder.id.as_str(),
+                        collection.as_str(),
+                        columns::join_id_list(&folder.children),
+                        folder.name.as_str(),
+                        folder.created_at.to_rfc3339(),
+                        folder.updated_at.to_rfc3339(),
+                    ),
+                )
+                .await?;
+            }
+            for api in &config.apis {
+                execute(
+                    &tx,
+                    "INSERT INTO api_settings (id, collection, name, category, setting, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'http', ?4, ?5, ?6)",
+                    (
+                        api.id.as_str(),
+                        collection.as_str(),
+                        api.name.as_str(),
+                        api.request.to_json(),
+                        api.created_at.to_rfc3339(),
+                        api.updated_at.to_rfc3339(),
+                    ),
+                )
+                .await?;
+            }
+            for variable in &config.variables {
+                execute(
+                    &tx,
+                    "INSERT INTO variables (id, category, collection, name, value, enabled, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    (
+                        variable.id.as_str(),
+                        variable.category.as_str(),
+                        collection.as_str(),
+                        variable.name.as_str(),
+                        variable.value.as_str(),
+                        columns::enabled_text(variable.enabled),
+                        variable.created_at.to_rfc3339(),
+                        variable.updated_at.to_rfc3339(),
+                    ),
+                )
+                .await?;
+            }
+            write_change(
+                &tx,
+                &collection,
+                &TreeChange {
+                    top_order: Some(config.top_order.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            execute(
+                &tx,
+                "UPDATE api_collections
+                 SET name = ?1, description = ?2, updated_at = ?3, revision = revision + 1 WHERE id = ?4",
+                (
+                    config.name.as_str(),
+                    config.description.as_str(),
+                    now.to_rfc3339(),
+                    collection.as_str(),
+                ),
+            )
+            .await?;
+            tx.commit().await.map_err(backend)?;
+            Ok(revision + 1)
         })
     }
 }

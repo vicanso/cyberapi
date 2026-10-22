@@ -36,6 +36,7 @@ use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
+use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
 use serde::{Deserialize, Serialize};
@@ -154,6 +155,20 @@ pub trait TreeStore: Send + Sync {
     /// Deletes an item, and for a folder all it contains (F3.6), with the
     /// response history of every API that goes.
     fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal>;
+    /// The project's configuration, whole, and the revision it is at: what a
+    /// copy of a server project pulls (`docs/server-sync.md` §3.1).
+    fn config(&self, collection: CollectionId) -> StoreFuture<ConfigAt>;
+    /// Puts `config` in place of the project's at once (server-sync §3.3).
+    /// Its folders, APIs and variables keep the ids they bring — an id
+    /// another project has is [`StoreError::IdTaken`] — and what the project
+    /// has and `config` does not goes, with the history of the APIs that go;
+    /// what stays keeps its history. Only when the project is still at
+    /// revision `base`: otherwise nothing is written and the answer is
+    /// [`StoreError::Stale`]. `None` replaces whatever it is at ("mine
+    /// over the server's"). The revision moves on once; the answer is the
+    /// new one. Editors and up; the name and description are the managers'
+    /// to change, and stay as they are for anyone else.
+    fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64>;
 }
 
 /// The responses each API keeps (F7.9 – F7.11): the newest

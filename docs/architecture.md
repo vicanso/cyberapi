@@ -99,6 +99,11 @@ pub trait TreeStore: Send + Sync {
     fn save_request(&self, collection: CollectionId, api: ItemId, request: HttpRequest) -> StoreFuture<ApiSetting>;
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange>;
     fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal>;
+    /// 整份项目配置（名称、说明、目录、接口、顶层顺序、三类变量）和当前修订号，服务器项目拉取时用。
+    fn config(&self, collection: CollectionId) -> StoreFuture<ConfigAt>;
+    /// 在一个事务里用整份配置替换项目：id 原样保留，修订号必须等于 `base`（`None` 为强制），
+    /// 否则返回 `Stale` 且不写入；写完修订号加一。编辑者可调用，名称和说明仍只由管理者修改。
+    fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64>;
 }
 
 pub trait VariableStore: Send + Sync {

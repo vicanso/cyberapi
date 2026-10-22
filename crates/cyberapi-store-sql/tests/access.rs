@@ -230,6 +230,42 @@ async fn rules(variable: &str) {
         std::slice::from_ref(&kept),
         "clearing his history leaves hers"
     );
+    // A whole configuration (server-sync §3): a viewer reads it but cannot
+    // put one in its place; an editor can, though the name and description
+    // stay the managers'.
+    let pulled = carol
+        .tree()
+        .config(id.clone())
+        .await
+        .expect("a viewer reads the configuration");
+    forbidden(
+        carol
+            .tree()
+            .replace(id.clone(), pulled.config.clone(), Some(pulled.revision))
+            .await,
+        CollectionRole::Editor,
+    );
+    let mut edited = pulled.config.clone();
+    edited.name = "renamed by an editor".into();
+    edited.apis[0].name = "sign in".into();
+    let synced = bob
+        .tree()
+        .replace(id.clone(), edited, Some(pulled.revision))
+        .await
+        .expect("an editor syncs");
+    let now = alice.tree().config(id.clone()).await.expect("config");
+    assert_eq!(now.revision, synced);
+    assert_eq!(now.config.name, "orders", "the name stays the managers'");
+    assert_eq!(now.config.apis[0].name, "sign in");
+    assert_eq!(
+        carol
+            .history()
+            .list(id.clone(), login.item.id.clone())
+            .await
+            .expect("list"),
+        std::slice::from_ref(&kept),
+        "her history of the API that stayed is still there"
+    );
     // Clearing all of it, and every workspace state, is one account's too.
     alice
         .prefs()

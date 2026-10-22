@@ -26,6 +26,7 @@ use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
+use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
 use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, SendError, SendFuture};
@@ -109,6 +110,14 @@ pub enum Call {
     TreeDelete {
         collection: CollectionId,
         item: ItemId,
+    },
+    TreeConfig {
+        collection: CollectionId,
+    },
+    TreeReplace {
+        collection: CollectionId,
+        config: ProjectConfig,
+        base: Option<u64>,
     },
     VariablesList {
         collection: CollectionId,
@@ -270,6 +279,12 @@ pub async fn dispatch(storage: &Storage, directory: &dyn DirectoryStore, call: C
             items,
         } => reply(tree.import(collection, parent, items).await),
         Call::TreeDelete { collection, item } => reply(tree.delete(collection, item).await),
+        Call::TreeConfig { collection } => reply(tree.config(collection).await),
+        Call::TreeReplace {
+            collection,
+            config,
+            base,
+        } => reply(tree.replace(collection, config, base).await),
         Call::VariablesList { collection, category } => reply(variables.list(collection, category).await),
         Call::VariablesCreate { input } => reply(variables.create(input).await),
         Call::VariablesUpdate { collection, id, edit } => reply(variables.update(collection, id, edit).await),
@@ -510,6 +525,16 @@ impl TreeStore for BridgeStore {
     }
     fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal> {
         self.call(Call::TreeDelete { collection, item })
+    }
+    fn config(&self, collection: CollectionId) -> StoreFuture<ConfigAt> {
+        self.call(Call::TreeConfig { collection })
+    }
+    fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64> {
+        self.call(Call::TreeReplace {
+            collection,
+            config,
+            base,
+        })
     }
 }
 

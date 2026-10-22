@@ -22,6 +22,15 @@ pub enum StoreError {
     /// A change to accounts or teams the rules do not allow (§9).
     #[snafu(display("refused: {reason:?}"))]
     Refused { reason: Refusal },
+    /// A whole configuration was to replace the project's as of revision
+    /// `base`, and the project has moved on to `revision` since: nothing was
+    /// written (`docs/server-sync.md` §3.3).
+    #[snafu(display("the project is at revision {revision}, not {base}"))]
+    Stale { base: u64, revision: u64 },
+    /// A folder, API or variable a configuration brings has an id another
+    /// project's item has, or one the configuration gives twice.
+    #[snafu(display("the id {id} is taken"))]
+    IdTaken { id: String },
     /// A tree change the rules refuse: a folder into itself, an API used as a
     /// folder. A missing item or folder is [`StoreError::NotFound`] instead.
     #[snafu(display("{source}"))]

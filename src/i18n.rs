@@ -64,6 +64,8 @@ pub fn store_error(error: &StoreError) -> String {
         },
         StoreError::Forbidden { .. } => t!("errors.forbidden").into(),
         StoreError::NameRequired => t!("errors.name_required").into(),
+        StoreError::Stale { .. } => t!("errors.stale").into(),
+        StoreError::IdTaken { .. } => t!("errors.id_taken").into(),
         StoreError::Tree { source } => t!("errors.tree", reason = source.to_string()).into(),
         StoreError::Backend { message } => t!("errors.backend", message = message).into(),
     }

@@ -212,10 +212,24 @@ pub const FOLDER_DELETE: &str = "DELETE FROM folders WHERE id = $1 AND collectio
 pub const API_DELETE: &str = "DELETE FROM apis WHERE id = $1 AND collection = $2";
 pub const API_COUNTS: &str = "SELECT collection, COUNT(*) FROM apis GROUP BY collection";
 
+// A whole configuration put in place of a project's (server-sync §3.3).
+// Folders and variables are written again; an API that stays is rewritten
+// in its row, which its responses hang from.
+pub const FOLDER_OWNER: &str = "SELECT collection FROM folders WHERE id = $1";
+pub const API_OWNER: &str = "SELECT collection FROM apis WHERE id = $1";
+pub const VARIABLE_OWNER: &str = "SELECT collection FROM variables WHERE id = $1";
+pub const API_IDS_OF: &str = "SELECT id FROM apis WHERE collection = $1";
+pub const API_REWRITE: &str = "UPDATE apis \
+    SET name = $1, category = $2, request = $3, created_at = $4, updated_at = $5 WHERE id = $6 AND collection = $7";
+pub const FOLDERS_DELETE_OF: &str = "DELETE FROM folders WHERE collection = $1";
+pub const VARIABLES_DELETE_OF: &str = "DELETE FROM variables WHERE collection = $1";
+
 // ---- variables -----------------------------------------------------------------
 
 pub const VARIABLES_OF: &str = "SELECT id, collection, category, name, value, enabled, created_at, updated_at \
     FROM variables WHERE collection = $1 AND category = $2 ORDER BY seq";
+pub const VARIABLES_ALL_OF: &str = "SELECT id, collection, category, name, value, enabled, created_at, updated_at \
+    FROM variables WHERE collection = $1 ORDER BY seq";
 pub const VARIABLE_GET: &str = "SELECT id, collection, category, name, value, enabled, created_at, updated_at \
     FROM variables WHERE id = $1 AND collection = $2";
 pub const VARIABLE_INSERT: &str = "INSERT INTO variables \
@@ -328,6 +342,14 @@ mod tests {
         COLLECTION_TRANSFER,
         FOLDERS_OF,
         APIS_OF,
+        FOLDER_OWNER,
+        API_OWNER,
+        VARIABLE_OWNER,
+        API_IDS_OF,
+        API_REWRITE,
+        FOLDERS_DELETE_OF,
+        VARIABLES_DELETE_OF,
+        VARIABLES_ALL_OF,
         API_GET,
         API_COUNTS,
         TOP_ORDER_OF,

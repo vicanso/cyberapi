@@ -14,9 +14,10 @@ use cyberapi_core::import::{ImportItem, assign_ids};
 use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
+use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
-use cyberapi_store::rules::required_name;
+use cyberapi_store::rules::{project_config, required_name};
 use cyberapi_store::{
     CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection, NewVariable,
     PrefStore, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
@@ -665,6 +666,179 @@ impl TreeStore for Scoped {
             this.touch(&mut tx, &collection).await?;
             tx.commit().await.map_err(db)?;
             Ok(removal)
+        })
+    }
+
+    fn config(&self, collection: CollectionId) -> StoreFuture<ConfigAt> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            let role = this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            let found = this.get_collection(&mut conn, &collection, role).await?;
+            let tree = this.tree_data(&mut conn, &collection).await?;
+            let variables = sqlx::query(this.dialect.sql(sql::VARIABLES_ALL_OF))
+                .bind(collection.as_str().to_string())
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(db)?
+                .iter()
+                .map(rows::variable)
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect();
+            Ok(ConfigAt {
+                revision: found.revision,
+                config: ProjectConfig {
+                    name: found.name,
+                    description: found.description,
+                    folders: tree.folders,
+                    apis: tree.apis,
+                    top_order: tree.top_order,
+                    variables,
+                },
+            })
+        })
+    }
+
+    fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            let role = this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            this.lock(&mut tx, &collection).await?;
+            let current = this.get_collection(&mut tx, &collection, role).await?;
+            let mut config = project_config(&collection, config)?;
+            if role < CollectionRole::Manager {
+                // An editor's sync carries the tree and the variables; the
+                // name and description stay the managers'.
+                config.name = current.name;
+                config.description = current.description;
+            }
+            if let Some(base) = base
+                && base != current.revision
+            {
+                return Err(StoreError::Stale {
+                    base,
+                    revision: current.revision,
+                });
+            }
+            let id = collection.as_str().to_string();
+            let items = config.folders.iter().map(|folder| folder.id.as_str());
+            let items = items.chain(config.apis.iter().map(|api| api.id.as_str()));
+            let owned = items
+                .map(|item| (item, [sql::FOLDER_OWNER, sql::API_OWNER].as_slice()))
+                .chain(
+                    config
+                        .variables
+                        .iter()
+                        .map(|variable| (variable.id.as_str(), [sql::VARIABLE_OWNER].as_slice())),
+                );
+            for (item, statements) in owned {
+                for statement in statements {
+                    let owner = sqlx::query(this.dialect.sql(statement))
+                        .bind(item.to_string())
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(db)?
+                        .map(|row| rows::text(&row, 0))
+                        .transpose()?;
+                    if owner.is_some_and(|owner| owner != id) {
+                        return Err(StoreError::IdTaken { id: item.to_string() });
+                    }
+                }
+            }
+            let had: HashSet<String> = sqlx::query(this.dialect.sql(sql::API_IDS_OF))
+                .bind(id.clone())
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(db)?
+                .iter()
+                .map(|row| rows::text(row, 0))
+                .collect::<Result<_, _>>()?;
+            let staying: HashSet<&str> = config.apis.iter().map(|api| api.id.as_str()).collect();
+            // An API that goes takes its responses with it.
+            for gone in had.iter().filter(|api| !staying.contains(api.as_str())) {
+                sqlx::query(this.dialect.sql(sql::API_DELETE))
+                    .bind(gone.clone())
+                    .bind(id.clone())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+            for statement in [sql::FOLDERS_DELETE_OF, sql::VARIABLES_DELETE_OF] {
+                sqlx::query(this.dialect.sql(statement))
+                    .bind(id.clone())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+            for folder in &config.folders {
+                sqlx::query(this.dialect.sql(sql::FOLDER_INSERT))
+                    .bind(folder.id.as_str().to_string())
+                    .bind(id.clone())
+                    .bind(folder.name.clone())
+                    .bind(serde_json::to_string(&folder.children).map_err(db)?)
+                    .bind(folder.created_at.to_rfc3339())
+                    .bind(folder.updated_at.to_rfc3339())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+            for api in &config.apis {
+                if had.contains(api.id.as_str()) {
+                    sqlx::query(this.dialect.sql(sql::API_REWRITE))
+                        .bind(api.name.clone())
+                        .bind("http")
+                        .bind(api.request.to_json())
+                        .bind(api.created_at.to_rfc3339())
+                        .bind(api.updated_at.to_rfc3339())
+                        .bind(api.id.as_str().to_string())
+                        .bind(id.clone())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db)?;
+                } else {
+                    sqlx::query(this.dialect.sql(sql::API_INSERT))
+                        .bind(api.id.as_str().to_string())
+                        .bind(id.clone())
+                        .bind(api.name.clone())
+                        .bind("http")
+                        .bind(api.request.to_json())
+                        .bind(api.created_at.to_rfc3339())
+                        .bind(api.updated_at.to_rfc3339())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db)?;
+                }
+            }
+            for variable in &config.variables {
+                sqlx::query(this.dialect.sql(sql::VARIABLE_INSERT))
+                    .bind(variable.id.as_str().to_string())
+                    .bind(id.clone())
+                    .bind(variable.category.as_str())
+                    .bind(variable.name.clone())
+                    .bind(variable.value.clone())
+                    .bind(i32::from(variable.enabled))
+                    .bind(variable.created_at.to_rfc3339())
+                    .bind(variable.updated_at.to_rfc3339())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+            let top = TreeChange {
+                top_order: Some(config.top_order.clone()),
+                ..Default::default()
+            };
+            this.write_change(&mut tx, &collection, &top).await?;
+            sqlx::query(this.dialect.sql(sql::COLLECTION_UPDATE))
+                .bind(config.name)
+                .bind(config.description)
+                .bind(now().to_rfc3339())
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            tx.commit().await.map_err(db)?;
+            Ok(current.revision + 1)
         })
     }
 }

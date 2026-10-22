@@ -2,7 +2,7 @@
 //! conformance suite is checked against, and the store tests of the layers
 //! above use.
 
-use crate::rules::required_name;
+use crate::rules::{project_config, required_name};
 use crate::{
     BackupStore, CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection,
     NewVariable, PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
@@ -14,9 +14,10 @@ use cyberapi_core::import::{ImportItem, assign_ids};
 use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
+use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, ItemId, Timestamp, VariableId};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use ulid::Ulid;
 
@@ -391,6 +392,86 @@ impl TreeStore for MemoryStore {
             state.apply(&collection, &removal.change);
             state.touch(&collection, now)?;
             Ok(removal)
+        })
+    }
+
+    fn config(&self, collection: CollectionId) -> StoreFuture<ConfigAt> {
+        self.run(move |state, _| {
+            let found = state.collection(&collection)?;
+            let tree = state.tree_data(&collection);
+            Ok(ConfigAt {
+                revision: found.revision,
+                config: ProjectConfig {
+                    name: found.name.clone(),
+                    description: found.description.clone(),
+                    folders: tree.folders,
+                    apis: tree.apis,
+                    top_order: tree.top_order,
+                    variables: state
+                        .variables
+                        .iter()
+                        .filter(|variable| variable.collection == collection)
+                        .cloned()
+                        .collect(),
+                },
+            })
+        })
+    }
+
+    fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64> {
+        self.run(move |state, now| {
+            let revision = state.collection(&collection)?.revision;
+            let config = project_config(&collection, config)?;
+            if let Some(base) = base
+                && base != revision
+            {
+                return Err(StoreError::Stale { base, revision });
+            }
+            let elsewhere = |id: &ItemId| {
+                state
+                    .folders
+                    .iter()
+                    .any(|folder| &folder.id == id && folder.collection != collection)
+                    || state
+                        .apis
+                        .iter()
+                        .any(|api| &api.id == id && api.collection != collection)
+            };
+            let items = config.folders.iter().map(|folder| &folder.id);
+            if let Some(id) = items
+                .chain(config.apis.iter().map(|api| &api.id))
+                .find(|id| elsewhere(id))
+            {
+                return Err(StoreError::IdTaken { id: id.to_string() });
+            }
+            if let Some(variable) = config.variables.iter().find(|variable| {
+                state
+                    .variables
+                    .iter()
+                    .any(|found| found.id == variable.id && found.collection != collection)
+            }) {
+                return Err(StoreError::IdTaken {
+                    id: variable.id.to_string(),
+                });
+            }
+            // The history of an API that stays stays; of one that goes, goes.
+            let staying: HashSet<&ItemId> = config.apis.iter().map(|api| &api.id).collect();
+            state
+                .responses
+                .retain(|response| response.collection != collection || staying.contains(&response.api));
+            state.folders.retain(|folder| folder.collection != collection);
+            state.folders.extend(config.folders);
+            state.apis.retain(|api| api.collection != collection);
+            state.apis.extend(config.apis);
+            state.variables.retain(|variable| variable.collection != collection);
+            state.variables.extend(config.variables);
+            state.top_orders.insert(collection.clone(), config.top_order);
+            let found = state.collection_mut(&collection)?;
+            found.name = config.name;
+            found.description = config.description;
+            found.updated_at = now;
+            found.revision += 1;
+            Ok(found.revision)
         })
     }
 }
