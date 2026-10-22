@@ -14,11 +14,10 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Styled as _, Subscription, Task, Window, div, px,
+    Styled as _, Subscription, Window, div, px,
 };
 use rust_i18n::t;
 use std::collections::HashMap;
-use std::time::Duration;
 
 /// The title and what the category is for.
 fn describe(category: VariableCategory) -> (String, String) {
@@ -66,14 +65,8 @@ struct VariablesEditor {
     /// A viewer reads them only (§9.2).
     editable: bool,
     rows: HashMap<VariableId, Row>,
-    /// The variable whose delete button was clicked once, and the wait for
-    /// the second click, as the request's lists have it (F4.10).
-    removing: Option<(VariableId, Task<()>)>,
     _subscriptions: Vec<Subscription>,
 }
-
-/// How long a first click on delete waits for the second.
-const REMOVE_WAIT: Duration = Duration::from_secs(3);
 
 impl VariablesEditor {
     fn new(state: Entity<VariablesState>, editable: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -89,27 +82,14 @@ impl VariablesEditor {
             state,
             editable,
             rows: HashMap::new(),
-            removing: None,
             _subscriptions: subscriptions,
         }
     }
 
-    /// The first click asks, the second deletes.
+    /// One click removes the row (#47). The request lists still ask twice
+    /// (F4.10); waiting out that pause here left the row in place.
     fn remove(&mut self, id: VariableId, cx: &mut Context<Self>) {
-        if matches!(&self.removing, Some((asked, _)) if *asked == id) {
-            self.removing = None;
-            self.state.update(cx, |state, cx| state.delete(&id, cx));
-            return;
-        }
-        let wait = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(REMOVE_WAIT).await;
-            let _ = this.update(cx, |this, cx| {
-                this.removing = None;
-                cx.notify();
-            });
-        });
-        self.removing = Some((id, wait));
-        cx.notify();
+        self.state.update(cx, |state, cx| state.delete(&id, cx));
     }
 
     /// Inputs for variables that have none yet; a row keeps its inputs while
@@ -208,12 +188,10 @@ impl Render for VariablesEditor {
                                 .child(t!("variables.value").to_string()),
                         )
                         .when(editable, |this| this.child(actions()));
-                    let removing = self.removing.as_ref().map(|(id, _)| id.clone());
                     let rows =
                         state.variables().iter().enumerate().filter_map(|(index, variable)| {
                             let row = self.rows.get(&variable.id)?;
                             let (toggle_id, delete_id) = (variable.id.clone(), variable.id.clone());
-                            let asked = removing.as_ref() == Some(&variable.id);
                             Some(
                                 h_flex()
                                     .id(("variable", index))
@@ -245,21 +223,18 @@ impl Render for VariablesEditor {
                                             )),
                                     )
                                     .when(editable, |this| {
-                                        let button = Button::new(("variable-delete", index)).xsmall();
-                                        let button = if asked {
-                                            button
-                                                .danger()
-                                                .icon(gpui_kit::assets::IconName::Trash)
-                                                .tooltip(t!("editor.remove_again").to_string())
-                                        } else {
-                                            button
-                                                .ghost()
-                                                .icon(IconName::Close)
-                                                .tooltip(t!("common.delete").to_string())
-                                        };
-                                        this.child(actions().child(button.on_click(
-                                            cx.listener(move |this, _, _, cx| this.remove(delete_id.clone(), cx)),
-                                        )))
+                                        this.child(
+                                            actions().child(
+                                                Button::new(("variable-delete", index))
+                                                    .xsmall()
+                                                    .ghost()
+                                                    .icon(IconName::Close)
+                                                    .tooltip(t!("common.delete").to_string())
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.remove(delete_id.clone(), cx);
+                                                    })),
+                                            ),
+                                        )
                                     }),
                             )
                         });

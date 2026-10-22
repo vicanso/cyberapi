@@ -315,6 +315,10 @@ impl ApiState {
             return;
         }
         self.save_now(cx);
+        // Timeouts are read when the request goes out. The sender was built
+        // when this API was opened, so a change in settings would otherwise
+        // wait for the next launch (#42).
+        self.sender.timeouts = super::AppStore::global(cx).state().read(cx).prefs().timeouts;
         let call = cyberapi_service::send(
             self.sender.clone(),
             self.collection.clone(),

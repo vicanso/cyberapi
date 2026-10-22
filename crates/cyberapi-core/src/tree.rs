@@ -99,6 +99,17 @@ pub struct Row {
     pub open: bool,
 }
 
+impl Row {
+    /// The folder a new item is created in when this row has the keys (#45):
+    /// the folder itself, or the folder an API is in.
+    pub fn insertion_parent(&self) -> Option<ItemId> {
+        match self.kind {
+            ItemKind::Folder => Some(self.id.clone()),
+            ItemKind::Api => self.parent.clone(),
+        }
+    }
+}
+
 /// A project's tree, built from its [`TreeData`].
 #[derive(Clone, Debug, Default)]
 pub struct Tree {
@@ -493,6 +504,20 @@ mod tests {
 
     fn expanded(list: &[&str]) -> HashSet<ItemId> {
         ids(list).into_iter().collect()
+    }
+
+    #[test]
+    fn a_new_item_is_created_in_the_row_that_has_the_keys() {
+        let rows = Tree::build(&sample()).rows(&expanded(&["users", "orders"]), "");
+        let parent = |id: &str| {
+            rows.iter()
+                .find(|row| row.id.as_str() == id)
+                .unwrap_or_else(|| panic!("missing {id}"))
+                .insertion_parent()
+        };
+        assert_eq!(parent("users"), Some(ItemId::from("users")));
+        assert_eq!(parent("login"), Some(ItemId::from("users")));
+        assert_eq!(parent("health"), None);
     }
 
     #[test]

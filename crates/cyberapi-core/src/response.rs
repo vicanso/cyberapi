@@ -103,9 +103,15 @@ impl HttpResponse {
         self.header_values("content-type").collect::<Vec<_>>().join(" ")
     }
 
-    /// F7.1.
+    /// F7.1. A declared type wins. With none, a UTF-8 body is text and an
+    /// object or array is JSON; bytes that are not UTF-8 stay binary (#43).
     pub fn body_kind(&self) -> BodyKind {
-        body_kind(&self.content_type())
+        let declared = self.content_type();
+        if declared.trim().is_empty() {
+            sniffed_kind(&self.body)
+        } else {
+            body_kind(&declared)
+        }
     }
 
     /// F7.1: JSON indented by four spaces; text as it is; anything else, and
@@ -245,6 +251,18 @@ pub enum BodyKind {
     Image,
     Pdf,
     Binary,
+}
+
+/// A body whose response named no content type (#43). Bytes that are not
+/// UTF-8 stay binary; a zero byte is UTF-8 and reads as text.
+fn sniffed_kind(bytes: &[u8]) -> BodyKind {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return BodyKind::Binary;
+    };
+    let trimmed = text.trim();
+    let json = (trimmed.starts_with('{') || trimmed.starts_with('['))
+        && serde_json::from_str::<serde_json::Value>(trimmed).is_ok();
+    if json { BodyKind::Json } else { BodyKind::Text }
 }
 
 /// F7.1 / F7.4 by content type. XML and HTML read as text; the old app
@@ -534,7 +552,24 @@ mod tests {
         assert_eq!(body_kind("image/png"), BodyKind::Image);
         assert_eq!(body_kind("application/pdf"), BodyKind::Pdf);
         assert_eq!(body_kind("application/octet-stream"), BodyKind::Binary);
-        assert_eq!(response(&[], b"\x00").body_text(), None);
+        // No type and not UTF-8: still binary. A zero byte is UTF-8, so it
+        // is text; the byte that is not is what stays binary (#43).
+        assert_eq!(response(&[], b"\xff").body_text(), None);
+    }
+
+    #[test]
+    fn a_body_without_a_content_type_is_sniffed() {
+        assert_eq!(response(&[], br#"{"ok":true}"#).body_kind(), BodyKind::Json);
+        assert_eq!(response(&[], b"hello").body_kind(), BodyKind::Text);
+        assert_eq!(response(&[], b"\xff").body_kind(), BodyKind::Binary);
+        assert_eq!(
+            response(&[("content-type", "application/octet-stream")], br#"{"ok":true}"#).body_kind(),
+            BodyKind::Binary
+        );
+        assert_eq!(
+            response(&[("content-type", "  ")], b"hello").body_kind(),
+            BodyKind::Text
+        );
     }
 
     #[test]

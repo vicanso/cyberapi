@@ -706,8 +706,9 @@ impl RequestEditor {
     fn render_tabs(&self, tab: RequestTab, cx: &mut Context<Self>) -> impl IntoElement {
         let request = self.api.read(cx).request().clone();
         let tabs = RequestTab::for_method(request.method);
-        // F4.13: how many entries each list has, on or off.
-        let count = |list: &[cyberapi_core::model::KvParam]| list.len();
+        // F4.13: how many entries are sent. A `//` line stays in the list and
+        // is not counted (#43).
+        let count = |list: &[cyberapi_core::model::KvParam]| list.iter().filter(|row| row.enabled).count();
         let label = |tab: &RequestTab| {
             let (name, count) = match tab {
                 RequestTab::Body => (

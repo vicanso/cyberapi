@@ -260,6 +260,14 @@ fn reads_what_the_tauri_app_wrote() {
 }
 
 #[test]
+fn a_missing_data_directory_is_created() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("fresh").join("cyberapi.db");
+    drop(open(&path));
+    assert!(path.is_file(), "the database exists");
+}
+
+#[test]
 fn a_newer_schema_is_refused() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("cyberapi.db");

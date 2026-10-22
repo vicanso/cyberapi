@@ -161,6 +161,17 @@ impl TreePanel {
         }
     }
 
+    /// Ctrl+N / Ctrl+Shift+N create inside the row that has the keys (#45).
+    /// The workspace still handles the same keys from the editor, at the root.
+    fn new_here(&mut self, kind: ItemKind, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.state.read(cx).rows();
+        let parent = self
+            .cursor_at(&rows, cx)
+            .and_then(|index| rows.get(index))
+            .and_then(Row::insertion_parent);
+        new_item(&self.state.downgrade(), parent, kind, window, cx);
+    }
+
     /// Where the cursor is among `rows`.
     fn cursor_at(&self, rows: &[Row], cx: &App) -> Option<usize> {
         let selected = self.state.read(cx).selected();
@@ -981,6 +992,8 @@ impl Render for TreePanel {
             .on_action(cx.listener(|this, _: &Open, window, cx| this.close_or_open(true, window, cx)))
             .on_action(cx.listener(|this, _: &Toggle, window, cx| this.toggle(window, cx)))
             .on_action(cx.listener(|this, _: &Rename, window, cx| this.rename_at_cursor(window, cx)))
+            .on_action(cx.listener(|this, _: &NewApi, window, cx| this.new_here(ItemKind::Api, window, cx)))
+            .on_action(cx.listener(|this, _: &NewFolder, window, cx| this.new_here(ItemKind::Folder, window, cx)))
             .child(self.render_header(cx))
             .child(self.render_body(focused, cx))
     }

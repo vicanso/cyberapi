@@ -153,8 +153,8 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
 }
 
 /// The request of a cURL command pasted where a URI goes: the editor fills
-/// itself in from it, a JSON body indented as its Format button does.
-/// `None` for anything else.
+/// itself in from it. The body stays as pasted (#43): indenting it would
+/// change the bytes that are sent. `None` for anything else.
 pub fn request_from_curl(text: &str) -> Option<HttpRequest> {
     let text = text.trim_start();
     let command = text.get(..4).is_some_and(|start| start.eq_ignore_ascii_case("curl"))
@@ -162,15 +162,9 @@ pub fn request_from_curl(text: &str) -> Option<HttpRequest> {
     if !command {
         return None;
     }
-    let ImportItem::Api { mut request, .. } = curl::parse(text).ok()?.items.into_iter().next()? else {
+    let ImportItem::Api { request, .. } = curl::parse(text).ok()?.items.into_iter().next()? else {
         return None;
     };
-    if request.content_type == ContentType::Json
-        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&request.body)
-        && let Ok(pretty) = serde_json::to_string_pretty(&json)
-    {
-        request.body = pretty;
-    }
     Some(request)
 }
 
@@ -252,10 +246,10 @@ mod tests {
         assert_eq!(request.uri, "https://a.test/x");
         assert_eq!(request.query, [kv("y", "1", true)]);
         assert_eq!(request.headers, [kv("X-A", "1", true)]);
-        // A JSON body comes indented, as the editor formats it.
+        // A JSON body stays as pasted, so sending does not change its bytes.
         let request = request_from_curl(r#"curl https://a.test -H 'Content-Type: application/json' -d '{"a":[1]}'"#)
             .expect("a request");
-        assert_eq!(request.body, "{\n  \"a\": [\n    1\n  ]\n}");
+        assert_eq!(request.body, r#"{"a":[1]}"#);
         // A URI, a word that only starts like one, a command without a URL.
         assert_eq!(request_from_curl("https://a.test/curl"), None);
         assert_eq!(request_from_curl("curly.test/a"), None);

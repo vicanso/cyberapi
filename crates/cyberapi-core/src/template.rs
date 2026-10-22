@@ -11,9 +11,11 @@
 //! left, each function taking the one before's result; parameters split on
 //! `,`, trimmed of spaces and quotes, one parameter is a string and several
 //! a list; each result replaces the first occurrence of its expression; an
-//! unknown function passes its input through. One rule is not kept: an
-//! expression without parentheses (`{{name}}`) used to stop every expression
-//! after it from being read; it is now left as it is and the rest still run.
+//! unknown function is an error: the old app passed its input through, so
+//! `{{uuid()}}` went out as an empty value and nothing said why (#48). One
+//! other rule is not kept: an expression without parentheses (`{{name}}`)
+//! used to stop every expression after it from being read; it is now left
+//! as it is and the rest still run.
 
 use base64::Engine as _;
 use md5::Digest as _;
@@ -56,6 +58,9 @@ pub enum TemplateError {
     /// `get` takes an API id and a path.
     #[snafu(display("get needs an API id and a path: {text}"))]
     GetParams { text: String },
+    /// No such template function (#48).
+    #[snafu(display("unknown function {name}"))]
+    Unknown { name: String },
     #[snafu(display("{file} could not be read: {message}"))]
     ReadFile { file: String, message: String },
 }
@@ -251,7 +256,7 @@ pub fn evaluate(expr: &Expr, inputs: &Inputs, files: &dyn FileReader) -> Result<
                     None => value,
                 }
             }
-            _ => value,
+            _ => return UnknownSnafu { name: name.clone() }.fail(),
         };
     }
     Ok(value.into_text())
@@ -375,8 +380,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_names_pass_through_and_each_text_is_replaced_once() {
-        assert_eq!(run("{{nope(x)}}").as_deref(), Ok("x"));
+    fn an_unknown_function_is_an_error_and_each_text_is_replaced_once() {
+        assert_eq!(run("{{nope(x)}}"), Err(TemplateError::Unknown { name: "nope".into() }));
+        assert_eq!(run("{{uuid()}}"), Err(TemplateError::Unknown { name: "uuid".into() }));
+        // A known function whose variable is missing still passes the name
+        // through: that is "not found", not "not a function".
         assert_eq!(run("{{value(missing)}}").as_deref(), Ok("missing"));
         assert_eq!(run("{{ts()}} {{ts()}}").as_deref(), Ok("1700000000 1700000000"));
     }

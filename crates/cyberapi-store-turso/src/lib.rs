@@ -57,9 +57,20 @@ pub(crate) fn backend(error: impl std::fmt::Display) -> StoreError {
     StoreError::backend(error)
 }
 
+/// How long a launch waits when the previous process still holds the file.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+const LOCK_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The previous process has not let go of the file yet (#46).
+fn file_is_locked(error: &StoreError) -> bool {
+    matches!(error, StoreError::Backend { message } if message.to_ascii_lowercase().contains("locked"))
+}
+
 impl TursoStore {
     /// Opens (or creates) the file and brings it to the current schema. Times
     /// are written in local time with their offset, as the old app wrote them.
+    /// The parent directory is created (#41). A file another process still
+    /// holds is tried again for a short while (#46).
     pub async fn open(path: &Path) -> Result<Self, StoreError> {
         Self::open_with_clock(path, || Timestamp::new(Local::now().fixed_offset())).await
     }
@@ -70,24 +81,44 @@ impl TursoStore {
         path: &Path,
         clock: impl Fn() -> Timestamp + Send + Sync + 'static,
     ) -> Result<Self, StoreError> {
+        let clock: Clock = Arc::new(clock);
+        let started = std::time::Instant::now();
+        loop {
+            match Self::open_file(path, clock.clone()).await {
+                Ok(store) => return Ok(store),
+                Err(error) if file_is_locked(&error) && started.elapsed() < LOCK_WAIT => {
+                    std::thread::sleep(LOCK_PAUSE);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// This store as every trait the layers above use.
+    pub fn storage(&self) -> Storage {
+        Storage::from_backend(Arc::new(self.clone()))
+    }
+
+    /// Opens `path`, creating its directory. One try: the lock is retried by
+    /// [`TursoStore::open_with_clock`].
+    async fn open_file(path: &Path, clock: Clock) -> Result<TursoStore, StoreError> {
+        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| backend(format!("could not create {}: {error}", parent.display())))?;
+        }
         let path = path
             .to_str()
             .ok_or_else(|| backend(format!("the database path is not UTF-8: {}", path.display())))?;
         let database = turso::Builder::new_local(path).build().await.map_err(backend)?;
         let mut conn = database.connect().map_err(backend)?;
         schema::migrate(&mut conn).await?;
-        Ok(Self {
+        Ok(TursoStore {
             inner: Arc::new(Inner {
                 _database: database,
                 conn: Mutex::new(conn),
-                clock: Arc::new(clock),
+                clock,
             }),
         })
-    }
-
-    /// This store as every trait the layers above use.
-    pub fn storage(&self) -> Storage {
-        Storage::from_backend(Arc::new(self.clone()))
     }
 
     /// Runs `work` with the connection to itself and "now", as a store future.
@@ -1135,5 +1166,22 @@ impl cyberapi_store::conformance::Probe for TursoStore {
             }
             Ok(total)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_locked_database_is_recognized() {
+        assert!(file_is_locked(&StoreError::backend(
+            "File is locked by another process"
+        )));
+        assert!(file_is_locked(&StoreError::backend("database is locked")));
+        assert!(!file_is_locked(&StoreError::backend(
+            "I/O error (open): entity not found"
+        )));
+        assert!(!file_is_locked(&StoreError::NameRequired));
     }
 }

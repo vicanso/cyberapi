@@ -240,10 +240,25 @@ mod desktop {
         }
     }
 
+    /// The downloads folder, or `~/Downloads` when the system names none
+    /// (`XDG_DOWNLOAD_DIR` unset, #49). The directory is created. Home is
+    /// the last place a file can land.
+    fn downloads_folder() -> Result<PathBuf, String> {
+        let dirs = directories::UserDirs::new().ok_or("this system names no home directory")?;
+        let home = dirs.home_dir().to_path_buf();
+        let preferred = dirs
+            .download_dir()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home.join("Downloads"));
+        if std::fs::create_dir_all(&preferred).is_ok() {
+            return Ok(preferred);
+        }
+        std::fs::create_dir_all(&home).map_err(|error| format!("{}: {error}", home.display()))?;
+        Ok(home)
+    }
+
     pub(super) fn save_to_downloads(name: &str, bytes: &[u8]) -> Result<String, String> {
-        let dir = directories::UserDirs::new()
-            .and_then(|dirs| dirs.download_dir().map(Path::to_path_buf))
-            .ok_or("this system names no downloads folder")?;
+        let dir = downloads_folder()?;
         save_unique(&dir, name, bytes)
     }
 
