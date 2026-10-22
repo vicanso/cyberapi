@@ -317,8 +317,11 @@ impl ApiState {
         self.save_now(cx);
         // Timeouts are read when the request goes out. The sender was built
         // when this API was opened, so a change in settings would otherwise
-        // wait for the next launch (#42).
-        self.sender.timeouts = super::AppStore::global(cx).state().read(cx).prefs().timeouts;
+        // wait for the next launch (#42). A workspace opened on its own, as
+        // the state tests do, has no app state and keeps the timeouts it set.
+        if let Some(store) = cx.try_global::<super::AppStore>() {
+            self.sender.timeouts = store.state().read(cx).prefs().timeouts;
+        }
         let call = cyberapi_service::send(
             self.sender.clone(),
             self.collection.clone(),
