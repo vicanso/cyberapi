@@ -1,13 +1,21 @@
-//! The desktop's bridge (`docs/server-sync.md` §1, step 5): the one
-//! address it signs in to, and who is signed in there. The session's token
-//! is kept in a file of its own (`crate::server_local`), out of the
-//! database and its backups. Signing in changes nothing about the projects
-//! of this machine.
+//! The desktop's bridge (`docs/server-sync.md` §1, steps 5–6): the one
+//! address it signs in to, who is signed in there, and which of this
+//! machine's projects are copies of whose server projects. The session's
+//! token is kept in a file of its own (`crate::server_local`), out of the
+//! database and its backups, with the account it is — so that account's
+//! copies show and are edited offline too. Another account's copies, or
+//! any while signed out, stay in the database unseen.
 
+use super::{AppStore, run_store};
 use crate::server_local::{self, ServerFile};
 use cyberapi_core::directory::Me;
+use cyberapi_core::sync::CopyBinding;
+use cyberapi_core::{AccountId, CollectionId};
 use cyberapi_http::HttpEngine;
-use cyberapi_store_bridge::{EngineTransport, LoginForm, SignInError, bridge_address, session_me, sign_in, sign_out};
+use cyberapi_store::{ServerCopyStore, Storage};
+use cyberapi_store_bridge::{
+    BridgeStore, EngineTransport, LoginForm, SignInError, bridge_address, session_me, sign_in, sign_out,
+};
 use gpui_kit::{AppContext as _, Context, EventEmitter};
 use std::sync::Arc;
 
@@ -41,22 +49,122 @@ pub struct ServerState {
     status: ServerStatus,
     /// A sign-in on its way.
     signing_in: bool,
+    /// The machine's copies of server projects, and every account's
+    /// bindings once read.
+    copies: Option<Arc<dyn ServerCopyStore>>,
+    bound: Option<Vec<CopyBinding>>,
+    /// The kept session was asked about once.
+    checked: bool,
 }
 
 impl EventEmitter<ServerEvent> for ServerState {}
 
 impl ServerState {
-    /// What the file kept; a kept session is asked about at once.
-    pub fn new(engine: Arc<dyn HttpEngine>, cx: &mut Context<Self>) -> Self {
+    /// What the file kept; a kept session is asked about at once, and the
+    /// copies' bindings read.
+    pub fn new(engine: Arc<dyn HttpEngine>, copies: Option<Arc<dyn ServerCopyStore>>, cx: &mut Context<Self>) -> Self {
         let file = server_local::read();
         let mut state = Self {
             engine,
             file,
             status: ServerStatus::SignedOut,
             signing_in: false,
+            copies,
+            bound: None,
+            checked: false,
         };
         state.check(cx);
+        state.reload_copies(cx);
         state
+    }
+
+    /// Who is signed in and which projects are whose are known: what may
+    /// open is decided.
+    pub fn ready(&self) -> bool {
+        self.checked && (self.copies.is_none() || self.bound.is_some())
+    }
+
+    fn became_ready(&mut self, was: bool, cx: &mut Context<Self>) {
+        if !was
+            && self.ready()
+            && let Some(store) = cx.try_global::<AppStore>()
+        {
+            let app = store.state().clone();
+            app.update(cx, |app, cx| app.open_waiting(cx));
+        }
+    }
+
+    /// The account signed in — or whose session could not be asked about
+    /// yet, whose copies are still theirs to work on.
+    pub fn account(&self) -> Option<AccountId> {
+        self.file.token.as_ref()?;
+        self.file.account.as_deref().map(AccountId::new)
+    }
+
+    /// The server's stores, as the signed-in account.
+    pub fn storage(&self) -> Option<Storage> {
+        Some(BridgeStore::new(Arc::new(self.transport()?)).storage())
+    }
+
+    pub fn copies(&self) -> Option<&Arc<dyn ServerCopyStore>> {
+        self.copies.as_ref()
+    }
+
+    /// Reads the bindings again: copies were made, synced or deleted.
+    pub fn reload_copies(&mut self, cx: &mut Context<Self>) {
+        let Some(copies) = &self.copies else { return };
+        run_store(cx, copies.copies(), |this, result, cx| {
+            let was = this.ready();
+            match result {
+                Ok(bound) => this.bound = Some(bound),
+                Err(error) => {
+                    tracing::warn!(%error, "the copies of server projects could not be read");
+                    this.bound.get_or_insert_default();
+                }
+            }
+            this.became_ready(was, cx);
+            cx.notify();
+        });
+    }
+
+    /// Bindings the database has now, before the next read: a copy just
+    /// made, synced or edited opens and shows as one at once.
+    pub fn note_bound(&mut self, bindings: Vec<CopyBinding>, cx: &mut Context<Self>) {
+        let bound = self.bound.get_or_insert_default();
+        for binding in bindings {
+            bound.retain(|found| found.collection != binding.collection);
+            bound.push(binding);
+        }
+        cx.notify();
+    }
+
+    /// A copy deleted, with its binding.
+    pub fn forget_bound(&mut self, id: &CollectionId, cx: &mut Context<Self>) {
+        if let Some(bound) = &mut self.bound {
+            bound.retain(|found| &found.collection != id);
+        }
+        cx.notify();
+    }
+
+    /// Every account's bindings, once read.
+    pub fn bound(&self) -> &[CopyBinding] {
+        self.bound.as_deref().unwrap_or_default()
+    }
+
+    /// The binding of `id`, whoever's.
+    pub fn binding(&self, id: &CollectionId) -> Option<&CopyBinding> {
+        self.bound.as_ref()?.iter().find(|binding| &binding.collection == id)
+    }
+
+    /// The signed-in account's copy `id`, if it is one.
+    pub fn mine(&self, id: &CollectionId) -> Option<&CopyBinding> {
+        let account = self.account()?;
+        self.binding(id).filter(|binding| binding.account == account)
+    }
+
+    /// A copy that is not the signed-in account's: not shown, not opened.
+    pub fn hides(&self, id: &CollectionId) -> bool {
+        self.binding(id).is_some() && self.mine(id).is_none()
     }
 
     pub fn address(&self) -> &str {
@@ -84,7 +192,10 @@ impl ServerState {
     /// forgotten; one it could not be asked about stays.
     pub fn check(&mut self, cx: &mut Context<Self>) {
         let Some(transport) = self.transport() else {
+            let was = self.ready();
             self.status = ServerStatus::SignedOut;
+            self.checked = true;
+            self.became_ready(was, cx);
             return cx.notify();
         };
         self.status = ServerStatus::Checking;
@@ -92,14 +203,24 @@ impl ServerState {
         cx.spawn(async move |this, cx| {
             let answer = cx.background_spawn(async move { session_me(&transport).await }).await;
             let _ = this.update(cx, |this, cx| {
+                let was = this.ready();
                 this.status = match answer {
-                    Ok(Some(me)) => ServerStatus::SignedIn(me),
+                    Ok(Some(me)) => {
+                        let account = Some(me.account.id.as_str().to_string());
+                        if this.file.account != account {
+                            this.file.account = account;
+                            server_local::write(&this.file);
+                        }
+                        ServerStatus::SignedIn(me)
+                    }
                     Ok(None) => {
                         this.forget_token();
                         ServerStatus::SignedOut
                     }
                     Err(reason) => ServerStatus::Unreachable(reason),
                 };
+                this.checked = true;
+                this.became_ready(was, cx);
                 cx.notify();
             });
         })
@@ -132,6 +253,7 @@ impl ServerState {
                         this.file = ServerFile {
                             address,
                             token: Some(token),
+                            account: None,
                         };
                         server_local::write(&this.file);
                         this.check(cx);
@@ -162,7 +284,8 @@ impl ServerState {
     }
 
     fn forget_token(&mut self) {
-        if self.file.token.take().is_some() {
+        let account = self.file.account.take();
+        if self.file.token.take().is_some() || account.is_some() {
             server_local::write(&self.file);
         }
     }
@@ -215,7 +338,7 @@ mod tests {
 
     fn state(bridge: &Arc<Bridge>, cx: &mut TestAppContext) -> Entity<ServerState> {
         let engine: Arc<dyn HttpEngine> = bridge.clone();
-        let state = cx.new(|cx| ServerState::new(engine, cx));
+        let state = cx.new(|cx| ServerState::new(engine, None, cx));
         cx.run_until_parked();
         state
     }
@@ -264,8 +387,8 @@ mod tests {
         assert_eq!(signed_in(cx, &server), Some("alice".to_string()));
         let kept = server_local::read();
         assert_eq!(
-            (kept.address.as_str(), kept.token.as_deref()),
-            ("https://bridge.test", Some("tok"))
+            (kept.address.as_str(), kept.token.as_deref(), kept.account.as_deref()),
+            ("https://bridge.test", Some("tok"), Some("a1"))
         );
 
         // The next start asks about the kept session.
@@ -279,7 +402,10 @@ mod tests {
             ServerStatus::SignedOut
         );
         let kept = server_local::read();
-        assert_eq!((kept.address.as_str(), kept.token), ("https://bridge.test", None));
+        assert_eq!(
+            (kept.address.as_str(), kept.token, kept.account),
+            ("https://bridge.test", None, None)
+        );
         let seen = bridge.seen.lock().map(|seen| seen.clone()).unwrap_or_default();
         assert!(
             seen.iter()

@@ -30,7 +30,7 @@ use crate::states::AppStore;
 use crate::views::StartupError;
 use cyberapi_core::prefs::{AppPrefs, WindowPrefs, placement_for};
 use cyberapi_http::HttpEngine;
-use cyberapi_store::{BackupStore, DirectoryStore, Storage};
+use cyberapi_store::{BackupStore, DirectoryStore, ServerCopyStore, Storage};
 use gpui_kit::component::TitleBar;
 use gpui_kit::{
     App, AppContext as _, Bounds, DisplayId, Entity, Pixels, Render, Window, WindowBounds, WindowOptions, point, px,
@@ -66,6 +66,8 @@ gpui_kit::actions!(
 pub struct Extras {
     /// The desktop's backups (M13).
     pub backups: Option<Arc<dyn BackupStore>>,
+    /// The desktop's copies of server projects (`docs/server-sync.md` §6).
+    pub copies: Option<Arc<dyn ServerCopyStore>>,
     /// The browser's accounts and teams (`docs/architecture.md` §9.4).
     pub directory: Option<Arc<dyn DirectoryStore>>,
     /// Ends the browser's login; the page then asks for one again.
@@ -96,9 +98,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Must come before anything that uses a component.
         gpui_kit::init(cx);
         match opened {
-            Ok((storage, backups, prefs)) => {
+            Ok((storage, store, prefs)) => {
                 let extras = Extras {
-                    backups: Some(backups),
+                    backups: Some(store.clone()),
+                    copies: Some(store),
                     ..Default::default()
                 };
                 launch(cx, storage, engine, prefs, extras)
@@ -120,10 +123,10 @@ fn init_logger() {
 }
 
 /// The data directory's database, with the Tauri app's data copied in on the
-/// first launch (D2): as the stores and as backups (M13), and the reader's
-/// settings.
+/// first launch (D2): as the stores, as itself — for backups (M13) and the
+/// copies of server projects — and the reader's settings.
 #[cfg(not(target_family = "wasm"))]
-fn open_desktop_storage() -> Result<(Storage, Arc<dyn BackupStore>, AppPrefs), String> {
+fn open_desktop_storage() -> Result<(Storage, Arc<cyberapi_store_turso::TursoStore>, AppPrefs), String> {
     use cyberapi_store_turso::{TursoStore, copy_legacy_data};
     use tracing::{info, warn};
 

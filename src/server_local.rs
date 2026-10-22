@@ -13,6 +13,9 @@ pub struct ServerFile {
     pub address: String,
     /// The session's token while signed in.
     pub token: Option<String>,
+    /// Whose session: the account whose server projects this machine shows
+    /// and edits, offline too (`docs/server-sync.md` §6).
+    pub account: Option<String>,
 }
 
 fn decode(text: &str) -> ServerFile {
@@ -124,6 +127,7 @@ mod tests {
         let file = ServerFile {
             address: "https://api.test".into(),
             token: Some("tok".into()),
+            account: Some("a1".into()),
         };
         assert!(write(&file));
         assert_eq!(read(), file);

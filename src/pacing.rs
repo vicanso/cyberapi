@@ -15,6 +15,14 @@ pub const REVISION_POLL: Option<Duration> = None;
 #[cfg(target_family = "wasm")]
 pub const REVISION_POLL: Option<Duration> = Some(Duration::from_secs(10));
 
+/// How often an open server project — the page's, or the desktop's copy of
+/// one — asks the server whether another reader changed it
+/// (`docs/server-sync.md` §3.1). The desktop's own projects never ask.
+#[cfg(not(target_family = "wasm"))]
+pub const SERVER_POLL: Option<Duration> = Some(Duration::from_secs(10));
+#[cfg(target_family = "wasm")]
+pub const SERVER_POLL: Option<Duration> = Some(Duration::from_secs(10));
+
 /// While the page is in a background tab, only one beat in this many asks:
 /// a minute apart, and back to every beat as soon as the tab shows.
 pub const HIDDEN_EVERY: u32 = 6;

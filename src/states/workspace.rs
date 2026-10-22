@@ -16,9 +16,8 @@
 //! `cyberapi_core::sync::step` says, with the server's content or the
 //! draft's.
 
-use super::copy::{self, Pushed, ServerCopy};
+use super::copy::{self, Kept, Pushed, ServerCopy};
 use super::{ApiState, AppStore, Load, run_serial, run_store};
-use crate::drafts_local::Draft;
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::ItemId;
@@ -28,8 +27,9 @@ use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
 use cyberapi_core::sync::{self, ConfigAt, Moment, Step};
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
 use cyberapi_service::Sender;
-use cyberapi_store::{Storage, StoreError};
+use cyberapi_store::{Storage, StoreError, StoreFuture};
 use futures::StreamExt as _;
+use futures::channel::mpsc::UnboundedReceiver;
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, Task};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -64,6 +64,10 @@ pub enum WorkspaceEvent {
     /// The server's content is the copy's now, the reader's changes gone.
     TookServers,
 }
+
+/// What opening a copy found: what this machine kept, and the server's
+/// project and content — or why not.
+type Opened = (Option<Kept>, Result<(Collection, ConfigAt), StoreError>);
 
 /// A server project's working copy, as the workspace keeps it.
 struct CopyState {
@@ -122,22 +126,27 @@ impl WorkspaceState {
     }
 
     /// A server project, edited in a working copy that waits for the reader
-    /// to sync it (server-sync §3–4); `scope` is whose drafts.
-    pub fn server_copy(sender: Sender, collection: Collection, scope: String, cx: &mut Context<Self>) -> Self {
-        Self::with_poll(sender, collection, Some(scope), pacing::REVISION_POLL, cx)
+    /// to sync it (server-sync §3–4, §6); `server` is where it is synced to,
+    /// `news` hears the copy's writes.
+    pub fn server_copy(
+        sender: Sender,
+        collection: Collection,
+        server: Storage,
+        copy: (ServerCopy, UnboundedReceiver<()>),
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::with_poll(sender, collection, Some((server, copy)), pacing::SERVER_POLL, cx)
     }
 
     /// Asks every `poll` whether another reader changed the project.
     fn with_poll(
         mut sender: Sender,
         collection: Collection,
-        scope: Option<String>,
+        copy: Option<(Storage, (ServerCopy, UnboundedReceiver<()>))>,
         poll: Option<Duration>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let copy = scope.map(|scope| {
-            let (copy, mut news) = ServerCopy::new(&collection, scope);
-            let server = sender.storage.clone();
+        let copy = copy.map(|(server, (copy, mut news))| {
             sender.storage = copy.storage(&server);
             let news = cx.spawn(async move |this, cx| {
                 while news.next().await.is_some() {
@@ -188,7 +197,10 @@ impl WorkspaceState {
                     continue;
                 }
                 let Ok(call) = this.update(cx, |this, _| {
-                    this.sender.storage.collections().get(this.collection.id.clone())
+                    // A copy asks its server; the desktop's own projects
+                    // are asked here only in tests.
+                    let stores = this.copy.as_ref().map_or(&this.sender.storage, |copy| &copy.server);
+                    stores.collections().get(this.collection.id.clone())
                 }) else {
                     return;
                 };
@@ -227,56 +239,77 @@ impl WorkspaceState {
         });
     }
 
-    /// Opening a server project (server-sync §3.1): the server's content,
-    /// or the draft of changes it has not had. A viewer changes nothing,
-    /// so no draft counts for them.
+    /// Opening a server project (server-sync §3.1): what this machine kept
+    /// of it, and the server's — the project as the reader has it there, and
+    /// its content.
     fn open_copy(&mut self, cx: &mut Context<Self>) {
         let Some(copy) = &self.copy else { return };
-        let draft = if self.editable() { copy.copy.draft() } else { None };
-        let call = copy.server.tree().config(self.collection.id.clone());
-        run_serial(cx, &self.gate, call, move |this, result, cx| {
-            this.copy_opened(result, draft, cx)
+        let (server, id, kept) = (copy.server.clone(), self.collection.id.clone(), copy.copy.kept());
+        let call: StoreFuture<Opened> = Box::pin(async move {
+            let kept = kept.await?;
+            let on_server = async {
+                let found = server.collections().get(id.clone()).await?;
+                Ok((found, server.tree().config(id).await?))
+            };
+            Ok((kept, on_server.await))
+        });
+        run_serial(cx, &self.gate, call, |this, result, cx| match result {
+            Ok((kept, on_server)) => this.copy_opened(kept, on_server, cx),
+            Err(error) => {
+                this.load = Load::Failed(error);
+                cx.notify();
+            }
         });
     }
 
-    fn copy_opened(&mut self, result: Result<ConfigAt, StoreError>, draft: Option<Draft>, cx: &mut Context<Self>) {
+    fn copy_opened(
+        &mut self,
+        kept: Option<Kept>,
+        on_server: Result<(Collection, ConfigAt), StoreError>,
+        cx: &mut Context<Self>,
+    ) {
+        // The reader's place in it is the server's to say.
+        if let Ok((found, _)) = &on_server {
+            self.collection.role = found.role;
+            self.collection.owner = found.owner.clone();
+        }
+        // A viewer changes nothing: no changes kept count for them.
+        let editable = self.editable();
+        let kept = kept.filter(|kept| editable || !kept.unsynced);
         let collection = self.collection.clone();
         let Some(copy) = self.copy.as_mut() else { return };
-        let held = match (result, draft) {
-            (Ok(at), Some(draft)) => {
-                let step = sync::step(Moment::Look, draft.base, at.revision, true);
-                copy.behind = step == Step::KeepUnsyncedBehind;
-                copy.told = true;
-                cx.emit(WorkspaceEvent::KeptUnsynced { behind: copy.behind });
-                Ok((draft, true))
+        let kept = match (on_server, kept) {
+            (Ok((_, at)), Some(kept)) => {
+                let step = sync::step(Moment::Look, kept.base, at.revision, kept.unsynced);
+                if step == Step::Pull {
+                    return self.take(at, false, cx);
+                }
+                if kept.unsynced {
+                    copy.behind = step == Step::KeepUnsyncedBehind;
+                    copy.told = true;
+                    cx.emit(WorkspaceEvent::KeptUnsynced { behind: copy.behind });
+                }
+                kept
             }
-            (Ok(at), None) => Ok((
-                Draft {
-                    base: Some(at.revision),
-                    config: at.config,
-                },
-                false,
-            )),
+            (Ok((_, at)), None) => return self.take(at, false, cx),
             // Not reachable, or not the reader's any more: what this
-            // browser kept shows, as long as there is that.
-            (Err(error), Some(draft)) => {
-                copy.told = true;
+            // machine kept is worked on, as long as there is that.
+            (Err(error), Some(kept)) => {
+                copy.told = kept.unsynced;
                 cx.emit(WorkspaceEvent::NotPulled(error));
-                Ok((draft, true))
+                kept
             }
-            (Err(error), None) => Err(error),
+            (Err(error), None) => {
+                self.load = Load::Failed(error);
+                return cx.notify();
+            }
         };
-        let held = held.and_then(|(draft, unsynced)| {
-            let (name, description) = (draft.config.name.clone(), draft.config.description.clone());
-            copy.copy.hold(collection, draft.config, draft.base, unsynced)?;
-            Ok((name, description))
-        });
-        match held {
-            Ok((name, description)) => {
-                self.collection.name = name;
-                self.collection.description = description;
-                self.load_all(cx);
-            }
+        if let Some(draft) = &kept.draft {
+            self.collection.name = draft.name.clone();
+            self.collection.description = draft.description.clone();
+        }
+        match copy.copy.resume(collection, kept) {
+            Ok(()) => self.load_all(cx),
             Err(error) => {
                 self.load = Load::Failed(error);
                 cx.notify();
@@ -336,24 +369,35 @@ impl WorkspaceState {
             || self.api.as_ref().is_some_and(|api| api.read(cx).has_unsaved())
     }
 
-    /// The server's content becomes the copy, level with it. The editor
-    /// starts again from it when its request changed — or always, when the
-    /// reader gave their changes up (`forget`).
+    /// The server's content becomes the copy, level with it.
     fn take(&mut self, at: ConfigAt, forget: bool, cx: &mut Context<Self>) {
         let Some(copy) = self.copy.as_mut() else { return };
-        let data = at.config.tree();
-        let (name, description) = (at.config.name.clone(), at.config.description.clone());
         let collection = Collection {
-            name: name.clone(),
-            description: description.clone(),
+            name: at.config.name.clone(),
+            description: at.config.description.clone(),
             ..self.collection.clone()
         };
-        if let Err(error) = copy.copy.hold(collection, at.config, Some(at.revision), false) {
-            return cx.emit(WorkspaceEvent::Failed(error));
-        }
+        let call = copy.copy.take(collection, at.config.clone(), at.revision);
         copy.behind = false;
-        self.collection.name = name;
-        self.collection.description = description;
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(()) => this.took(at, forget, cx),
+            Err(error) => {
+                if this.load != Load::Loaded {
+                    this.load = Load::Failed(error.clone());
+                }
+                cx.emit(WorkspaceEvent::Failed(error));
+                cx.notify();
+            }
+        });
+    }
+
+    /// The copy is the server's content now. The editor starts again from
+    /// it when its request changed — or always, when the reader gave their
+    /// changes up (`forget`).
+    fn took(&mut self, at: ConfigAt, forget: bool, cx: &mut Context<Self>) {
+        let data = at.config.tree();
+        self.collection.name = at.config.name;
+        self.collection.description = at.config.description;
         let editor = self.api.as_ref().map(|api| api.read(cx).api().clone());
         let request = |data: &TreeData, id: &ItemId| {
             data.apis
@@ -373,6 +417,9 @@ impl WorkspaceState {
         } else {
             self.load_all(cx);
         }
+        if forget {
+            cx.emit(WorkspaceEvent::TookServers);
+        }
         cx.notify();
     }
 
@@ -383,7 +430,7 @@ impl WorkspaceState {
             copy.told = true;
             cx.emit(WorkspaceEvent::FirstChange);
         }
-        if !copy.copy.kept() && !copy.told_not_kept {
+        if !copy.copy.kept_here() && !copy.told_not_kept {
             copy.told_not_kept = true;
             cx.emit(WorkspaceEvent::NotKept);
         }
@@ -439,32 +486,35 @@ impl WorkspaceState {
             return;
         };
         let Some(over) = copy.push.take() else { return };
-        let (config, base, landed) = match copy.copy.snapshot() {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                copy.busy = false;
-                return cx.emit(WorkspaceEvent::Failed(error));
-            }
-        };
-        let server = copy.server.clone();
-        let call = if over {
-            copy::push_over(server, id, config)
-        } else {
-            copy::push(server, id, config, base)
-        };
-        run_store(cx, call, move |this, result, cx| this.pushed(result, landed, cx));
+        let (server, snapshot) = (copy.server.clone(), copy.copy.snapshot());
+        let call: StoreFuture<(Pushed, u64)> = Box::pin(async move {
+            let (config, base, landed) = snapshot.await?;
+            let pushed = if over {
+                copy::push_over(server, id, config).await?
+            } else {
+                copy::push(server, id, config, base).await?
+            };
+            Ok((pushed, landed))
+        });
+        run_store(cx, call, |this, result, cx| this.pushed(result, cx));
     }
 
-    fn pushed(&mut self, result: Result<Pushed, StoreError>, landed: u64, cx: &mut Context<Self>) {
+    fn pushed(&mut self, result: Result<(Pushed, u64), StoreError>, cx: &mut Context<Self>) {
         let Some(copy) = self.copy.as_mut() else { return };
         copy.busy = false;
         match result {
-            Ok(Pushed::Written(revision)) => {
-                copy.copy.pushed(revision, landed);
+            Ok((Pushed::Written(revision), landed)) => {
+                let (_, keep) = copy.copy.pushed(revision, landed);
+                cx.background_spawn(async move {
+                    if let Err(error) = keep.await {
+                        warn!(%error, "the synced copy could not be marked");
+                    }
+                })
+                .detach();
                 copy.behind = false;
                 cx.emit(WorkspaceEvent::Synced);
             }
-            Ok(Pushed::Conflict) => cx.emit(WorkspaceEvent::Conflict),
+            Ok((Pushed::Conflict, _)) => cx.emit(WorkspaceEvent::Conflict),
             // Not the reader's to change any more, or not reachable: the
             // changes stay, unsynced.
             Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
@@ -487,10 +537,7 @@ impl WorkspaceState {
                 copy.busy = false;
             }
             match result {
-                Ok(at) => {
-                    this.take(at, true, cx);
-                    cx.emit(WorkspaceEvent::TookServers);
-                }
+                Ok(at) => this.take(at, true, cx),
                 Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
             }
             cx.notify();
@@ -1739,6 +1786,55 @@ mod tests {
         const BEAT: Duration = Duration::from_secs(10);
         const READER: &str = "alice";
 
+        /// Projects the reader only views.
+        struct Viewing(MemoryStore);
+
+        impl cyberapi_store::CollectionStore for Viewing {
+            fn list(&self) -> cyberapi_store::StoreFuture<Vec<Collection>> {
+                let call = self.0.list();
+                Box::pin(async move {
+                    let mut found = call.await?;
+                    for collection in &mut found {
+                        collection.role = CollectionRole::Viewer;
+                    }
+                    Ok(found)
+                })
+            }
+
+            fn get(&self, id: cyberapi_core::CollectionId) -> cyberapi_store::StoreFuture<Collection> {
+                let call = self.0.get(id);
+                Box::pin(async move {
+                    Ok(Collection {
+                        role: CollectionRole::Viewer,
+                        ..call.await?
+                    })
+                })
+            }
+
+            fn create(&self, input: NewCollection) -> cyberapi_store::StoreFuture<Collection> {
+                self.0.create(input)
+            }
+
+            fn update(
+                &self,
+                id: cyberapi_core::CollectionId,
+                edit: cyberapi_store::CollectionEdit,
+            ) -> cyberapi_store::StoreFuture<Collection> {
+                self.0.update(id, edit)
+            }
+
+            fn delete(&self, id: cyberapi_core::CollectionId) -> cyberapi_store::StoreFuture<()> {
+                cyberapi_store::CollectionStore::delete(&self.0, id)
+            }
+
+            fn api_counts(
+                &self,
+            ) -> cyberapi_store::StoreFuture<std::collections::BTreeMap<cyberapi_core::CollectionId, usize>>
+            {
+                self.0.api_counts()
+            }
+        }
+
         /// A server project opened as a page opens it, and what it said.
         fn open_copy(
             server: &Storage,
@@ -1746,7 +1842,14 @@ mod tests {
             cx: &mut TestAppContext,
         ) -> (Entity<WorkspaceState>, Rc<RefCell<Vec<String>>>) {
             let state = cx.new(|cx| {
-                WorkspaceState::with_poll(sender(server, true), collection, Some(READER.into()), Some(BEAT), cx)
+                let copy = ServerCopy::page(&collection, READER.into());
+                WorkspaceState::with_poll(
+                    sender(server, true),
+                    collection,
+                    Some((server.clone(), copy)),
+                    Some(BEAT),
+                    cx,
+                )
             });
             let told: Rc<RefCell<Vec<String>>> = Rc::default();
             let heard = told.clone();
@@ -1934,18 +2037,24 @@ mod tests {
 
         #[gpui_kit::test]
         async fn a_viewer_has_nothing_to_sync(cx: &mut TestAppContext) {
-            let server = MemoryStore::new().storage();
+            let memory = MemoryStore::new();
+            let server = memory.storage();
             let collection = project(&server).await;
             let (editor_state, _) = open_copy(&server, collection.clone(), cx);
             editor_state.update(cx, |state, cx| state.create_api(None, "mine".into(), cx));
             cx.run_until_parked();
             drop(editor_state);
 
-            let viewer = Collection {
-                role: CollectionRole::Viewer,
-                ..collection.clone()
-            };
-            let (state, told) = open_copy(&server, viewer, cx);
+            // The same server, which now says the reader only views it.
+            let viewing = Storage::new(
+                Arc::new(Viewing(memory.clone())),
+                Arc::new(memory.clone()),
+                Arc::new(memory.clone()),
+                Arc::new(memory.clone()),
+                Arc::new(memory.clone()),
+                Arc::new(memory),
+            );
+            let (state, told) = open_copy(&viewing, collection, cx);
             assert!(row_names(&state, cx).is_empty(), "the server's, not the draft");
             assert!(!state.read_with(cx, |state, _| state.syncs()));
             assert!(!unsynced(&state, cx));

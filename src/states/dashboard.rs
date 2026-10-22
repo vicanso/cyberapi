@@ -1,20 +1,27 @@
 //! The project list (M2).
 //!
-//! In a page the projects are the server's, and a reader's unsynced
-//! changes to one wait in a draft in this browser (`docs/server-sync.md`
-//! §3–4): its card shows the draft's name and says so, and syncs it or
-//! gives it up without opening the project. A change of name or
-//! description is one of those changes.
+//! Projects may be a server's (`docs/server-sync.md`), and a reader's
+//! unsynced changes to one wait: in a page, in a draft in this browser
+//! (§3–4); on the desktop, in its copy in the database, bound to the
+//! signed-in account (§6). A card shows the changes' name and says they are
+//! unsynced, and syncs them or gives them up without opening the project.
+//! A change of name or description is one of those changes.
+//!
+//! The desktop lists its own projects, and — signed in — the account's
+//! server projects, each copied here when it is first listed and refreshed
+//! while it has nothing unsynced. Another account's copies, or any while
+//! signed out, are not listed; offline, the account's copies show as kept.
 
 use super::copy::{self, Pushed};
-use super::{Load, run_store};
+use super::{Load, ServerState, run_store};
 use crate::drafts_local::{self, Draft};
-use cyberapi_core::CollectionId;
 use cyberapi_core::model::Collection;
-use cyberapi_core::sync::{self, Moment, ProjectConfig, Step};
-use cyberapi_store::{CollectionEdit, NewCollection, Storage, StoreError, rules};
-use gpui_kit::{Context, EventEmitter};
+use cyberapi_core::sync::{self, CopyBinding, Moment, ProjectConfig, Step};
+use cyberapi_core::{AccountId, CollectionId};
+use cyberapi_store::{CollectionEdit, NewCollection, ServerCopyStore, Storage, StoreError, StoreFuture, rules};
+use gpui_kit::{Context, Entity, EventEmitter, Subscription};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use tracing::warn;
 
 /// What the view should tell the reader about.
@@ -26,40 +33,67 @@ pub enum DashboardEvent {
     Deleted(CollectionId),
     /// A project the reader made, to be opened.
     Created(Collection),
-    /// A change now waits in this browser for the reader to sync it.
+    /// A change now waits here for the reader to sync it.
     Unsynced,
     /// This browser could not keep a change: a refresh loses it.
     NotKept,
-    /// The server has the project's draft now.
+    /// The server has the project's changes now.
     Synced(Collection),
-    /// The server moved on since the draft's base: the reader chooses.
+    /// The server moved on since the changes' base: the reader chooses.
     Conflict(Collection),
+}
+
+/// The desktop's server, signed in, as the list needs it.
+#[derive(Clone)]
+struct Desktop {
+    server: Storage,
+    copies: Arc<dyn ServerCopyStore>,
+    account: AccountId,
 }
 
 pub struct DashboardState {
     storage: Storage,
-    /// As the server lists them.
+    /// As the store lists them.
     listed: Vec<Collection>,
-    /// As they show: with the name and description of their drafts.
+    /// As they show: a draft's name over the server's; the desktop's copies
+    /// as the server has them, and only the signed-in account's.
     collections: Vec<Collection>,
     /// How many APIs each project holds, for its card; read beside the
     /// list, and `None` until it was.
     api_counts: Option<BTreeMap<CollectionId, usize>>,
     load: Load,
-    /// Whose drafts (`crate::pins_local::scope`); `None` where changes are
-    /// written at once.
+    /// Whose drafts (`crate::pins_local::scope`); a page's.
     scope: Option<String>,
     drafts: BTreeMap<CollectionId, Draft>,
-    /// Drafts on their way to the server.
+    /// The desktop's server.
+    server_state: Option<Entity<ServerState>>,
+    /// Signed in there.
+    desktop: Option<Desktop>,
+    /// Every account's copies' bindings, as the server state has them.
+    bound: Vec<CopyBinding>,
+    /// The account's projects as its server lists them; `None` until read,
+    /// or when it could not be.
+    on_server: Option<Vec<Collection>>,
+    /// Changes on their way to the server.
     syncing: BTreeSet<CollectionId>,
+    _server: Option<Subscription>,
 }
 
 impl EventEmitter<DashboardEvent> for DashboardState {}
 
 impl DashboardState {
-    /// `scope`: whose drafts the projects have, where they are the
-    /// server's.
-    pub fn new(storage: Storage, scope: Option<String>, cx: &mut Context<Self>) -> Self {
+    /// `scope`: whose drafts a page's projects have. `server`: the
+    /// desktop's server, whose projects it lists beside its own.
+    pub fn new(
+        storage: Storage,
+        scope: Option<String>,
+        server: Option<Entity<ServerState>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // Signed in or out, copies made, synced or edited.
+        let watch = server
+            .as_ref()
+            .map(|server| cx.observe(server, |this, _, cx| this.server_changed(cx)));
         let mut state = Self {
             storage,
             listed: Vec::new(),
@@ -68,8 +102,14 @@ impl DashboardState {
             load: Load::Loading,
             scope,
             drafts: BTreeMap::new(),
+            server_state: server,
+            desktop: None,
+            bound: Vec::new(),
+            on_server: None,
             syncing: BTreeSet::new(),
+            _server: watch,
         };
+        state.read_server(cx);
         state.reload(cx);
         state
     }
@@ -83,24 +123,82 @@ impl DashboardState {
         }
     }
 
+    /// The desktop's server changed: signed in or out, or its copies'
+    /// bindings. Another account lists again.
+    pub fn server_changed(&mut self, cx: &mut Context<Self>) {
+        let before = self.desktop.as_ref().map(|desktop| desktop.account.clone());
+        self.read_server(cx);
+        let after = self.desktop.as_ref().map(|desktop| desktop.account.clone());
+        if before != after {
+            self.on_server = None;
+            self.reload(cx);
+        } else {
+            self.show();
+            cx.notify();
+        }
+    }
+
+    fn read_server(&mut self, cx: &mut Context<Self>) {
+        let Some(server) = &self.server_state else { return };
+        let server = server.read(cx);
+        self.bound = server.bound().to_vec();
+        self.desktop = (|| {
+            Some(Desktop {
+                server: server.storage()?,
+                copies: server.copies()?.clone(),
+                account: server.account()?,
+            })
+        })();
+    }
+
     fn read_drafts(&mut self) {
         self.drafts = self.scope.as_deref().map(drafts_local::all).unwrap_or_default();
         self.show();
     }
 
-    /// The list as it shows: a draft's name and description over the
-    /// server's. A viewer changes nothing, so no draft counts for them.
+    /// The signed-in account's copy `id`, on the desktop.
+    fn mine(&self, id: &CollectionId) -> Option<&CopyBinding> {
+        let account = &self.desktop.as_ref()?.account;
+        self.bound
+            .iter()
+            .find(|binding| &binding.collection == id && &binding.account == account)
+    }
+
+    /// The list as it shows.
     fn show(&mut self) {
         self.collections = self
             .listed
             .iter()
-            .map(|collection| match self.draft(collection) {
-                Some(draft) => Collection {
-                    name: draft.config.name.clone(),
-                    description: draft.config.description.clone(),
-                    ..collection.clone()
-                },
-                None => collection.clone(),
+            .filter_map(|collection| {
+                if let Some(draft) = self.draft(collection) {
+                    return Some(Collection {
+                        name: draft.config.name.clone(),
+                        description: draft.config.description.clone(),
+                        ..collection.clone()
+                    });
+                }
+                let bound = self.bound.iter().any(|binding| binding.collection == collection.id);
+                match self.mine(&collection.id) {
+                    // This machine's own.
+                    None if !bound => Some(collection.clone()),
+                    // Another account's, or any while signed out.
+                    None => None,
+                    Some(binding) => match &self.on_server {
+                        // Offline: as kept.
+                        None => Some(collection.clone()),
+                        // Gone from the server, or from the account's
+                        // reach: not listed.
+                        Some(projects) => {
+                            let theirs = projects.iter().find(|project| project.id == collection.id)?;
+                            let mine = if binding.unsynced { collection } else { theirs };
+                            Some(Collection {
+                                name: mine.name.clone(),
+                                description: mine.description.clone(),
+                                ..theirs.clone()
+                            })
+                        }
+                    },
+                }
             })
             .collect();
     }
@@ -113,15 +211,31 @@ impl DashboardState {
     }
 
     /// Whether `id` has changes the server has not had, and then whether
-    /// the server moved on since too (server-sync §3.1).
+    /// the server moved on since too (server-sync §3.1). A viewer has none.
     pub fn unsynced(&self, id: &CollectionId) -> Option<bool> {
-        let collection = self.listed.iter().find(|collection| &collection.id == id)?;
-        let draft = self.draft(collection)?;
-        let step = sync::step(Moment::Look, draft.base, collection.revision, true);
-        Some(step == Step::KeepUnsyncedBehind)
+        let collection = self.collections.iter().find(|collection| &collection.id == id)?;
+        if !collection.role.can_edit() {
+            return None;
+        }
+        let (base, revision) = match self.drafts.get(id) {
+            Some(draft) => (draft.base, collection.revision),
+            None => {
+                let binding = self.mine(id).filter(|binding| binding.unsynced)?;
+                let on_server = self
+                    .on_server
+                    .as_ref()
+                    .and_then(|projects| projects.iter().find(|project| &project.id == id));
+                match on_server {
+                    Some(project) => (binding.base, project.revision),
+                    // Offline: unsynced, and nothing known of the server.
+                    None => return Some(false),
+                }
+            }
+        };
+        Some(sync::step(Moment::Look, base, revision, true) == Step::KeepUnsyncedBehind)
     }
 
-    /// Whether `id`'s draft is on its way to the server.
+    /// Whether `id`'s changes are on their way to the server.
     pub fn syncing(&self, id: &CollectionId) -> bool {
         self.syncing.contains(id)
     }
@@ -146,16 +260,27 @@ impl DashboardState {
         Some(counts.get(id).copied().unwrap_or_default())
     }
 
-    /// F2.1.
+    /// F2.1; on the desktop signed in, the server's projects after this
+    /// machine's.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.load = Load::Loading;
         cx.notify();
-        run_store(cx, self.storage.collections().list(), |this, result, cx| {
+        if let Some(server) = &self.server_state {
+            server.update(cx, |server, cx| server.reload_copies(cx));
+        }
+        self.reload_listed(true, cx);
+    }
+
+    fn reload_listed(&mut self, then_server: bool, cx: &mut Context<Self>) {
+        run_store(cx, self.storage.collections().list(), move |this, result, cx| {
             match result {
                 Ok(collections) => {
                     this.listed = collections;
                     this.read_drafts();
                     this.load = Load::Loaded;
+                    if then_server {
+                        this.reload_server(cx);
+                    }
                 }
                 Err(error) => this.load = Load::Failed(error),
             }
@@ -171,8 +296,87 @@ impl DashboardState {
         });
     }
 
-    /// F2.2.
+    /// The account's server projects (server-sync §3.1, §6): each copied
+    /// here when it is not yet, and refreshed when the server moved on and
+    /// the copy has nothing unsynced.
+    fn reload_server(&mut self, cx: &mut Context<Self>) {
+        let Some(desktop) = self.desktop.clone() else {
+            self.on_server = None;
+            return;
+        };
+        run_store(cx, desktop.server.collections().list(), move |this, result, cx| {
+            match result {
+                Ok(projects) => {
+                    let stale: Vec<Collection> =
+                        projects.iter().filter(|project| this.stale(project)).cloned().collect();
+                    this.on_server = Some(projects);
+                    if !stale.is_empty() {
+                        this.pull(desktop, stale, None, cx);
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, "the server's projects could not be listed");
+                    this.on_server = None;
+                }
+            }
+            this.show();
+            cx.notify();
+        });
+    }
+
+    fn stale(&self, project: &Collection) -> bool {
+        let here = self.listed.iter().any(|collection| collection.id == project.id);
+        match self.mine(&project.id) {
+            None => true,
+            Some(_) if !here => true,
+            Some(binding) => !binding.unsynced && binding.base != Some(project.revision),
+        }
+    }
+
+    /// Copies `projects` here as the server has them; `then` hears of the
+    /// first, made.
+    fn pull(&mut self, desktop: Desktop, projects: Vec<Collection>, then: Option<Collection>, cx: &mut Context<Self>) {
+        run_store(cx, pull_copies(desktop, projects), move |this, result, cx| {
+            match result {
+                Ok(bound) => {
+                    this.note_bound(bound, cx);
+                    if let Some(collection) = then {
+                        cx.emit(DashboardEvent::Created(collection));
+                    }
+                }
+                Err(error) => cx.emit(DashboardEvent::Failed(error)),
+            }
+            this.reload_listed(false, cx);
+        });
+    }
+
+    /// Bindings the database has now: here and in the server state, so a
+    /// copy opens as one at once.
+    fn note_bound(&mut self, bound: Vec<CopyBinding>, cx: &mut Context<Self>) {
+        for binding in &bound {
+            self.bound.retain(|found| found.collection != binding.collection);
+            self.bound.push(binding.clone());
+        }
+        if let Some(server) = &self.server_state {
+            server.update(cx, |server, cx| server.note_bound(bound, cx));
+        }
+        self.show();
+        cx.notify();
+    }
+
+    /// F2.2: on the desktop signed in, a team's project is made on the
+    /// server and copied here (server-sync §2); without a team, it is this
+    /// machine's.
     pub fn create(&mut self, input: NewCollection, cx: &mut Context<Self>) {
+        if let Some(desktop) = self.desktop.clone()
+            && input.owner.is_some()
+        {
+            let call = desktop.server.collections().create(input);
+            return run_store(cx, call, move |this, result, cx| match result {
+                Ok(made) => this.pull(desktop, vec![made.clone()], Some(made), cx),
+                Err(error) => cx.emit(DashboardEvent::Failed(error)),
+            });
+        }
         run_store(
             cx,
             self.storage.collections().create(input),
@@ -189,45 +393,70 @@ impl DashboardState {
     }
 
     /// F2.3. A server project's name and description are part of what
-    /// syncs (server-sync §2): the change goes into its draft, made from the
-    /// server's content when there is none yet.
+    /// syncs (server-sync §2): the change goes into its draft (made from the
+    /// server's content when there is none yet), or the desktop's copy.
     pub fn update(&mut self, id: CollectionId, edit: CollectionEdit, cx: &mut Context<Self>) {
         if self.scope.is_some() {
             return self.update_draft(id, edit, cx);
         }
-        run_store(
-            cx,
-            self.storage.collections().update(id, edit),
-            |this, result, cx| match result {
-                Ok(updated) => {
-                    if let Some(found) = this.listed.iter_mut().find(|found| found.id == updated.id) {
-                        *found = updated;
-                    }
-                    this.show();
-                    cx.notify();
+        let copy = self.desktop.clone().zip(self.mine(&id).cloned());
+        let call = self.storage.collections().update(id, edit);
+        run_store(cx, call, move |this, result, cx| match result {
+            Ok(updated) => {
+                if let Some(found) = this.listed.iter_mut().find(|found| found.id == updated.id) {
+                    *found = updated;
                 }
-                Err(error) => cx.emit(DashboardEvent::Failed(error)),
-            },
-        );
+                if let Some((desktop, binding)) = copy {
+                    this.mark_unsynced(desktop, binding, cx);
+                }
+                this.show();
+                cx.notify();
+            }
+            Err(error) => cx.emit(DashboardEvent::Failed(error)),
+        });
     }
 
-    /// F2.4. The view asks first.
+    fn mark_unsynced(&mut self, desktop: Desktop, binding: CopyBinding, cx: &mut Context<Self>) {
+        let binding = CopyBinding {
+            unsynced: true,
+            ..binding
+        };
+        let call = desktop.copies.bind(binding.clone());
+        run_store(cx, call, move |this, result, cx| match result {
+            Ok(()) => {
+                this.note_bound(vec![binding], cx);
+                cx.emit(DashboardEvent::Unsynced);
+            }
+            Err(error) => cx.emit(DashboardEvent::Failed(error)),
+        });
+    }
+
+    /// F2.4. The view asks first. The desktop's copy of a server project
+    /// goes from the server first, then from here with its binding.
     pub fn delete(&mut self, id: CollectionId, cx: &mut Context<Self>) {
         let deleted = id.clone();
-        run_store(
-            cx,
-            self.storage.collections().delete(id),
-            move |this, result, cx| match result {
-                Ok(()) => {
-                    this.listed.retain(|found| found.id != deleted);
-                    this.drafts.remove(&deleted);
-                    this.show();
-                    cx.emit(DashboardEvent::Deleted(deleted));
-                    cx.notify();
+        let local = self.storage.clone();
+        let call: StoreFuture<()> = match self.desktop.clone().filter(|_| self.mine(&id).is_some()) {
+            Some(desktop) => Box::pin(async move {
+                desktop.server.collections().delete(id.clone()).await?;
+                local.collections().delete(id).await
+            }),
+            None => local.collections().delete(id),
+        };
+        run_store(cx, call, move |this, result, cx| match result {
+            Ok(()) => {
+                this.listed.retain(|found| found.id != deleted);
+                this.drafts.remove(&deleted);
+                this.bound.retain(|found| found.collection != deleted);
+                if let Some(server) = &this.server_state {
+                    server.update(cx, |server, cx| server.forget_bound(&deleted, cx));
                 }
-                Err(error) => cx.emit(DashboardEvent::Failed(error)),
-            },
-        );
+                this.show();
+                cx.emit(DashboardEvent::Deleted(deleted));
+                cx.notify();
+            }
+            Err(error) => cx.emit(DashboardEvent::Failed(error)),
+        });
     }
 
     fn update_draft(&mut self, id: CollectionId, edit: CollectionEdit, cx: &mut Context<Self>) {
@@ -273,19 +502,64 @@ impl DashboardState {
         cx.notify();
     }
 
-    /// Pushes `id`'s draft (server-sync §3.3): only where the server is
-    /// still at its base, or `over` whatever it has.
+    /// Pushes `id`'s changes (server-sync §3.3): only where the server is
+    /// still at their base, or `over` whatever it has.
     pub fn sync(&mut self, id: &CollectionId, over: bool, cx: &mut Context<Self>) {
-        let Some(collection) = self.listed.iter().find(|collection| &collection.id == id).cloned() else {
+        let Some(collection) = self.collections.iter().find(|collection| &collection.id == id).cloned() else {
             return;
         };
-        let Some(draft) = self.draft(&collection).cloned() else {
-            return;
-        };
-        if !self.syncing.insert(id.clone()) {
+        if self.syncing.contains(id) {
             return;
         }
-        let (server, id) = (self.storage.clone(), id.clone());
+        if let Some(listed) = self.listed.iter().find(|listed| &listed.id == id).cloned()
+            && let Some(draft) = self.draft(&listed).cloned()
+        {
+            return self.sync_draft(collection, draft, over, cx);
+        }
+        let (Some(desktop), Some(binding)) = (self.desktop.clone(), self.mine(id).cloned()) else {
+            return;
+        };
+        self.syncing.insert(id.clone());
+        let local = self.storage.clone();
+        let call: StoreFuture<(Pushed, Option<CopyBinding>)> = Box::pin(async move {
+            let config = local.tree().config(binding.collection.clone()).await?.config;
+            let (server, id) = (desktop.server.clone(), binding.collection.clone());
+            let pushed = if over {
+                copy::push_over(server, id, config).await?
+            } else {
+                copy::push(server, id, config, binding.base).await?
+            };
+            let Pushed::Written(revision) = pushed else {
+                return Ok((pushed, None));
+            };
+            let level = CopyBinding {
+                base: Some(revision),
+                unsynced: false,
+                ..binding
+            };
+            desktop.copies.bind(level.clone()).await?;
+            Ok((pushed, Some(level)))
+        });
+        let id = id.clone();
+        run_store(cx, call, move |this, result, cx| {
+            this.syncing.remove(&id);
+            match result {
+                Ok((Pushed::Written(_), level)) => {
+                    this.note_bound(level.into_iter().collect(), cx);
+                    cx.emit(DashboardEvent::Synced(collection));
+                    this.reload(cx);
+                }
+                Ok((Pushed::Conflict, _)) => cx.emit(DashboardEvent::Conflict(collection)),
+                Err(error) => cx.emit(DashboardEvent::Failed(error)),
+            }
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    fn sync_draft(&mut self, collection: Collection, draft: Draft, over: bool, cx: &mut Context<Self>) {
+        let (server, id) = (self.storage.clone(), collection.id.clone());
+        self.syncing.insert(id.clone());
         let call = if over {
             copy::push_over(server, id.clone(), draft.config.clone())
         } else {
@@ -312,15 +586,44 @@ impl DashboardState {
         cx.notify();
     }
 
-    /// Gives `id`'s unsynced changes up: it opens as the server has it.
+    /// Gives `id`'s unsynced changes up: a page's draft goes, and it opens
+    /// as the server has it; the desktop's copy is pulled again — when the
+    /// server can be reached, else it stays.
     pub fn discard(&mut self, id: &CollectionId, cx: &mut Context<Self>) {
         if let Some(scope) = self.scope.as_deref() {
             drafts_local::remove(scope, id);
+            self.drafts.remove(id);
+            self.show();
+            return cx.notify();
         }
-        self.drafts.remove(id);
-        self.show();
-        cx.notify();
+        let (Some(desktop), Some(collection)) = (
+            self.desktop.clone(),
+            self.collections.iter().find(|collection| &collection.id == id).cloned(),
+        ) else {
+            return;
+        };
+        self.pull(desktop, vec![collection], None, cx);
     }
+}
+
+/// The server's `projects` as copies here, level with it: what they bind.
+fn pull_copies(desktop: Desktop, projects: Vec<Collection>) -> StoreFuture<Vec<CopyBinding>> {
+    Box::pin(async move {
+        let mut bound = Vec::new();
+        for project in projects {
+            let at = desktop.server.tree().config(project.id.clone()).await?;
+            desktop.copies.keep_copy(project.clone(), at.config).await?;
+            let binding = CopyBinding {
+                collection: project.id,
+                account: desktop.account.clone(),
+                base: Some(at.revision),
+                unsynced: false,
+            };
+            desktop.copies.bind(binding.clone()).await?;
+            bound.push(binding);
+        }
+        Ok(bound)
+    })
 }
 
 #[cfg(test)]
@@ -361,7 +664,7 @@ mod tests {
     async fn a_server_projects_name_waits_for_its_sync(cx: &mut TestAppContext) {
         let server = MemoryStore::new().storage();
         let shop = project(&server, "shop").await;
-        let state = cx.new(|cx| DashboardState::new(server.clone(), Some(READER.into()), cx));
+        let state = cx.new(|cx| DashboardState::new(server.clone(), Some(READER.into()), None, cx));
         cx.run_until_parked();
 
         state.update(cx, |state, cx| state.update(shop.id.clone(), edit(" store "), cx));
@@ -412,7 +715,7 @@ mod tests {
     async fn a_draft_given_up_shows_the_servers(cx: &mut TestAppContext) {
         let server = MemoryStore::new().storage();
         let shop = project(&server, "shop").await;
-        let state = cx.new(|cx| DashboardState::new(server.clone(), Some(READER.into()), cx));
+        let state = cx.new(|cx| DashboardState::new(server.clone(), Some(READER.into()), None, cx));
         cx.run_until_parked();
         state.update(cx, |state, cx| state.update(shop.id.clone(), edit("store"), cx));
         cx.run_until_parked();
@@ -437,7 +740,7 @@ mod tests {
                 },
             },
         );
-        let state = cx.new(|cx| DashboardState::new(server.clone(), Some(READER.into()), cx));
+        let state = cx.new(|cx| DashboardState::new(server.clone(), Some(READER.into()), None, cx));
         cx.run_until_parked();
         assert_eq!(names(&state, cx), ["mine"]);
 
@@ -454,7 +757,7 @@ mod tests {
     async fn without_drafts_a_name_is_written_at_once(cx: &mut TestAppContext) {
         let storage = MemoryStore::new().storage();
         let shop = project(&storage, "shop").await;
-        let state = cx.new(|cx| DashboardState::new(storage.clone(), None, cx));
+        let state = cx.new(|cx| DashboardState::new(storage.clone(), None, None, cx));
         cx.run_until_parked();
         state.update(cx, |state, cx| state.update(shop.id.clone(), edit("store"), cx));
         cx.run_until_parked();

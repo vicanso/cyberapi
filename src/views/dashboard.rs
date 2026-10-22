@@ -3,7 +3,7 @@
 //! them and forwards what the reader asks for.
 
 use crate::i18n;
-use crate::states::{AppStore, DashboardEvent, DashboardState, Load};
+use crate::states::{AppStore, DashboardEvent, DashboardState, Load, ServerStatus};
 use crate::views::group_dialog::open_group_dialog;
 use crate::views::marked::marked;
 use crate::views::name_dialog::ok_button;
@@ -91,7 +91,8 @@ impl DashboardView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = AppStore::global(cx).clone();
         let scope = store.draft_scope(cx);
-        let state = cx.new(|cx| DashboardState::new(store.storage().clone(), scope, cx));
+        let server = store.server().cloned();
+        let state = cx.new(|cx| DashboardState::new(store.storage().clone(), scope, server, cx));
         let search = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("dashboard.search").to_string())
@@ -1003,18 +1004,38 @@ fn place_of(collection: &Collection, cx: &App) -> Option<String> {
 
 /// The browser build's choice of team for a new project.
 fn team_field(team: &Rc<RefCell<Option<TeamId>>>, cx: &App) -> Option<AnyElement> {
-    AppStore::global(cx).directory()?;
-    let teams = AppStore::global(cx).state().read(cx).me()?.teams.clone();
-    let chosen = team
-        .borrow()
-        .clone()
-        .or_else(|| teams.first().map(|first| first.id.clone()));
+    let store = AppStore::global(cx);
+    // A page's projects are its teams'; the desktop's, signed in, this
+    // machine's (`None`) or a team's on its server (`docs/server-sync.md`
+    // §2).
+    let (teams, here) = if store.directory().is_some() {
+        (store.state().read(cx).me()?.teams.clone(), None)
+    } else {
+        let server = store.server()?.read(cx);
+        server.account()?;
+        let ServerStatus::SignedIn(me) = server.status() else {
+            return None;
+        };
+        (me.teams.clone(), Some(t!("dashboard.this_computer").to_string()))
+    };
+    let chosen = match &here {
+        Some(_) => team.borrow().clone(),
+        None => team
+            .borrow()
+            .clone()
+            .or_else(|| teams.first().map(|first| first.id.clone())),
+    };
     let label = teams
         .iter()
         .find(|candidate| Some(&candidate.id) == chosen.as_ref())
         .map(|candidate| candidate.name.clone())
+        .or_else(|| here.clone())
         .unwrap_or_default();
-    let options = teams.iter().map(|team| (team.id.clone(), team.name.clone())).collect();
+    let options: Vec<(Option<TeamId>, String)> = here
+        .map(|here| (None, here))
+        .into_iter()
+        .chain(teams.iter().map(|team| (Some(team.id.clone()), team.name.clone())))
+        .collect();
     let team = team.clone();
     Some(
         v_flex()
@@ -1024,10 +1045,10 @@ fn team_field(team: &Rc<RefCell<Option<TeamId>>>, cx: &App) -> Option<AnyElement
                 "collection-team",
                 label,
                 options,
-                chosen,
+                Some(chosen),
                 false,
                 move |id, window, _| {
-                    *team.borrow_mut() = Some(id);
+                    *team.borrow_mut() = id;
                     window.refresh();
                 },
             )))

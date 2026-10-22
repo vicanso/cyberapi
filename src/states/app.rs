@@ -51,7 +51,8 @@ impl AppStore {
         });
         let server = extras.sign_out.is_none().then(|| {
             let engine = engine.clone();
-            cx.new(|cx| ServerState::new(engine, cx))
+            let copies = extras.copies.clone();
+            cx.new(|cx| ServerState::new(engine, copies, cx))
         });
         cx.set_global(Self {
             storage,
@@ -191,9 +192,7 @@ impl AppState {
             Ok(me) => {
                 this.me = Some(me);
                 this.json_view = crate::json_view_local::get(&this.pin_scope());
-                if let Some(collection) = this.opening.take() {
-                    this.open_collection(collection, cx);
-                }
+                this.open_waiting(cx);
                 cx.notify();
             }
             Err(error) => warn!(%error, "who is signed in could not be read"),
@@ -209,13 +208,28 @@ impl AppState {
 
     /// F2.7.
     pub fn open_collection(&mut self, collection: Collection, cx: &mut Context<Self>) {
-        if self.me.is_none() && AppStore::global(cx).signs_in() {
+        let store = AppStore::global(cx);
+        let server = store.server().map(|server| server.read(cx));
+        if (self.me.is_none() && store.signs_in()) || server.is_some_and(|server| !server.ready()) {
             self.opening = Some(collection);
             return;
+        }
+        // Another account's copy of a server project (`docs/server-sync.md`
+        // §1) is not this reader's to open.
+        if server.is_some_and(|server| server.hides(&collection.id)) {
+            return self.go_home(cx);
         }
         self.remember_page(Some(collection.id.clone()), cx);
         self.route = Route::Workspace(collection);
         cx.notify();
+    }
+
+    /// The project asked for before who is signed in was known, now that
+    /// it is.
+    pub fn open_waiting(&mut self, cx: &mut Context<Self>) {
+        if let Some(collection) = self.opening.take() {
+            self.open_collection(collection, cx);
+        }
     }
 
     /// F2.8.

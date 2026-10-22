@@ -380,6 +380,17 @@ impl Storage {
         }
     }
 
+    /// These stores with a project's tree and variables answered
+    /// elsewhere: the desktop's copy of a server project, whose changes are
+    /// marked unsynced as they land (`docs/server-sync.md` §6).
+    pub fn with_content(&self, tree: Arc<dyn TreeStore>, variables: Arc<dyn VariableStore>) -> Self {
+        Self {
+            tree,
+            variables,
+            ..self.clone()
+        }
+    }
+
     pub fn collections(&self) -> &dyn CollectionStore {
         self.collections.as_ref()
     }

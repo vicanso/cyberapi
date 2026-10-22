@@ -13,7 +13,7 @@ mod tree_panel;
 
 use crate::APP_NAME;
 use crate::i18n;
-use crate::states::{ApiState, AppStore, WorkspaceEvent, WorkspaceState};
+use crate::states::{ApiState, AppStore, ServerCopy, WorkspaceEvent, WorkspaceState};
 use crate::views::name_dialog::open_name_dialog;
 use crate::views::sync_dialog::open_conflict_dialog;
 use cyberapi_core::model::{Collection, HttpMethod};
@@ -290,6 +290,31 @@ struct Selected {
     _editor_events: Subscription,
 }
 
+/// The project's state: a server project's copy (`docs/server-sync.md`
+/// §3–4, §6) — every project of a page, the signed-in account's copies on
+/// the desktop — or a project of this machine's, written at once.
+fn open_workspace(collection: Collection, cx: &mut Context<WorkspaceState>) -> WorkspaceState {
+    let store = AppStore::global(cx);
+    let sender = store.sender(cx);
+    if let Some(scope) = store.draft_scope(cx) {
+        let copy = ServerCopy::page(&collection, scope);
+        let server = store.storage().clone();
+        return WorkspaceState::server_copy(sender, collection, server, copy, cx);
+    }
+    let desktop = store.server().and_then(|server| {
+        let server = server.read(cx);
+        server.mine(&collection.id)?;
+        Some((server.storage()?, server.copies()?.clone(), server.account()?))
+    });
+    match desktop {
+        Some((server, copies, account)) => {
+            let copy = ServerCopy::desktop(&collection, store.storage().clone(), copies, account);
+            WorkspaceState::server_copy(sender, collection, server, copy, cx)
+        }
+        None => WorkspaceState::new(sender, collection, cx),
+    }
+}
+
 pub struct WorkspaceView {
     id: CollectionId,
     state: Entity<WorkspaceState>,
@@ -308,12 +333,7 @@ pub struct WorkspaceView {
 impl WorkspaceView {
     pub fn new(collection: Collection, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let id = collection.id.clone();
-        let store = AppStore::global(cx);
-        let sender = store.sender(cx);
-        let state = match store.draft_scope(cx) {
-            Some(scope) => cx.new(|cx| WorkspaceState::server_copy(sender, collection, scope, cx)),
-            None => cx.new(|cx| WorkspaceState::new(sender, collection, cx)),
-        };
+        let state = cx.new(|cx| open_workspace(collection, cx));
         let tree = cx.new(|cx| TreePanel::new(state.clone(), window, cx));
         let pins = cx.new(|cx| PinsBar::new(state.clone(), cx));
         let title_name = cx.new(|cx| ProjectTitle::new(state.clone(), cx));
