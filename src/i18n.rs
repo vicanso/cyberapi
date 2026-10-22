@@ -49,6 +49,7 @@ pub fn store_error(error: &StoreError) -> String {
             Entity::Variable => t!("errors.variable_not_found").into(),
             Entity::Team => t!("errors.team_not_found").into(),
             Entity::Account => t!("errors.account_not_found").into(),
+            Entity::Invite => t!("errors.invite_not_found").into(),
         },
         StoreError::Refused { reason } => match reason {
             Refusal::AdminOnly => t!("errors.refused_admin_only").into(),
@@ -61,6 +62,7 @@ pub fn store_error(error: &StoreError) -> String {
             Refusal::PasswordTooShort => t!("errors.refused_password_too_short").into(),
             Refusal::WrongPassword => t!("errors.refused_wrong_password").into(),
             Refusal::NotYourself => t!("errors.refused_not_yourself").into(),
+            Refusal::InviteGone => t!("errors.refused_invite_gone").into(),
         },
         StoreError::Forbidden { .. } => t!("errors.forbidden").into(),
         StoreError::NameRequired => t!("errors.name_required").into(),

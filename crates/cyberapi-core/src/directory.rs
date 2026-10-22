@@ -2,11 +2,13 @@
 //! a reader sees them, and the rules for new ones. The desktop has none.
 
 use crate::access::{CollectionRole, Grantee, TeamRole};
-use crate::{AccountId, TeamId};
+use crate::{AccountId, InviteId, TeamId, Timestamp};
 use serde::{Deserialize, Serialize};
 
 pub const MIN_PASSWORD_CHARS: usize = 8;
 pub const MAX_ACCOUNT_NAME_CHARS: usize = 64;
+/// How long an invitation can be used (`docs/server-sync.md` §5).
+pub const INVITE_DAYS: i64 = 7;
 
 /// An account, as every signed-in reader may see it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +73,57 @@ pub struct Me {
     pub teams: Vec<Team>,
 }
 
+/// A team, and the place in it an invitation gives.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamPlace {
+    pub team: TeamId,
+    pub role: TeamRole,
+}
+
+/// An invitation to make an account (`docs/server-sync.md` §5), as the one
+/// who sent it lists it while it can still be used.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Invite {
+    pub id: InviteId,
+    /// The team the new account joins, and as what; `None`: an
+    /// administrator's, for an account with only its own space.
+    pub place: Option<TeamPlace>,
+    /// The team's name, with `place`.
+    pub team_name: Option<String>,
+    pub created_at: Timestamp,
+    pub expires_at: Timestamp,
+}
+
+/// An invitation just made, and what opens it: shown this once, never kept.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewInvite {
+    pub invite: Invite,
+    pub token: String,
+}
+
+/// What an invitation's link says before an account is made with it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteInfo {
+    /// Who sent it.
+    pub inviter: String,
+    /// The team it joins, if one.
+    pub team: Option<String>,
+}
+
+/// The place in a team its member needs to invite someone in as `role`
+/// (server-sync §5): an admin invites members and admins; only an owner
+/// invites another owner.
+pub fn invite_needs(role: TeamRole) -> TeamRole {
+    match role {
+        TeamRole::Owner => TeamRole::Owner,
+        TeamRole::Admin | TeamRole::Member => TeamRole::Admin,
+    }
+}
+
 /// A sign-in name: 1 to 64 characters, none of them blank.
 pub fn valid_account_name(name: &str) -> bool {
     !name.is_empty() && name.chars().count() <= MAX_ACCOUNT_NAME_CHARS && !name.chars().any(char::is_whitespace)
@@ -105,6 +158,13 @@ mod tests {
         assert_eq!(info.label(), "alice");
         info.display_name = "Alice".into();
         assert_eq!(info.label(), "Alice");
+    }
+
+    #[test]
+    fn only_an_owner_invites_an_owner() {
+        assert_eq!(invite_needs(TeamRole::Member), TeamRole::Admin);
+        assert_eq!(invite_needs(TeamRole::Admin), TeamRole::Admin);
+        assert_eq!(invite_needs(TeamRole::Owner), TeamRole::Owner);
     }
 
     #[test]

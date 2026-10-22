@@ -8,10 +8,11 @@
 //! show.
 
 use super::{AppStore, run_store};
+use crate::this_build;
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
-use cyberapi_core::directory::{AccountInfo, Grant, Me, Member};
-use cyberapi_core::{AccountId, CollectionId, TeamId};
-use cyberapi_store::{AccountEdit, AccountInvite, DirectoryStore, StoreError};
+use cyberapi_core::directory::{AccountInfo, Grant, Invite, Me, Member, TeamPlace};
+use cyberapi_core::{AccountId, CollectionId, InviteId, TeamId};
+use cyberapi_store::{AccountEdit, DirectoryStore, StoreError};
 use gpui_kit::{Context, EventEmitter};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,7 +24,8 @@ pub enum DirectoryDone {
     TeamDeleted,
     /// The reader left the team.
     TeamLeft,
-    AccountCreated,
+    /// An invitation's link, to copy (`docs/server-sync.md` §5).
+    InviteCreated(String),
     PasswordReset,
     PasswordChanged,
     Transferred,
@@ -41,6 +43,11 @@ pub struct DirectoryState {
     accounts: Vec<AccountInfo>,
     members: HashMap<TeamId, Vec<Member>>,
     grants: Option<(CollectionId, Vec<Grant>)>,
+    /// The reader's invitations that can still be used.
+    invites: Vec<Invite>,
+    /// The one just made, and its link: shown this once, as only now its
+    /// token is known.
+    made: Option<(InviteId, String)>,
 }
 
 impl EventEmitter<DirectoryEvent> for DirectoryState {}
@@ -54,6 +61,8 @@ impl DirectoryState {
             accounts: Vec::new(),
             members: HashMap::new(),
             grants: None,
+            invites: Vec::new(),
+            made: None,
         }
     }
 
@@ -76,6 +85,18 @@ impl DirectoryState {
             .as_ref()
             .filter(|(of, _)| of == collection)
             .map(|(_, grants)| grants.as_slice())
+    }
+
+    /// The reader's invitations into `team`, or (`None`) into no team.
+    pub fn invites<'a>(&'a self, team: Option<&'a TeamId>) -> impl Iterator<Item = &'a Invite> + 'a {
+        self.invites
+            .iter()
+            .filter(move |invite| invite.place.as_ref().map(|place| &place.team) == team)
+    }
+
+    /// The invitation just made, and its link.
+    pub fn made(&self) -> Option<&(InviteId, String)> {
+        self.made.as_ref()
     }
 
     fn failed(cx: &mut Context<Self>, error: StoreError) {
@@ -225,14 +246,47 @@ impl DirectoryState {
         );
     }
 
-    pub fn create_account(&mut self, invite: AccountInvite, cx: &mut Context<Self>) {
+    pub fn load_invites(&mut self, cx: &mut Context<Self>) {
+        run_store(cx, self.directory.invites(), |this, result, cx| match result {
+            Ok(invites) => {
+                this.invites = invites;
+                cx.notify();
+            }
+            Err(error) => Self::failed(cx, error),
+        });
+    }
+
+    /// An invitation to `place`, or to an account of its own; its link is
+    /// handed out once, in [`DirectoryDone::InviteCreated`].
+    pub fn create_invite(&mut self, place: Option<TeamPlace>, cx: &mut Context<Self>) {
         run_store(
             cx,
-            self.directory.create_account(invite),
+            self.directory.create_invite(place),
             |this, result, cx| match result {
-                Ok(_) => {
-                    this.reload_accounts(cx);
-                    cx.emit(DirectoryEvent::Done(DirectoryDone::AccountCreated));
+                Ok(made) => {
+                    let link = this_build::invite_link(&made.token);
+                    this.made = Some((made.invite.id.clone(), link.clone()));
+                    this.invites.push(made.invite);
+                    cx.emit(DirectoryEvent::Done(DirectoryDone::InviteCreated(link)));
+                    cx.notify();
+                }
+                Err(error) => Self::failed(cx, error),
+            },
+        );
+    }
+
+    pub fn revoke_invite(&mut self, id: InviteId, cx: &mut Context<Self>) {
+        let revoked = id.clone();
+        run_store(
+            cx,
+            self.directory.revoke_invite(id),
+            move |this, result, cx| match result {
+                Ok(()) => {
+                    this.invites.retain(|invite| invite.id != revoked);
+                    if this.made.as_ref().is_some_and(|(made, _)| made == &revoked) {
+                        this.made = None;
+                    }
+                    cx.notify();
                 }
                 Err(error) => Self::failed(cx, error),
             },

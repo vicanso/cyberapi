@@ -8,12 +8,14 @@
 //! | `GET /v1/setup` | whether the first administrator is still to be made |
 //! | `POST /v1/setup` | makes it, with the setup token, and signs it in |
 //! | `POST /v1/login`, `POST /v1/logout` | the session cookie |
+//! | `POST /v1/invite` | what an invitation's token opens, while it can be used |
+//! | `POST /v1/invite/accept` | makes the account it invites, and signs it in |
 //! | `GET /v1/session` | who is signed in, or 401 |
 //! | `POST /v1/store` | one store call (`cyberapi_store_bridge::Call`) |
 //! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5) |
 //! | anything else | the page's files ([`static_files`]) |
 //!
-//! Failed sign-ins and setup tries are counted ([`throttle`]) and turned
+//! Failed sign-ins, setup tries and invitations that open nothing are counted ([`throttle`]) and turned
 //! away with 429 once there are too many; serve the router with
 //! `into_make_service_with_connect_info::<SocketAddr>` so they are counted
 //! by address too.
@@ -30,8 +32,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use cyberapi_core::directory::{valid_account_name, valid_password};
 use cyberapi_http::{HttpEngine, PreparedRequest};
+use cyberapi_store::{Refusal, StoreError};
 use cyberapi_store_bridge::{Call, SEND_PATH, STORE_PATH, SendReply, dispatch};
-use cyberapi_store_sql::{Account, NewAccount, SqlStore};
+use cyberapi_store_sql::{Acceptance, Account, NewAccount, SqlStore};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -107,6 +110,8 @@ impl Bridge {
             .route("/v1/setup", get(setup_needed).post(setup))
             .route("/v1/login", post(login))
             .route("/v1/logout", post(logout))
+            .route("/v1/invite", post(invite_info))
+            .route("/v1/invite/accept", post(accept_invite))
             .route("/v1/session", get(session))
             .route(STORE_PATH, post(store_call))
             .route(SEND_PATH, post(send_request))
@@ -298,6 +303,72 @@ async fn login(State(bridge): State<Bridge>, extensions: Extensions, Json(form):
             bridge.inner.throttle.failed(&keys, Instant::now());
             (StatusCode::UNAUTHORIZED, "wrong name or password").into_response()
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct InviteForm {
+    token: String,
+}
+
+/// Who sent the invitation, and to which team, for the page to say before
+/// the account is made (`docs/server-sync.md` §5).
+async fn invite_info(State(bridge): State<Bridge>, extensions: Extensions, Json(form): Json<InviteForm>) -> Response {
+    let keys: Vec<Key> = address(&extensions).into_iter().collect();
+    if let Some(refused) = throttled(&bridge, &keys) {
+        return refused;
+    }
+    match bridge.inner.store.invite_info(&form.token).await {
+        Ok(info) => Json(info).into_response(),
+        Err(error) => invite_refused(&bridge, &keys, error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcceptForm {
+    token: String,
+    name: String,
+    #[serde(default)]
+    display_name: String,
+    password: String,
+}
+
+/// The account an invitation asks for, made and signed in. Nothing is made
+/// for an invitation used, revoked or run out, or a name already taken.
+async fn accept_invite(State(bridge): State<Bridge>, extensions: Extensions, Json(form): Json<AcceptForm>) -> Response {
+    let keys: Vec<Key> = address(&extensions).into_iter().collect();
+    if let Some(refused) = throttled(&bridge, &keys) {
+        return refused;
+    }
+    let acceptance = Acceptance {
+        name: form.name,
+        display_name: form.display_name,
+        password: form.password,
+    };
+    match bridge.inner.store.accept_invite(&form.token, acceptance).await {
+        Ok(account) => bridge.sign_in(account).await,
+        Err(error) => invite_refused(&bridge, &keys, error),
+    }
+}
+
+/// A refusal as the page shows it. An invitation that opens nothing counts
+/// as a failed try, as a wrong password does.
+fn invite_refused(bridge: &Bridge, keys: &[Key], error: StoreError) -> Response {
+    let StoreError::Refused { reason } = error else {
+        return internal(error);
+    };
+    match reason {
+        Refusal::InviteGone => {
+            bridge.inner.throttle.failed(keys, Instant::now());
+            (StatusCode::GONE, "this invitation was used, taken back or has run out").into_response()
+        }
+        Refusal::NameTaken => (StatusCode::CONFLICT, "that name is taken").into_response(),
+        Refusal::BadAccountName => {
+            (StatusCode::BAD_REQUEST, "a name is 1 to 64 characters, with no spaces").into_response()
+        }
+        Refusal::PasswordTooShort => (StatusCode::BAD_REQUEST, "a password has at least 8 characters").into_response(),
+        other => internal(format!("{other:?}")),
     }
 }
 

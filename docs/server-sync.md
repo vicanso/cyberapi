@@ -2,7 +2,7 @@
 
 > 状态：待实现。产品选择已确认，本文是功能说明。与 [architecture.md](./architecture.md) 里已经落地的行为冲突时，落地前以本文为准，落地时再把架构文档改过来。
 >
-> 进度：第 1 步已完成（`TreeStore::config` / `replace`，`cyberapi_core::sync::ProjectConfig`）；第 2 步已完成（`cyberapi_core::sync::step`：除文中四种结果外，另有“已是最新”和“推送写入”两种，调用方不必再自己比较修订号）；第 3 步已完成（网页的工作副本是编译到 wasm 的 `MemoryStore`，见 `states/copy.rs`；草稿在 `drafts_local.rs`；项目名称和说明在首页卡片上修改，同样进草稿）。
+> 进度：第 1 步已完成（`TreeStore::config` / `replace`，`cyberapi_core::sync::ProjectConfig`）；第 2 步已完成（`cyberapi_core::sync::step`：除文中四种结果外，另有“已是最新”和“推送写入”两种，调用方不必再自己比较修订号）；第 3 步已完成（网页的工作副本是编译到 wasm 的 `MemoryStore`，见 `states/copy.rs`；草稿在 `drafts_local.rs`；项目名称和说明在首页卡片上修改，同样进草稿）；第 4 步已完成（`invites` 表；`DirectoryStore::invites` / `create_invite` / `revoke_invite`，管理员不再直接建号；`POST /v1/invite` 查看、`POST /v1/invite/accept` 接受；链接是页面地址加 `#invite=<令牌>`，登录页显示注册表单；接受时按当时的身份再检查一次发出者）。
 
 桌面版和网页版打开的是同一类项目，但项目有两种来源。桌面可以同时拥有只在本机的项目，和登录后从服务器拿来的项目。网页版只有服务器项目。
 

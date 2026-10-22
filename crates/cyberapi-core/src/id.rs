@@ -73,3 +73,7 @@ string_id!(
     /// An account of the browser build. The desktop has none.
     AccountId
 );
+string_id!(
+    /// An invitation to make an account (`docs/server-sync.md` §5).
+    InviteId
+);

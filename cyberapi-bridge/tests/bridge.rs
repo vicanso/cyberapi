@@ -10,7 +10,7 @@ use cyberapi_bridge::Bridge;
 use cyberapi_core::model::HttpMethod;
 use cyberapi_core::prefs::Timeouts;
 use cyberapi_http::{HttpEngine, NativeEngine, PreparedRequest, SendError, TargetPolicy};
-use cyberapi_store::{AccountInvite, Refusal, StoreError, conformance};
+use cyberapi_store::{Refusal, StoreError, conformance};
 use cyberapi_store_bridge::{BridgeHttpEngine, BridgeStore, Response, STORE_PATH, Transport};
 use cyberapi_store_sql::SqlStore;
 use http_body_util::BodyExt;
@@ -354,8 +354,9 @@ async fn requests_are_sent_by_the_bridge() {
     assert_eq!(exchange.stats.remote_addr, target.to_string());
 }
 
-/// The directory through the page's store: an administrator makes an
-/// account, which then signs in with its password, and sees its own space.
+/// The directory through the page's store: an administrator's invitation
+/// link makes an account (`docs/server-sync.md` §5), which signs in at once
+/// and with its password later, and sees its own space.
 #[tokio::test]
 async fn the_directory_over_the_bridge() {
     let Some(bridge) = fresh_bridge().await else { return };
@@ -367,31 +368,53 @@ async fn the_directory_over_the_bridge() {
     .directory();
     let me = admin.me().await.expect("me");
     assert!(me.account.admin && me.teams.len() == 1 && me.teams[0].personal);
-    let made = admin
-        .create_account(AccountInvite {
-            name: "erin".into(),
-            display_name: "Erin".into(),
-            password: "erins password".into(),
-            admin: false,
-        })
-        .await
-        .expect("an account");
-    assert_eq!(made.label(), "Erin");
+    let made = admin.create_invite(None).await.expect("an invitation");
+    assert_eq!(
+        admin.invites().await.expect("invites"),
+        std::slice::from_ref(&made.invite)
+    );
 
-    let login = json!({"name": "erin", "password": "erins password"});
-    let (status, set_cookie, body) = send(&router, "POST", "/v1/login", None, Some(login)).await;
+    // What the link says, before anyone signs in.
+    let token = json!({"token": made.token});
+    let (status, _, body) = send(&router, "POST", "/v1/invite", None, Some(token.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let info: Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(info["inviter"], "admin");
+
+    let form =
+        |name: &str| json!({"token": made.token, "name": name, "displayName": "Erin", "password": "erins password"});
+    let (status, _, _) = send(&router, "POST", "/v1/invite/accept", None, Some(form("admin"))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "the name is taken");
+    let (status, set_cookie, body) = send(&router, "POST", "/v1/invite/accept", None, Some(form("erin"))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let erin = BridgeStore::new(Arc::new(RouterTransport {
-        router,
-        cookie: cookie_pair(&set_cookie.expect("a cookie")),
+        router: router.clone(),
+        cookie: cookie_pair(&set_cookie.expect("signed in")),
     }))
     .directory();
     let me = erin.me().await.expect("me");
-    assert_eq!((me.account.id, me.teams.len()), (made.id, 1));
+    assert_eq!((me.account.label(), me.teams.len()), ("Erin", 1));
     assert_eq!(
-        erin.create_account(AccountInvite::default()).await,
+        erin.create_invite(None).await,
         Err(StoreError::Refused {
             reason: Refusal::AdminOnly
         })
     );
+    // Used once.
+    let (status, _, _) = send(&router, "POST", "/v1/invite/accept", None, Some(form("erin2"))).await;
+    assert_eq!(status, StatusCode::GONE);
+    let (status, _, _) = send(&router, "POST", "/v1/invite", None, Some(token)).await;
+    assert_eq!(status, StatusCode::GONE);
+
+    let login = json!({"name": "erin", "password": "erins password"});
+    let (status, _, body) = send(&router, "POST", "/v1/login", None, Some(login)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Taken back, a link opens nothing.
+    let revoked = admin.create_invite(None).await.expect("an invitation");
+    admin.revoke_invite(revoked.invite.id).await.expect("revoke");
+    let form = json!({"token": revoked.token, "name": "fred", "password": "freds password"});
+    let (status, _, _) = send(&router, "POST", "/v1/invite/accept", None, Some(form)).await;
+    assert_eq!(status, StatusCode::GONE);
+    assert!(admin.invites().await.expect("invites").is_empty());
 }

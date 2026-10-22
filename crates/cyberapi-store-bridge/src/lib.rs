@@ -21,19 +21,18 @@
 
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::cookie::Cookie;
-use cyberapi_core::directory::{AccountInfo, Grant, Me, Member, Team};
+use cyberapi_core::directory::{AccountInfo, Grant, Invite, Me, Member, NewInvite, Team, TeamPlace};
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
+use cyberapi_core::{AccountId, CollectionId, InviteId, ItemId, TeamId, VariableId};
 use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, SendError, SendFuture};
 use cyberapi_store::{
-    AccountEdit, AccountInvite, CollectionEdit, CollectionStore, CookieStore, DirectoryStore, HistoryStore, Imported,
-    Inserted, NewCollection, NewVariable, PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit,
-    VariableStore,
+    AccountEdit, CollectionEdit, CollectionStore, CookieStore, DirectoryStore, HistoryStore, Imported, Inserted,
+    NewCollection, NewVariable, PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -206,8 +205,12 @@ pub enum Call {
         collection: CollectionId,
         team: TeamId,
     },
-    DirectoryCreateAccount {
-        invite: AccountInvite,
+    DirectoryInvites,
+    DirectoryCreateInvite {
+        place: Option<TeamPlace>,
+    },
+    DirectoryRevokeInvite {
+        id: InviteId,
     },
     DirectoryUpdateAccount {
         account: AccountId,
@@ -320,7 +323,9 @@ pub async fn dispatch(storage: &Storage, directory: &dyn DirectoryStore, call: C
             role,
         } => reply(directory.set_grant(collection, grantee, role).await),
         Call::DirectoryTransfer { collection, team } => reply(directory.transfer(collection, team).await),
-        Call::DirectoryCreateAccount { invite } => reply(directory.create_account(invite).await),
+        Call::DirectoryInvites => reply(directory.invites().await),
+        Call::DirectoryCreateInvite { place } => reply(directory.create_invite(place).await),
+        Call::DirectoryRevokeInvite { id } => reply(directory.revoke_invite(id).await),
         Call::DirectoryUpdateAccount { account, edit } => reply(directory.update_account(account, edit).await),
         Call::DirectoryResetPassword { account, password } => reply(directory.reset_password(account, password).await),
         Call::DirectoryChangePassword { current, password } => {
@@ -432,8 +437,16 @@ impl DirectoryStore for BridgeStore {
         self.call(Call::DirectoryTransfer { collection, team })
     }
 
-    fn create_account(&self, invite: AccountInvite) -> StoreFuture<AccountInfo> {
-        self.call(Call::DirectoryCreateAccount { invite })
+    fn invites(&self) -> StoreFuture<Vec<Invite>> {
+        self.call(Call::DirectoryInvites)
+    }
+
+    fn create_invite(&self, place: Option<TeamPlace>) -> StoreFuture<NewInvite> {
+        self.call(Call::DirectoryCreateInvite { place })
+    }
+
+    fn revoke_invite(&self, id: InviteId) -> StoreFuture<()> {
+        self.call(Call::DirectoryRevokeInvite { id })
     }
 
     fn update_account(&self, account: AccountId, edit: AccountEdit) -> StoreFuture<AccountInfo> {

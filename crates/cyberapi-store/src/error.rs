@@ -80,6 +80,7 @@ pub enum Entity {
     /// A team the reader is not in (the browser build's).
     Team,
     Account,
+    Invite,
 }
 
 /// Why a change to accounts or teams was refused.
@@ -106,4 +107,7 @@ pub enum Refusal {
     WrongPassword,
     /// An administrator cannot disable or demote themselves.
     NotYourself,
+    /// The invitation was used, revoked or ran out — or never was
+    /// (`docs/server-sync.md` §5).
+    InviteGone,
 }

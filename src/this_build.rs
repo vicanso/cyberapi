@@ -184,6 +184,23 @@ pub fn opens_html() -> bool {
     false
 }
 
+/// The link that opens an invitation (`docs/server-sync.md` §5): this
+/// page's address, with the token after `#`, which no server sees or logs.
+/// The desktop sends none — accounts are made on the web — so it has only
+/// the fragment.
+#[cfg(not(target_family = "wasm"))]
+pub fn invite_link(token: &str) -> String {
+    format!("#invite={token}")
+}
+#[cfg(target_family = "wasm")]
+pub fn invite_link(token: &str) -> String {
+    let page = web_sys::window()
+        .and_then(|window| window.location().href().ok())
+        .unwrap_or_default();
+    let page = page.split('#').next().unwrap_or_default();
+    format!("{page}#invite={token}")
+}
+
 /// A text file the reader picked.
 #[cfg(not(target_family = "wasm"))]
 pub fn read_text(path: &std::path::Path) -> Result<String, String> {

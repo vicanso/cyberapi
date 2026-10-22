@@ -1,17 +1,20 @@
-//! Every account, for a system administrator (browser build, §9.1): make
-//! one, make it an administrator or not, disable it, reset its password.
+//! Every account, for a system administrator (browser build, §9.1): invite
+//! someone to make one (`docs/server-sync.md` §5), make an account an
+//! administrator or not, disable it, reset its password.
 
 use crate::i18n;
 use crate::states::{AppStore, DirectoryDone, DirectoryEvent, DirectoryState};
 use crate::views::inline_confirm::inline_confirm;
+use crate::views::invites::{copy_link, invites_section};
 use cyberapi_core::directory::{AccountInfo, valid_password};
-use cyberapi_store::{AccountEdit, AccountInvite};
+use cyberapi_store::AccountEdit;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
     Render, Styled as _, Subscription, Window, div, px,
@@ -34,16 +37,8 @@ pub fn open_accounts_dialog(window: &mut Window, cx: &mut App) {
     });
 }
 
-struct NewAccount {
-    name: Entity<InputState>,
-    display_name: Entity<InputState>,
-    password: Entity<InputState>,
-    admin: bool,
-}
-
 struct AccountsEditor {
     state: Entity<DirectoryState>,
-    new: NewAccount,
     /// The account whose password is being reset, and the new one.
     resetting: Option<(AccountInfo, Entity<InputState>)>,
     _subscriptions: Vec<Subscription>,
@@ -54,26 +49,12 @@ impl AccountsEditor {
         state.update(cx, |state, cx| {
             state.reload_me(cx);
             state.reload_accounts(cx);
+            state.load_invites(cx);
         });
-        let input = |placeholder: String, masked: bool, window: &mut Window, cx: &mut Context<Self>| {
-            cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).masked(masked))
-        };
-        let new = NewAccount {
-            name: input(t!("accounts.name").to_string(), false, window, cx),
-            display_name: input(t!("accounts.display_name").to_string(), false, window, cx),
-            password: input(t!("accounts.password").to_string(), true, window, cx),
-            admin: false,
-        };
         let subscriptions = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
             cx.subscribe_in(&state, window, |this, _, event, window, cx| match event {
-                DirectoryEvent::Done(DirectoryDone::AccountCreated) => {
-                    for input in [&this.new.name, &this.new.display_name, &this.new.password] {
-                        input.update(cx, |input, cx| input.set_value("", window, cx));
-                    }
-                    this.new.admin = false;
-                    window.push_notification(Notification::success(t!("accounts.created").to_string()), cx);
-                }
+                DirectoryEvent::Done(DirectoryDone::InviteCreated(link)) => copy_link(link, window, cx),
                 DirectoryEvent::Done(DirectoryDone::PasswordReset) => {
                     this.resetting = None;
                     window.push_notification(Notification::success(t!("password.reset_done").to_string()), cx);
@@ -87,21 +68,9 @@ impl AccountsEditor {
         ];
         Self {
             state,
-            new,
             resetting: None,
             _subscriptions: subscriptions,
         }
-    }
-
-    fn add(&mut self, cx: &mut Context<Self>) {
-        let read = |input: &Entity<InputState>, cx: &App| input.read(cx).value().to_string();
-        let invite = AccountInvite {
-            name: read(&self.new.name, cx).trim().to_string(),
-            display_name: read(&self.new.display_name, cx).trim().to_string(),
-            password: read(&self.new.password, cx),
-            admin: self.new.admin,
-        };
-        self.state.update(cx, |state, cx| state.create_account(invite, cx));
     }
 
     fn start_reset(&mut self, account: AccountInfo, window: &mut Window, cx: &mut Context<Self>) {
@@ -227,7 +196,7 @@ impl Render for AccountsEditor {
                     ),
                 )
         });
-        let new = &self.new;
+        let invites = invites_section(&self.state, None, cx);
         v_flex()
             .gap_2()
             .child(div().text_sm().text_color(muted).child(t!("accounts.hint").to_string()))
@@ -240,6 +209,7 @@ impl Render for AccountsEditor {
                     .children(rows),
             )
             .children(self.render_resetting(cx))
+            .when_some(invites, |this, invites| this.child(invites))
             .child(
                 h_flex()
                     .gap_2()
@@ -247,25 +217,22 @@ impl Render for AccountsEditor {
                     .items_center()
                     .border_t_1()
                     .border_color(border)
-                    .child(div().w(px(180.)).child(Input::new(&new.name).small()))
-                    .child(div().flex_1().child(Input::new(&new.display_name).small()))
-                    .child(div().w(px(160.)).child(Input::new(&new.password).small()))
                     .child(
-                        Checkbox::new("account-new-admin")
-                            .label(t!("accounts.admin").to_string())
-                            .checked(new.admin)
-                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                this.new.admin = *checked;
-                                cx.notify();
-                            })),
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(t!("accounts.invite_hint").to_string()),
                     )
                     .child(
-                        Button::new("account-add")
+                        Button::new("account-invite")
                             .primary()
                             .small()
                             .icon(IconName::Plus)
-                            .tooltip(t!("accounts.add").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| this.add(cx))),
+                            .label(t!("accounts.invite").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state.update(cx, |state, cx| state.create_invite(None, cx));
+                            })),
                     ),
             )
     }

@@ -4,12 +4,15 @@
 
 use crate::scoped::Scoped;
 use crate::sql;
-use crate::{NewAccount, db, rows};
+use crate::{db, new_id, new_token, now, rows, token_hash, unix_now};
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
-use cyberapi_core::directory::{AccountInfo, Grant, Me, Member, Team, sort_teams, valid_account_name, valid_password};
-use cyberapi_core::{AccountId, CollectionId, TeamId};
+use cyberapi_core::directory::{
+    AccountInfo, Grant, INVITE_DAYS, Invite, Me, Member, NewInvite, Team, TeamPlace, invite_needs, sort_teams,
+    valid_password,
+};
+use cyberapi_core::{AccountId, CollectionId, InviteId, TeamId, Timestamp};
 use cyberapi_store::rules::required_name;
-use cyberapi_store::{AccountEdit, AccountInvite, DirectoryStore, Entity, Refusal, StoreError, StoreFuture};
+use cyberapi_store::{AccountEdit, DirectoryStore, Entity, Refusal, StoreError, StoreFuture};
 use sqlx::any::AnyRow;
 use sqlx::{AnyConnection, Row as _};
 
@@ -66,6 +69,25 @@ fn team_role(text: &str) -> TeamRole {
     TeamRole::parse(text).unwrap_or(TeamRole::Member)
 }
 
+/// `id, team, team name, role, created_at, expires_at`.
+fn invite(row: &AnyRow) -> Result<Invite, StoreError> {
+    let optional = |index| row.try_get::<Option<String>, _>(index).map_err(db);
+    let place = match (optional(1)?, optional(3)?) {
+        (Some(team), Some(role)) => Some(TeamPlace {
+            team: TeamId::new(team),
+            role: team_role(&role),
+        }),
+        _ => None,
+    };
+    Ok(Invite {
+        id: InviteId::new(rows::text(row, 0)?),
+        place,
+        team_name: optional(2)?,
+        created_at: Timestamp::parse_lenient(&rows::text(row, 4)?),
+        expires_at: Timestamp::from_unix(row.try_get::<i64, _>(5).map_err(db)?),
+    })
+}
+
 async fn count(
     conn: &mut AnyConnection,
     statement: sqlx::AssertSqlSafe<std::borrow::Cow<'static, str>>,
@@ -117,11 +139,7 @@ impl Scoped {
 
     /// `password` hashed, off the async workers.
     async fn hash(&self, password: String) -> Result<String, StoreError> {
-        let passwords = self.store.passwords.clone();
-        tokio::task::spawn_blocking(move || passwords.hash(&password))
-            .await
-            .map_err(db)?
-            .map_err(db)
+        self.store.hash_password(password).await
     }
 }
 
@@ -379,31 +397,83 @@ impl DirectoryStore for Scoped {
         })
     }
 
-    fn create_account(&self, invite: AccountInvite) -> StoreFuture<AccountInfo> {
+    fn invites(&self) -> StoreFuture<Vec<Invite>> {
+        self.run(|this| async move {
+            let mut invites = sqlx::query(this.dialect.sql(sql::INVITES_OPEN_OF))
+                .bind(this.account())
+                .bind(unix_now())
+                .fetch_all(&this.pool)
+                .await
+                .map_err(db)?
+                .iter()
+                .map(invite)
+                .collect::<Result<Vec<_>, _>>()?;
+            invites.sort_by_key(|invite| invite.created_at);
+            Ok(invites)
+        })
+    }
+
+    fn create_invite(&self, place: Option<TeamPlace>) -> StoreFuture<NewInvite> {
         self.run(|this| async move {
             let mut conn = this.pool.acquire().await.map_err(db)?;
-            this.require_admin(&mut conn).await?;
-            let name = invite.name.trim().to_string();
-            if !valid_account_name(&name) {
-                return Err(refused(Refusal::BadAccountName));
+            let team_name = match &place {
+                None => {
+                    this.require_admin(&mut conn).await?;
+                    None
+                }
+                Some(place) => {
+                    let team = this.team_of(&mut conn, &place.team).await?;
+                    if team.personal {
+                        return Err(refused(Refusal::PersonalSpace));
+                    }
+                    let needed = invite_needs(place.role);
+                    if team.role < needed {
+                        return Err(refused(Refusal::TeamRole { needed }));
+                    }
+                    Some(team.name)
+                }
+            };
+            let token = new_token()?;
+            let id = InviteId::new(new_id());
+            let created_at = now();
+            let expires_at = unix_now() + INVITE_DAYS * 24 * 60 * 60;
+            sqlx::query(this.dialect.sql(sql::INVITE_INSERT))
+                .bind(id.as_str().to_string())
+                .bind(token_hash(&token))
+                .bind(this.account())
+                .bind(place.as_ref().map(|place| place.team.as_str().to_string()))
+                .bind(place.as_ref().map(|place| place.role.as_str()))
+                .bind(created_at.to_rfc3339())
+                .bind(expires_at)
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+            Ok(NewInvite {
+                invite: Invite {
+                    id,
+                    place,
+                    team_name,
+                    created_at,
+                    expires_at: Timestamp::from_unix(expires_at),
+                },
+                token,
+            })
+        })
+    }
+
+    fn revoke_invite(&self, id: InviteId) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let revoked = sqlx::query(this.dialect.sql(sql::INVITE_REVOKE))
+                .bind(id.as_str().to_string())
+                .bind(this.account())
+                .execute(&this.pool)
+                .await
+                .map_err(db)?
+                .rows_affected();
+            if revoked == 0 {
+                return Err(StoreError::not_found(Entity::Invite, &id));
             }
-            if !valid_password(&invite.password) {
-                return Err(refused(Refusal::PasswordTooShort));
-            }
-            if count(&mut conn, this.dialect.sql(sql::ACCOUNT_NAME_COUNT), &name).await? > 0 {
-                return Err(refused(Refusal::NameTaken));
-            }
-            let password_hash = this.hash(invite.password).await?;
-            let id = this
-                .store
-                .create_account(NewAccount {
-                    name,
-                    display_name: invite.display_name.trim().to_string(),
-                    password_hash,
-                    admin: invite.admin,
-                })
-                .await?;
-            this.account_info(&mut conn, &id).await
+            Ok(())
         })
     }
 

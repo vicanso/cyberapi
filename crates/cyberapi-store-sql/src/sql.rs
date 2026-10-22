@@ -160,6 +160,24 @@ pub const ACCOUNT_UPDATE: &str = "UPDATE accounts SET display_name = $1, admin =
 pub const ACCOUNT_PASSWORD: &str = "SELECT password_hash FROM accounts WHERE id = $1";
 pub const ACCOUNT_SET_PASSWORD: &str = "UPDATE accounts SET password_hash = $1 WHERE id = $2";
 pub const SESSIONS_OF_DELETE: &str = "DELETE FROM sessions WHERE account = $1";
+pub const INVITE_INSERT: &str = "INSERT INTO invites \
+    (id, token_hash, inviter, team, role, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7)";
+/// The invitations an account sent that can still be used (at unix `$2`),
+/// with their team's name.
+pub const INVITES_OPEN_OF: &str = "SELECT i.id, i.team, t.name, i.role, i.created_at, i.expires_at \
+    FROM invites i LEFT JOIN teams t ON t.id = i.team \
+    WHERE i.inviter = $1 AND i.used_by IS NULL AND i.revoked = 0 AND i.expires_at > $2";
+pub const INVITE_REVOKE: &str = "UPDATE invites SET revoked = 1 \
+    WHERE id = $1 AND inviter = $2 AND used_by IS NULL AND revoked = 0";
+/// An invitation that can still be used: who sent it, and to which team.
+pub const INVITE_OPEN: &str = "SELECT a.name, a.display_name, t.name \
+    FROM invites i JOIN accounts a ON a.id = i.inviter LEFT JOIN teams t ON t.id = i.team \
+    WHERE i.token_hash = $1 AND i.used_by IS NULL AND i.revoked = 0 AND i.expires_at > $2";
+/// Uses an invitation for account `$1`: of two acceptances at once, one
+/// claims it.
+pub const INVITE_CLAIM: &str = "UPDATE invites SET used_by = $1 \
+    WHERE token_hash = $2 AND used_by IS NULL AND revoked = 0 AND expires_at > $3";
+pub const INVITE_PLACE: &str = "SELECT inviter, team, role FROM invites WHERE token_hash = $1";
 /// The teams an account is in, with its place in each.
 pub const TEAMS_OF: &str = "SELECT t.id, t.name, t.personal_of, tm.role \
     FROM teams t JOIN team_members tm ON tm.team = t.id WHERE tm.account = $1";
@@ -301,6 +319,12 @@ mod tests {
 
     /// Every single-spelling statement, for the placeholder check.
     const ALL: &[&str] = &[
+        INVITE_INSERT,
+        INVITES_OPEN_OF,
+        INVITE_REVOKE,
+        INVITE_OPEN,
+        INVITE_CLAIM,
+        INVITE_PLACE,
         COLLECTIONS_VISIBLE,
         ROLE_OF,
         COLLECTION_GET,

@@ -54,9 +54,29 @@ pub fn ago(at: Timestamp, now: Timestamp) -> Ago {
     }
 }
 
+/// Whole days from `now` until `at`, a day begun counting as one; none once
+/// it is past. How long an invitation still lasts.
+pub fn days_until(at: Timestamp, now: Timestamp) -> i64 {
+    let seconds = at.get().signed_duration_since(now.get()).num_seconds();
+    if seconds <= 0 {
+        return 0;
+    }
+    (seconds + 24 * 60 * 60 - 1) / (24 * 60 * 60)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_day_begun_counts() {
+        let now = Timestamp::from_unix(1_700_000_000);
+        let later = |seconds: i64| Timestamp::from_unix(1_700_000_000 + seconds);
+        assert_eq!(days_until(later(7 * 24 * 60 * 60), now), 7);
+        assert_eq!(days_until(later(7 * 24 * 60 * 60 - 60), now), 7);
+        assert_eq!(days_until(later(60), now), 1);
+        assert_eq!(days_until(later(-60), now), 0);
+    }
 
     #[test]
     fn this_year_shows_the_day_and_time() {

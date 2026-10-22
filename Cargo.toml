@@ -160,6 +160,7 @@ web-sys = { version = "0.3.106", features = [
     "Document",
     "Element",
     "HtmlAnchorElement",
+    "Location",
     "Navigator",
     "Storage",
     "Url",

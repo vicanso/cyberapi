@@ -1881,6 +1881,7 @@ dependencies = [
  "cyberapi-core",
  "cyberapi-store",
  "cyberapi-store-sql",
+ "getrandom 0.4.3",
  "serde",
  "serde_json",
  "sha2 0.10.9",

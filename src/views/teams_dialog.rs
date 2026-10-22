@@ -1,13 +1,16 @@
 //! The reader's teams (`docs/architecture.md` §9.1, browser build): make
-//! one, rename, delete or leave it, and choose who is in it and as what.
-//! What the reader may not change is shown, not offered.
+//! one, rename, delete or leave it, and choose who is in it and as what —
+//! an account there is already, or someone invited to make one
+//! (`docs/server-sync.md` §5). What the reader may not change is shown, not
+//! offered.
 
 use crate::i18n;
 use crate::states::{AppStore, DirectoryDone, DirectoryEvent, DirectoryState};
 use crate::views::inline_confirm::inline_confirm;
+use crate::views::invites::{copy_link, invites_section};
 use crate::views::pick::pick;
 use cyberapi_core::access::TeamRole;
-use cyberapi_core::directory::{Member, Team};
+use cyberapi_core::directory::{Member, Team, TeamPlace};
 use cyberapi_core::{AccountId, TeamId};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -88,6 +91,7 @@ impl TeamsEditor {
         state.update(cx, |state, cx| {
             state.reload_me(cx);
             state.reload_accounts(cx);
+            state.load_invites(cx);
         });
         let new_team = cx.new(|cx| InputState::new(window, cx).placeholder(t!("teams.new_placeholder").to_string()));
         let subscriptions = vec![
@@ -111,6 +115,7 @@ impl TeamsEditor {
                     this.new_team.update(cx, |input, cx| input.set_value("", window, cx));
                     this.select(team.clone(), window, cx);
                 }
+                DirectoryEvent::Done(DirectoryDone::InviteCreated(link)) => copy_link(link, window, cx),
                 DirectoryEvent::Done(_) => {}
                 DirectoryEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);
@@ -475,6 +480,21 @@ impl TeamsEditor {
                             },
                         ))
                         .child(div().flex_1())
+                        .child({
+                            let invite_team = team.id.clone();
+                            Button::new("member-invite")
+                                .outline()
+                                .small()
+                                .label(t!("teams.invite").to_string())
+                                .tooltip(t!("teams.invite_hint").to_string())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let place = TeamPlace {
+                                        team: invite_team.clone(),
+                                        role: this.add_role,
+                                    };
+                                    this.state.update(cx, |state, cx| state.create_invite(Some(place), cx));
+                                }))
+                        })
                         .child(
                             Button::new("member-add")
                                 .primary()
@@ -490,6 +510,9 @@ impl TeamsEditor {
                                 })),
                         ),
                 )
+            })
+            .when_some(invites_section(&self.state, Some(&team.id), cx), |this, invites| {
+                this.child(invites)
             })
             .into_any_element()
     }

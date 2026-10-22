@@ -18,8 +18,9 @@ pub use sql::Dialect;
 
 use chrono::Utc;
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
+use cyberapi_core::directory::{AccountInfo, InviteInfo, invite_needs, valid_account_name, valid_password};
 use cyberapi_core::{AccountId, CollectionId, TeamId, Timestamp};
-use cyberapi_store::{DirectoryStore, Storage, StoreError};
+use cyberapi_store::{DirectoryStore, Refusal, Storage, StoreError};
 use directory::NoPasswords;
 use scoped::Scoped;
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
@@ -46,6 +47,36 @@ pub(crate) fn new_id() -> String {
 /// gives back.
 pub(crate) fn now() -> Timestamp {
     Timestamp::parse_lenient(&Timestamp::new(Utc::now().fixed_offset()).to_rfc3339())
+}
+
+pub(crate) fn unix_now() -> i64 {
+    Utc::now().timestamp()
+}
+
+/// An invitation's token: 32 random bytes, hex. The store keeps its hash.
+pub(crate) fn new_token() -> Result<String, StoreError> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(db)?;
+    Ok(hex(&bytes))
+}
+
+/// What the store keeps of a token: a copy of the database opens nothing.
+pub(crate) fn token_hash(token: &str) -> String {
+    use sha2::Digest as _;
+    hex(&sha2::Sha256::digest(token.as_bytes()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// An account made with an invitation (`docs/server-sync.md` §5): what its
+/// owner chose. The password is hashed by the store's `Passwords`.
+#[derive(Clone, Debug, Default)]
+pub struct Acceptance {
+    pub name: String,
+    pub display_name: String,
+    pub password: String,
 }
 
 /// The fields of a new account. The password is hashed by the caller; the
@@ -161,7 +192,7 @@ impl SqlStore {
     /// it is, as owner.
     pub async fn create_account(&self, input: NewAccount) -> Result<AccountId, StoreError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
-        let account = self.insert_account(&mut tx, input).await?;
+        let account = self.insert_account(&mut tx, AccountId::new(new_id()), input).await?;
         tx.commit().await.map_err(db)?;
         Ok(account)
     }
@@ -189,14 +220,18 @@ impl SqlStore {
             return Ok(None);
         }
         let account = self
-            .insert_account(&mut tx, NewAccount { admin: true, ..input })
+            .insert_account(&mut tx, AccountId::new(new_id()), NewAccount { admin: true, ..input })
             .await?;
         tx.commit().await.map_err(db)?;
         Ok(Some(account))
     }
 
-    async fn insert_account(&self, conn: &mut AnyConnection, input: NewAccount) -> Result<AccountId, StoreError> {
-        let account = AccountId::new(new_id());
+    async fn insert_account(
+        &self,
+        conn: &mut AnyConnection,
+        account: AccountId,
+        input: NewAccount,
+    ) -> Result<AccountId, StoreError> {
         let team = TeamId::new(new_id());
         let at = now().to_rfc3339();
         sqlx::query(self.dialect.sql(sql::ACCOUNT_INSERT))
@@ -230,6 +265,145 @@ impl SqlStore {
             .await
             .map_err(db)?;
         Ok(account)
+    }
+
+    /// `password` hashed by the store's `Passwords`, off the async workers.
+    pub(crate) async fn hash_password(&self, password: String) -> Result<String, StoreError> {
+        let passwords = self.passwords.clone();
+        tokio::task::spawn_blocking(move || passwords.hash(&password))
+            .await
+            .map_err(db)?
+            .map_err(db)
+    }
+
+    /// Who sent the invitation `token` opens, and to which team — while it
+    /// can still be used (`docs/server-sync.md` §5).
+    pub async fn invite_info(&self, token: &str) -> Result<InviteInfo, StoreError> {
+        let row = sqlx::query(self.dialect.sql(sql::INVITE_OPEN))
+            .bind(token_hash(token))
+            .bind(unix_now())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?
+            .ok_or(StoreError::Refused {
+                reason: Refusal::InviteGone,
+            })?;
+        let inviter = AccountInfo {
+            name: rows::text(&row, 0)?,
+            display_name: rows::text(&row, 1)?,
+            ..Default::default()
+        };
+        Ok(InviteInfo {
+            inviter: inviter.label().to_string(),
+            team: row.try_get::<Option<String>, _>(2).map_err(db)?,
+        })
+    }
+
+    /// Makes the account the invitation `token` asks for (server-sync §5):
+    /// its own space, and the team's place the invitation gives. Nothing is
+    /// made when the invitation was used, revoked or ran out, when its
+    /// sender may no longer invite so, or when the name is taken.
+    pub async fn accept_invite(&self, token: &str, acceptance: Acceptance) -> Result<Account, StoreError> {
+        let refused = |reason| StoreError::Refused { reason };
+        let name = acceptance.name.trim().to_string();
+        if !valid_account_name(&name) {
+            return Err(refused(Refusal::BadAccountName));
+        }
+        if !valid_password(&acceptance.password) {
+            return Err(refused(Refusal::PasswordTooShort));
+        }
+        let password_hash = self.hash_password(acceptance.password).await?;
+        let account = AccountId::new(new_id());
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let claimed = sqlx::query(self.dialect.sql(sql::INVITE_CLAIM))
+            .bind(account.as_str().to_string())
+            .bind(token_hash(token))
+            .bind(unix_now())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?
+            .rows_affected()
+            == 1;
+        if !claimed {
+            return Err(refused(Refusal::InviteGone));
+        }
+        let row = sqlx::query(self.dialect.sql(sql::INVITE_PLACE))
+            .bind(token_hash(token))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+        let inviter = rows::text(&row, 0)?;
+        let place = match row.try_get::<Option<String>, _>(1).map_err(db)? {
+            Some(team) => Some((team, TeamRole::parse(&rows::text(&row, 2)?).unwrap_or(TeamRole::Member))),
+            None => None,
+        };
+        // The sender may still invite so: an administrator, or a member of
+        // the team placed to give that role.
+        let allowed = match &place {
+            None => sqlx::query(self.dialect.sql(sql::ACCOUNT_INFO))
+                .bind(inviter)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?
+                .map(|row| -> Result<bool, StoreError> {
+                    let admin = row.try_get::<i32, _>(3).map_err(db)? != 0;
+                    let disabled = row.try_get::<i32, _>(4).map_err(db)? != 0;
+                    Ok(admin && !disabled)
+                })
+                .transpose()?
+                .unwrap_or(false),
+            Some((team, role)) => sqlx::query(self.dialect.sql(sql::TEAM_ROLE))
+                .bind(team.clone())
+                .bind(inviter)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?
+                .map(|row| rows::text(&row, 0))
+                .transpose()?
+                .and_then(|theirs| TeamRole::parse(&theirs))
+                .is_some_and(|theirs| theirs >= invite_needs(*role)),
+        };
+        if !allowed {
+            return Err(refused(Refusal::InviteGone));
+        }
+        let taken = sqlx::query(self.dialect.sql(sql::ACCOUNT_NAME_COUNT))
+            .bind(name.clone())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?
+            .try_get::<i64, _>(0)
+            .map_err(db)?;
+        if taken > 0 {
+            return Err(refused(Refusal::NameTaken));
+        }
+        let display_name = acceptance.display_name.trim().to_string();
+        self.insert_account(
+            &mut tx,
+            account.clone(),
+            NewAccount {
+                name: name.clone(),
+                display_name: display_name.clone(),
+                password_hash,
+                admin: false,
+            },
+        )
+        .await?;
+        if let Some((team, role)) = place {
+            sqlx::query(self.dialect.pick(&sql::MEMBER_UPSERT))
+                .bind(team)
+                .bind(account.as_str().to_string())
+                .bind(role.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(Account {
+            id: account,
+            name,
+            display_name,
+            admin: false,
+        })
     }
 
     pub async fn account_count(&self) -> Result<u64, StoreError> {

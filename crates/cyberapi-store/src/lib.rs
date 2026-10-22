@@ -29,14 +29,14 @@ pub use memory::MemoryStore;
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
-use cyberapi_core::directory::{AccountInfo, Grant, Me, Member, Team};
+use cyberapi_core::directory::{AccountInfo, Grant, Invite, Me, Member, NewInvite, Team, TeamPlace};
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
+use cyberapi_core::{AccountId, CollectionId, InviteId, ItemId, TeamId, VariableId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -242,17 +242,6 @@ pub fn sort_cookies(cookies: &mut [Cookie]) {
     cookies.sort_by(|a, b| (&a.name, &a.domain, &a.path).cmp(&(&b.name, &b.domain, &b.path)));
 }
 
-/// An account an administrator makes (§9.5). The password is sent once, to
-/// be hashed by the store; it is never read back.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountInvite {
-    pub name: String,
-    pub display_name: String,
-    pub password: String,
-    pub admin: bool,
-}
-
 /// What an administrator may change about an account.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -292,8 +281,16 @@ pub trait DirectoryStore: Send + Sync {
     fn set_grant(&self, collection: CollectionId, grantee: Grantee, role: Option<CollectionRole>) -> StoreFuture<()>;
     /// Moves the project to another team the reader is in; its managers.
     fn transfer(&self, collection: CollectionId, team: TeamId) -> StoreFuture<()>;
-    /// Administrators: a new account, with its own space.
-    fn create_account(&self, invite: AccountInvite) -> StoreFuture<AccountInfo>;
+    /// The invitations the reader sent that can still be used
+    /// (`docs/server-sync.md` §5), oldest first.
+    fn invites(&self) -> StoreFuture<Vec<Invite>>;
+    /// An invitation for one new account, used once within
+    /// `cyberapi_core::directory::INVITE_DAYS`: to a team the reader may
+    /// invite into (`invite_needs`), or — `None`, administrators only — to
+    /// an account with only its own space. No one joins a personal space.
+    fn create_invite(&self, place: Option<TeamPlace>) -> StoreFuture<NewInvite>;
+    /// Its sender takes it back before it is used.
+    fn revoke_invite(&self, id: InviteId) -> StoreFuture<()>;
     /// Administrators. Disabling signs the account out.
     fn update_account(&self, account: AccountId, edit: AccountEdit) -> StoreFuture<AccountInfo>;
     /// Administrators; signs the account out.

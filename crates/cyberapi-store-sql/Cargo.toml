@@ -17,6 +17,8 @@ conformance = ["cyberapi-store/conformance"]
 chrono = { workspace = true, features = ["clock"] }
 cyberapi-core = { workspace = true }
 cyberapi-store = { workspace = true }
+# An invitation's token (`docs/server-sync.md` §5).
+getrandom = "0.4.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 # A cookie's key: its domain, path and name, hashed to fit an index.
@@ -29,6 +31,8 @@ ulid = { workspace = true }
 
 [dev-dependencies]
 cyberapi-store-sql = { workspace = true, features = ["conformance"] }
+# Ages an invitation past its end, which no store call does.
+sqlx = { workspace = true }
 tokio = { workspace = true }
 ulid = { workspace = true }
 

@@ -3,14 +3,13 @@
 //! skips.
 
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
+use cyberapi_core::directory::TeamPlace;
 use cyberapi_core::model::{HttpRequest, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, ThemeMode, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::{AccountId, CollectionId};
-use cyberapi_store::{
-    AccountEdit, AccountInvite, CollectionEdit, Entity, NewCollection, NewVariable, Refusal, Storage, StoreError,
-};
-use cyberapi_store_sql::{NewAccount, SqlStore};
+use cyberapi_store::{AccountEdit, CollectionEdit, Entity, NewCollection, NewVariable, Refusal, Storage, StoreError};
+use cyberapi_store_sql::{Acceptance, NewAccount, SqlStore};
 use std::sync::Arc;
 
 async fn account(store: &SqlStore, name: &str) -> AccountId {
@@ -633,34 +632,21 @@ async fn directory(variable: &str) {
     // Bob was a member of the team that owned it: no longer.
     assert_eq!(role(&store.scoped(bob_id.clone()), &project.id).await, None);
 
-    // Accounts are the administrators'.
-    let invite = |name: &str, password: &str| AccountInvite {
-        name: name.into(),
-        display_name: String::new(),
-        password: password.into(),
-        admin: false,
-    };
+    // Accounts come from administrators' invitations.
     let dave_name = format!("dave-{}", ulid::Ulid::generate());
-    refused(
-        alice.create_account(invite(&dave_name, "long enough")).await,
-        Refusal::AdminOnly,
-    );
-    refused(
-        root.create_account(invite("a b", "long enough")).await,
-        Refusal::BadAccountName,
-    );
-    refused(
-        root.create_account(invite(&dave_name, "short")).await,
-        Refusal::PasswordTooShort,
-    );
-    let dave = root
-        .create_account(invite(&dave_name, "long enough"))
+    refused(alice.create_invite(None).await, Refusal::AdminOnly);
+    let made = root.create_invite(None).await.expect("an invitation");
+    let dave = store
+        .accept_invite(
+            &made.token,
+            Acceptance {
+                name: dave_name.clone(),
+                display_name: String::new(),
+                password: "long enough".into(),
+            },
+        )
         .await
         .expect("dave");
-    refused(
-        root.create_account(invite(&dave_name, "long enough")).await,
-        Refusal::NameTaken,
-    );
     let (_, hash) = store
         .find_login(&dave_name)
         .await
@@ -736,4 +722,210 @@ async fn postgres_directory() {
 #[tokio::test]
 async fn mysql_directory() {
     directory("CYBERAPI_TEST_MYSQL").await;
+}
+
+/// Invitations (`docs/server-sync.md` §5): who may send which, and that an
+/// account comes from one only while it can be used.
+async fn invitations(variable: &str) {
+    let Ok(url) = std::env::var(variable) else {
+        eprintln!("skipped: {variable} is not set");
+        return;
+    };
+    let store = SqlStore::connect(&url)
+        .await
+        .expect("connect")
+        .with_passwords(Arc::new(Plain));
+    let root_id = store
+        .create_account(NewAccount {
+            name: format!("root-{}", ulid::Ulid::generate()),
+            display_name: "Root".into(),
+            password_hash: "plain:rootpass".into(),
+            admin: true,
+        })
+        .await
+        .expect("an administrator");
+    let (alice_id, bob_id, carol_id) = (
+        account(&store, "alice").await,
+        account(&store, "bob").await,
+        account(&store, "carol").await,
+    );
+    let (root, alice, bob, carol) = (
+        store.directory(root_id.clone()),
+        store.directory(alice_id.clone()),
+        store.directory(bob_id.clone()),
+        store.directory(carol_id.clone()),
+    );
+    let fresh = |prefix: &str| format!("{prefix}-{}", ulid::Ulid::generate());
+    let accept = |name: &str, password: &str| Acceptance {
+        name: name.into(),
+        display_name: "New".into(),
+        password: password.into(),
+    };
+
+    // An administrator's: an account with its own space only.
+    let made = root.create_invite(None).await.expect("an invitation");
+    assert_eq!(made.invite.place, None);
+    assert_eq!(
+        root.invites().await.expect("invites"),
+        std::slice::from_ref(&made.invite)
+    );
+    assert!(alice.invites().await.expect("invites").is_empty(), "the sender's own");
+    let info = store.invite_info(&made.token).await.expect("info");
+    assert_eq!((info.inviter.as_str(), info.team), ("Root", None));
+    // A refused name or password leaves the invitation as it was.
+    refused(
+        store.accept_invite(&made.token, accept("a b", "long enough")).await,
+        Refusal::BadAccountName,
+    );
+    refused(
+        store.accept_invite(&made.token, accept(&fresh("erin"), "short")).await,
+        Refusal::PasswordTooShort,
+    );
+    let alice_name = alice.me().await.expect("me").account.name;
+    refused(
+        store
+            .accept_invite(&made.token, accept(&alice_name, "long enough"))
+            .await,
+        Refusal::NameTaken,
+    );
+    let erin_name = fresh("erin");
+    let erin = store
+        .accept_invite(&made.token, accept(&erin_name, "long enough"))
+        .await
+        .expect("erin");
+    let erin_me = store.directory(erin.id.clone()).me().await.expect("me");
+    assert!(!erin_me.account.admin && erin_me.teams.len() == 1 && erin_me.teams[0].personal);
+    // Used once.
+    refused(
+        store
+            .accept_invite(&made.token, accept(&fresh("frank"), "long enough"))
+            .await,
+        Refusal::InviteGone,
+    );
+    refused(store.invite_info(&made.token).await, Refusal::InviteGone);
+    refused(store.invite_info("no such token").await, Refusal::InviteGone);
+    assert!(root.invites().await.expect("invites").is_empty());
+
+    // Taken back by its sender only, and then it opens nothing.
+    let revoked = root.create_invite(None).await.expect("an invitation");
+    match alice.revoke_invite(revoked.invite.id.clone()).await {
+        Err(StoreError::NotFound {
+            what: Entity::Invite, ..
+        }) => {}
+        other => panic!("not alice's to take back: {other:?}"),
+    }
+    root.revoke_invite(revoked.invite.id.clone()).await.expect("revoke");
+    refused(
+        store
+            .accept_invite(&revoked.token, accept(&fresh("gina"), "long enough"))
+            .await,
+        Refusal::InviteGone,
+    );
+    assert!(root.revoke_invite(revoked.invite.id.clone()).await.is_err());
+
+    // Run out.
+    let expired = root.create_invite(None).await.expect("an invitation");
+    sqlx::any::install_default_drivers();
+    let pool = sqlx::AnyPool::connect(&url).await.expect("a pool");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE invites SET expires_at = 1 WHERE id = '{}'",
+        expired.invite.id
+    )))
+    .execute(&pool)
+    .await
+    .expect("age it");
+    refused(
+        store
+            .accept_invite(&expired.token, accept(&fresh("hank"), "long enough"))
+            .await,
+        Refusal::InviteGone,
+    );
+    assert!(root.invites().await.expect("invites").is_empty());
+
+    // A team's: its owners and admins invite, only an owner invites an owner,
+    // and no one joins a personal space.
+    let team = alice.create_team("backend".into()).await.expect("team");
+    alice
+        .set_member(team.id.clone(), bob_id.clone(), Some(TeamRole::Admin))
+        .await
+        .expect("bob admin");
+    alice
+        .set_member(team.id.clone(), carol_id.clone(), Some(TeamRole::Member))
+        .await
+        .expect("carol member");
+    let place = |role| {
+        Some(TeamPlace {
+            team: team.id.clone(),
+            role,
+        })
+    };
+    refused(
+        bob.create_invite(place(TeamRole::Owner)).await,
+        Refusal::TeamRole {
+            needed: TeamRole::Owner,
+        },
+    );
+    refused(
+        carol.create_invite(place(TeamRole::Member)).await,
+        Refusal::TeamRole {
+            needed: TeamRole::Admin,
+        },
+    );
+    match root.create_invite(place(TeamRole::Member)).await {
+        Err(StoreError::NotFound { what: Entity::Team, .. }) => {}
+        other => panic!("not root's team: {other:?}"),
+    }
+    let space = alice.me().await.expect("me").teams[0].id.clone();
+    refused(
+        alice
+            .create_invite(Some(TeamPlace {
+                team: space,
+                role: TeamRole::Member,
+            }))
+            .await,
+        Refusal::PersonalSpace,
+    );
+    let to_team = bob.create_invite(place(TeamRole::Admin)).await.expect("bob invites");
+    assert_eq!(to_team.invite.team_name.as_deref(), Some("backend"));
+    let info = store.invite_info(&to_team.token).await.expect("info");
+    assert_eq!(info.team.as_deref(), Some("backend"));
+    let ivy = store
+        .accept_invite(&to_team.token, accept(&fresh("ivy"), "long enough"))
+        .await
+        .expect("ivy");
+    let members = alice.members(team.id.clone()).await.expect("members");
+    assert!(
+        members
+            .iter()
+            .any(|member| member.account.id == ivy.id && member.role == TeamRole::Admin)
+    );
+
+    // An invitation is only as good as its sender's place when it is used.
+    let owner_invite = alice
+        .create_invite(place(TeamRole::Owner))
+        .await
+        .expect("alice invites");
+    alice
+        .set_member(team.id.clone(), bob_id.clone(), Some(TeamRole::Owner))
+        .await
+        .expect("bob owner");
+    bob.set_member(team.id.clone(), alice_id.clone(), Some(TeamRole::Admin))
+        .await
+        .expect("alice steps down");
+    refused(
+        store
+            .accept_invite(&owner_invite.token, accept(&fresh("jack"), "long enough"))
+            .await,
+        Refusal::InviteGone,
+    );
+}
+
+#[tokio::test]
+async fn postgres_invitations() {
+    invitations("CYBERAPI_TEST_POSTGRES").await;
+}
+
+#[tokio::test]
+async fn mysql_invitations() {
+    invitations("CYBERAPI_TEST_MYSQL").await;
 }
