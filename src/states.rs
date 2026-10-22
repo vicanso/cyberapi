@@ -8,6 +8,7 @@ mod cookies;
 mod copy;
 mod dashboard;
 mod directory;
+mod server;
 mod variables;
 mod workspace;
 
@@ -16,6 +17,7 @@ pub use app::{AppEvent, AppState, AppStore, Route};
 pub use cookies::{CookieKey, CookiesEvent, CookiesState, cookie_key};
 pub use dashboard::{DashboardEvent, DashboardState};
 pub use directory::{DirectoryDone, DirectoryEvent, DirectoryState};
+pub use server::{ServerEvent, ServerState, ServerStatus, SignInFailure};
 pub use variables::{VariablesEvent, VariablesState};
 pub use workspace::{WorkspaceEvent, WorkspaceState};
 

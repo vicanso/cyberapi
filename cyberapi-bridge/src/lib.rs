@@ -7,7 +7,7 @@
 //! |---|---|
 //! | `GET /v1/setup` | whether the first administrator is still to be made |
 //! | `POST /v1/setup` | makes it, with the setup token, and signs it in |
-//! | `POST /v1/login`, `POST /v1/logout` | the session cookie |
+//! | `POST /v1/login`, `POST /v1/logout` | the session cookie — or, for a client of its own (the desktop), the session's token, sent back as a bearer token |
 //! | `POST /v1/invite` | what an invitation's token opens, while it can be used |
 //! | `POST /v1/invite/accept` | makes the account it invites, and signs it in |
 //! | `GET /v1/session` | who is signed in, or 401 |
@@ -24,7 +24,7 @@ mod auth;
 pub mod static_files;
 mod throttle;
 
-use auth::{SESSION_COOKIE, hash_password, hash_token, new_token, session_cookie, signed_in, verify_password};
+use auth::{hash_password, hash_token, new_token, session_cookie, signed_in, verify_password};
 use axum::Router;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Json, State};
 use axum::http::{Extensions, HeaderMap, StatusCode, header};
@@ -33,7 +33,7 @@ use axum::routing::{get, post};
 use cyberapi_core::directory::{valid_account_name, valid_password};
 use cyberapi_http::{HttpEngine, PreparedRequest};
 use cyberapi_store::{Refusal, StoreError};
-use cyberapi_store_bridge::{Call, SEND_PATH, STORE_PATH, SendReply, dispatch};
+use cyberapi_store_bridge::{BearerSession, Call, LoginForm, SEND_PATH, STORE_PATH, SendReply, dispatch};
 use cyberapi_store_sql::{Acceptance, Account, NewAccount, SqlStore};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -124,8 +124,8 @@ impl Bridge {
     }
 
     /// Signs `account` in, answering it with the cookie that carries the
-    /// new session.
-    async fn sign_in(&self, account: Account) -> Response {
+    /// new session — or, for a `bearer` client, the session's token.
+    async fn sign_in(&self, account: Account, bearer: bool) -> Response {
         let token = match new_token() {
             Ok(token) => token,
             Err(error) => return internal(error),
@@ -138,6 +138,9 @@ impl Bridge {
             .await
         {
             return internal(error);
+        }
+        if bearer {
+            return Json(BearerSession { token }).into_response();
         }
         let cookie = session_cookie(&token, SESSION_DAYS * 24 * 60 * 60, self.inner.secure_cookie);
         ([(header::SET_COOKIE, cookie)], Json(account)).into_response()
@@ -252,7 +255,7 @@ async fn setup(State(bridge): State<Bridge>, extensions: Extensions, Json(form):
         display_name,
         admin: true,
     };
-    bridge.sign_in(account).await
+    bridge.sign_in(account, false).await
 }
 
 fn check_new_account(name: &str, password: &str) -> Result<(), &'static str> {
@@ -263,12 +266,6 @@ fn check_new_account(name: &str, password: &str) -> Result<(), &'static str> {
         return Err("a password has at least 8 characters");
     }
     Ok(())
-}
-
-#[derive(Deserialize)]
-struct LoginForm {
-    name: String,
-    password: String,
 }
 
 async fn login(State(bridge): State<Bridge>, extensions: Extensions, Json(form): Json<LoginForm>) -> Response {
@@ -297,7 +294,7 @@ async fn login(State(bridge): State<Bridge>, extensions: Extensions, Json(form):
     match account {
         Some(account) if verified => {
             bridge.inner.throttle.succeeded(&name);
-            bridge.sign_in(account).await
+            bridge.sign_in(account, form.bearer).await
         }
         _ => {
             bridge.inner.throttle.failed(&keys, Instant::now());
@@ -347,7 +344,7 @@ async fn accept_invite(State(bridge): State<Bridge>, extensions: Extensions, Jso
         password: form.password,
     };
     match bridge.inner.store.accept_invite(&form.token, acceptance).await {
-        Ok(account) => bridge.sign_in(account).await,
+        Ok(account) => bridge.sign_in(account, false).await,
         Err(error) => invite_refused(&bridge, &keys, error),
     }
 }
@@ -373,7 +370,7 @@ fn invite_refused(bridge: &Bridge, keys: &[Key], error: StoreError) -> Response 
 }
 
 async fn logout(State(bridge): State<Bridge>, headers: HeaderMap) -> Response {
-    if let Some(token) = auth::cookie(&headers, SESSION_COOKIE)
+    if let Some(token) = auth::session_token(&headers)
         && let Err(error) = bridge.inner.store.delete_session(&hash_token(&token)).await
     {
         return internal(error);

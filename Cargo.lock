@@ -1783,6 +1783,7 @@ dependencies = [
  "cyberapi-http",
  "cyberapi-service",
  "cyberapi-store",
+ "cyberapi-store-bridge",
  "cyberapi-store-turso",
  "directories",
  "futures",

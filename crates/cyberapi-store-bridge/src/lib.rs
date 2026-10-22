@@ -41,6 +41,13 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+mod client;
+
+pub use client::{
+    BearerSession, EngineTransport, LOGIN_PATH, LOGOUT_PATH, LoginForm, SignInError, bridge_address, session_me,
+    sign_in, sign_out,
+};
+
 /// Where calls are posted.
 pub const STORE_PATH: &str = "/v1/store";
 /// Where requests to send are posted.

@@ -105,9 +105,24 @@ pub fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// The session a request carries: the page's cookie, or a client's bearer
+/// token (`docs/server-sync.md` step 5). A browser sends no bearer token of
+/// its own, and another origin's page cannot add one: the bridge allows no
+/// cross-origin request.
+pub fn session_token(headers: &HeaderMap) -> Option<String> {
+    cookie(headers, SESSION_COOKIE).or_else(|| {
+        headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty())
+    })
+}
+
 /// The account whose session the request carries; 401 without one.
 pub async fn signed_in(store: &SqlStore, headers: &HeaderMap) -> Result<Account, StatusCode> {
-    let token = cookie(headers, SESSION_COOKIE).ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = session_token(headers).ok_or(StatusCode::UNAUTHORIZED)?;
     match store.session_account(&hash_token(&token), unix_now()).await {
         Ok(Some(account)) => Ok(account),
         Ok(None) => Err(StatusCode::UNAUTHORIZED),
@@ -141,6 +156,18 @@ mod tests {
         );
         assert_eq!(cookie(&headers, SESSION_COOKIE), Some("abc".into()));
         assert_eq!(cookie(&headers, "missing"), None);
+    }
+
+    #[test]
+    fn a_session_rides_a_cookie_or_a_bearer_token() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(session_token(&headers), None);
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer tok"));
+        assert_eq!(session_token(&headers), Some("tok".into()));
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Basic tok"));
+        assert_eq!(session_token(&headers), None);
+        headers.insert(header::COOKIE, HeaderValue::from_static("cyberapi_session=abc"));
+        assert_eq!(session_token(&headers), Some("abc".into()), "the page's cookie first");
     }
 
     #[test]

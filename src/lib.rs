@@ -19,6 +19,7 @@ mod pacing;
 mod paths;
 mod pins_local;
 mod root;
+mod server_local;
 pub mod states;
 mod this_build;
 mod views;

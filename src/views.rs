@@ -14,6 +14,7 @@ mod marked;
 mod name_dialog;
 mod password_dialog;
 mod pick;
+mod server_section;
 mod settings_dialog;
 mod shortcuts_dialog;
 mod startup;

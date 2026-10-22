@@ -418,3 +418,58 @@ async fn the_directory_over_the_bridge() {
     assert_eq!(status, StatusCode::GONE);
     assert!(admin.invites().await.expect("invites").is_empty());
 }
+
+/// The desktop's way in (`docs/server-sync.md` step 5): a bearer sign-in
+/// over a real socket, through the desktop's own engine. The token comes in
+/// the body and no cookie is set; sent back, it is the session, until the
+/// desktop signs out.
+#[tokio::test]
+async fn a_client_of_its_own_signs_in_with_a_bearer_token() {
+    use cyberapi_store_bridge::{EngineTransport, LoginForm, SignInError, session_me, sign_in, sign_out};
+    let Some(bridge) = fresh_bridge().await else { return };
+    let (router, _) = signed_in_router(&bridge).await;
+
+    // No cookie for a bearer client.
+    let form = json!({"name": "admin", "password": "long enough", "bearer": true});
+    let (status, set_cookie, body) = send(&router, "POST", "/v1/login", None, Some(form)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(set_cookie, None);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = format!("http://{}", listener.local_addr().expect("address"));
+    tokio::spawn(async move {
+        let service = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let _ = axum::serve(listener, service).await;
+    });
+    let engine: Arc<dyn HttpEngine> = Arc::new(NativeEngine::new(
+        tokio::runtime::Handle::current(),
+        TargetPolicy::Anywhere,
+    ));
+    let login = |password: &str| LoginForm {
+        name: "admin".into(),
+        password: password.into(),
+        bearer: false,
+    };
+    assert_eq!(
+        sign_in(engine.clone(), address.clone(), login("wrong one")).await,
+        Err(SignInError::WrongLogin)
+    );
+    let token = sign_in(engine.clone(), address.clone(), login("long enough"))
+        .await
+        .expect("a token");
+
+    let transport = EngineTransport::new(engine.clone(), address.clone(), Some(token.clone()));
+    let me = session_me(&transport).await.expect("an answer").expect("signed in");
+    assert!(me.account.admin);
+    let storage = BridgeStore::new(Arc::new(transport.clone())).storage();
+    assert!(storage.collections().list().await.expect("projects").is_empty());
+
+    sign_out(&transport).await.expect("signed out");
+    assert_eq!(
+        session_me(&transport).await,
+        Ok(None),
+        "the token is no session any more"
+    );
+    let nobody = EngineTransport::new(engine, address, None);
+    assert_eq!(session_me(&nobody).await, Ok(None));
+}

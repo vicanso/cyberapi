@@ -1,7 +1,7 @@
 //! What the whole application shares: the stores, where the reader is, and
 //! their settings.
 
-use super::{run_serial, run_store};
+use super::{ServerState, run_serial, run_store};
 use crate::json_view_local::JsonView;
 use crate::{Extras, this_build};
 use async_lock::Mutex;
@@ -30,6 +30,9 @@ pub struct AppStore {
     engine: Arc<dyn HttpEngine>,
     extras: Extras,
     state: Entity<AppState>,
+    /// The bridge the desktop signs in to (`docs/server-sync.md` step 5);
+    /// a page is signed in already, by its own.
+    server: Option<Entity<ServerState>>,
 }
 
 impl Global for AppStore {}
@@ -46,11 +49,16 @@ impl AppStore {
             save_task: None,
             saves: Arc::default(),
         });
+        let server = extras.sign_out.is_none().then(|| {
+            let engine = engine.clone();
+            cx.new(|cx| ServerState::new(engine, cx))
+        });
         cx.set_global(Self {
             storage,
             engine,
             extras,
             state: state.clone(),
+            server,
         });
         state.update(cx, |state, cx| {
             state.reload_me(cx);
@@ -102,6 +110,11 @@ impl AppStore {
 
     pub fn state(&self) -> &Entity<AppState> {
         &self.state
+    }
+
+    /// The desktop's bridge and who is signed in there.
+    pub fn server(&self) -> Option<&Entity<ServerState>> {
+        self.server.as_ref()
     }
 }
 

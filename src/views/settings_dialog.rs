@@ -1,12 +1,13 @@
 //! The application's settings (M14), in a dialog: theme, language, request
-//! timeouts, the window's size on the desktop, what this build is, and a way
-//! back to the defaults.
+//! timeouts, the window's size on the desktop, the desktop's server, what
+//! this build is, and a way back to the defaults.
 
 use crate::json_view_local::JsonView;
 use crate::states::AppStore;
 use crate::this_build;
 use crate::views::inline_confirm::inline_confirm;
 use crate::views::json_tree::json_view_switch;
+use crate::views::server_section::ServerSection;
 use cyberapi_core::prefs::{ThemeMode, Timeouts, WindowPrefs};
 use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -40,6 +41,9 @@ pub fn open_settings_dialog(window: &mut Window, cx: &mut App) {
             .title(t!("settings.title").to_string())
             .w(px(560.))
             .child(view.clone())
+            // Enter is a field's own: it signs in to the server, or sets a
+            // number; it does not close the settings.
+            .on_ok(|_, _, _| false)
     });
 }
 
@@ -61,6 +65,8 @@ struct SettingsView {
     pending: Option<Task<()>>,
     /// What the dialog is asking to confirm.
     confirming: Option<Clearing>,
+    /// The desktop's bridge (`docs/server-sync.md` step 5).
+    server: Option<Entity<ServerSection>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -108,6 +114,10 @@ impl SettingsView {
                 }),
             );
         }
+        let server = AppStore::global(cx)
+            .server()
+            .cloned()
+            .map(|state| cx.new(|cx| ServerSection::new(state, window, cx)));
         Self {
             connect,
             write,
@@ -116,6 +126,7 @@ impl SettingsView {
             height,
             pending: None,
             confirming: None,
+            server,
             _subscriptions: subscriptions,
         }
     }
@@ -523,6 +534,11 @@ impl Render for SettingsView {
             .child(section(t!("settings.json_view").to_string(), json_view))
             .child(section(t!("settings.timeouts").to_string(), timeouts))
             .children(window_size)
+            .children(
+                self.server
+                    .clone()
+                    .map(|server| section(t!("server.title").to_string(), server)),
+            )
             .child(section(t!("settings.about").to_string(), about))
             .child(section(
                 t!("settings.local_data").to_string(),
