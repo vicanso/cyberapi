@@ -75,10 +75,12 @@ pub fn open_settings(window: &mut Window, cx: &mut App) {
     let view = cx.new(|cx| SettingsView::new(None, window, cx));
     window.open_dialog(cx, move |dialog, window, _| {
         let rem = window.rem_size();
-        let height = (window.viewport_size().height - px(160.)).min(rem * 40.).max(px(280.));
+        let viewport = window.viewport_size();
+        let height = (viewport.height - px(160.)).min(rem * 40.).max(px(280.));
         dialog
             .title(t!("settings.title").to_string())
-            .w(rem * 54.)
+            // Within a narrow page, at the largest text too.
+            .w((rem * 54.).min(viewport.width - px(32.)).max(px(480.)))
             .child(div().w_full().h(height).child(view.clone()))
             // Enter is a field's own: it sets a number; it does not close
             // the settings.

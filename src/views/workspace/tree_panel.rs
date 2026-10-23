@@ -30,7 +30,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent, Entity, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Pixels, Point, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, px,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, px, rems,
 };
 use rust_i18n::t;
 use std::collections::HashSet;
@@ -540,11 +540,13 @@ impl TreePanel {
                 )
                 .into_any_element(),
             // The method as coloured text, short enough for one width: a
-            // filled badge on every row outweighs the names beside it.
+            // filled badge on every row outweighs the names beside it. In
+            // rems, so it grows with the names; wide enough that PATCH keeps
+            // its distance from them.
             ItemKind::Api => div()
-                .w(px(34.))
+                .w(rems(2.75))
                 .flex_none()
-                .text_size(px(10.5))
+                .text_size(rems(0.75))
                 .font_bold()
                 .text_color(method_color(node.method(), cx))
                 .child(method_label(node.method()))
@@ -673,19 +675,19 @@ impl TreePanel {
                     t!("workspace.pin")
                 }
                 .to_string();
-                let (icon, color) = if pinned {
-                    (IconName::StarFill, theme.warning)
+                let color = if pinned {
+                    theme.foreground
                 } else {
-                    (IconName::Star, theme.muted_foreground)
+                    theme.muted_foreground
                 };
                 // Faint until the row is hovered, so a long list is not a column
-                // of stars. Pinned ones stay lit. The click is the star's,
+                // of pins. Pinned ones stay dark. The click is the pin's,
                 // not the row's.
                 this.child(
                     div()
                         .flex_none()
-                        .when(!pinned, |star| {
-                            star.opacity(0.45)
+                        .when(!pinned, |pin| {
+                            pin.opacity(0.45)
                                 .group_hover(pin_group.clone(), |style| style.opacity(1.))
                         })
                         .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
@@ -705,7 +707,7 @@ impl TreePanel {
                                         state.set_pinned(&pin_id, !pinned, cx);
                                     });
                                 }))
-                                .child(Icon::new(icon).xsmall().text_color(color)),
+                                .child(Icon::new(Icons::Pin).xsmall().text_color(color)),
                         ),
                 )
             })
@@ -905,9 +907,9 @@ fn item_menu(
             let (config_state, config_id) = (state.clone(), id.clone());
             let (curl_state, curl_id) = (state.clone(), id.clone());
             let (label, pin_icon) = if pinned {
-                (t!("workspace.unpin"), Icons::StarOff)
+                (t!("workspace.unpin"), Icons::PinOff)
             } else {
-                (t!("workspace.pin"), Icons::Star)
+                (t!("workspace.pin"), Icons::Pin)
             };
             // F3.9: what a viewer may do too.
             menu.item(

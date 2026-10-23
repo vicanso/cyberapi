@@ -1,6 +1,7 @@
 //! The pinned APIs as tags in the title bar (M12): the number, the method
-//! and the name, the selected one marked; a click — or Cmd/Ctrl and the
-//! number — selects, the close button unpins.
+//! and the name, the one in the editor marked; a click — or Cmd/Ctrl and the
+//! number — opens it without moving the tree's selection, the close button
+//! unpins.
 
 use super::{KEY_CONTEXT, method_color, method_label, pin_action};
 use crate::states::WorkspaceState;
@@ -9,7 +10,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::{
     Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div, px,
+    Styled as _, Subscription, Window, div, px, rems,
 };
 use rust_i18n::t;
 
@@ -31,7 +32,7 @@ impl PinsBar {
 impl Render for PinsBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
-        let selected = state.selected().cloned();
+        let selected = state.opened().cloned();
         let theme = cx.theme();
         let tags = state.pinned().into_iter().enumerate().map(|(index, api)| {
             let active = selected.as_ref() == Some(&api.id);
@@ -76,7 +77,7 @@ impl Render for PinsBar {
                         .child(div().child(format!("{}", index + 1)))
                         .child(
                             div()
-                                .text_size(px(10.))
+                                .text_size(rems(0.7))
                                 .font_bold()
                                 .text_color(method_ink)
                                 .child(method_label(api.request.method)),
@@ -96,7 +97,7 @@ impl Render for PinsBar {
                         })),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state.update(cx, |state, cx| state.select(&select_id, cx));
+                    this.state.update(cx, |state, cx| state.open_pin(&select_id, cx));
                 }))
         });
         h_flex()

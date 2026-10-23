@@ -2,6 +2,7 @@
 //! kept in an API's history, and the rules for showing one.
 
 use crate::model::HttpRequest;
+use crate::redirect;
 use crate::send::base64_bytes;
 use crate::{CollectionId, ItemId, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -112,6 +113,12 @@ impl HttpResponse {
             .iter()
             .filter(move |(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.as_str())
+    }
+
+    /// Where this answer redirects to, when it is a redirect a send could
+    /// follow (F14.8): its `Location`, against the address it came from.
+    pub fn redirects_to(&self) -> Option<String> {
+        redirect::target(&self.url, self.status?, &self.headers).map(String::from)
     }
 
     pub fn content_type(&self) -> String {
@@ -507,6 +514,26 @@ mod tests {
         assert!(kept.body.is_empty());
         assert_eq!(kept.body_omitted, Some(HISTORY_BODY_LIMIT as u64 + 1));
         assert_eq!(kept.size(), big.size(), "the size still shows");
+    }
+
+    #[test]
+    fn a_redirect_says_where_it_points() {
+        let found = HttpResponse {
+            status: Some(302),
+            url: "http://api.test/v1/old?x=1".into(),
+            ..response(&[("Location", "/users")], b"")
+        };
+        assert_eq!(found.redirects_to().as_deref(), Some("http://api.test/users"));
+        let modified = HttpResponse {
+            status: Some(304),
+            ..found.clone()
+        };
+        assert_eq!(modified.redirects_to(), None, "not modified points nowhere");
+        let old = HttpResponse {
+            url: String::new(),
+            ..found
+        };
+        assert_eq!(old.redirects_to(), None, "kept before the address was");
     }
 
     #[test]

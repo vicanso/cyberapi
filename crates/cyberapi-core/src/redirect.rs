@@ -24,15 +24,11 @@ const BODY_HEADERS: [&str; 5] = [
 /// origin are the send pipeline's to add.
 const ORIGIN_HEADERS: [&str; 4] = ["authorization", "proxy-authorization", "cookie", "host"];
 
-/// The request an answer of `status` with `headers` points to; `None` when
-/// it is not a redirect to follow: not 301, 302, 303, 307 or 308, without a
-/// `Location`, or to somewhere other than http(s).
-///
-/// 303 asks for a GET, and 301 and 302 turn a POST into one, as browsers
-/// and curl do; the body goes with the method. 307 and 308 keep both. To
-/// another origin, the credentials and the `Host` written for this one stay
-/// behind.
-pub fn next(request: &PreparedRequest, status: u16, headers: &[(String, String)]) -> Option<PreparedRequest> {
+/// Where an answer of `status` with `headers`, to a request for `from`,
+/// sends it: the `Location`, against `from`. `None` when it is not a
+/// redirect to follow: not 301, 302, 303, 307 or 308, without a `Location`,
+/// or to somewhere other than http(s).
+pub fn target(from: &str, status: u16, headers: &[(String, String)]) -> Option<Url> {
     if !matches!(status, 301 | 302 | 303 | 307 | 308) {
         return None;
     }
@@ -40,11 +36,20 @@ pub fn next(request: &PreparedRequest, status: u16, headers: &[(String, String)]
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("location"))
         .map(|(_, value)| value.trim())?;
+    let to = Url::parse(from).ok()?.join(location).ok()?;
+    matches!(to.scheme(), "http" | "https").then_some(to)
+}
+
+/// The request an answer of `status` with `headers` points to; `None` when
+/// [`target`] finds nowhere to go.
+///
+/// 303 asks for a GET, and 301 and 302 turn a POST into one, as browsers
+/// and curl do; the body goes with the method. 307 and 308 keep both. To
+/// another origin, the credentials and the `Host` written for this one stay
+/// behind.
+pub fn next(request: &PreparedRequest, status: u16, headers: &[(String, String)]) -> Option<PreparedRequest> {
+    let to = target(&request.url, status, headers)?;
     let from = Url::parse(&request.url).ok()?;
-    let to = from.join(location).ok()?;
-    if !matches!(to.scheme(), "http" | "https") {
-        return None;
-    }
     let mut next = request.clone();
     let to_get = match status {
         303 => request.method != HttpMethod::Head,

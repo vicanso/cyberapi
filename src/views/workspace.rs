@@ -465,12 +465,12 @@ impl WorkspaceView {
         view
     }
 
-    /// F1.5: the window is named after the selected API, or the project
+    /// F1.5: the window is named after the opened API, or the project
     /// while none is.
     fn follow_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
         let name = state
-            .selected()
+            .opened()
             .and_then(|id| state.tree().get(id))
             .map(|node| node.name().to_string())
             .unwrap_or_else(|| state.collection().name.clone());
@@ -568,11 +568,12 @@ impl WorkspaceView {
         self.columns_resized(&columns, window, cx);
     }
 
-    /// F12.2: the pin with this number (from 0), if there is one.
+    /// F12.2: the pin with this number (from 0), if there is one, opened
+    /// with the tree left as it is.
     fn select_pin(&mut self, index: usize, cx: &mut Context<Self>) {
         let id = self.state.read(cx).pinned().get(index).map(|api| api.id.clone());
         if let Some(id) = id {
-            self.state.update(cx, |state, cx| state.select(&id, cx));
+            self.state.update(cx, |state, cx| state.open_pin(&id, cx));
         }
     }
 
@@ -862,7 +863,7 @@ mod tests {
         ));
         paste(cx, &state, window);
         state.read_with(cx, |state, _| {
-            let api = state.selected_api().expect("the new API is opened");
+            let api = state.opened_api().expect("the new API is opened");
             assert_eq!(api.name, "login");
             assert_eq!(api.request.method, HttpMethod::Post);
             assert_eq!(api.request.body, "{\"a\":1}");

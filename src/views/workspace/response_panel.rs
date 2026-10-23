@@ -406,16 +406,39 @@ impl ResponsePanel {
             .into_any_element()
     }
 
-    /// The body, under a note when it was longer than the engine reads.
+    /// The body, under a note when the answer is a redirect (F14.8) and one
+    /// when it was longer than the engine reads.
     fn render_cut_body(&self, response: &HttpResponse, cx: &mut Context<Self>) -> AnyElement {
         let body = self.render_body(response, cx);
-        if !response.truncated {
+        // Where it points, and how to go there by itself: with following
+        // on, a send ends past every redirect, so only an answer kept
+        // before shows the first.
+        let redirect = response.redirects_to().map(|to| {
+            let follows = AppStore::global(cx).state().read(cx).prefs().sending.follow_redirects;
+            let text = if follows {
+                t!("response.redirect", url = to)
+            } else {
+                t!("response.redirect_unfollowed", url = to)
+            };
+            let copy_to = Button::new("response-copy-location")
+                .ghost()
+                .xsmall()
+                .icon(IconName::Copy)
+                .label(t!("common.copy").to_string())
+                .on_click(move |_, window, cx| copy(to.clone(), window, cx));
+            note(text.to_string(), vec![copy_to], cx)
+        });
+        let cut = response.truncated.then(|| {
+            let limit = format_size(RESPONSE_LIMIT as u64);
+            note(t!("response.truncated", size = limit).to_string(), Vec::new(), cx)
+        });
+        if redirect.is_none() && cut.is_none() {
             return body;
         }
-        let limit = format_size(RESPONSE_LIMIT as u64);
         v_flex()
             .size_full()
-            .child(note(t!("response.truncated", size = limit).to_string(), Vec::new(), cx))
+            .children(redirect)
+            .children(cut)
             .child(div().flex_1().min_h_0().child(body))
             .into_any_element()
     }

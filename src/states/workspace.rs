@@ -103,8 +103,11 @@ pub struct WorkspaceState {
     /// The saves of the reader's state, one at a time in the order made:
     /// each writes the whole document.
     saves: Arc<Mutex<()>>,
-    /// The selected API's editor, while one is selected.
+    /// The opened API's editor, while one is open.
     api: Option<Entity<ApiState>>,
+    /// A pin opened over the tree's selection (F12.2): the editor shows it
+    /// while the tree keeps its row. This session's only.
+    pin_open: Option<ItemId>,
     /// The API the reader just made, until its editor is up: its URI is
     /// what they type next.
     created: Option<ItemId>,
@@ -181,6 +184,7 @@ impl WorkspaceState {
             saves: Arc::default(),
             api: None,
             created: None,
+            pin_open: None,
             environment: Vec::new(),
             global_headers: Vec::new(),
             copy,
@@ -700,11 +704,11 @@ impl WorkspaceState {
         }
     }
 
-    /// Opens the editor of the selected API, or closes it when none is
-    /// selected (or the selected one is gone). The editor of an API that
-    /// stays selected is kept, with what it holds.
+    /// Opens the editor of the opened API, or closes it when none is open
+    /// (or the open one is gone). The editor of an API that stays open is
+    /// kept, with what it holds.
     fn sync_api(&mut self, cx: &mut Context<Self>) {
-        let selected = self.selected_api().cloned();
+        let selected = self.opened_api().cloned();
         let current = self.api.as_ref().map(|api| api.read(cx).api().clone());
         match selected {
             Some(api) if current.as_ref() != Some(&api.id) => {
@@ -738,14 +742,24 @@ impl WorkspaceState {
         &self.keyword
     }
 
+    /// The tree's selected row.
     pub fn selected(&self) -> Option<&ItemId> {
         self.prefs.selected.as_ref()
     }
 
-    /// The selected API's record, when it still exists.
-    pub fn selected_api(&self) -> Option<&ApiSetting> {
-        let selected = self.prefs.selected.as_ref()?;
-        self.data.apis.iter().find(|api| &api.id == selected)
+    /// The API in the editor: a pin opened over the tree's selection, else
+    /// that selection.
+    pub fn opened(&self) -> Option<&ItemId> {
+        self.pin_open
+            .as_ref()
+            .filter(|pin| self.data.apis.iter().any(|api| &api.id == *pin))
+            .or(self.prefs.selected.as_ref())
+    }
+
+    /// The opened API's record, when it still exists.
+    pub fn opened_api(&self) -> Option<&ApiSetting> {
+        let opened = self.opened()?;
+        self.data.apis.iter().find(|api| &api.id == opened)
     }
 
     /// Pinned APIs that still exist, in pin order (F12.2).
@@ -855,10 +869,11 @@ impl WorkspaceState {
         }
     }
 
-    /// F3.8: an API is selected; a folder is opened or closed instead. The
-    /// folders it sits in open, so a pin (F12.2) shows its row.
+    /// F3.8: an API is selected, and opened in the editor over any pin; a
+    /// folder is opened or closed instead. The folders it sits in open, so
+    /// its row shows.
     pub fn select(&mut self, id: &ItemId, cx: &mut Context<Self>) {
-        let mut changed = self.prefs.selected.as_ref() != Some(id);
+        let mut changed = self.prefs.selected.as_ref() != Some(id) || self.pin_open.take().is_some();
         self.prefs.selected = Some(id.clone());
         let mut parent = self.tree.get(id).and_then(|node| node.parent()).cloned();
         while let Some(folder) = parent {
@@ -875,13 +890,29 @@ impl WorkspaceState {
         }
     }
 
-    /// F12.1 / F12.3. Only this project's APIs, once each.
+    /// F12.2: a pin's API in the editor. The tree keeps its selection and
+    /// its folders: a pin is for the APIs used beside the one at hand.
+    pub fn open_pin(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        let pin = Some(id.clone()).filter(|id| self.prefs.selected.as_ref() != Some(id));
+        if pin != self.pin_open {
+            self.pin_open = pin;
+            self.sync_api(cx);
+            cx.notify();
+        }
+    }
+
+    /// F12.1 / F12.3. Only this project's APIs, once each. Closing the pin
+    /// that is open takes the editor back to the tree's selection.
     pub fn set_pinned(&mut self, id: &ItemId, pinned: bool, cx: &mut Context<Self>) {
         let present = self.prefs.pinned.contains(id);
         if pinned && !present && self.data.apis.iter().any(|api| &api.id == id) {
             self.prefs.pinned.push(id.clone());
         } else if !pinned && present {
             self.prefs.pinned.retain(|pin| pin != id);
+            if self.pin_open.as_ref() == Some(id) {
+                self.pin_open = None;
+                self.sync_api(cx);
+            }
         } else {
             return;
         }
@@ -904,6 +935,7 @@ impl WorkspaceState {
                 this.open_folder(parent.as_ref());
                 this.created = Some(inserted.item.id.clone());
                 this.prefs.selected = Some(inserted.item.id);
+                this.pin_open = None;
                 this.sync_api(cx);
                 this.save_prefs(cx);
                 cx.notify();
@@ -1149,6 +1181,9 @@ impl WorkspaceState {
                 if this.prefs.selected.as_ref().is_some_and(gone) {
                     this.prefs.selected = None;
                 }
+                if this.pin_open.as_ref().is_some_and(gone) {
+                    this.pin_open = None;
+                }
                 this.prefs.pinned.retain(|id| !gone(id));
                 this.prefs.expanded.retain(|id| !gone(id));
                 this.sync_api(cx);
@@ -1344,7 +1379,7 @@ mod tests {
         let login = find(&state, "login", cx);
         state.read_with(cx, |state, _| {
             assert_eq!(state.selected(), Some(&login));
-            assert_eq!(state.selected_api().map(|api| api.name.as_str()), Some("login"));
+            assert_eq!(state.opened_api().map(|api| api.name.as_str()), Some("login"));
         });
         // Its editor asks once whether it is new (the URI takes the keys).
         state.update(cx, |state, _| {
@@ -1372,7 +1407,7 @@ mod tests {
         state.read_with(cx, |state, _| {
             assert_eq!(state.selected(), Some(&login));
             assert_eq!(state.selected_folder(), Some(users.clone()), "the next goes beside it");
-            let request = &state.selected_api().expect("opened").request;
+            let request = &state.opened_api().expect("opened").request;
             assert_eq!(
                 (request.method, request.uri.as_str()),
                 (HttpMethod::Put, "https://a.test/v1/users/login")
@@ -1430,9 +1465,54 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(row_names(&again, cx), ["users"]);
 
-        // Chosen from its pin, the API shows again.
+        // Chosen in the tree, the API shows again.
         again.update(cx, |state, cx| state.select(&login, cx));
         assert_eq!(row_names(&again, cx), ["users", "  login"]);
+    }
+
+    /// F12.2: a pin opens its API in the editor and leaves the tree as it
+    /// was, its selection and its folders. The tree's row, chosen again,
+    /// takes the editor back; so does closing the pin.
+    #[gpui_kit::test]
+    async fn a_pin_opens_its_api_and_leaves_the_tree_alone(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection, cx);
+        state.update(cx, |state, cx| state.create_folder(None, "users".into(), cx));
+        cx.run_until_parked();
+        let users = find(&state, "users", cx);
+        state.update(cx, |state, cx| state.create_api(Some(users), "login".into(), cx));
+        cx.run_until_parked();
+        let login = find(&state, "login", cx);
+        state.update(cx, |state, cx| state.create_api(None, "ping".into(), cx));
+        cx.run_until_parked();
+        let ping = find(&state, "ping", cx);
+        state.update(cx, |state, cx| {
+            state.set_pinned(&login, true, cx);
+            state.collapse_all(cx);
+        });
+        cx.run_until_parked();
+        let editing = |state: &Entity<WorkspaceState>, cx: &mut TestAppContext| {
+            state.read_with(cx, |state, cx| state.api().map(|api| api.read(cx).api().clone()))
+        };
+
+        state.update(cx, |state, cx| state.open_pin(&login, cx));
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.selected(), Some(&ping), "the tree keeps its row");
+            assert_eq!(state.opened(), Some(&login));
+        });
+        assert_eq!(editing(&state, cx), Some(login.clone()));
+        assert_eq!(row_names(&state, cx), ["ping", "users"], "its folder stays shut");
+
+        // The tree's row takes the editor back.
+        state.update(cx, |state, cx| state.select(&ping, cx));
+        assert_eq!(editing(&state, cx), Some(ping.clone()));
+
+        // So does closing the pin that is open.
+        state.update(cx, |state, cx| state.open_pin(&login, cx));
+        assert_eq!(editing(&state, cx), Some(login.clone()));
+        state.update(cx, |state, cx| state.set_pinned(&login, false, cx));
+        assert_eq!(editing(&state, cx), Some(ping));
     }
 
     /// A document that still carries pins (the old place) is copied onto

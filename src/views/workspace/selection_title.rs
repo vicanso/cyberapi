@@ -1,9 +1,8 @@
-//! The selection, drawn in the middle of the title bar: the folders it sits
-//! in, then — for an API — its method and name.
+//! The API in the editor, drawn in the middle of the title bar: the folders
+//! it sits in, then its name. The method is the editor's, just below; here it would
+//! only crowd the name.
 
-use super::method_color;
 use crate::states::WorkspaceState;
-use cyberapi_core::model::HttpMethod;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -27,10 +26,10 @@ impl SelectionTitle {
     }
 }
 
-/// Folders from the top of the tree down to the parent, the method when the
-/// selection is an API, and the selection's own name.
-fn selection(state: &WorkspaceState) -> Option<(Vec<String>, Option<HttpMethod>, String)> {
-    let node = state.tree().get(state.selected()?)?;
+/// Folders from the top of the tree down to the parent, and the opened
+/// API's own name.
+fn selection(state: &WorkspaceState) -> Option<(Vec<String>, String)> {
+    let node = state.tree().get(state.opened()?)?;
     let mut folders = Vec::new();
     let mut parent = node.parent().cloned();
     while let Some(id) = parent {
@@ -39,8 +38,7 @@ fn selection(state: &WorkspaceState) -> Option<(Vec<String>, Option<HttpMethod>,
         parent = folder.parent().cloned();
     }
     folders.reverse();
-    let method = (!node.is_folder()).then(|| node.method());
-    Some((folders, method, node.name().to_string()))
+    Some((folders, node.name().to_string()))
 }
 
 impl Render for SelectionTitle {
@@ -52,12 +50,9 @@ impl Render for SelectionTitle {
             .id("selection-title")
             .flex_none()
             .items_center()
-            .when_some(shown, |row, (folders, method, name)| {
+            .when_some(shown, |row, (folders, name)| {
                 let mut tip = folders.clone();
-                tip.push(match method {
-                    Some(method) => format!("{} {name}", method.as_str()),
-                    None => name.clone(),
-                });
+                tip.push(name.clone());
                 let tip = tip.join(" / ");
                 let folders = (!folders.is_empty()).then(|| folders.join(" / "));
                 row.min_w_0()
@@ -78,16 +73,6 @@ impl Render for SelectionTitle {
                                 .child(folders),
                         )
                         .child(div().flex_none().text_sm().text_color(muted).child("/"))
-                    })
-                    .when_some(method, |row, method| {
-                        row.child(
-                            div()
-                                .flex_none()
-                                .text_xs()
-                                .font_bold()
-                                .text_color(method_color(method, cx))
-                                .child(method.as_str()),
-                        )
                     })
                     .child(
                         div()
