@@ -6,6 +6,7 @@
 //! components spell Simplified Chinese `zh-CN`, so this app does too.
 
 use cyberapi_core::access::{CollectionRole, TeamRole};
+use cyberapi_core::import::ImportError;
 use cyberapi_service::backup::BackupFailure;
 use cyberapi_store::{Refusal, StoreError};
 use rust_i18n::t;
@@ -96,6 +97,16 @@ pub fn backup_error(failure: &BackupFailure) -> String {
         BackupFailure::Store { source } => store_error(source),
         BackupFailure::NotABackup { message } => t!("backup.not_a_backup", reason = message).into(),
         BackupFailure::Write { message } => message.clone(),
+    }
+}
+
+/// Why a text cannot be imported (F10.2), after "Cannot import:". The JSON
+/// reader's own words stay as they are, where they say where it went wrong.
+pub fn import_error(error: &ImportError) -> String {
+    match error {
+        ImportError::Unreadable { message } => t!("import.not_curl_or_json", why = message).into(),
+        ImportError::NoUrl => t!("import.no_url").into(),
+        ImportError::Empty => t!("import.empty").into(),
     }
 }
 

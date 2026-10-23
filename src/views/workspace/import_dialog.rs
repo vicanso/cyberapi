@@ -55,7 +55,11 @@ fn describe(text: &str) -> Option<Found> {
     }
     let format = match import::detect(text) {
         Ok((format, _)) => format_name(format),
-        Err(failure) => return Some(Err(t!("import.unreadable", why = failure.to_string()).to_string())),
+        Err(failure) => {
+            return Some(Err(
+                t!("import.unreadable", why = crate::i18n::import_error(&failure)).to_string()
+            ));
+        }
     };
     Some(match import::parse(text) {
         Ok(bundle) => {
@@ -66,7 +70,7 @@ fn describe(text: &str) -> Option<Found> {
             }
             Ok(found)
         }
-        Err(failure) => Err(t!("import.unreadable", why = failure.to_string()).to_string()),
+        Err(failure) => Err(t!("import.unreadable", why = crate::i18n::import_error(&failure)).to_string()),
     })
 }
 
