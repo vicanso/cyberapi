@@ -280,19 +280,12 @@ fn confirm_delete(
         ),
         ItemKind::Folder => {
             // Only what there is: "3 APIs", "3 APIs, 1 folder".
-            let count = |count: usize, one: &str, other: &str| match count {
-                0 => None,
-                1 => Some(t!(one).to_string()),
-                count => Some(t!(other, count = count).to_string()),
-            };
-            let what = [
-                count(apis, "workspace.api_one", "workspace.api_other"),
-                count(folders, "workspace.folder_one", "workspace.folder_other"),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(&t!("workspace.list_separator"));
+            let what = [(apis, "workspace.api"), (folders, "workspace.folder")]
+                .into_iter()
+                .filter(|(count, _)| *count > 0)
+                .map(|(count, key)| i18n::counted(key, count))
+                .collect::<Vec<_>>()
+                .join(&t!("workspace.list_separator"));
             (
                 t!("workspace.delete_folder_title", name = name),
                 t!("workspace.delete_folder_description", what = what),
@@ -392,7 +385,14 @@ impl WorkspaceView {
             cx.subscribe_in(&state, window, |_, this_state, event, window, cx| match event {
                 WorkspaceEvent::Imported { apis, folders } => {
                     window.push_notification(
-                        Notification::success(t!("import.done", apis = apis, folders = folders).to_string()),
+                        Notification::success(
+                            t!(
+                                "import.done",
+                                apis = i18n::counted("workspace.api", *apis),
+                                folders = i18n::counted("import.folder", *folders)
+                            )
+                            .to_string(),
+                        ),
                         cx,
                     );
                 }

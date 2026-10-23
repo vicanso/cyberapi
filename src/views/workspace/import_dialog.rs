@@ -64,9 +64,16 @@ fn describe(text: &str) -> Option<Found> {
     Some(match import::parse(text) {
         Ok(bundle) => {
             let (apis, folders) = bundle.counts();
-            let mut found = t!("import.found", format = format, apis = apis, folders = folders).to_string();
+            let mut found = t!(
+                "import.found",
+                format = format,
+                apis = crate::i18n::counted("workspace.api", apis),
+                folders = crate::i18n::counted("import.folder", folders)
+            )
+            .to_string();
             if !bundle.environment.is_empty() {
-                found += &t!("import.found_variables", count = bundle.environment.len());
+                let variables = crate::i18n::counted("import.variable", bundle.environment.len());
+                found += &t!("import.found_variables", variables = variables);
             }
             Ok(found)
         }

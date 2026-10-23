@@ -100,6 +100,13 @@ pub fn backup_error(failure: &BackupFailure) -> String {
     }
 }
 
+/// `count` of something, as the locale says one (`{key}_one`) or more
+/// (`{key}_other`, given `count`): "1 API", "3 APIs".
+pub fn counted(key: &str, count: usize) -> String {
+    let key = format!("{key}_{}", if count == 1 { "one" } else { "other" });
+    t!(key.as_str(), count = count).into()
+}
+
 /// Why a text cannot be imported (F10.2), after "Cannot import:". The JSON
 /// reader's own words stay as they are, where they say where it went wrong.
 pub fn import_error(error: &ImportError) -> String {
@@ -159,5 +166,26 @@ mod tests {
             t!("dashboard.title", locale = "zh-CN"),
             t!("dashboard.title", locale = "en")
         );
+    }
+
+    #[test]
+    fn a_counted_thing_says_one_and_more() {
+        // `counted` takes `_one` for 1 and `_other` for the rest: a key
+        // with one form only would show its own name.
+        let english = keys(include_str!("../locales/en.toml"));
+        let lone: Vec<_> = english
+            .iter()
+            .filter_map(|key| {
+                let (base, other) = if let Some(base) = key.strip_suffix("_one") {
+                    (base, "_other")
+                } else {
+                    (key.strip_suffix("_other")?, "_one")
+                };
+                (!english.contains(&format!("{base}{other}"))).then_some(key)
+            })
+            .collect();
+        assert!(lone.is_empty(), "a form without its pair: {lone:?}");
+        assert_eq!(t!("workspace.api_one", locale = "en"), "1 API");
+        assert_eq!(t!("workspace.api_other", locale = "en", count = 3), "3 APIs");
     }
 }

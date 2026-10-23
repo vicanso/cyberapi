@@ -81,8 +81,8 @@ fn detail(hint: &Hint) -> String {
         }
         HintKind::Custom(value) => value.clone(),
         HintKind::Api(api) => api.place.clone(),
-        HintKind::Field(Field::Object(count)) => t!("hints.object", count = count).to_string(),
-        HintKind::Field(Field::Array(count)) => t!("hints.array", count = count).to_string(),
+        HintKind::Field(Field::Object(count)) => crate::i18n::counted("hints.object", *count),
+        HintKind::Field(Field::Array(count)) => crate::i18n::counted("hints.array", *count),
         HintKind::Field(Field::Value(value)) => value.clone(),
     }
 }

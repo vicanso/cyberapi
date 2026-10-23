@@ -328,7 +328,7 @@ impl DashboardView {
             let (app, name) = (app.clone(), name.clone());
             alert
                 .title(t!("dashboard.ungroup_title", name = name).to_string())
-                .description(t!("dashboard.ungroup_description", count = count).to_string())
+                .description(i18n::counted("dashboard.ungroup_description", count))
                 .confirm()
                 .ok_text(t!("dashboard.ungroup_ok").to_string())
                 .cancel_text(t!("common.cancel").to_string())
@@ -363,10 +363,9 @@ impl DashboardView {
         // How many APIs go, when that was read and there are some.
         let description = match self.state.read(cx).api_count(&collection.id) {
             Some(0) | None => t!("dashboard.delete_description").to_string(),
-            Some(1) => t!("dashboard.delete_description_count", apis = t!("workspace.api_one")).to_string(),
             Some(count) => t!(
                 "dashboard.delete_description_count",
-                apis = t!("workspace.api_other", count = count)
+                apis = i18n::counted("workspace.api", count)
             )
             .to_string(),
         };
@@ -560,11 +559,7 @@ impl DashboardView {
                     .children(sync)
                     .when_some(place, |this, place| this.child(div().truncate().child(place)))
                     .when_some(api_count, |this, count| {
-                        this.child(
-                            div()
-                                .flex_none()
-                                .child(t!("dashboard.api_count", count = count).to_string()),
-                        )
+                        this.child(div().flex_none().child(i18n::counted("workspace.api", count)))
                     }),
             )
     }

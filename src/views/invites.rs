@@ -41,7 +41,7 @@ pub fn invites_section(state: &Entity<DirectoryState>, team: Option<&TeamId>, cx
             Some(place) => t!("invites.as_role", role = i18n::team_role(place.role)).to_string(),
             None => t!("invites.own_account").to_string(),
         };
-        let lasts = t!("invites.expires_in", days = days_until(invite.expires_at, now)).to_string();
+        let lasts = crate::i18n::counted("invites.expires_in", days_until(invite.expires_at, now) as usize);
         let (state, id) = (state.clone(), invite.id.clone());
         h_flex()
             .gap_2()

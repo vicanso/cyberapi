@@ -119,8 +119,8 @@ impl JsonTree {
         // A container past the depth cap is one row: its preview, not "0 members".
         let detail: SharedString = if node.preview.is_empty() {
             match node.kind {
-                JsonNodeKind::Object => t!("editor.json_tree_members", count = node.len).to_string().into(),
-                JsonNodeKind::Array => t!("editor.json_tree_items", count = node.len).to_string().into(),
+                JsonNodeKind::Object => crate::i18n::counted("editor.json_tree_member", node.len).into(),
+                JsonNodeKind::Array => crate::i18n::counted("editor.json_tree_item", node.len).into(),
                 _ => SharedString::default(),
             }
         } else {
