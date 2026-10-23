@@ -253,7 +253,8 @@ impl CyberApi {
 
     /// F14.1 / F14.6 / F15.2: a new theme, text size or language shows at
     /// once. A new language builds the page again, so the strings its fields
-    /// were made with are the new language's too.
+    /// were made with are the new language's too; an open project keeps its
+    /// state, so nothing it holds is read again or lost.
     fn follow_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
         if prefs.theme != self.theme {
@@ -267,8 +268,16 @@ impl CyberApi {
         if prefs.language != self.language {
             self.language = prefs.language.clone();
             crate::i18n::apply(prefs.language.as_deref());
-            let route = AppStore::global(cx).state().read(cx).route().clone();
-            self.page = Self::page_for(route, window, cx);
+            self.page = match &self.page {
+                Page::Workspace(view) => {
+                    let state = view.read(cx).state().clone();
+                    Page::Workspace(cx.new(|cx| WorkspaceView::with_state(state, window, cx)))
+                }
+                Page::Dashboard(_) => {
+                    let route = AppStore::global(cx).state().read(cx).route().clone();
+                    Self::page_for(route, window, cx)
+                }
+            };
             window.refresh();
             cx.notify();
         }

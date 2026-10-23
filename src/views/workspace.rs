@@ -370,8 +370,15 @@ pub struct WorkspaceView {
 
 impl WorkspaceView {
     pub fn new(collection: Collection, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let id = collection.id.clone();
         let state = cx.new(|cx| open_workspace(collection, cx));
+        Self::with_state(state, window, cx)
+    }
+
+    /// The page drawn again around a project already open: what it holds
+    /// (the answers too, those the history could not keep) stays, and only
+    /// the views are made anew — in a new language, say.
+    pub fn with_state(state: Entity<WorkspaceState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let id = state.read(cx).collection().id.clone();
         let tree = cx.new(|cx| TreePanel::new(state.clone(), window, cx));
         let pins = cx.new(|cx| PinsBar::new(state.clone(), cx));
         let title_name = cx.new(|cx| ProjectTitle::new(state.clone(), cx));
