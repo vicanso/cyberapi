@@ -77,7 +77,7 @@ pub fn open_settings(window: &mut Window, cx: &mut App) {
     // Sized by the text as it was when opened: measured afresh, a dialog
     // centred on the page widened on both sides with each step of the text
     // size, and the step button ran from under the pointer.
-    let rem = window.rem_size();
+    let rem = cx.theme().font_size;
     window.open_dialog(cx, move |dialog, window, _| {
         let viewport = window.viewport_size();
         let height = (viewport.height - px(160.)).min(rem * 40.).max(px(280.));
@@ -381,7 +381,9 @@ impl SettingsView {
             section: Section::default(),
             focus_handle: cx.focus_handle(),
             built_in: rust_i18n::locale().to_string(),
-            rem: window.rem_size(),
+            // The theme's size, which the window takes as its rem when it
+            // draws: a new settings window's own is still the default here.
+            rem: cx.theme().font_size,
             main,
             theme,
             language,
