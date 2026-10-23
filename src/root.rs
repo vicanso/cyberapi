@@ -588,9 +588,14 @@ impl Render for CyberApi {
                         .flex_1()
                         .min_w_0()
                         .items_center()
+                        // No width of its own, only the share it grows to:
+                        // the kit's bar will not shrink below what its row
+                        // needs, so a row of many pins needing their whole
+                        // width pushed the menu out of the window.
                         .child(
                             h_flex()
                                 .flex_1()
+                                .w(px(0.))
                                 .min_w_0()
                                 .overflow_hidden()
                                 .child(self.render_title(cx)),
