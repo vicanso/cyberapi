@@ -426,7 +426,7 @@ impl ResponsePanel {
                 .ghost()
                 .xsmall()
                 .icon(IconName::Copy)
-                .label(t!("common.copy").to_string())
+                .label(t!("response.copy_location").to_string())
                 .on_click(move |_, window, cx| copy(to.clone(), window, cx));
             note(text.to_string(), vec![copy_to], cx)
         });
