@@ -74,6 +74,9 @@ struct Pending {
 struct TeamsEditor {
     state: Entity<DirectoryState>,
     selected: Option<TeamId>,
+    /// A team just made, selected before the list read again has it: until
+    /// then it is not a selection that is gone.
+    awaited: Option<TeamId>,
     pending: Option<Pending>,
     new_team: Entity<InputState>,
     /// The selected team's name, where the reader may change it, and
@@ -99,10 +102,11 @@ impl TeamsEditor {
                 // The first team once they are read, or again when the
                 // selected one is gone.
                 let teams: Vec<Team> = state.read(cx).me().map(|me| me.teams.clone()).unwrap_or_default();
-                let gone = this
-                    .selected
-                    .as_ref()
-                    .is_none_or(|selected| !teams.iter().any(|team| &team.id == selected));
+                let listed = |id: &TeamId| teams.iter().any(|team| &team.id == id);
+                if this.awaited.as_ref().is_some_and(listed) {
+                    this.awaited = None;
+                }
+                let gone = this.awaited.is_none() && this.selected.as_ref().is_none_or(|selected| !listed(selected));
                 if gone && let Some(first) = teams.first() {
                     this.select(first.id.clone(), window, cx);
                 }
@@ -113,6 +117,7 @@ impl TeamsEditor {
             cx.subscribe_in(&state, window, |this, _, event, window, cx| match event {
                 DirectoryEvent::Done(DirectoryDone::TeamCreated(team)) => {
                     this.new_team.update(cx, |input, cx| input.set_value("", window, cx));
+                    this.awaited = Some(team.clone());
                     this.select(team.clone(), window, cx);
                 }
                 DirectoryEvent::Done(DirectoryDone::InviteCreated(link)) => copy_link(link, window, cx),
@@ -130,6 +135,7 @@ impl TeamsEditor {
         Self {
             state,
             selected: None,
+            awaited: None,
             pending: None,
             new_team,
             name: None,
