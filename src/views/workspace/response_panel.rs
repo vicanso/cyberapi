@@ -572,10 +572,11 @@ impl ResponsePanel {
             let method = response.request.method.as_str();
             rows.push((t!("response.url").to_string(), format!("{method} {}", response.url)));
         }
-        rows.extend([
-            (t!("response.api_id").to_string(), response.api.to_string()),
-            (t!("response.remote").to_string(), stats.remote_addr.clone()),
-        ]);
+        rows.push((t!("response.api_id").to_string(), response.api.to_string()));
+        // A request that never connected has no peer.
+        if !stats.remote_addr.is_empty() {
+            rows.push((t!("response.remote").to_string(), stats.remote_addr.clone()));
+        }
         if !stats.version.is_empty() {
             rows.push((t!("response.version").to_string(), stats.version.clone()));
         }
@@ -629,6 +630,8 @@ impl ResponsePanel {
                     .border_color(theme.border)
                     .pt_1(),
             );
+        // Nothing was timed (it failed before it went out): no line of dashes.
+        let timed = span > 0.;
         v_flex()
             .id("response-info")
             .size_full()
@@ -636,7 +639,7 @@ impl ResponsePanel {
             .p_2()
             .gap_3()
             .child(field_rows("response-info-fields", rows, cx))
-            .child(timeline)
+            .when(timed, |this| this.child(timeline))
             .into_any_element()
     }
 }
