@@ -1,4 +1,4 @@
-.PHONY: dev debug check fmt lint test release desktop-dist bundle icons nightly check-web web-bundle web-release web-serve web-dist db-up db-down test-sql bridge
+.PHONY: dev debug check fmt lint test release desktop-dist bundle icons nightly check-web web-bundle web-release web-serve web-dist docker db-up db-down test-sql bridge
 
 # The desktop app.
 dev:
@@ -96,3 +96,13 @@ web-serve:
 # it will run on.
 web-dist:
 	scripts/web-dist.sh
+
+# The browser build as an image (Dockerfile), for this machine's architecture:
+# the same bridge with the page compiled in, as vicanso/cyberapi-web:dev. CI
+# pushes it to Docker Hub (.github/workflows/docker.yml). DOCKER=container
+# builds with Apple's container; DOCKER_ARGS passes more, such as
+# --build-arg CARGO_MIRROR=sparse+https://rsproxy.cn/index/.
+DOCKER ?= docker
+
+docker:
+	$(DOCKER) build -t vicanso/cyberapi-web:dev $(DOCKER_ARGS) .

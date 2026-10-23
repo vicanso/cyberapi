@@ -25,8 +25,9 @@ pub struct AppPrefs {
     /// monitor.
     pub monitors: BTreeMap<String, MonitorPlacement>,
     /// The monitor the window was on last. Empty when none was recorded.
-    /// The next launch looks this id up; a monitor that is gone falls back
-    /// to [`WindowPrefs`].
+    /// The next launch opens there while it is connected, else on another
+    /// connected monitor in `monitors`, else as [`WindowPrefs`] says (see
+    /// [`opening_monitor`]).
     pub last_monitor: String,
     pub timeouts: Timeouts,
     /// The project open when the app last left it, opened again at the
@@ -103,6 +104,28 @@ impl MonitorPlacement {
     pub fn usable(self) -> bool {
         self.width >= WindowPrefs::MIN_WIDTH && self.height >= WindowPrefs::MIN_HEIGHT
     }
+
+    /// Moved, and shrunk when larger, into `area`: the monitor's visible
+    /// part, in the same coordinates. Never below the smallest window. A
+    /// monitor whose resolution or arrangement changed since still shows
+    /// the whole window; an empty area changes nothing.
+    pub fn fitted(self, area: MonitorPlacement) -> Self {
+        if area.width == 0 || area.height == 0 {
+            return self;
+        }
+        let width = self.width.min(area.width).max(WindowPrefs::MIN_WIDTH);
+        let height = self.height.min(area.height).max(WindowPrefs::MIN_HEIGHT);
+        let within = |at: i32, start: i32, room: u32, length: u32| {
+            let last = i64::from(start) + i64::from(room) - i64::from(length);
+            i64::from(at).min(last).max(i64::from(start)) as i32
+        };
+        Self {
+            x: within(self.x, area.x, area.width, width),
+            y: within(self.y, area.y, area.height, height),
+            width,
+            height,
+        }
+    }
 }
 
 /// The placement kept for `monitor`, when it is large enough to open.
@@ -112,6 +135,24 @@ pub fn placement_for<'a>(
 ) -> Option<&'a MonitorPlacement> {
     let placement = monitors.get(monitor)?;
     placement.usable().then_some(placement)
+}
+
+/// The monitor the window opens on, among those `connected` now (the one a
+/// window opens on by default first), and the placement kept for it. The
+/// monitor it was on last while that one is connected, with its placement
+/// when one was kept (`None`: centered there); else the first connected
+/// monitor that has one. `None` when neither: the default monitor, centered.
+pub fn opening_monitor<'a>(
+    monitors: &BTreeMap<String, MonitorPlacement>,
+    last: &str,
+    connected: &[&'a str],
+) -> Option<(&'a str, Option<MonitorPlacement>)> {
+    if let Some(id) = connected.iter().find(|id| !last.is_empty() && **id == last) {
+        return Some((id, placement_for(monitors, id).copied()));
+    }
+    connected
+        .iter()
+        .find_map(|id| Some((*id, Some(*placement_for(monitors, id)?))))
 }
 
 /// A double-click Fill sits a few pixels inside the monitor. That frame is
@@ -354,6 +395,100 @@ mod tests {
         assert_eq!(remember_monitor(&monitors, "a", "", next, false), None);
         assert_eq!(placement_for(&monitors, "missing"), None);
         assert_eq!(placement_for(&recorded.monitors, "a").copied(), Some(next));
+    }
+
+    #[test]
+    fn the_window_opens_on_a_connected_monitor_it_was_placed_on() {
+        let on = |x| MonitorPlacement {
+            x,
+            y: 40,
+            width: 1100,
+            height: 720,
+        };
+        let mut monitors = BTreeMap::new();
+        monitors.insert("a".to_string(), on(10));
+        monitors.insert("b".to_string(), on(20));
+        monitors.insert("small".to_string(), MonitorPlacement { width: 400, ..on(30) });
+
+        assert_eq!(
+            opening_monitor(&monitors, "b", &["a", "b"]),
+            Some(("b", Some(on(20)))),
+            "the last monitor while it is connected"
+        );
+        assert_eq!(
+            opening_monitor(&monitors, "b", &["c", "a"]),
+            Some(("a", Some(on(10)))),
+            "the last one is gone: a connected one with a position"
+        );
+        assert_eq!(
+            opening_monitor(&monitors, "c", &["c", "a"]),
+            Some(("c", None)),
+            "the last one, without a position, is centered on"
+        );
+        assert_eq!(opening_monitor(&monitors, "gone", &["small", "c"]), None);
+        assert_eq!(
+            opening_monitor(&monitors, "", &["", "c"]),
+            None,
+            "no monitor was recorded"
+        );
+    }
+
+    #[test]
+    fn a_placement_is_kept_inside_the_monitor() {
+        let area = MonitorPlacement {
+            x: 75,
+            y: 30,
+            width: 1845,
+            height: 1050,
+        };
+        let placed = MonitorPlacement {
+            x: 300,
+            y: 120,
+            width: 1100,
+            height: 720,
+        };
+        assert_eq!(placed.fitted(area), placed, "already inside");
+        assert_eq!(placed.fitted(MonitorPlacement::default()), placed, "no area known");
+
+        let past_the_edge = MonitorPlacement {
+            x: 1500,
+            y: 900,
+            ..placed
+        };
+        assert_eq!(
+            past_the_edge.fitted(area),
+            MonitorPlacement {
+                x: 75 + 1845 - 1100,
+                y: 30 + 1050 - 720,
+                ..placed
+            }
+        );
+        let above = MonitorPlacement { x: -40, y: 0, ..placed };
+        assert_eq!(above.fitted(area), MonitorPlacement { x: 75, y: 30, ..placed });
+
+        let larger = MonitorPlacement {
+            x: 0,
+            y: 0,
+            width: 2400,
+            height: 1400,
+        };
+        assert_eq!(larger.fitted(area), area, "shrunk to the visible part");
+        let tiny = MonitorPlacement {
+            x: 100,
+            y: 100,
+            width: 800,
+            height: 500,
+        };
+        assert_eq!(
+            placed.fitted(tiny),
+            MonitorPlacement {
+                x: 100,
+                y: 100,
+                width: WindowPrefs::MIN_WIDTH,
+                height: WindowPrefs::MIN_HEIGHT,
+            },
+            "never below the smallest window"
+        );
     }
 
     #[test]

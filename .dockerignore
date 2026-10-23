@@ -1,0 +1,15 @@
+# Build output and generated pages: the image builds its own.
+target
+**/*.rs.bk
+cyberapi-web/www/wasm
+cyberapi-web/www/assets
+cyberapi-web/www/fonts/JetBrainsMono-*
+
+# Nothing the build reads.
+.git
+.github
+.claude
+.gstack
+docs
+icons
+**/.DS_Store

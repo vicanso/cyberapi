@@ -17,8 +17,8 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(version, about = "The server of CyberAPI's browser build")]
 struct Args {
-    /// Where to listen.
-    #[arg(long, default_value = "127.0.0.1:7380")]
+    /// Where to listen. The image listens on every interface.
+    #[arg(long, env = "CYBERAPI_BRIDGE_LISTEN", default_value = "127.0.0.1:7380")]
     listen: SocketAddr,
     /// The database: `postgres://…` or `mysql://…`. An environment variable
     /// rather than a flag, which anyone who can list processes would read.
@@ -78,6 +78,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = bridge
         .router(args.www)
         .into_make_service_with_connect_info::<SocketAddr>();
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app).with_graceful_shutdown(stopped()).await?;
     Ok(())
+}
+
+/// Ctrl-C, or the SIGTERM a service manager or `docker stop` sends. In a
+/// container the bridge is PID 1, which a signal without a handler does not
+/// stop. Requests under way finish first.
+async fn stopped() {
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        () = terminated() => {}
+    }
+    tracing::info!("cyberapi-bridge stopping");
+}
+
+#[cfg(unix)]
+async fn terminated() {
+    use tokio::signal::unix::{SignalKind, signal};
+    match signal(SignalKind::terminate()) {
+        Ok(mut terminate) => {
+            terminate.recv().await;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "SIGTERM cannot be handled");
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn terminated() {
+    std::future::pending::<()>().await;
 }

@@ -31,7 +31,8 @@ rust-embed = { version = "8.13.0", default-features = false, features = ["includ
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.11.1"
-tokio = { workspace = true }
+# `signal`: stopping on SIGTERM, as a container or a service manager asks.
+tokio = { workspace = true, features = ["signal"] }
 tower-http = { version = "0.7.1", default-features = false, features = ["fs"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

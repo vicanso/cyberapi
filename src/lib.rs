@@ -28,13 +28,13 @@ pub use crate::pacing::set_page_visible;
 use crate::root::CyberApi;
 use crate::states::AppStore;
 use crate::views::StartupError;
-use cyberapi_core::prefs::{AppPrefs, WindowPrefs, placement_for};
+use cyberapi_core::prefs::{AppPrefs, MonitorPlacement, WindowPrefs, opening_monitor};
 use cyberapi_http::HttpEngine;
 use cyberapi_store::{BackupStore, DirectoryStore, ServerCopyStore, Storage};
 use gpui_kit::component::TitleBar;
 use gpui_kit::{
-    App, AppContext as _, Bounds, DisplayId, Entity, Pixels, Render, Window, WindowBounds, WindowOptions, point, px,
-    size,
+    App, AppContext as _, Bounds, DisplayId, Entity, Pixels, Render, Size, Window, WindowBounds, WindowOptions, point,
+    px, size,
 };
 use std::future::Future;
 use std::pin::Pin;
@@ -237,9 +237,9 @@ fn open_main_window<V: Render>(cx: &mut App, build: impl FnOnce(&mut Window, &mu
 }
 
 fn main_window_options(cx: &App) -> WindowOptions {
-    // F1.3: the size the settings name, at least 900 × 600. A monitor that
-    // still has a recorded position uses that instead; one that is gone
-    // falls back here.
+    // F1.3: the size the settings name, at least 900 × 600. A connected
+    // monitor with a recorded position uses that instead (see
+    // `remembered_bounds`).
     let window = cx
         .try_global::<AppStore>()
         .map(|store| store.state().read(cx).prefs().window)
@@ -252,12 +252,9 @@ fn main_window_options(cx: &App) -> WindowOptions {
     } else {
         (WindowPrefs::DEFAULT_WIDTH, WindowPrefs::DEFAULT_HEIGHT)
     };
-    let (display_id, bounds) = remembered_bounds(cx).unwrap_or_else(|| {
-        (
-            None,
-            Bounds::centered(None, size(px(width as f32), px(height as f32)), cx),
-        )
-    });
+    let chosen = size(px(width as f32), px(height as f32));
+    let (display_id, bounds) =
+        remembered_bounds(chosen, cx).unwrap_or_else(|| (None, Bounds::centered(None, chosen, cx)));
     let window_bounds = if window.maximized {
         WindowBounds::Maximized(bounds)
     } else {
@@ -285,18 +282,34 @@ fn main_window_options(cx: &App) -> WindowOptions {
     }
 }
 
-/// The position recorded for the monitor the window was on last, when that
-/// monitor is still connected. The id is the display's stable id.
-fn remembered_bounds(cx: &App) -> Option<(Option<DisplayId>, Bounds<Pixels>)> {
-    let (wanted, placement) = {
-        let prefs = cx.try_global::<AppStore>()?.state().read(cx).prefs();
-        let placement = *placement_for(&prefs.monitors, &prefs.last_monitor)?;
-        (prefs.last_monitor.clone(), placement)
-    };
-    let display = cx
+/// The monitor the window opens on, by the displays' stable ids: the one it
+/// was on last while that is connected, else a connected one with a recorded
+/// position, the default display first. A recorded position is kept inside
+/// that monitor's visible area; without one the window is centered there at
+/// `chosen`, the size the settings name.
+fn remembered_bounds(chosen: Size<Pixels>, cx: &App) -> Option<(Option<DisplayId>, Bounds<Pixels>)> {
+    let prefs = cx.try_global::<AppStore>()?.state().read(cx).prefs();
+    let primary = cx.primary_display().map(|display| display.id());
+    let mut displays: Vec<_> = cx
         .displays()
         .into_iter()
-        .find(|display| display.uuid().is_ok_and(|id| id.to_string() == wanted))?;
+        .filter_map(|display| Some((display.uuid().ok()?.to_string(), display)))
+        .collect();
+    displays.sort_by_key(|(_, display)| Some(display.id()) != primary);
+    let ids: Vec<&str> = displays.iter().map(|(id, _)| id.as_str()).collect();
+    let (wanted, placement) = opening_monitor(&prefs.monitors, &prefs.last_monitor, &ids)?;
+    let display = &displays.iter().find(|(id, _)| id == wanted)?.1;
+    let Some(placement) = placement else {
+        return Some((Some(display.id()), Bounds::centered(Some(display.id()), chosen, cx)));
+    };
+    let visible = display.visible_bounds();
+    let whole = |value: Pixels| f32::from(value).round() as i32;
+    let placement = placement.fitted(MonitorPlacement {
+        x: whole(visible.origin.x),
+        y: whole(visible.origin.y),
+        width: whole(visible.size.width).max(0) as u32,
+        height: whole(visible.size.height).max(0) as u32,
+    });
     Some((
         Some(display.id()),
         Bounds {

@@ -1,6 +1,7 @@
 # The default branch, packaged every night (package.yml) into the `nightly`
 # prerelease, replaced each time: its tag moves to the commit built and its
-# assets are that build's. A night with nothing new on the branch builds
+# assets are that build's. The browser build's image is pushed as `nightly`
+# too (docker.yml). A night with nothing new on the branch builds
 # nothing; a manual run with `force` builds anyway, and may name another
 # branch (`gh workflow run nightly.yml --ref <branch>`).
 name: Nightly
@@ -85,6 +86,14 @@ jobs:
     if: needs.changes.outputs.build == 'true'
     uses: ./.github/workflows/package.yml
     # The macOS signing secrets, when set (package.yml).
+    secrets: inherit
+
+  docker:
+    # The `nightly` image (docker.yml), pushed from main only.
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    uses: ./.github/workflows/docker.yml
+    # The Docker Hub credentials (docker.yml).
     secrets: inherit
 
   publish:

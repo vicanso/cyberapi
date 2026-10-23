@@ -24,6 +24,14 @@ make bridge       # http://127.0.0.1:7380/, setup token `dev`
 
 `make web-dist` builds the deployment: one `cyberapi-bridge` binary with the page compiled in, packed with its README.
 
+The same deployment is an image on Docker Hub, for linux/amd64 and linux/arm64: `vicanso/cyberapi-web` (`latest` and each version, `nightly` from `main`). `make docker` builds it from the sources.
+
+```bash
+docker run -p 7380:7380 -e CYBERAPI_BRIDGE_STORE=postgres://user:password@host/db vicanso/cyberapi-web
+```
+
+With no account yet the log shows the setup token (`CYBERAPI_BRIDGE_SETUP_TOKEN` chooses it). The login cookie is Secure: put TLS in front, or add `--insecure-cookie` after the image name to try it over plain HTTP.
+
 ## License
 
 Apache-2.0
