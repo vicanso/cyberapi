@@ -249,7 +249,54 @@ async fn serve_self_signed() -> SocketAddr {
     address
 }
 
+/// A server's stream whose first write waits: over HTTP/2 that is its
+/// settings, which reach a client far away a round trip after its request
+/// went out — and the client answers them then.
+struct SlowStart<S> {
+    inner: S,
+    wait: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for SlowStart<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for SlowStart<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if let Some(wait) = self.wait.as_mut() {
+            std::task::ready!(wait.as_mut().poll(cx));
+            self.wait = None;
+        }
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 /// An HTTP/2-only server, over TLS (agreeing to `h2` alone) or plain (h2c).
+/// Over TLS its first write waits 200 ms, as a far server's would arrive.
 /// `/slow` answers after 300 ms; anything else answers with the request's
 /// method, authority and headers.
 async fn serve_h2(tls: bool) -> SocketAddr {
@@ -280,7 +327,13 @@ async fn serve_h2(tls: bool) -> SocketAddr {
                 let builder = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new());
                 let _ = match acceptor {
                     Some(acceptor) => match acceptor.accept(stream).await {
-                        Ok(stream) => builder.serve_connection(TokioIo::new(stream), service).await,
+                        Ok(stream) => {
+                            let slow = SlowStart {
+                                inner: stream,
+                                wait: Some(Box::pin(tokio::time::sleep(Duration::from_millis(200)))),
+                            };
+                            builder.serve_connection(TokioIo::new(slow), service).await
+                        }
                         Err(_) => return,
                     },
                     None => builder.serve_connection(TokioIo::new(stream), service).await,
@@ -325,9 +378,23 @@ async fn https_speaks_http2_where_the_server_agrees() {
         !echoed.contains("connection"),
         "HTTP/2 has no Connection header: {echoed}"
     );
+    // The client answers the server's settings after its request went out;
+    // that answer is no part of sending it.
     let stats = &exchange.stats;
     assert!(stats.server_processing >= Duration::from_millis(300), "{stats:?}");
-    assert!(stats.send < Duration::from_millis(300), "{stats:?}");
+    assert!(stats.send < Duration::from_millis(100), "{stats:?}");
+    // A body too: it is taken in frames, not with the headers.
+    let posted = engine()
+        .send(PreparedRequest {
+            method: HttpMethod::Post,
+            body: vec![b'x'; 64 * 1024],
+            ..to(url.clone(), HttpVersion::Auto)
+        })
+        .await
+        .expect("an exchange");
+    let stats = &posted.stats;
+    assert!(stats.server_processing >= Duration::from_millis(300), "{stats:?}");
+    assert!(stats.send < Duration::from_millis(100), "{stats:?}");
 
     let forced = engine().send(to(url.clone(), HttpVersion::Http2)).await;
     assert_eq!(forced.map(|e| e.stats.version), Ok("HTTP/2".to_string()));

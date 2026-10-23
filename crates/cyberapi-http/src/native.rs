@@ -316,7 +316,10 @@ where
         inner: stream,
         timeline: timeline.clone(),
     });
-    let outgoing = build(request, url, h2)?;
+    let outgoing = build(request, url, h2)?.map(|inner| TimedBody {
+        inner,
+        timeline: timeline.clone(),
+    });
     let answer = async {
         // The connection runs on a task of its own, and both it and the
         // sender stay until the body is read.
@@ -368,15 +371,16 @@ where
 
     let line = timeline.lock().map(|line| line.clone()).unwrap_or_default();
     if let (Some(first_write), Some(last_write)) = (line.first_write, line.last_write) {
-        stats.send = last_write.duration_since(first_write);
-        // Over HTTP/2 the server's settings are read before any answer.
-        let began = if h2 {
-            line.headers
+        // Over HTTP/2 the connection writes on after the request, and reads
+        // the server's settings before any answer.
+        let (sent, began) = if h2 {
+            (line.sent.unwrap_or(last_write), line.headers)
         } else {
-            line.first_read.or(line.headers)
+            (last_write, line.first_read.or(line.headers))
         };
+        stats.send = sent.saturating_duration_since(first_write);
         if let Some(began) = began {
-            stats.server_processing = began.saturating_duration_since(last_write);
+            stats.server_processing = began.saturating_duration_since(sent);
             stats.content_transfer = ended.saturating_duration_since(began);
         }
     }
@@ -526,8 +530,14 @@ fn decompress(encoding: &str, raw: &[u8], cut: bool, limit: usize) -> Option<(Ve
 #[derive(Clone, Debug, Default)]
 struct Timeline {
     first_write: Option<Instant>,
-    /// The last write before the answer: the request's end.
+    /// The last write before the answer: the request's end over HTTP/1.1.
     last_write: Option<Instant>,
+    /// The connection has taken all of the request's body.
+    body_taken: bool,
+    /// The first write after that: the request's end over HTTP/2, whose
+    /// connection goes on writing for itself — answering the server's
+    /// settings, which from a server far away arrive after the request.
+    sent: Option<Instant>,
     first_read: Option<Instant>,
     /// When the answer's headers were in.
     headers: Option<Instant>,
@@ -548,7 +558,54 @@ impl<S> Timed<S> {
             let now = Instant::now();
             line.first_write.get_or_insert(now);
             line.last_write = Some(now);
+            if line.body_taken && line.sent.is_none() {
+                line.sent = Some(now);
+            }
         }
+    }
+}
+
+/// The request's body, telling the timeline when the connection has taken
+/// all of it: what it writes next ends the request.
+struct TimedBody {
+    inner: Full<Bytes>,
+    timeline: Arc<Mutex<Timeline>>,
+}
+
+impl TimedBody {
+    fn taken(&self) {
+        if let Ok(mut line) = self.timeline.lock() {
+            line.body_taken = true;
+        }
+    }
+}
+
+impl hyper::body::Body for TimedBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+        let polled = Pin::new(&mut self.inner).poll_frame(cx);
+        if matches!(polled, Poll::Ready(None)) || self.inner.is_end_stream() {
+            self.taken();
+        }
+        polled
+    }
+
+    /// An empty body goes with the headers, unasked for.
+    fn is_end_stream(&self) -> bool {
+        let end = self.inner.is_end_stream();
+        if end {
+            self.taken();
+        }
+        end
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
     }
 }
 
