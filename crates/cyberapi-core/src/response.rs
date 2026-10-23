@@ -374,10 +374,13 @@ pub fn display_header_name(name: &str) -> String {
         .join("-")
 }
 
-/// How a status reads (F7.3): its color in the response panel.
+/// How a status reads (F7.3): its color in the response panel. The old
+/// app read 3xx as success; here a redirect is its own, as the panel says
+/// where it points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StatusLevel {
     Success,
+    Redirect,
     ClientError,
     ServerError,
 }
@@ -386,6 +389,7 @@ pub fn status_level(status: u16) -> StatusLevel {
     match status {
         500.. => StatusLevel::ServerError,
         400..500 => StatusLevel::ClientError,
+        300..400 => StatusLevel::Redirect,
         _ => StatusLevel::Success,
     }
 }
@@ -688,7 +692,9 @@ mod tests {
         assert_eq!(status_text(200), "OK");
         assert_eq!(status_text(418), "I'm a teapot");
         assert_eq!(status_text(299), "");
-        assert_eq!(status_level(302), StatusLevel::Success);
+        assert_eq!(status_level(204), StatusLevel::Success);
+        assert_eq!(status_level(302), StatusLevel::Redirect);
+        assert_eq!(status_level(304), StatusLevel::Redirect);
         assert_eq!(status_level(404), StatusLevel::ClientError);
         assert_eq!(status_level(503), StatusLevel::ServerError);
     }

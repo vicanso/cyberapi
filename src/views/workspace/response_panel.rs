@@ -170,6 +170,7 @@ impl ResponsePanel {
         let theme = cx.theme();
         match status_level(status) {
             StatusLevel::Success => theme.success,
+            StatusLevel::Redirect => theme.info,
             StatusLevel::ClientError => theme.warning,
             StatusLevel::ServerError => theme.danger,
         }

@@ -523,7 +523,7 @@ Sending --异常--> Idle + 错误提示
 |---|---|---|---|---|
 | F7.1 | Body 分类 | `content-type` 含 `application/json` → 解码并以 4 空格缩进格式化（解析失败会直接抛错）；匹配 `/text\|javascript/i` → 按文本解码；其余为二进制（保留 base64） | `http_response.ts:135` | D |
 | F7.2 | 大小 | 优先取 `content-length`，否则用 base64 长度 × 3/4 估算；同时显示压缩前的大小和比例 | `http_response.ts:162`，`APIResponse/index.tsx:487` | D |
-| F7.3 | 状态文本 | 内置状态码 → 原因短语映射表；按 2xx–3xx / 4xx / 5xx 分三级 | `http_response.ts:62`，`status_text.tsx` | D（分级颜色为 V） |
+| F7.3 | 状态文本 | 内置状态码 → 原因短语映射表；按 2xx–3xx / 4xx / 5xx 分三级（GPUI 版把 3xx 单独一级，用蓝色，与重定向提示对应） | `http_response.ts:62`，`status_text.tsx` | D（分级颜色为 V） |
 | F7.4 | 预览 | `content-type` 匹配 `/image\|pdf/i` 时进入预览模式（图片 / PDF） | `ExPreview.tsx:15` | D（渲染为 V） |
 | F7.5 | 附件自动保存 | 响应头有 `content-disposition: ...filename="x"` 时，**自动**保存到下载目录；重名时依次尝试 `x-1` … `x-9`；从历史加载时不保存 | `APIResponse/index.tsx:213`，`helpers/util.ts:205` | S |
 | F7.6 | 响应头 / Cookie | 响应头按名称首字母大写展示（`content-type` → `Content-Type`）；`set-cookie` 单独展示为 name=value | `APIResponse/index.tsx:430` | D + V |
