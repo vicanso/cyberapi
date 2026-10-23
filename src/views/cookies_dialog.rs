@@ -13,7 +13,7 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
+    AnyElement, App, AppContext as _, Context, Div, ElementId, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
 };
 use rust_i18n::t;
@@ -264,7 +264,7 @@ impl Render for CookiesEditor {
             .child(div().w(px(150.)).child(t!("cookies.domain").to_string()))
             .child(div().w(px(70.)).child(t!("cookies.path").to_string()))
             .child(div().w(px(170.)).child(t!("cookies.expires").to_string()))
-            .child(div().w(px(64.)));
+            .child(actions());
         let keyword = self.search.read(cx).value().trim().to_lowercase();
         let shown = |cookie: &&Cookie| {
             keyword.is_empty()
@@ -316,18 +316,21 @@ impl Render for CookiesEditor {
                                     )
                                     .child(div().w(px(70.)).truncate().text_color(muted).child(cookie.path.clone()))
                                     .child(div().w(px(170.)).child(Input::new(&row.expires).small()))
-                                    .child(never_button(("cookie-never", index)).on_click(cx.listener(
-                                        move |this, _, window, cx| this.never_expires(&never_key, window, cx),
-                                    )))
                                     .child(
-                                        Button::new(("cookie-delete", index))
-                                            .ghost()
-                                            .small()
-                                            .icon(IconName::Close)
-                                            .tooltip(t!("common.delete").to_string())
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.state.update(cx, |state, cx| state.delete(&key, cx));
-                                            })),
+                                        actions()
+                                            .child(never_button(("cookie-never", index)).on_click(cx.listener(
+                                                move |this, _, window, cx| this.never_expires(&never_key, window, cx),
+                                            )))
+                                            .child(
+                                                Button::new(("cookie-delete", index))
+                                                    .ghost()
+                                                    .small()
+                                                    .icon(IconName::Close)
+                                                    .tooltip(t!("common.delete").to_string())
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.state.update(cx, |state, cx| state.delete(&key, cx));
+                                                    })),
+                                            ),
                                     ),
                             )
                         }),
@@ -347,19 +350,22 @@ impl Render for CookiesEditor {
             .child(div().w(px(70.)).child(Input::new(&new.path).small()))
             .child(div().w(px(170.)).child(Input::new(&new.expires).small()))
             .child(
-                never_button("cookie-never").on_click(cx.listener(|this, _, window, cx| {
-                    this.new
-                        .expires
-                        .update(cx, |input, cx| input.set_value(NEVER, window, cx));
-                })),
-            )
-            .child(
-                Button::new("cookie-add")
-                    .primary()
-                    .small()
-                    .icon(IconName::Plus)
-                    .tooltip(t!("cookies.add").to_string())
-                    .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
+                actions()
+                    .child(
+                        never_button("cookie-never").on_click(cx.listener(|this, _, window, cx| {
+                            this.new
+                                .expires
+                                .update(cx, |input, cx| input.set_value(NEVER, window, cx));
+                        })),
+                    )
+                    .child(
+                        Button::new("cookie-add")
+                            .primary()
+                            .small()
+                            .icon(IconName::Plus)
+                            .tooltip(t!("cookies.add").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
+                    ),
             );
         v_flex()
             .gap_2()
@@ -400,6 +406,12 @@ impl Render for CookiesEditor {
             )
             .children(self.render_clear(cx))
     }
+}
+
+/// The buttons at the end of a row, as wide in every row as the header
+/// leaves for them, so the columns before them line up.
+fn actions() -> Div {
+    h_flex().flex_none().w(px(64.)).gap_1().justify_end()
 }
 
 /// F9.6: sets the expiry beside it to "never".
