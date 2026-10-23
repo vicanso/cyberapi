@@ -35,7 +35,7 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
   - 字体与字号：`root.rs` 的 `apply_theme` 在每次切换主题后按设置（`AppPrefs.text`，即 `TextPrefs`，`0` 为默认值）设置界面字号（rem，默认 14px，组件库默认 16px）和编辑器字号（`mono_font_size`，默认 13px，请求体和响应体的编辑器用它），只改字号时走 `apply_text`；可选的字号是 `TextPrefs::UI_SIZES` / `EDITOR_SIZES`，界面最大 18px（有些行是固定像素高度）。等宽字体固定为 JetBrains Mono，深色模式加深弹窗遮罩。设置弹窗的宽度按 rem 计算，随字号变宽。两个编辑器的自动换行（`TextPrefs.wrap`）在设置改变时用 `set_soft_wrap` 即时切换。Ghost 按钮的 hover 读 `tokens.accent`（深色再乘 0.5 透明度），默认 accent 贴着页面，所以这里把浅色 accent 换成 neutral-200、深色换成 neutral-600；菜单和列表高亮用的是同一个 token。JetBrains Mono 在 `resources/fonts/`：桌面版 `this_build::add_fonts` 编进二进制；浏览器版由 `web-bundle.sh` 复制到 `www/fonts/`，页面在首帧之后取来交给 `add_mono_fonts`。
   - 组件库只在 macOS 原生构建里给输入框绑 Cmd 快捷键（全选、复制、撤销……），浏览器版一律是 Ctrl。所以页面运行在 Mac 上时（`this_build::mac_page()`），`views::bind_mac_page_keys` 补绑同样的 Cmd 组合和 Cmd-Enter 发送。Cmd-N 之类浏览器自己占用的组合到不了页面。这些 Cmd 绑定要在共用的绑定**之前**注册：界面上显示的快捷键取最后注册的那个，而组件库在页面里把 Cmd 写成 “Win”，先注册 Cmd 才会显示同样可用的 Ctrl。Windows / Linux 的浏览器先占用 Ctrl-N，所以新建接口 / 目录的快捷键只在 `this_build::takes_new_keys()` 为真时显示；Ctrl-1…9 同理被浏览器拿去切标签，固定接口的快捷键只在 `takes_pin_keys()` 为真时显示。
   - `src/assets.rs`（仅桌面）：嵌入 gpui-kit 默认图标之外用到的 Lucide 图标；**新用一个 `gpui_kit::assets::IconName` 时要加进 `icon_assets!` 列表**，否则桌面版显示空白（浏览器版从 `www/assets/icons` 取任意图标）。测试 `every_icon_the_app_uses_is_embedded` 列出了它们。
-  - `src/views/`：只负责绘制和转发事件，不调用 store。`root.rs` 按路由切换页面、同步主题和窗口标题。设置（`views/settings.rs`）照 zedis 的布局：左侧分区，右侧每行是 `setting_row`（名称 + 说明在左，控件在右：下拉用 `Select`，字号用 `NumberInput`，开关用 `Switch`）；桌面版是单独的窗口（`settings/window.rs`：同时只开一个，用应用自己的标题栏，Esc / ⌘W 只关它；Windows / Linux 上只剩它时应用退出），网页版是弹窗。窗口分区改的是主窗口的大小。语言只有中文和英文。粘贴 cURL 新建接口（F10.5）：`views/workspace.rs` 的 `paste_curl`，只在用户粘贴（工作区的 `PasteCurl`，⌘V / Ctrl+V；输入框在更内层的 `Input` 上下文里绑了同样的键，仍是普通粘贴）或点菜单项时才用 `read_from_clipboard_async` 读剪贴板（网页版同步读永远是空，异步读要在用户操作的同一事件里发起）。**不要在其他时候读剪贴板**（启动、获得焦点、定时都不行）。工作区是可拖动宽度的三栏（树 / 请求编辑 / 响应，宽度存入 `AppPrefs.columns`）；`kv_editor.rs` 是 Query / Header / Auth / 表单共用的键值列表。JSON 高亮来自 gpui-kit 的 `tree-sitter` feature，只在 native 依赖表里打开。
+  - `src/views/`：只负责绘制和转发事件，不调用 store。`root.rs` 按路由切换页面、同步主题和窗口标题。设置（`views/settings.rs`）照 zedis 的布局：左侧分区，右侧每行是 `setting_row`（名称 + 说明在左，控件在右：下拉用 `Select`，字号用 `NumberInput`，开关用 `Switch`）；桌面版是单独的窗口（`settings/window.rs`：同时只开一个，用应用自己的标题栏，Esc / ⌘W 只关它；Windows / Linux 上只剩它时应用退出），网页版是弹窗。窗口分区改的是主窗口的大小。语言只有中文和英文。粘贴 cURL 新建接口（F10.5）：`views/workspace.rs` 的 `paste_curl`，只在用户粘贴（工作区的 `PasteCurl`，⌘V / Ctrl+V；输入框在更内层的 `Input` 上下文里绑了同样的键，仍是普通粘贴）或点菜单项时才用 `read_from_clipboard_async` 读剪贴板（网页版同步读永远是空，异步读要在用户操作的同一事件里发起）；导入弹窗（F10.1）也是在用户打开它的那次点击里读一次，用来预填，编辑框已有内容就不覆盖。**不要在其他时候读剪贴板**（启动、获得焦点、定时都不行）。工作区是可拖动宽度的三栏（树 / 请求编辑 / 响应，宽度存入 `AppPrefs.columns`）；`kv_editor.rs` 是 Query / Header / Auth / 表单共用的键值列表。JSON 高亮来自 gpui-kit 的 `tree-sitter` feature，只在 native 依赖表里打开。
   - `src/i18n.rs` + `locales/{en,zh-CN}.toml`：rust-i18n，当前语言与 gpui-component 共用，所以中文的 locale 代码用组件的 `zh-CN`。**新增文案时每个 locale 文件都要加**，测试 `every_locale_has_every_key` 会逐个 key 比对。store 错误统一用 `i18n::store_error` 转成提示文案。
   - 开发用环境变量（`src/paths.rs`）：`CYBERAPI_DATA_DIR` 覆盖数据目录（试运行时指向临时目录，避免写入真实数据），`CYBERAPI_LEGACY_DIR` 覆盖 Tauri 版的数据目录。默认数据目录是平台数据目录下的 `CyberAPI`（Linux 为 `cyberapi`）。发布版数据库为 `cyberapi.db`；debug 构建（`make dev`）用同目录的 `cyberapi-dev.db`，不打开正式库。
 - `crates/cyberapi-core`：L0 领域层。model（项目 / 目录 / 接口 / 请求 / 变量，含旧库字段的转换）、`tree`（构建、关键字过滤后的显示行、移动 / 插入 / 删除的变更计划、拖放落点）、`search`（拼音匹配）、`collection`（首页过滤与排序）。无 IO、无时钟、无 gpui，必须能编译到 wasm。新的纯逻辑放这里，不放 GUI crate。树的规则只在这里写一份：store 按 `plan_*` 的结果写库，state 用同一个计划 `apply` 到自己的副本。
@@ -83,15 +83,15 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 - 能在 module 级 gate 就不要在 item 级，能在 item 级就不要在语句级。
 - **依赖也分表**：普通 `[dependencies]` 里的 crate 必须能编译到 `wasm32-unknown-unknown`；仅桌面的放 `[target.'cfg(not(target_family = "wasm"))'.dependencies]`，仅浏览器的放 `[target.'cfg(target_family = "wasm")'.dependencies]`。
 
-### 浏览器版的已知约束（待设计）
+### 浏览器版为什么经过 bridge
 
-浏览器不能替代桌面版的 L1 基础设施：受 CORS 限制不能请求任意域名，`Cookie` / `User-Agent` / `Host` 等是禁止设置的请求头，拿不到 DNS / TCP / TLS 分阶段耗时（F5.6），也没有 SQLite 和本地文件系统。因此和 zedis 的 `zedis-bridge` 一样，浏览器版的请求执行和数据存储预计要经过一个服务端（`cyberapi-bridge`），切点放在 L1 的 trait（`HttpClient`、Repository 等）上：桌面版直连，浏览器版走 bridge。上层（L0 / L2 / L3 / View）两端共用。
+浏览器不能替代桌面版的 L1 基础设施：受 CORS 限制不能请求任意域名，`Cookie` / `User-Agent` / `Host` 等是禁止设置的请求头，拿不到 DNS / TCP / TLS 分阶段耗时（F5.6），也没有 SQLite 和本地文件系统。所以和 zedis 的 `zedis-bridge` 一样，浏览器版的发送和存储都经过 `cyberapi-bridge`，切点在 L1 的 trait 上：发送是 `HttpEngine`（浏览器 `BridgeHttpEngine` → `/v1/send`，桌面 `NativeEngine`），存储是各 Store trait（浏览器 `BridgeStore` → `/v1/store`，桌面 `TursoStore`）。上层（L0 / L2 / L3 / View）两端共用。浏览器的剪贴板也一样受限：同步读永远是空的，要用 `read_from_clipboard_async`，并在用户的点击或按键里发起。
 
-## 分层（规划）
+## 分层
 
-完整设计（crate 划分、Store trait、turso / sqlx、view 拆分、实施步骤、待决定项）见 `docs/architecture.md`。
+完整设计（crate 划分、Store trait、turso / sqlx、view 拆分、实施步骤、决策）见 `docs/architecture.md`。
 
-按 `docs/gpui-refactor-feature-analysis.md` 第 3 节：L0 Domain（纯函数，无 IO）→ L1 Infrastructure（trait + 实现）→ L2 Services → L3 State → L4 View（GPUI）。随功能落地拆出 `crates/*`（例如 L0 进 `crates/cyberapi-core`，不依赖 gpui，必须能编译到 wasm），届时把 `crates/*` 加入 workspace `members`。
+按 `docs/gpui-refactor-feature-analysis.md` 第 3 节：L0 Domain（`crates/cyberapi-core`，纯函数，无 IO，不依赖 gpui，必须能编译到 wasm）→ L1 Infrastructure（`cyberapi-store*`、`cyberapi-http` 的 trait 和实现）→ L2 Services（`cyberapi-service`）→ L3 State（`src/states/`）→ L4 View（`src/views/`）。
 
 ## GPUI
 

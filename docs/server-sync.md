@@ -186,7 +186,7 @@
 
 ### 做完之后
 
-把 [architecture.md](./architecture.md) 第 7 节和第 9 节改成落地后的行为，去掉文首「待实现」的说明。
+已完成：[architecture.md](./architecture.md) 第 7 节和第 9 节写的是落地后的行为，文首不再有「待实现」的说明。
 
 ## 7. 这一版明确不做
 

@@ -19,11 +19,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// F10.1: what the clipboard holds, when it looks like something to import
-/// — JSON, formatted, or a cURL command.
-fn from_clipboard(cx: &App) -> String {
-    let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-        return String::new();
-    };
+/// — JSON, formatted, or a cURL command; nothing otherwise.
+fn importable(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.len() >= 4 && trimmed[..4].eq_ignore_ascii_case("curl") {
         return trimmed.to_string();
@@ -79,15 +76,32 @@ pub fn open_import_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let text = from_clipboard(cx);
+    // F10.1: the clipboard, read because the reader asked to import, and
+    // asked for now, while that click still counts as theirs: a page may
+    // read it only then, through the browser, which may ask the reader
+    // first. A page's synchronous read is always empty.
+    let clipboard = cx.read_from_clipboard_async();
     let editor: Entity<EditorState> = cx.new(|cx| {
         EditorState::new(window, cx)
             .language("json")
             .line_number(true)
             .soft_wrap(true)
             .placeholder(t!("import.placeholder").to_string())
-            .default_value(text)
     });
+    let filling = editor.clone();
+    window
+        .spawn(cx, async move |cx| {
+            // Not readable, or turned down: the reader pastes or picks a file.
+            let Ok(Some(item)) = clipboard.await else { return };
+            let text = importable(&item.text().unwrap_or_default());
+            let _ = cx.update(|window, cx| {
+                // What the reader typed or pasted meanwhile stays.
+                if !text.is_empty() && filling.read(cx).value().is_empty() {
+                    filling.update(cx, |editor, cx| editor.set_value(text, window, cx));
+                }
+            });
+        })
+        .detach();
     // A picked file that could not be read.
     let error: Rc<RefCell<Option<String>>> = Rc::default();
     // What the text would import, worked out again only when it changes.
@@ -210,4 +224,20 @@ pub fn open_import_dialog(
             )
             .on_ok(submit)
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F10.1: a command or a JSON document fills the dialog; anything else
+    /// leaves it empty for the reader.
+    #[test]
+    fn only_what_imports_fills_the_dialog() {
+        assert_eq!(importable("  curl https://a.test \n"), "curl https://a.test");
+        assert_eq!(importable(r#"{"item":[]}"#), "{\n  \"item\": []\n}");
+        assert_eq!(importable("hello"), "");
+        assert_eq!(importable("{ not json }"), "");
+        assert_eq!(importable(""), "");
+    }
 }
