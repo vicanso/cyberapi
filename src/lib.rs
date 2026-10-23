@@ -202,7 +202,11 @@ pub fn launch(cx: &mut App, storage: Storage, engine: Arc<dyn HttpEngine>, prefs
 /// A window that says why the data could not be opened, in place of the app.
 pub fn launch_failed(cx: &mut App, message: String) {
     i18n::apply(None);
-    open_main_window(cx, move |_, cx| cx.new(|_| StartupError::new(message)));
+    open_main_window(cx, move |window, cx| {
+        // No settings to read: the system's light or dark, as their default.
+        gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
+        cx.new(|_| StartupError::new(message))
+    });
 }
 
 fn open_main_window<V: Render>(cx: &mut App, build: impl FnOnce(&mut Window, &mut App) -> Entity<V>) {
