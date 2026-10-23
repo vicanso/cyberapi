@@ -245,7 +245,7 @@ clear_description = "Every cookie of every site goes."
 [settings]
 title = "Settings"
 section_appearance = "Appearance"
-section_appearance_desc = "Theme, language and the size of the interface's text."
+section_appearance_desc = "The size of the interface's text, the theme and the language."
 section_editor = "Editor"
 section_editor_desc = "The editors of a request's body and a response's."
 section_requests = "Requests"

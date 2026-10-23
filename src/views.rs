@@ -5,6 +5,7 @@ mod access_dialog;
 mod accounts_dialog;
 mod cookies_dialog;
 mod dashboard;
+mod fixed_rem;
 mod group_dialog;
 mod inline_confirm;
 mod invites;

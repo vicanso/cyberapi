@@ -245,7 +245,7 @@ clear_description = "所有站点的 Cookie 都会被删除。"
 [settings]
 title = "设置"
 section_appearance = "外观"
-section_appearance_desc = "主题、语言和界面字号。"
+section_appearance_desc = "界面字号、主题和语言。"
 section_editor = "编辑器"
 section_editor_desc = "请求体和响应体的编辑器。"
 section_requests = "请求"

@@ -13,6 +13,7 @@ pub use window::is_settings_window;
 use crate::json_view_local::JsonView;
 use crate::states::AppStore;
 use crate::this_build;
+use crate::views::fixed_rem::fixed_rem;
 use crate::views::inline_confirm::inline_confirm;
 use crate::views::server_section::ServerSection;
 use cyberapi_core::prefs::{HttpVersion, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
@@ -27,8 +28,8 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, IndexPath, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div, px, rems,
-    size,
+    IntoElement, ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Task, Window, div, px,
+    rems, size,
 };
 use rust_i18n::t;
 use std::ops::RangeInclusive;
@@ -191,6 +192,9 @@ pub struct SettingsView {
     built_in: String,
     /// The main window, which the Window section sizes. The desktop's only.
     main: Option<AnyWindowHandle>,
+    /// The rem the view opened with, which it keeps: changed here, the text
+    /// size would move the rows, and its own buttons from under the pointer.
+    rem: Pixels,
     theme: Choices,
     language: Choices,
     json_view: Choices,
@@ -377,6 +381,7 @@ impl SettingsView {
             section: Section::default(),
             focus_handle: cx.focus_handle(),
             built_in: rust_i18n::locale().to_string(),
+            rem: window.rem_size(),
             main,
             theme,
             language,
@@ -610,7 +615,19 @@ impl SettingsView {
     fn render_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
         match self.section {
+            // The text size first: each step makes the rows above it
+            // taller, so with none its buttons stay under the pointer.
             Section::Appearance => vec![
+                setting_row(
+                    t!("settings.ui_size").to_string(),
+                    Some(size_description(
+                        TextPrefs::UI_SIZES,
+                        TextPrefs::DEFAULT_UI,
+                        "settings.ui_size_desc",
+                    )),
+                    NumberInput::new(&self.ui_size).small(),
+                    cx,
+                ),
                 setting_row(
                     t!("settings.theme").to_string(),
                     Some(t!("settings.theme_desc").to_string()),
@@ -621,16 +638,6 @@ impl SettingsView {
                     t!("settings.language").to_string(),
                     Some(t!("settings.language_desc").to_string()),
                     Select::new(&self.language).small(),
-                    cx,
-                ),
-                setting_row(
-                    t!("settings.ui_size").to_string(),
-                    Some(size_description(
-                        TextPrefs::UI_SIZES,
-                        TextPrefs::DEFAULT_UI,
-                        "settings.ui_size_desc",
-                    )),
-                    NumberInput::new(&self.ui_size).small(),
                     cx,
                 ),
             ],
@@ -953,7 +960,7 @@ impl Render for SettingsView {
             .pb_4()
             .child(div().text_sm().font_bold().child(self.section.title()))
             .child(div().text_xs().text_color(muted).child(self.section.description()));
-        h_flex()
+        let view = h_flex()
             .track_focus(&self.focus_handle)
             .size_full()
             .items_start()
@@ -969,7 +976,8 @@ impl Render for SettingsView {
                     .child(header)
                     .children(self.render_rows(cx))
                     .overflow_y_scrollbar(),
-            )
+            );
+        fixed_rem(self.rem, view)
     }
 }
 
