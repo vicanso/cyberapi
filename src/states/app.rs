@@ -608,7 +608,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cyberapi_core::prefs::WorkspacePrefs;
+    use cyberapi_core::prefs::{HttpVersion, WorkspacePrefs};
     use cyberapi_core::response::HttpResponse;
     use cyberapi_http::{PreparedRequest, SendFuture};
     use cyberapi_store::{MemoryStore, NewCollection};
@@ -738,6 +738,7 @@ mod tests {
         let sending = SendPrefs {
             follow_redirects: true,
             accept_invalid_certs: true,
+            http_version: HttpVersion::Http1,
         };
         state.update(cx, |state, cx| {
             state.set_text(text, cx);

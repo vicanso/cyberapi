@@ -76,7 +76,7 @@ fn origin(url: &Url) -> (&str, Option<&str>, Option<u16>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prefs::Timeouts;
+    use crate::prefs::{HttpVersion, Timeouts};
     use pretty_assertions::assert_eq;
 
     fn post() -> PreparedRequest {
@@ -92,6 +92,7 @@ mod tests {
             body: b"{}".to_vec(),
             timeouts: Timeouts::default().effective(),
             accept_invalid_certs: true,
+            http_version: HttpVersion::Http2,
         }
     }
 
@@ -112,6 +113,7 @@ mod tests {
             assert!(next.body.is_empty());
             assert_eq!(names(&next), vec!["Authorization", "Cookie", "X-Trace"], "same origin");
             assert!(next.accept_invalid_certs, "the settings go along");
+            assert_eq!(next.http_version, HttpVersion::Http2);
         }
     }
 

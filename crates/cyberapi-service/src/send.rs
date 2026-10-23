@@ -131,6 +131,7 @@ pub async fn send(
             // Every hop's: the stats are the last one's alone.
             latency: floor(earlier + exchange.stats.total),
             stats: exchange.stats,
+            truncated: exchange.truncated,
             ..Default::default()
         },
         Err(error) => HttpResponse {
@@ -282,6 +283,7 @@ async fn prepare(
             user_agent: &sender.user_agent,
             timeouts: sender.timeouts,
             accept_invalid_certs: sender.sending.accept_invalid_certs,
+            http_version: sender.sending.http_version,
             boundary: &boundary(),
         },
     )

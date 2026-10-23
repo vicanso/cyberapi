@@ -109,8 +109,8 @@ fn within(value: u32, default: u32, sizes: RangeInclusive<u32>) -> u32 {
     }
 }
 
-/// How a request goes out besides its timeouts. Both off is how the old
-/// app sent, and what a document from before them reads as.
+/// How a request goes out besides its timeouts. The switches off is how the
+/// old app sent, and what a document from before them reads as.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SendPrefs {
@@ -120,6 +120,23 @@ pub struct SendPrefs {
     /// HTTPS goes to a server whose certificate does not verify:
     /// self-signed, expired, or for another name (F14.9).
     pub accept_invalid_certs: bool,
+    /// F14.10.
+    pub http_version: HttpVersion,
+}
+
+/// Which HTTP a request speaks (F14.10).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HttpVersion {
+    /// HTTP/2 where the TLS handshake agrees on it, HTTP/1.1 otherwise and
+    /// over plain HTTP: what browsers and curl do.
+    #[default]
+    Auto,
+    /// HTTP/1.1 only, as the old app sent.
+    Http1,
+    /// HTTP/2 only: a server that does not agree to it over TLS fails the
+    /// request, and plain HTTP starts in HTTP/2 straight away (h2c).
+    Http2,
 }
 
 /// The workspace's columns (F14.5): the tree in pixels, then the request

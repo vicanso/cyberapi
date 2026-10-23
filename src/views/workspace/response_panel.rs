@@ -8,8 +8,8 @@ use crate::states::{ApiState, AppStore};
 use crate::this_build;
 use crate::views::json_tree::{JsonTree, json_view_switch};
 use cyberapi_core::response::{
-    BodyKind, DISPLAY_LIMIT, HttpResponse, StatusLevel, clip_text, format_duration, format_size, status_level,
-    status_text,
+    BodyKind, DISPLAY_LIMIT, HttpResponse, RESPONSE_LIMIT, StatusLevel, clip_text, format_duration, format_size,
+    status_level, status_text,
 };
 use cyberapi_http::SendError;
 use gpui_kit::component::alert::Alert;
@@ -406,6 +406,20 @@ impl ResponsePanel {
             .into_any_element()
     }
 
+    /// The body, under a note when it was longer than the engine reads.
+    fn render_cut_body(&self, response: &HttpResponse, cx: &mut Context<Self>) -> AnyElement {
+        let body = self.render_body(response, cx);
+        if !response.truncated {
+            return body;
+        }
+        let limit = format_size(RESPONSE_LIMIT as u64);
+        v_flex()
+            .size_full()
+            .child(note(t!("response.truncated", size = limit).to_string(), Vec::new(), cx))
+            .child(div().flex_1().min_h_0().child(body))
+            .into_any_element()
+    }
+
     fn render_body(&self, response: &HttpResponse, cx: &mut Context<Self>) -> AnyElement {
         // F5.7: why it failed, as the failure it is.
         if let Some(error) = &response.error {
@@ -537,6 +551,9 @@ impl ResponsePanel {
             (t!("response.api_id").to_string(), response.api.to_string()),
             (t!("response.remote").to_string(), stats.remote_addr.clone()),
         ]);
+        if !stats.version.is_empty() {
+            rows.push((t!("response.version").to_string(), stats.version.clone()));
+        }
         if stats.is_https {
             rows.push((t!("response.cipher").to_string(), stats.cipher.clone()));
         }
@@ -757,7 +774,7 @@ impl Render for ResponsePanel {
         let content: AnyElement = match &response {
             Some(response) => {
                 let content = match self.tab {
-                    ResponseTab::Body => self.render_body(response, cx),
+                    ResponseTab::Body => self.render_cut_body(response, cx),
                     ResponseTab::Headers => Self::render_headers(
                         "response-headers",
                         response

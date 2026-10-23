@@ -15,6 +15,10 @@ pub const HISTORY_BODY_LIMIT: usize = 2 * 1024 * 1024;
 /// The most of a text body the response panel shows; the rest is left out,
 /// and the panel says so.
 pub const DISPLAY_LIMIT: usize = 1024 * 1024;
+/// The most of a body the engine reads, as it comes and once decompressed:
+/// a bigger one is cut there, so one answer, or a small archive that
+/// unpacks to gigabytes, cannot take the memory of a bridge everyone uses.
+pub const RESPONSE_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Where the time of one exchange went (F5.6). Each phase is measured on its
 /// own connection, so two requests at once no longer mix their numbers (#1).
@@ -24,6 +28,9 @@ pub const DISPLAY_LIMIT: usize = 1024 * 1024;
 pub struct HttpStats {
     pub remote_addr: String,
     pub is_https: bool,
+    /// The protocol the answer came in: `HTTP/1.1`, `HTTP/2`. Empty in
+    /// entries kept before this was.
+    pub version: String,
     /// The TLS cipher suite, when there was TLS.
     pub cipher: String,
     #[serde(with = "micros")]
@@ -35,7 +42,9 @@ pub struct HttpStats {
     /// Writing the request.
     #[serde(with = "micros")]
     pub send: Duration,
-    /// From the request written to the first byte back.
+    /// From the request written to the answer's start: its first byte over
+    /// HTTP/1.1, its headers over HTTP/2, where the connection's own frames
+    /// come first.
     #[serde(with = "micros")]
     pub server_processing: Duration,
     #[serde(with = "micros")]
@@ -57,6 +66,9 @@ pub struct Exchange {
     /// The body's size as it came, before decompression.
     pub body_size: u64,
     pub stats: HttpStats,
+    /// The body was longer than [`RESPONSE_LIMIT`]: this is its start.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// One entry of an API's history (F7.9): an exchange, or why there was none.
@@ -88,6 +100,9 @@ pub struct HttpResponse {
     /// The body was too big to keep in the history (#17): its length, the
     /// body itself left out.
     pub body_omitted: Option<u64>,
+    /// The body was longer than the engine reads ([`RESPONSE_LIMIT`]): this
+    /// is its start.
+    pub truncated: bool,
 }
 
 impl HttpResponse {
@@ -202,6 +217,7 @@ impl HttpResponse {
             stats: self.stats.clone(),
             created_at: self.created_at,
             body_omitted: Some(self.body.len() as u64),
+            truncated: self.truncated,
         }
     }
 

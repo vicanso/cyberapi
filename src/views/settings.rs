@@ -15,7 +15,7 @@ use crate::states::AppStore;
 use crate::this_build;
 use crate::views::inline_confirm::inline_confirm;
 use crate::views::server_section::ServerSection;
-use cyberapi_core::prefs::{SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
+use cyberapi_core::prefs::{HttpVersion, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
 use cyberapi_core::redirect::MAX_REDIRECTS;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
@@ -45,6 +45,9 @@ const LANGUAGES: [(Option<&str>, &str); 3] = [(None, ""), (Some("zh-CN"), "ä¸­æ–
 const THEMES: [ThemeMode; 3] = [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark];
 
 const JSON_VIEWS: [JsonView; 2] = [JsonView::Text, JsonView::Tree];
+
+/// F14.10, in the list's order.
+const HTTP_VERSIONS: [HttpVersion; 3] = [HttpVersion::Auto, HttpVersion::Http1, HttpVersion::Http2];
 
 /// How long typing in a number field waits before it counts.
 const COMMIT_DELAY: Duration = Duration::from_millis(600);
@@ -186,6 +189,7 @@ pub struct SettingsView {
     theme: Choices,
     language: Choices,
     json_view: Choices,
+    http_version: Choices,
     ui_size: Entity<InputState>,
     editor_size: Entity<InputState>,
     connect: Entity<InputState>,
@@ -254,6 +258,29 @@ impl SettingsView {
             |index, cx| {
                 let app = AppStore::global(cx).state().clone();
                 app.update(cx, |app, cx| app.set_json_view(JSON_VIEWS[index], cx));
+            },
+            window,
+            cx,
+            &mut subscriptions,
+        );
+
+        let http_version = Self::choices(
+            vec![
+                t!("settings.http_auto").to_string(),
+                t!("settings.http_1").to_string(),
+                t!("settings.http_2").to_string(),
+            ],
+            HTTP_VERSIONS
+                .iter()
+                .position(|version| *version == prefs.sending.http_version)
+                .unwrap_or(0),
+            |index, cx| {
+                let app = AppStore::global(cx).state().clone();
+                let sending = SendPrefs {
+                    http_version: HTTP_VERSIONS[index],
+                    ..app.read(cx).prefs().sending
+                };
+                app.update(cx, |app, cx| app.set_sending(sending, cx));
             },
             window,
             cx,
@@ -349,6 +376,7 @@ impl SettingsView {
             theme,
             language,
             json_view,
+            http_version,
             ui_size,
             editor_size,
             connect,
@@ -635,6 +663,12 @@ impl SettingsView {
                 ),
             ],
             Section::Requests => vec![
+                setting_row(
+                    t!("settings.http_version").to_string(),
+                    Some(t!("settings.http_version_desc").to_string()),
+                    Select::new(&self.http_version).small(),
+                    cx,
+                ),
                 setting_row(
                     t!("settings.timeout_connect").to_string(),
                     Some(t!("settings.timeout_connect_desc", default = Timeouts::DEFAULT_CONNECT).to_string()),
@@ -1029,6 +1063,7 @@ mod tests {
             SendPrefs {
                 follow_redirects: true,
                 accept_invalid_certs: true,
+                http_version: HttpVersion::Auto,
             }
         );
         assert!(!shown(cx, "settings-wrap"));
@@ -1069,6 +1104,8 @@ mod tests {
         assert_eq!(prefs(cx).theme, ThemeMode::Dark);
         pick(cx, |view| view.language.clone(), 2);
         assert_eq!(prefs(cx).language.as_deref(), Some("en"));
+        pick(cx, |view| view.http_version.clone(), 1);
+        assert_eq!(prefs(cx).sending.http_version, HttpVersion::Http1);
         let connect = cx.read(|cx| view.read(cx).connect.clone());
         enter(cx, handle, &connect, "30");
         assert_eq!(prefs(cx).timeouts.connect, 30);
@@ -1076,6 +1113,7 @@ mod tests {
         click(cx, handle, &["settings-data", "settings-reset", "inline-ok"]);
         assert_eq!(prefs(cx).theme, ThemeMode::System);
         assert_eq!(prefs(cx).timeouts, Timeouts::default());
+        assert_eq!(prefs(cx).sending, SendPrefs::default());
         let connect = cx.read(|cx| view.read(cx).connect.clone());
         assert_eq!(
             cx.read(|cx| connect.read(cx).value().to_string()),

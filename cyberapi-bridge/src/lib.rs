@@ -12,7 +12,7 @@
 //! | `POST /v1/invite/accept` | makes the account it invites, and signs it in |
 //! | `GET /v1/session` | who is signed in, or 401 |
 //! | `POST /v1/store` | one store call (`cyberapi_store_bridge::Call`) |
-//! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5) |
+//! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5), a few of an account's at a time ([`in_flight`]) |
 //! | anything else | the page's files ([`static_files`]) |
 //!
 //! Failed sign-ins, setup tries and invitations that open nothing are counted ([`throttle`]) and turned
@@ -21,6 +21,7 @@
 //! by address too.
 
 mod auth;
+mod in_flight;
 pub mod static_files;
 mod throttle;
 
@@ -31,10 +32,11 @@ use axum::http::{Extensions, HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use cyberapi_core::directory::{valid_account_name, valid_password};
-use cyberapi_http::{HttpEngine, PreparedRequest};
+use cyberapi_http::{HttpEngine, PreparedRequest, SendError};
 use cyberapi_store::{Refusal, StoreError};
 use cyberapi_store_bridge::{BearerSession, Call, LoginForm, SEND_PATH, STORE_PATH, SendReply, dispatch};
 use cyberapi_store_sql::{Acceptance, Account, NewAccount, SqlStore};
+use in_flight::InFlight;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -66,6 +68,8 @@ struct Inner {
     /// HTTP (development).
     secure_cookie: bool,
     throttle: Throttle,
+    /// Each account's requests on their way through `/v1/send`.
+    in_flight: Arc<InFlight>,
 }
 
 impl Bridge {
@@ -78,6 +82,7 @@ impl Bridge {
                 setup_token,
                 secure_cookie,
                 throttle: Throttle::default(),
+                in_flight: Arc::default(),
             }),
         }
     }
@@ -400,18 +405,26 @@ async fn store_call(State(bridge): State<Bridge>, headers: HeaderMap, Json(call)
     Json(dispatch(&storage, directory.as_ref(), call).await).into_response()
 }
 
-/// Sends for a signed-in account. A request the engine refuses or that
-/// fails is a normal answer, like a store's refusal.
+/// Sends for a signed-in account, a few of its requests at a time. A
+/// request the engine refuses or that fails is a normal answer, like a
+/// store's refusal.
 async fn send_request(
     State(bridge): State<Bridge>,
     headers: HeaderMap,
     Json(request): Json<PreparedRequest>,
 ) -> Response {
-    if let Err(status) = signed_in(&bridge.inner.store, &headers).await {
-        return status.into_response();
-    }
+    let account = match signed_in(&bridge.inner.store, &headers).await {
+        Ok(account) => account,
+        Err(status) => return status.into_response(),
+    };
+    let Some(_sending) = bridge.inner.in_flight.start(&account.id) else {
+        let busy = SendError::Busy {
+            limit: in_flight::PER_ACCOUNT,
+        };
+        return Json(SendReply::Err(busy)).into_response();
+    };
     let reply = match bridge.inner.engine.send(request).await {
-        Ok(exchange) => SendReply::Ok(exchange),
+        Ok(exchange) => SendReply::Ok(Box::new(exchange)),
         Err(error) => SendReply::Err(error),
     };
     Json(reply).into_response()

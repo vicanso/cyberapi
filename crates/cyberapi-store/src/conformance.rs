@@ -876,6 +876,7 @@ fn response(collection: &Collection, api: &ItemId, n: usize) -> HttpResponse {
         stats: HttpStats {
             remote_addr: "127.0.0.1:80".into(),
             is_https: n.is_multiple_of(2),
+            version: "HTTP/2".into(),
             cipher: "TLS13_AES_128_GCM_SHA256".into(),
             dns: std::time::Duration::from_micros(10),
             tcp: std::time::Duration::from_micros(20),
@@ -885,6 +886,7 @@ fn response(collection: &Collection, api: &ItemId, n: usize) -> HttpResponse {
             content_transfer: std::time::Duration::from_micros(60),
             total: std::time::Duration::from_micros(1500 + n as u64),
         },
+        truncated: n.is_multiple_of(4),
         ..Default::default()
     }
 }

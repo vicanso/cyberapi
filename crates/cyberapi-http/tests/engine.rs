@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use cyberapi_core::model::HttpMethod;
-use cyberapi_core::prefs::Timeouts;
+use cyberapi_core::prefs::{HttpVersion, Timeouts};
 use cyberapi_http::{HttpEngine, NativeEngine, PreparedRequest, SendError, TargetPolicy};
 use http_body_util::{BodyExt as _, Full};
 use hyper::service::service_fn;
@@ -205,19 +205,26 @@ async fn dropping_the_send_cancels_it() {
     assert!(started.elapsed() < Duration::from_secs(1));
 }
 
-/// An HTTPS server for `localhost` with a self-signed certificate, which
-/// answers every request with `secret`.
-async fn serve_self_signed() -> SocketAddr {
+/// A TLS acceptor for `localhost` with a self-signed certificate,
+/// agreeing to the protocols in `alpn`.
+fn self_signed(alpn: &[&[u8]]) -> tokio_rustls::TlsAcceptor {
     let made = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("a certificate");
     let key = rustls::pki_types::PrivateKeyDer::Pkcs8(made.signing_key.serialize_der().into());
-    let config =
+    let mut config =
         rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
             .with_safe_default_protocol_versions()
             .expect("TLS versions")
             .with_no_client_auth()
             .with_single_cert(vec![made.cert.der().clone()], key)
             .expect("a server config");
-    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+    config.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
+    tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config))
+}
+
+/// An HTTPS server for `localhost` with a self-signed certificate and no
+/// ALPN, which answers every request over HTTP/1.1 with `secret`.
+async fn serve_self_signed() -> SocketAddr {
+    let acceptor = self_signed(&[]);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let address = listener.local_addr().expect("address");
     tokio::spawn(async move {
@@ -240,6 +247,157 @@ async fn serve_self_signed() -> SocketAddr {
         }
     });
     address
+}
+
+/// An HTTP/2-only server, over TLS (agreeing to `h2` alone) or plain (h2c).
+/// `/slow` answers after 300 ms; anything else answers with the request's
+/// method, authority and headers.
+async fn serve_h2(tls: bool) -> SocketAddr {
+    let acceptor = tls.then(|| self_signed(&[b"h2"]));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let service = service_fn(|request: hyper::Request<hyper::body::Incoming>| async move {
+                    if request.uri().path() == "/slow" {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                    }
+                    let mut lines = vec![format!(
+                        "{} {}",
+                        request.method(),
+                        request.uri().authority().map(|a| a.as_str()).unwrap_or("-")
+                    )];
+                    for (name, value) in request.headers() {
+                        lines.push(format!("{name}: {}", value.to_str().unwrap_or("?")));
+                    }
+                    hyper::Response::builder().body(Full::new(Bytes::from(lines.join("\n"))))
+                });
+                let builder = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new());
+                let _ = match acceptor {
+                    Some(acceptor) => match acceptor.accept(stream).await {
+                        Ok(stream) => builder.serve_connection(TokioIo::new(stream), service).await,
+                        Err(_) => return,
+                    },
+                    None => builder.serve_connection(TokioIo::new(stream), service).await,
+                };
+            });
+        }
+    });
+    address
+}
+
+fn to(url: String, http_version: HttpVersion) -> PreparedRequest {
+    PreparedRequest {
+        url,
+        timeouts: Timeouts::default().effective(),
+        accept_invalid_certs: true,
+        http_version,
+        ..Default::default()
+    }
+}
+
+/// F14.10: HTTPS speaks HTTP/2 where the server agrees, and the time to
+/// its answer is the server's, not the connection's own frames that come
+/// first.
+#[tokio::test]
+async fn https_speaks_http2_where_the_server_agrees() {
+    let address = serve_h2(true).await;
+    let url = format!("https://localhost:{}/slow", address.port());
+    let exchange = engine()
+        .send(PreparedRequest {
+            headers: vec![
+                ("Connection".into(), "keep-alive".into()),
+                ("X-Note".into(), "kept".into()),
+            ],
+            ..to(url.clone(), HttpVersion::Auto)
+        })
+        .await
+        .expect("an exchange");
+    assert_eq!((exchange.status, exchange.stats.version.as_str()), (200, "HTTP/2"));
+    let echoed = String::from_utf8_lossy(&exchange.body).into_owned();
+    assert!(echoed.contains("x-note: kept"), "{echoed}");
+    assert!(
+        !echoed.contains("connection"),
+        "HTTP/2 has no Connection header: {echoed}"
+    );
+    let stats = &exchange.stats;
+    assert!(stats.server_processing >= Duration::from_millis(300), "{stats:?}");
+    assert!(stats.send < Duration::from_millis(300), "{stats:?}");
+
+    let forced = engine().send(to(url.clone(), HttpVersion::Http2)).await;
+    assert_eq!(forced.map(|e| e.stats.version), Ok("HTTP/2".to_string()));
+    let refused = engine().send(to(url, HttpVersion::Http1)).await;
+    assert!(refused.is_err(), "an HTTP/2-only server takes no HTTP/1.1: {refused:?}");
+}
+
+/// A server that does not agree to HTTP/2 gets HTTP/1.1, unless the request
+/// asks for HTTP/2 only.
+#[tokio::test]
+async fn http2_only_fails_where_the_server_does_not_agree() {
+    let address = serve_self_signed().await;
+    let url = format!("https://localhost:{}/", address.port());
+    let exchange = engine()
+        .send(to(url.clone(), HttpVersion::Auto))
+        .await
+        .expect("an exchange");
+    assert_eq!(exchange.stats.version, "HTTP/1.1");
+    let refused = engine().send(to(url, HttpVersion::Http2)).await;
+    assert_eq!(
+        refused.map(|e| e.status),
+        Err(SendError::Http {
+            message: "the server did not agree to HTTP/2".into()
+        })
+    );
+}
+
+/// Plain HTTP starts in HTTP/2 when asked (h2c), a `Host` the request names
+/// becoming the authority.
+#[tokio::test]
+async fn plain_http_speaks_http2_when_asked() {
+    let address = serve_h2(false).await;
+    let exchange = engine()
+        .send(PreparedRequest {
+            headers: vec![("Host".into(), "api.test".into())],
+            ..to(format!("http://{address}/"), HttpVersion::Http2)
+        })
+        .await
+        .expect("an exchange");
+    assert_eq!(exchange.stats.version, "HTTP/2");
+    let echoed = String::from_utf8_lossy(&exchange.body).into_owned();
+    assert!(echoed.starts_with("GET api.test"), "{echoed}");
+}
+
+/// At most the limit of a body is read, as it comes and decompressed.
+#[tokio::test]
+async fn a_body_is_read_up_to_the_limit() {
+    let address = serve().await;
+    let small = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::Anywhere).body_limit(100);
+    let exchange = small
+        .send(PreparedRequest {
+            body: vec![b'x'; 500],
+            method: HttpMethod::Post,
+            ..get(address, "/echo")
+        })
+        .await
+        .expect("an exchange");
+    assert_eq!(
+        (exchange.body.len(), exchange.body_size, exchange.truncated),
+        (100, 100, true)
+    );
+
+    // 600 bytes of text, a few dozen gzipped: cut once inflated.
+    let exchange = small.send(get(address, "/gzip")).await.expect("an exchange");
+    assert_eq!(exchange.body, b"hello ".repeat(100)[..100].to_vec());
+    assert!(exchange.truncated);
+    assert!(exchange.body_size < 100);
+
+    let whole = engine().send(get(address, "/gzip")).await.expect("an exchange");
+    assert_eq!((whole.body.len(), whole.truncated), (600, false));
 }
 
 #[tokio::test]
@@ -275,6 +433,7 @@ async fn https_with_the_systems_roots() {
     };
     let exchange = engine().send(request).await.expect("an exchange");
     assert_eq!(exchange.status, 200);
+    assert_eq!(exchange.stats.version, "HTTP/2", "example.com agrees to HTTP/2");
     assert!(exchange.stats.is_https);
     assert!(!exchange.stats.cipher.is_empty());
     assert!(exchange.stats.tls > Duration::ZERO);

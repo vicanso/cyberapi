@@ -7,7 +7,7 @@
 use crate::{Response, STORE_PATH, Transport};
 use cyberapi_core::directory::Me;
 use cyberapi_core::model::HttpMethod;
-use cyberapi_core::prefs::Timeouts;
+use cyberapi_core::prefs::{HttpVersion, Timeouts};
 use cyberapi_http::{HttpEngine, PreparedRequest};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -87,6 +87,7 @@ impl Transport for EngineTransport {
             // The account's password and session go here: the server's
             // certificate is checked whatever the reader's requests take.
             accept_invalid_certs: false,
+            http_version: HttpVersion::Auto,
         };
         let call = self.engine.send(request);
         Box::pin(async move {

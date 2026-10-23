@@ -1,28 +1,35 @@
 //! The engine of the desktop and the bridge: one new connection per request,
 //! as the old app made, on hyper's connection-level client so every phase is
 //! timed on this request's own connection (#1) — resolve, connect, TLS, then
-//! the stream itself records when the request was written and when the
-//! answer began.
+//! the stream itself records when the request was written, and the answer's
+//! start is when its first byte came over HTTP/1.1 and its headers over
+//! HTTP/2, whose connection exchanges frames of its own before that.
 //!
-//! As before: HTTP/1.1 only, redirects are not followed (the send pipeline
-//! follows them when the reader asks, one request per hop), `gzip` / `br`
-//! (and now `deflate`) bodies are decompressed with their size as received
-//! kept. A request may take any certificate (F14.9); the handshake is still
-//! verified to be with the holder of the one presented.
-//! Header values that are not UTF-8 are read lossily instead of failing the
-//! request (#11). The connect timeout bounds resolving, connecting and TLS;
-//! the write and read timeouts together bound the exchange after that.
+//! HTTP/2 where TLS agrees on it, or straight away over plain HTTP when the
+//! request asks for it (F14.10); HTTP/1.1 otherwise. Redirects are not
+//! followed (the send pipeline follows them when the reader asks, one
+//! request per hop). `gzip` / `br` (and now `deflate`) bodies are
+//! decompressed, away from the async threads, with their size as received
+//! kept; at most [`RESPONSE_LIMIT`] of a body is read either way. A request
+//! may take any certificate (F14.9); the handshake is still verified to be
+//! with the holder of the one presented. Header values that are not UTF-8
+//! are read lossily instead of failing the request (#11). The connect
+//! timeout bounds resolving, connecting and TLS; the write and read timeouts
+//! together bound the exchange after that.
 
 use crate::{Exchange, HttpEngine, PreparedRequest, SendError, SendFuture, TargetPolicy};
 use bytes::Bytes;
-use cyberapi_core::response::HttpStats;
+use cyberapi_core::prefs::HttpVersion;
+use cyberapi_core::response::{HttpStats, RESPONSE_LIMIT};
 use http_body_util::{BodyExt as _, Full};
-use hyper_util::rt::TokioIo;
+use hyper::body::Incoming;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
-use std::io::Read as _;
+use std::any::Any;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -40,17 +47,31 @@ use url::{Host, Url};
 pub struct NativeEngine {
     runtime: Handle,
     policy: TargetPolicy,
+    body_limit: usize,
 }
 
 impl NativeEngine {
     pub fn new(runtime: Handle, policy: TargetPolicy) -> Self {
-        Self { runtime, policy }
+        Self {
+            runtime,
+            policy,
+            body_limit: RESPONSE_LIMIT,
+        }
+    }
+
+    /// Reads at most `limit` bytes of a body, as it comes and decompressed;
+    /// [`RESPONSE_LIMIT`] unless set.
+    pub fn body_limit(mut self, limit: usize) -> Self {
+        self.body_limit = limit;
+        self
     }
 }
 
 impl HttpEngine for NativeEngine {
     fn send(&self, request: PreparedRequest) -> SendFuture {
-        let task = self.runtime.spawn(exchange(request, self.policy.clone()));
+        let task = self
+            .runtime
+            .spawn(exchange(request, self.policy.clone(), self.body_limit));
         let guard = AbortOnDrop(task.abort_handle());
         Box::pin(async move {
             let _guard = guard;
@@ -73,13 +94,19 @@ impl Drop for AbortOnDrop {
     }
 }
 
-fn tls_config(accept_invalid_certs: bool) -> Arc<rustls::ClientConfig> {
+/// The client's TLS: the roots checked, or any certificate taken, offering
+/// the protocols `version` allows.
+fn tls_config(accept_invalid_certs: bool, version: HttpVersion) -> Arc<rustls::ClientConfig> {
     static CHECKED: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     static ANY: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
-    let config = if accept_invalid_certs { &ANY } else { &CHECKED };
-    config
-        .get_or_init(|| Arc::new(client_config(!accept_invalid_certs)))
-        .clone()
+    let base = if accept_invalid_certs { &ANY } else { &CHECKED };
+    let mut config = (**base.get_or_init(|| Arc::new(client_config(!accept_invalid_certs)))).clone();
+    config.alpn_protocols = match version {
+        HttpVersion::Auto => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        HttpVersion::Http1 => vec![b"http/1.1".to_vec()],
+        HttpVersion::Http2 => vec![b"h2".to_vec()],
+    };
+    Arc::new(config)
 }
 
 fn client_config(check_certs: bool) -> rustls::ClientConfig {
@@ -87,7 +114,7 @@ fn client_config(check_certs: bool) -> rustls::ClientConfig {
     let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
         .expect("ring supports the default TLS versions");
-    let mut config = if check_certs {
+    if check_certs {
         // The system's roots, as the old app used; Mozilla's when the
         // system offers none.
         let mut roots = rustls::RootCertStore::empty();
@@ -103,9 +130,7 @@ fn client_config(check_certs: bool) -> rustls::ClientConfig {
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(AnyCertificate(provider)))
             .with_no_client_auth()
-    };
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    config
+    }
 }
 
 /// Takes the certificate a server presents, whoever issued it and whatever
@@ -159,7 +184,7 @@ fn timed_out(phase: &str, seconds: u32) -> SendError {
     }
 }
 
-async fn exchange(request: PreparedRequest, policy: TargetPolicy) -> Result<Exchange, SendError> {
+async fn exchange(request: PreparedRequest, policy: TargetPolicy, body_limit: usize) -> Result<Exchange, SendError> {
     let started = Instant::now();
     let timeouts = request.timeouts;
     let invalid = |message: String| SendError::Invalid { message };
@@ -237,7 +262,8 @@ async fn exchange(request: PreparedRequest, policy: TargetPolicy) -> Result<Exch
         .map_err(|error| invalid(error.to_string()))?;
         let tls = timeout(
             connect_limit,
-            tokio_rustls::TlsConnector::from(tls_config(request.accept_invalid_certs)).connect(name, stream),
+            tokio_rustls::TlsConnector::from(tls_config(request.accept_invalid_certs, request.http_version))
+                .connect(name, stream),
         )
         .await
         .map_err(|_| timed_out("TLS", timeouts.connect))?
@@ -249,25 +275,33 @@ async fn exchange(request: PreparedRequest, policy: TargetPolicy) -> Result<Exch
             }
         })?;
         stats.tls = shaking.elapsed();
-        stats.cipher = tls
-            .get_ref()
-            .1
+        let session = tls.get_ref().1;
+        stats.cipher = session
             .negotiated_cipher_suite()
             .map(|suite| format!("{:?}", suite.suite()))
             .unwrap_or_default();
-        over(tls, &request, &url, stats, started).await
+        let h2 = session.alpn_protocol() == Some(b"h2".as_slice());
+        if request.http_version == HttpVersion::Http2 && !h2 {
+            return Err(SendError::Http {
+                message: "the server did not agree to HTTP/2".to_string(),
+            });
+        }
+        over(tls, &request, &url, stats, started, h2, body_limit).await
     } else {
-        over(stream, &request, &url, stats, started).await
+        let h2 = request.http_version == HttpVersion::Http2;
+        over(stream, &request, &url, stats, started, h2, body_limit).await
     }
 }
 
-/// The exchange on a connected stream.
+/// The exchange on a connected stream, in HTTP/2 when `h2`.
 async fn over<S>(
     stream: S,
     request: &PreparedRequest,
     url: &Url,
     mut stats: HttpStats,
     started: Instant,
+    h2: bool,
+    body_limit: usize,
 ) -> Result<Exchange, SendError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -278,17 +312,41 @@ where
         message: error.to_string(),
     };
     let timeline = Arc::new(Mutex::new(Timeline::default()));
-    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(Timed {
+    let io = TokioIo::new(Timed {
         inner: stream,
         timeline: timeline.clone(),
-    }))
-    .await
-    .map_err(http_error)?;
-    let _connection = AbortOnDrop(tokio::spawn(connection).abort_handle());
-
-    let outgoing = build(request, url)?;
+    });
+    let outgoing = build(request, url, h2)?;
     let answer = async {
-        let response = sender.send_request(outgoing).await.map_err(http_error)?;
+        // The connection runs on a task of its own, and both it and the
+        // sender stay until the body is read.
+        let (response, _kept): (_, (AbortOnDrop, Box<dyn Any + Send>)) = if h2 {
+            let (mut sender, connection) = hyper::client::conn::http2::handshake(TokioExecutor::new(), io)
+                .await
+                .map_err(http_error)?;
+            let connection = AbortOnDrop(tokio::spawn(connection).abort_handle());
+            // The preface and the settings are the connection's: the
+            // request starts after them.
+            if let Ok(mut line) = timeline.lock() {
+                *line = Timeline::default();
+            }
+            let response = sender.send_request(outgoing).await.map_err(http_error)?;
+            (response, (connection, Box::new(sender)))
+        } else {
+            let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await.map_err(http_error)?;
+            let connection = AbortOnDrop(tokio::spawn(connection).abort_handle());
+            let response = sender.send_request(outgoing).await.map_err(http_error)?;
+            (response, (connection, Box::new(sender)))
+        };
+        if let Ok(mut line) = timeline.lock() {
+            line.headers = Some(Instant::now());
+        }
+        let version = match response.version() {
+            http::Version::HTTP_2 => "HTTP/2".to_string(),
+            http::Version::HTTP_11 => "HTTP/1.1".to_string(),
+            http::Version::HTTP_10 => "HTTP/1.0".to_string(),
+            other => format!("{other:?}"),
+        };
         let status = response.status().as_u16();
         let headers: Vec<(String, String)> = response
             .headers()
@@ -300,10 +358,10 @@ where
                 )
             })
             .collect();
-        let raw = response.into_body().collect().await.map_err(http_error)?.to_bytes();
-        Ok::<_, SendError>((status, headers, raw))
+        let (raw, truncated) = read_body(response.into_body(), body_limit).await.map_err(http_error)?;
+        Ok::<_, SendError>((version, status, headers, raw, truncated))
     };
-    let (status, headers, raw) = timeout(limit, answer)
+    let (version, status, headers, raw, truncated) = timeout(limit, answer)
         .await
         .map_err(|_| timed_out("response", timeouts.write + timeouts.read))??;
     let ended = Instant::now();
@@ -311,58 +369,121 @@ where
     let line = timeline.lock().map(|line| line.clone()).unwrap_or_default();
     if let (Some(first_write), Some(last_write)) = (line.first_write, line.last_write) {
         stats.send = last_write.duration_since(first_write);
-        if let Some(first_read) = line.first_read {
-            stats.server_processing = first_read.saturating_duration_since(last_write);
-            stats.content_transfer = ended.saturating_duration_since(first_read);
+        // Over HTTP/2 the server's settings are read before any answer.
+        let began = if h2 {
+            line.headers
+        } else {
+            line.first_read.or(line.headers)
+        };
+        if let Some(began) = began {
+            stats.server_processing = began.saturating_duration_since(last_write);
+            stats.content_transfer = ended.saturating_duration_since(began);
         }
     }
     stats.total = ended.duration_since(started);
+    stats.version = version;
 
+    let body_size = raw.len() as u64;
     let encoding = headers
         .iter()
         .find(|(name, _)| name == "content-encoding")
         .map(|(_, value)| value.clone());
-    let body = encoding
-        .and_then(|encoding| decompress(&encoding, &raw))
-        .unwrap_or_else(|| raw.to_vec());
+    let (body, truncated) = match encoding {
+        // Inflating is work for a thread of its own: on an async thread it
+        // holds up every other request there.
+        Some(encoding) => tokio::task::spawn_blocking(move || {
+            decompress(&encoding, &raw, truncated, body_limit).unwrap_or((raw, truncated))
+        })
+        .await
+        .map_err(|error| SendError::Http {
+            message: error.to_string(),
+        })?,
+        None => (raw, truncated),
+    };
     Ok(Exchange {
         status,
         headers,
         body,
-        body_size: raw.len() as u64,
+        body_size,
         stats,
+        truncated,
     })
 }
 
-/// The request in origin form, with `Host` and `Accept-Encoding` unless it
-/// names its own.
-fn build(request: &PreparedRequest, url: &Url) -> Result<http::Request<Full<Bytes>>, SendError> {
+/// The body, up to `limit` bytes, and whether there was more.
+async fn read_body(mut body: Incoming, limit: usize) -> Result<(Vec<u8>, bool), hyper::Error> {
+    let mut raw = Vec::new();
+    while let Some(frame) = body.frame().await {
+        if let Ok(data) = frame?.into_data() {
+            let room = limit - raw.len();
+            if data.len() > room {
+                raw.extend_from_slice(&data[..room]);
+                return Ok((raw, true));
+            }
+            raw.extend_from_slice(&data);
+        }
+    }
+    Ok((raw, false))
+}
+
+/// What HTTP/2 forbids: a connection's own headers. `Host` is its
+/// authority there, and `TE` may only ask for trailers.
+const HTTP1_ONLY: [&str; 5] = [
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "transfer-encoding",
+    "upgrade",
+];
+
+/// The request, with `Accept-Encoding` unless it names its own. Over
+/// HTTP/1.1 in origin form with `Host`; over HTTP/2 with the address in
+/// full, a `Host` the request names as its authority, and the headers
+/// HTTP/2 forbids left out.
+fn build(request: &PreparedRequest, url: &Url, h2: bool) -> Result<http::Request<Full<Bytes>>, SendError> {
     let invalid = |message: String| SendError::Invalid { message };
     let mut target = url.path().to_string();
     if let Some(query) = url.query() {
         target.push('?');
         target.push_str(query);
     }
-    let mut builder = http::Request::builder()
-        .method(
-            http::Method::from_bytes(request.method.as_str().as_bytes()).map_err(|error| invalid(error.to_string()))?,
-        )
-        .uri(target);
-    let named = |name: &str| request.headers.iter().any(|(key, _)| key.eq_ignore_ascii_case(name));
-    if !named("host") {
-        let host = url.host_str().unwrap_or_default();
-        builder = builder.header(
-            "Host",
+    let authority = match request.header("host") {
+        Some(host) => host.trim().to_string(),
+        None => {
+            let host = url.host_str().unwrap_or_default();
             match url.port() {
                 Some(port) => format!("{host}:{port}"),
                 None => host.to_string(),
-            },
-        );
-    }
-    if !named("accept-encoding") {
+            }
+        }
+    };
+    let mut builder = http::Request::builder().method(
+        http::Method::from_bytes(request.method.as_str().as_bytes()).map_err(|error| invalid(error.to_string()))?,
+    );
+    builder = if h2 {
+        builder
+            .version(http::Version::HTTP_2)
+            .uri(format!("{}://{authority}{target}", url.scheme()))
+    } else {
+        let builder = builder.uri(target);
+        if request.header("host").is_none() {
+            builder.header("Host", authority)
+        } else {
+            builder
+        }
+    };
+    if request.header("accept-encoding").is_none() {
         builder = builder.header("Accept-Encoding", "gzip, deflate, br");
     }
     for (name, value) in &request.headers {
+        let lower = name.trim().to_ascii_lowercase();
+        if h2
+            && (HTTP1_ONLY.contains(&lower.as_str())
+                || lower == "host"
+                || (lower == "te" && !value.trim().eq_ignore_ascii_case("trailers")))
+        {
+            continue;
+        }
         let name = http::HeaderName::from_bytes(name.trim().as_bytes())
             .map_err(|_| invalid(format!("{name:?} is not a header name")))?;
         let value = http::HeaderValue::from_bytes(value.as_bytes())
@@ -374,30 +495,42 @@ fn build(request: &PreparedRequest, url: &Url) -> Result<http::Request<Full<Byte
         .map_err(|error| invalid(error.to_string()))
 }
 
-/// The body as it was before `content-encoding`; `None` for an encoding
-/// this does not read, or a body that does not decode, which then stays as
-/// it came.
-fn decompress(encoding: &str, raw: &[u8]) -> Option<Vec<u8>> {
+/// The body as it was before `content-encoding`, at most `limit` bytes of
+/// it, and whether there was more; `None` for an encoding this does not
+/// read, or a body that does not decode, which then stays as it came. A
+/// body cut short (`cut`) gives what decodes of its start.
+fn decompress(encoding: &str, raw: &[u8], cut: bool, limit: usize) -> Option<(Vec<u8>, bool)> {
+    let inflate = |reader: &mut dyn Read, out: &mut Vec<u8>| reader.take(limit as u64 + 1).read_to_end(out);
     let mut out = Vec::new();
     let read = match encoding.trim().to_ascii_lowercase().as_str() {
-        "gzip" | "x-gzip" => flate2::read::MultiGzDecoder::new(raw).read_to_end(&mut out),
-        "deflate" => flate2::read::ZlibDecoder::new(raw).read_to_end(&mut out).or_else(|_| {
+        "gzip" | "x-gzip" => inflate(&mut flate2::read::MultiGzDecoder::new(raw), &mut out),
+        "deflate" => inflate(&mut flate2::read::ZlibDecoder::new(raw), &mut out).or_else(|_| {
             out.clear();
-            flate2::read::DeflateDecoder::new(raw).read_to_end(&mut out)
+            inflate(&mut flate2::read::DeflateDecoder::new(raw), &mut out)
         }),
-        "br" => brotli_decompressor::Decompressor::new(raw, 4096).read_to_end(&mut out),
+        "br" => inflate(&mut brotli_decompressor::Decompressor::new(raw, 4096), &mut out),
         _ => return None,
     };
-    read.ok().map(|_| out)
+    if out.len() > limit {
+        out.truncate(limit);
+        return Some((out, true));
+    }
+    match read {
+        Ok(_) => Some((out, cut)),
+        Err(_) if cut && !out.is_empty() => Some((out, true)),
+        Err(_) => None,
+    }
 }
 
 /// When the request went out and the answer began, as the stream saw it.
 #[derive(Clone, Debug, Default)]
 struct Timeline {
     first_write: Option<Instant>,
-    /// The last write before the first read: the request's end.
+    /// The last write before the answer: the request's end.
     last_write: Option<Instant>,
     first_read: Option<Instant>,
+    /// When the answer's headers were in.
+    headers: Option<Instant>,
 }
 
 struct Timed<S> {
@@ -407,8 +540,10 @@ struct Timed<S> {
 
 impl<S> Timed<S> {
     fn wrote(&self) {
+        // Until the answer's headers: over HTTP/2 the request's frames go
+        // out after the server's settings were read.
         if let Ok(mut line) = self.timeline.lock()
-            && line.first_read.is_none()
+            && line.headers.is_none()
         {
             let now = Instant::now();
             line.first_write.get_or_insert(now);

@@ -53,11 +53,12 @@ pub const STORE_PATH: &str = "/v1/store";
 /// Where requests to send are posted.
 pub const SEND_PATH: &str = "/v1/send";
 
-/// What sending answers: the exchange, or why there was none.
+/// What sending answers: the exchange, or why there was none. Boxed, the
+/// exchange is as big as the reason; the JSON is the same.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SendReply {
-    Ok(Exchange),
+    Ok(Box<Exchange>),
     Err(SendError),
 }
 
@@ -660,7 +661,7 @@ impl HttpEngine for BridgeHttpEngine {
                 }
             }
             match serde_json::from_slice(&response.body).map_err(|e| bridge(e.to_string()))? {
-                SendReply::Ok(exchange) => Ok(exchange),
+                SendReply::Ok(exchange) => Ok(*exchange),
                 SendReply::Err(error) => Err(error),
             }
         })

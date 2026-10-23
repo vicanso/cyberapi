@@ -6,9 +6,11 @@
 //! cookies whose domain is part of the host. Unlike it, quotes inside values
 //! are escaped for the shell, and a multipart body becomes `-F` fields. A
 //! send that follows redirects is `-L`, one that takes any certificate `-k`
-//! (F14.8, F14.9).
+//! (F14.8, F14.9), and an HTTP version other than curl's own choice is named
+//! (F14.10).
 
 use crate::model::{ContentType, HttpRequest};
+use crate::prefs::HttpVersion;
 use crate::send::{PreparedRequest, form_fields};
 
 /// A stored cookie, as far as the command needs it.
@@ -36,6 +38,13 @@ pub fn curl(
     }
     if prepared.accept_invalid_certs {
         parts.push("-k".to_string());
+    }
+    // curl, too, prefers HTTP/2 over TLS and speaks HTTP/1.1 otherwise.
+    match prepared.http_version {
+        HttpVersion::Auto => {}
+        HttpVersion::Http1 => parts.push("--http1.1".to_string()),
+        HttpVersion::Http2 if prepared.url.starts_with("https:") => parts.push("--http2".to_string()),
+        HttpVersion::Http2 => parts.push("--http2-prior-knowledge".to_string()),
     }
     parts.push(format!("-X{}", prepared.method.as_str()));
     let multipart = prepared.method.has_body() && request.content_type == ContentType::Multipart;
@@ -177,5 +186,21 @@ mod tests {
             curl(&prepared, &HttpRequest::default(), &[], true),
             "curl -v -L -k -XGET 'https://h.test/'"
         );
+        let versions = [
+            (HttpVersion::Http1, "https://h.test/", "--http1.1"),
+            (HttpVersion::Http2, "https://h.test/", "--http2"),
+            (HttpVersion::Http2, "http://h.test/", "--http2-prior-knowledge"),
+        ];
+        for (http_version, url, flag) in versions {
+            let prepared = PreparedRequest {
+                url: url.into(),
+                http_version,
+                ..Default::default()
+            };
+            assert_eq!(
+                curl(&prepared, &HttpRequest::default(), &[], false),
+                format!("curl -v {flag} -XGET '{url}'")
+            );
+        }
     }
 }

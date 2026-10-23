@@ -58,6 +58,10 @@ pub enum SendError {
     /// most likely (F14.8).
     #[snafu(display("stopped after {count} redirects"))]
     Redirects { count: usize },
+    /// The bridge already has as many of this reader's requests on their
+    /// way as it takes from one.
+    #[snafu(display("{limit} requests are already on their way; send this one when one of them is back"))]
+    Busy { limit: usize },
 }
 
 impl SendError {

@@ -13,7 +13,7 @@
 //! request crosses the bridge as JSON.
 
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam, Variable, VariableCategory, split_env_prefix};
-use crate::prefs::Timeouts;
+use crate::prefs::{HttpVersion, Timeouts};
 use crate::template::{self, FileReader, Inputs, Needs, TemplateError};
 use base64::Engine as _;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
@@ -35,6 +35,9 @@ pub struct PreparedRequest {
     /// HTTPS goes ahead whatever the server's certificate (F14.9).
     #[serde(default)]
     pub accept_invalid_certs: bool,
+    /// F14.10.
+    #[serde(default)]
+    pub http_version: HttpVersion,
 }
 
 impl PreparedRequest {
@@ -64,6 +67,8 @@ pub struct Context<'a> {
     pub timeouts: Timeouts,
     /// F14.9.
     pub accept_invalid_certs: bool,
+    /// F14.10.
+    pub http_version: HttpVersion,
     /// Separates multipart fields; random, from the caller.
     pub boundary: &'a str,
 }
@@ -334,6 +339,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         body,
         timeouts: cx.timeouts.effective(),
         accept_invalid_certs: cx.accept_invalid_certs,
+        http_version: cx.http_version,
     })
 }
 
@@ -470,6 +476,7 @@ mod tests {
                 user_agent: "CyberAPI/test",
                 timeouts: Timeouts::default(),
                 accept_invalid_certs: false,
+                http_version: HttpVersion::Auto,
                 boundary: "XYZ",
             },
         )
@@ -667,6 +674,7 @@ mod tests {
                     user_agent: "",
                     timeouts: Timeouts::default(),
                     accept_invalid_certs: false,
+                    http_version: HttpVersion::Auto,
                     boundary: "B",
                 }
             ),
