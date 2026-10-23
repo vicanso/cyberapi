@@ -873,9 +873,11 @@ impl SettingsView {
                 .child(h_flex().flex_1().min_w_0().child(value))
         };
         v_flex()
+            // A long value (a browser's whole user agent) wraps inside the
+            // dialog rather than running past its edge.
             .children(
                 rows.into_iter()
-                    .map(|(label, value)| line(label, div().child(value).into_any_element())),
+                    .map(|(label, value)| line(label, div().flex_1().min_w_0().child(value).into_any_element())),
             )
             .child(line(
                 t!("settings.homepage").to_string(),
