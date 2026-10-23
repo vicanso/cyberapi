@@ -695,6 +695,13 @@ impl WorkspaceState {
     }
 
     /// The rows to draw under the current keyword and open folders.
+    /// The folder the selected API is in: where an API added beside it
+    /// goes. `None` on the top level, or with nothing selected.
+    pub fn selected_folder(&self) -> Option<ItemId> {
+        let selected = self.prefs.selected.as_ref()?;
+        self.tree.get(selected).and_then(|node| node.parent()).cloned()
+    }
+
     pub fn rows(&self) -> Vec<Row> {
         let expanded: HashSet<ItemId> = self.prefs.expanded.iter().cloned().collect();
         self.tree.rows(&expanded, &self.keyword)
@@ -956,7 +963,8 @@ impl WorkspaceState {
     }
 
     /// F10.4: the bundle under `parent` (the top level when `None`), and its
-    /// environment variables — those with a name or a value.
+    /// environment variables — those with a name or a value. One API alone
+    /// (a cURL command, F10.5) is opened.
     pub fn import(&mut self, parent: Option<ItemId>, bundle: ImportBundle, cx: &mut Context<Self>) {
         let call = self
             .sender
@@ -971,11 +979,18 @@ impl WorkspaceState {
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(imported) => {
                 let (apis, folders) = (imported.apis.len(), imported.folders.len());
+                let only = match (&imported.apis[..], folders) {
+                    ([api], 0) => Some(api.id.clone()),
+                    _ => None,
+                };
                 this.data.folders.extend(imported.folders);
                 this.data.apis.extend(imported.apis);
                 this.data.apply(&imported.change);
                 this.tree = Tree::build(&this.data);
                 this.open_folder(parent.as_ref());
+                if let Some(api) = only {
+                    this.select(&api, cx);
+                }
                 this.save_prefs(cx);
                 this.add_environment(environment, cx);
                 cx.emit(WorkspaceEvent::Imported { apis, folders });
@@ -1257,6 +1272,33 @@ mod tests {
         state.update(cx, |state, _| {
             assert!(state.take_created(&login));
             assert!(!state.take_created(&login));
+        });
+    }
+
+    /// F10.5: a pasted cURL command is an API in its folder, opened.
+    #[gpui_kit::test]
+    async fn a_pasted_curl_command_is_opened_in_its_folder(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection, cx);
+        state.update(cx, |state, cx| state.create_folder(None, "users".into(), cx));
+        cx.run_until_parked();
+        let users = find(&state, "users", cx);
+        let bundle =
+            cyberapi_core::import::curl_command("curl -X PUT 'https://a.test/v1/users/login?x=1'").expect("a command");
+        state.update(cx, |state, cx| state.import(Some(users.clone()), bundle, cx));
+        cx.run_until_parked();
+
+        assert_eq!(row_names(&state, cx), ["users", "  login"]);
+        let login = find(&state, "login", cx);
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.selected(), Some(&login));
+            assert_eq!(state.selected_folder(), Some(users.clone()), "the next goes beside it");
+            let request = &state.selected_api().expect("opened").request;
+            assert_eq!(
+                (request.method, request.uri.as_str()),
+                (HttpMethod::Put, "https://a.test/v1/users/login")
+            );
         });
     }
 

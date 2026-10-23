@@ -317,6 +317,10 @@ hint = "粘贴 cURL 命令，或 Postman、Insomnia、Swagger / OpenAPI、CyberA
 placeholder = "curl https://api.example.com … 或 { … }"
 choose_file = "选择文件"
 done = "已导入 %{apis} 个接口、%{folders} 个目录。"
+paste_curl = "粘贴 cURL 新建接口"
+paste_curl_into = "粘贴 cURL 到此目录"
+no_curl = "剪贴板里不是 cURL 命令。可以在浏览器开发者工具的网络面板里，对请求选“复制为 cURL”。"
+clipboard_unreadable = "无法读取剪贴板：%{reason}"
 
 [export]
 project = "导出项目"

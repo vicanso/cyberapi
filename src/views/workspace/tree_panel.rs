@@ -4,7 +4,10 @@
 //! input into intent.
 
 use super::move_dialog::open_move_dialog;
-use super::{NewApi, NewFolder, confirm_delete, export, method_color, method_label, new_item, open_import_dialog};
+use super::{
+    NewApi, NewFolder, PasteCurl, confirm_delete, export, method_color, method_label, new_item, open_import_dialog,
+    paste_curl,
+};
 use crate::states::{Load, WorkspaceState};
 use crate::this_build;
 use crate::views::marked::marked;
@@ -164,12 +167,22 @@ impl TreePanel {
     /// Ctrl+N / Ctrl+Shift+N create inside the row that has the keys (#45).
     /// The workspace still handles the same keys from the editor, at the root.
     fn new_here(&mut self, kind: ItemKind, window: &mut Window, cx: &mut Context<Self>) {
-        let rows = self.state.read(cx).rows();
-        let parent = self
-            .cursor_at(&rows, cx)
-            .and_then(|index| rows.get(index))
-            .and_then(Row::insertion_parent);
+        let parent = self.cursor_folder(cx);
         new_item(&self.state.downgrade(), parent, kind, window, cx);
+    }
+
+    /// F10.5, where the cursor is.
+    fn paste_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let parent = self.cursor_folder(cx);
+        paste_curl(&self.state.downgrade(), parent, window, cx);
+    }
+
+    /// The folder a new item at the cursor goes in.
+    fn cursor_folder(&self, cx: &App) -> Option<ItemId> {
+        let rows = self.state.read(cx).rows();
+        self.cursor_at(&rows, cx)
+            .and_then(|index| rows.get(index))
+            .and_then(Row::insertion_parent)
     }
 
     /// Where the cursor is among `rows`.
@@ -422,6 +435,7 @@ impl TreePanel {
                     .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
                         let (for_api, for_folder) = (state.clone(), state.clone());
                         let (for_import, for_export) = (state.clone(), state.clone());
+                        let for_paste = state.clone();
                         let menu = if editable {
                             menu.item(
                                 PopupMenuItem::new(t!("workspace.new_api").to_string())
@@ -440,6 +454,13 @@ impl TreePanel {
                                     }),
                             )
                             .separator()
+                            // F10.5: the clipboard is read on this click.
+                            .item(
+                                PopupMenuItem::new(t!("import.paste_curl").to_string())
+                                    .icon(Icons::ClipboardPaste)
+                                    .action(Box::new(PasteCurl))
+                                    .on_click(move |_, window, cx| paste_curl(&for_paste, None, window, cx)),
+                            )
                             // F10.1.
                             .item(
                                 PopupMenuItem::new(t!("import.title").to_string())
@@ -827,6 +848,7 @@ fn item_menu(
             let (for_api, for_folder, parent) = (state.clone(), state.clone(), id.clone());
             let folder = parent.clone();
             let (for_import, into) = (state.clone(), id.clone());
+            let (for_paste, paste_into) = (state.clone(), id.clone());
             let (for_export, exported) = (state.clone(), id.clone());
             let menu = if editable {
                 menu.item(
@@ -842,6 +864,11 @@ fn item_menu(
                         .on_click(move |_, window, cx| {
                             new_item(&for_folder, Some(folder.clone()), ItemKind::Folder, window, cx)
                         }),
+                )
+                .item(
+                    PopupMenuItem::new(t!("import.paste_curl_into").to_string())
+                        .icon(Icons::ClipboardPaste)
+                        .on_click(move |_, window, cx| paste_curl(&for_paste, Some(paste_into.clone()), window, cx)),
                 )
                 .item(
                     PopupMenuItem::new(t!("import.into_folder").to_string())
@@ -993,6 +1020,7 @@ impl Render for TreePanel {
             .on_action(cx.listener(|this, _: &Toggle, window, cx| this.toggle(window, cx)))
             .on_action(cx.listener(|this, _: &Rename, window, cx| this.rename_at_cursor(window, cx)))
             .on_action(cx.listener(|this, _: &NewApi, window, cx| this.new_here(ItemKind::Api, window, cx)))
+            .on_action(cx.listener(|this, _: &PasteCurl, window, cx| this.paste_here(window, cx)))
             .on_action(cx.listener(|this, _: &NewFolder, window, cx| this.new_here(ItemKind::Folder, window, cx)))
             .child(self.render_header(cx))
             .child(self.render_body(focused, cx))

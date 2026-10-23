@@ -4,8 +4,8 @@
 
 use super::dashboard::{FocusSearch, KEY_CONTEXT as DASHBOARD};
 use super::workspace::{
-    KEY_CONTEXT as WORKSPACE, NewApi, NewFolder, Pin1, Pin9, Send as SendAction, TREE_CONTEXT as TREE, TreeClose,
-    TreeNext, TreeOpen, TreePrevious, TreeRename, TreeToggle,
+    KEY_CONTEXT as WORKSPACE, NewApi, NewFolder, PasteCurl, Pin1, Pin9, Send as SendAction, TREE_CONTEXT as TREE,
+    TreeClose, TreeNext, TreeOpen, TreePrevious, TreeRename, TreeToggle,
 };
 use crate::this_build;
 use gpui_kit::component::kbd::Kbd;
@@ -39,6 +39,7 @@ fn shortcuts(window: &mut Window, cx: &mut App) -> impl IntoElement {
             keys(&NewFolder, WORKSPACE, window),
         ));
     }
+    workspace.push((t!("import.paste_curl").to_string(), keys(&PasteCurl, WORKSPACE, window)));
     workspace.push((t!("shortcuts.send").to_string(), keys(&SendAction, WORKSPACE, window)));
     if this_build::takes_pin_keys() {
         workspace.push((t!("shortcuts.pins").to_string(), {

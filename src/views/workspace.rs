@@ -46,7 +46,7 @@ pub(crate) use tree_panel::{
     Rename as TreeRename, Toggle as TreeToggle,
 };
 
-gpui_kit::actions!(workspace, [NewApi, NewFolder, Send]);
+gpui_kit::actions!(workspace, [NewApi, NewFolder, Send, PasteCurl]);
 
 // F12.2 from the keyboard: Cmd/Ctrl and a pin's number selects it.
 gpui_kit::actions!(workspace, [Pin1, Pin2, Pin3, Pin4, Pin5, Pin6, Pin7, Pin8, Pin9]);
@@ -75,6 +75,9 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-n", NewApi, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-n", NewFolder, Some(KEY_CONTEXT)),
+        // F10.5: pasting where no field takes it. A field binds the same keys
+        // closer in, and keeps its own paste.
+        KeyBinding::new("secondary-v", PasteCurl, Some(KEY_CONTEXT)),
         // F5.1 from the keyboard, wherever focus is in the workspace — in
         // a field too, ahead of the field's own Cmd/Ctrl-Enter (bound later,
         // so it wins over the kit's).
@@ -129,6 +132,7 @@ pub fn bind_mac_page_keys(cx: &mut App) {
         KeyBinding::new("alt-delete", DeleteToNextWordEnd, INPUT),
         KeyBinding::new("cmd-enter", Send, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-enter", Send, Some("Workspace > Input")),
+        KeyBinding::new("cmd-v", PasteCurl, Some(KEY_CONTEXT)),
     ]);
 }
 
@@ -186,6 +190,40 @@ fn new_item(
 }
 
 pub use import_dialog::open_import_dialog;
+
+/// F10.5: the cURL command on the clipboard as a new API in `parent`, opened.
+/// The clipboard is read here, when the reader pastes or picks the menu
+/// item, and never otherwise; a page's read goes through the browser, which
+/// may ask the reader first.
+fn paste_curl(state: &WeakEntity<WorkspaceState>, parent: Option<ItemId>, window: &mut Window, cx: &mut App) {
+    if !state.upgrade().is_some_and(|state| state.read(cx).editable()) {
+        return;
+    }
+    // Asked for now, while the paste or the click still counts as the
+    // reader's: a page may read the clipboard only then.
+    let read = cx.read_from_clipboard_async();
+    let state = state.clone();
+    window
+        .spawn(cx, async move |cx| {
+            let read = read.await;
+            let _ = cx.update(|window, cx| {
+                let text = match read {
+                    Ok(item) => item.and_then(|item| item.text()).unwrap_or_default(),
+                    Err(error) => {
+                        let message = t!("import.clipboard_unreadable", reason = error.to_string());
+                        return window.push_notification(Notification::warning(message.to_string()), cx);
+                    }
+                };
+                match cyberapi_core::import::curl_command(&text) {
+                    Some(bundle) => {
+                        let _ = state.update(cx, |state, cx| state.import(parent, bundle, cx));
+                    }
+                    None => window.push_notification(Notification::warning(t!("import.no_curl").to_string()), cx),
+                }
+            });
+        })
+        .detach();
+}
 
 /// M11: the project or a folder as a file in the downloads folder — or, in
 /// a page, on the clipboard.
@@ -564,11 +602,14 @@ impl WorkspaceView {
         // may change the tree.
         let muted = cx.theme().muted_foreground;
         let shortcuts: Vec<_> = [
-            (&NewApi as &dyn gpui_kit::Action, t!("workspace.new_api")),
-            (&NewFolder, t!("workspace.new_folder")),
+            (&NewApi as &dyn gpui_kit::Action, t!("workspace.new_api"), true),
+            (&NewFolder, t!("workspace.new_folder"), true),
+            // Paste reaches every page.
+            (&PasteCurl, t!("import.paste_curl"), false),
         ]
         .into_iter()
-        .filter(|_| self.state.read(cx).editable() && crate::this_build::takes_new_keys())
+        .filter(|(_, _, new)| self.state.read(cx).editable() && (!new || crate::this_build::takes_new_keys()))
+        .map(|(action, label, _)| (action, label))
         .filter_map(|(action, label)| {
             let shortcut = Kbd::binding_for_action(action, Some(KEY_CONTEXT), window)?;
             Some(
@@ -620,6 +661,7 @@ impl Render for WorkspaceView {
         let columns = AppStore::global(cx).state().read(cx).prefs().columns;
         let state = self.state.downgrade();
         let folder_state = state.clone();
+        let paste_state = state.clone();
         // The editor's first width: its share of what the tree leaves.
         let rest = (f32::from(window.viewport_size().width) - columns.tree).max(400.);
         let editor_width = rest * columns.editor_ratio.clamp(0.2, 0.8);
@@ -660,6 +702,12 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(|this, _: &Pin9, _, cx| this.select_pin(8, cx)))
             .on_action(move |_: &NewApi, window, cx| new_item(&state, None, ItemKind::Api, window, cx))
             .on_action(move |_: &NewFolder, window, cx| new_item(&folder_state, None, ItemKind::Folder, window, cx))
+            // Beside the open API; the tree, when it has the focus, answers
+            // first with its cursor's folder.
+            .on_action(move |_: &PasteCurl, window, cx| {
+                let parent = paste_state.upgrade().and_then(|state| state.read(cx).selected_folder());
+                paste_curl(&paste_state, parent, window, cx)
+            })
             .on_action(move |_: &Send, window, cx| {
                 if let Some(editor) = &editor {
                     let _ = editor.update(cx, |editor, cx| editor.send(window, cx));
@@ -670,5 +718,151 @@ impl Render for WorkspaceView {
                     this.columns_resized(columns, window, cx)
                 })),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cyberapi_core::prefs::{SendPrefs, Timeouts};
+    use cyberapi_core::template::NoFiles;
+    use cyberapi_http::{HttpEngine, PreparedRequest, SendFuture};
+    use cyberapi_service::Sender;
+    use cyberapi_store::{MemoryStore, NewCollection};
+    use gpui_kit::component::Root;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AnyWindowHandle, ClipboardItem, TestAppContext, div, size};
+    use std::sync::Arc;
+
+    struct NoEngine;
+
+    impl HttpEngine for NoEngine {
+        fn send(&self, _: PreparedRequest) -> SendFuture {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    struct Blank;
+
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    fn workspace(cx: &mut TestAppContext) -> (Entity<WorkspaceState>, AnyWindowHandle) {
+        cx.update(gpui_kit::init);
+        let storage = MemoryStore::new().storage();
+        let collection = pollster::block_on(storage.collections().create(NewCollection {
+            name: "p".into(),
+            ..Default::default()
+        }))
+        .expect("create");
+        let sender = Sender {
+            storage,
+            engine: Arc::new(NoEngine),
+            files: Arc::new(NoFiles("no files in tests")),
+            user_agent: "CyberAPI/test".into(),
+            timeouts: Timeouts::default(),
+            sending: SendPrefs::default(),
+        };
+        let state = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
+        let window = cx.open_window(size(px(800.), px(600.)), |window, cx| {
+            Root::new(cx.new(|_| Blank), window, cx)
+        });
+        cx.run_until_parked();
+        (state, window.into())
+    }
+
+    fn paste(cx: &mut TestAppContext, state: &Entity<WorkspaceState>, window: AnyWindowHandle) {
+        cx.update_window(window, |_, window, cx| paste_curl(&state.downgrade(), None, window, cx))
+            .expect("the window is open");
+        cx.run_until_parked();
+    }
+
+    /// A workspace with a field in it, counting the pastes it gets.
+    struct Pasting {
+        focus: FocusHandle,
+        field: Entity<gpui_kit::component::input::InputState>,
+        pasted: usize,
+    }
+
+    impl Render for Pasting {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .key_context(KEY_CONTEXT)
+                .track_focus(&self.focus)
+                .on_action(cx.listener(|this, _: &PasteCurl, _, _| this.pasted += 1))
+                .child(gpui_kit::component::input::Input::new(&self.field))
+        }
+    }
+
+    /// The paste key adds a command where no field has the focus, and is a
+    /// field's own paste in one.
+    #[gpui_kit::test]
+    async fn a_field_keeps_its_paste(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            bind_keys(cx);
+        });
+        cx.write_to_clipboard(ClipboardItem::new_string("curl https://a.test".into()));
+        let mut view = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(400.), px(300.)), |window, cx| {
+                let pasting = cx.new(|cx| Pasting {
+                    focus: cx.focus_handle(),
+                    field: cx.new(|cx| gpui_kit::component::input::InputState::new(window, cx)),
+                    pasted: 0,
+                });
+                view = Some(pasting.clone());
+                Root::new(pasting, window, cx)
+            })
+            .into();
+        let view = view.expect("built");
+        let press = |cx: &mut TestAppContext, field: bool| {
+            cx.update_window(window, |_, window, cx| {
+                let pasting = view.read(cx);
+                let focus = if field {
+                    pasting.field.read(cx).focus_handle(cx)
+                } else {
+                    pasting.focus.clone()
+                };
+                focus.focus(window, cx);
+                window.render_frame(cx);
+                window.press("cmd-v", cx);
+            })
+            .expect("the window is open");
+            cx.run_until_parked();
+        };
+        press(cx, false);
+        assert_eq!(cx.read(|cx| view.read(cx).pasted), 1);
+        press(cx, true);
+        assert_eq!(cx.read(|cx| view.read(cx).pasted), 1, "not the workspace's");
+        let field = cx.read(|cx| view.read(cx).field.read(cx).value().to_string());
+        assert_eq!(field, "curl https://a.test", "the field's own paste");
+    }
+
+    /// F10.5: what is on the clipboard is read when the reader pastes, and
+    /// only a cURL command adds an API.
+    #[gpui_kit::test]
+    async fn a_pasted_curl_command_becomes_an_api(cx: &mut TestAppContext) {
+        let (state, window) = workspace(cx);
+        let count = |cx: &mut TestAppContext| state.read_with(cx, |state, _| state.rows().len());
+
+        cx.write_to_clipboard(ClipboardItem::new_string("not a command".into()));
+        paste(cx, &state, window);
+        assert_eq!(count(cx), 0, "nothing but a cURL command is added");
+
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            "curl 'https://a.test/v1/users/login' -H 'X-Trace: 1' --data-raw '{\"a\":1}'".into(),
+        ));
+        paste(cx, &state, window);
+        state.read_with(cx, |state, _| {
+            let api = state.selected_api().expect("the new API is opened");
+            assert_eq!(api.name, "login");
+            assert_eq!(api.request.method, HttpMethod::Post);
+            assert_eq!(api.request.body, "{\"a\":1}");
+        });
     }
 }

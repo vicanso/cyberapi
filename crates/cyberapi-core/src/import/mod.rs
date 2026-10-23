@@ -156,16 +156,22 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
 /// itself in from it. The body stays as pasted (#43): indenting it would
 /// change the bytes that are sent. `None` for anything else.
 pub fn request_from_curl(text: &str) -> Option<HttpRequest> {
+    let ImportItem::Api { request, .. } = curl_command(text)?.items.into_iter().next()? else {
+        return None;
+    };
+    Some(request)
+}
+
+/// A cURL command, as the API it imports, named after its path (F10.5):
+/// what pasting one into a project adds. `None` for anything else.
+pub fn curl_command(text: &str) -> Option<ImportBundle> {
     let text = text.trim_start();
     let command = text.get(..4).is_some_and(|start| start.eq_ignore_ascii_case("curl"))
         && text[4..].starts_with(char::is_whitespace);
     if !command {
         return None;
     }
-    let ImportItem::Api { request, .. } = curl::parse(text).ok()?.items.into_iter().next()? else {
-        return None;
-    };
-    Some(request)
+    curl::parse(text).ok()
 }
 
 /// A request's URL with its query moved to the query list, as every importer
@@ -255,6 +261,10 @@ mod tests {
         assert_eq!(request_from_curl("curly.test/a"), None);
         assert_eq!(request_from_curl("curl -v"), None);
         assert_eq!(request_from_curl("网厅"), None);
+        let bundle = curl_command("curl 'https://a.test/v1/users/login' -d 'a=1'").expect("a command");
+        assert!(matches!(&bundle.items[..], [ImportItem::Api { name, .. }] if name == "login"));
+        assert!(bundle.environment.is_empty());
+        assert!(curl_command("  {\"item\": []}").is_none(), "only a cURL command");
     }
 
     #[test]

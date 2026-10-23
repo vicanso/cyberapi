@@ -317,6 +317,10 @@ hint = "Paste a cURL command, or a Postman, Insomnia, Swagger / OpenAPI or Cyber
 placeholder = "curl https://api.example.com … or { … }"
 choose_file = "Choose a file"
 done = "Imported %{apis} APIs and %{folders} folders."
+paste_curl = "Paste cURL as a new API"
+paste_curl_into = "Paste cURL into this folder"
+no_curl = "The clipboard holds no cURL command. In a browser's developer tools, Network panel, a request's “Copy as cURL” gives one."
+clipboard_unreadable = "The clipboard could not be read: %{reason}"
 
 [export]
 project = "Export the project"
