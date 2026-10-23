@@ -426,7 +426,7 @@ impl RequestEditor {
                 .title(t!("editor.change_type_title").to_string())
                 .description(t!("editor.change_type_description").to_string())
                 .confirm()
-                .ok_text(t!("common.ok").to_string())
+                .ok_text(t!("editor.change_type_ok").to_string())
                 .ok_variant(ButtonVariant::Danger)
                 .cancel_text(t!("common.cancel").to_string())
                 .on_ok(move |_, window, cx| {
@@ -804,15 +804,18 @@ impl RequestEditor {
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let request = self.api.read(cx).request().clone();
         let this = cx.entity().downgrade();
+        let current = request.content_type;
         let type_menu = move |menu: gpui_kit::component::menu::PopupMenu,
                               _: &mut Window,
                               _: &mut Context<gpui_kit::component::menu::PopupMenu>| {
             ContentType::ALL.iter().fold(menu, |menu, content_type| {
                 let (this, content_type) = (this.clone(), *content_type);
                 menu.item(
-                    PopupMenuItem::new(content_type.as_str()).on_click(move |_, window, cx| {
-                        let _ = this.update(cx, |this, cx| this.set_content_type(content_type, window, cx));
-                    }),
+                    PopupMenuItem::new(content_type.as_str())
+                        .checked(content_type == current)
+                        .on_click(move |_, window, cx| {
+                            let _ = this.update(cx, |this, cx| this.set_content_type(content_type, window, cx));
+                        }),
                 )
             })
         };

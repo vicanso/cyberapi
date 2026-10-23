@@ -1,7 +1,6 @@
 [common]
 copy = "复制"
 copied = "已复制到剪贴板。"
-ok = "确定"
 cancel = "取消"
 create = "创建"
 save = "保存"
@@ -153,6 +152,7 @@ json_tree_more = "… 还有 %{count} 个"
 share_tooltip = "请求编辑区占 %{share} 宽度（树以外的部分）"
 change_type_title = "切换 Body 类型？"
 change_type_description = "切换后会清空当前的 Body。"
+change_type_ok = "清空并切换"
 manage_environments = "管理环境变量…"
 remove_again = "再点一次删除"
 

@@ -1,7 +1,6 @@
 [common]
 copy = "Copy"
 copied = "Copied to the clipboard."
-ok = "OK"
 cancel = "Cancel"
 create = "Create"
 save = "Save"
@@ -153,6 +152,7 @@ json_tree_more = "… %{count} more"
 share_tooltip = "The request editor at %{share} of the width beside the tree"
 change_type_title = "Change the body type?"
 change_type_description = "The body is emptied for the new type."
+change_type_ok = "Empty and change"
 manage_environments = "Manage environment variables…"
 remove_again = "Click again to remove"
 
