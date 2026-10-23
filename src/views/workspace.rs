@@ -426,6 +426,9 @@ impl WorkspaceView {
                 WorkspaceEvent::TookServers => {
                     window.push_notification(Notification::success(t!("sync.took_servers").to_string()), cx);
                 }
+                WorkspaceEvent::NotIntoLocal => {
+                    window.push_notification(Notification::warning(t!("sync.not_into_local").to_string()), cx);
+                }
                 WorkspaceEvent::Conflict => {
                     let state = this_state.clone();
                     let name = state.read(cx).collection().name.clone();

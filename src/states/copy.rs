@@ -11,9 +11,16 @@
 //!
 //! What a copy does about the server is `cyberapi_core::sync::step`'s to
 //! decide. This keeps the copy and where it stands, and pushes.
+//!
+//! The reader's own items (server-sync §3.4, `cyberapi_core::local_only`)
+//! are in the copy too, and kept on this machine (`crate::local_items`): a
+//! push leaves them out, a pull puts them back, and while there are some,
+//! whether the copy is unsynced is whether what syncs of it changed.
 
 use crate::drafts_local::{self, Draft};
+use crate::{local_items, pins_local};
 use cyberapi_core::import::ImportItem;
+use cyberapi_core::local_only::{LocalItems, fingerprint, ids};
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, Moment, ProjectConfig, Step, step};
@@ -67,7 +74,11 @@ pub struct Kept {
 struct Shared {
     keeper: Keeper,
     collection: CollectionId,
+    /// Whose own items these are (`crate::local_items`).
+    scope: String,
     marks: Mutex<Marks>,
+    /// The reader's own items (server-sync §3.4).
+    local: Mutex<LocalItems>,
     /// A write finished.
     news: UnboundedSender<()>,
 }
@@ -75,6 +86,37 @@ struct Shared {
 impl Shared {
     fn marks(&self) -> MutexGuard<'_, Marks> {
         self.marks.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn local(&self) -> MutexGuard<'_, LocalItems> {
+        self.local.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn keep_local(&self, local: &LocalItems) {
+        if !local_items::set(&self.scope, &self.collection, local) {
+            tracing::warn!("the reader's own items could not be kept");
+        }
+    }
+
+    /// After a change: the reader's own items as the copy has them now, and
+    /// whether what syncs of the copy differs from the server's. `None`
+    /// when the reader has none, or that is not known: every change counts
+    /// then.
+    async fn recount(self: Arc<Self>) -> Option<bool> {
+        if self.local().roots.is_empty() {
+            return None;
+        }
+        let config = match self.tree().config(self.collection.clone()).await {
+            Ok(at) => at.config,
+            Err(error) => {
+                tracing::warn!(%error, "the working copy could not be read");
+                return None;
+            }
+        };
+        let mut local = self.local();
+        local.keep(&config);
+        self.keep_local(&local);
+        local.unsynced(&config)
     }
 
     fn tree(&self) -> &dyn TreeStore {
@@ -140,6 +182,7 @@ impl ServerCopy {
     pub fn page(collection: &Collection, scope: String) -> (Self, UnboundedReceiver<()>) {
         Self::with(
             collection,
+            scope.clone(),
             Keeper::Page {
                 working: MemoryStore::new(),
                 scope,
@@ -154,14 +197,18 @@ impl ServerCopy {
         copies: Arc<dyn ServerCopyStore>,
         account: AccountId,
     ) -> (Self, UnboundedReceiver<()>) {
-        Self::with(collection, Keeper::Desktop { local, copies, account })
+        let scope = pins_local::scope(Some(account.as_str()));
+        Self::with(collection, scope, Keeper::Desktop { local, copies, account })
     }
 
-    fn with(collection: &Collection, keeper: Keeper) -> (Self, UnboundedReceiver<()>) {
+    fn with(collection: &Collection, scope: String, keeper: Keeper) -> (Self, UnboundedReceiver<()>) {
         let (news, heard) = unbounded();
+        let local = local_items::get(&scope, &collection.id);
         let shared = Arc::new(Shared {
             keeper,
             collection: collection.id.clone(),
+            scope,
+            local: Mutex::new(local),
             marks: Mutex::new(Marks {
                 base: None,
                 unsynced: false,
@@ -217,6 +264,8 @@ impl ServerCopy {
     /// database already.
     pub fn resume(&self, collection: Collection, kept: Kept) -> Result<(), StoreError> {
         if let (Keeper::Page { working, .. }, Some(draft)) = (&self.shared.keeper, kept.draft) {
+            // A draft made on the project list has none of the reader's own.
+            let draft = self.shared.local().restore(draft);
             working.hold(collection, draft)?;
         }
         let mut marks = self.shared.marks();
@@ -226,8 +275,36 @@ impl ServerCopy {
         Ok(())
     }
 
-    /// The server's content becomes the copy, level with it at `base`.
-    pub fn take(&self, collection: Collection, config: ProjectConfig, base: u64) -> StoreFuture<()> {
+    /// What is not known yet of the reader's own items, from the copy as
+    /// it is: what the server has — all of it, until a pull says — and,
+    /// when the copy is level, its level.
+    pub fn adopt(&self) -> StoreFuture<()> {
+        let shared = self.shared.clone();
+        Box::pin(async move {
+            {
+                let local = shared.local();
+                if local.server.is_some() && local.level.is_some() {
+                    return Ok(());
+                }
+            }
+            let config = shared.tree().config(shared.collection.clone()).await?.config;
+            let level = !shared.marks().unsynced;
+            let mut local = shared.local();
+            let syncable = local.syncable(&config);
+            if local.server.is_none() {
+                local.server = Some(ids(&syncable));
+            }
+            if local.level.is_none() && level {
+                local.level = Some(fingerprint(&syncable));
+            }
+            shared.keep_local(&local);
+            Ok(())
+        })
+    }
+
+    /// The server's content becomes the copy, level with it at `base`, the
+    /// reader's own items put back: what the copy holds now.
+    pub fn take(&self, collection: Collection, config: ProjectConfig, base: u64) -> StoreFuture<ProjectConfig> {
         {
             let mut marks = self.shared.marks();
             marks.base = Some(base);
@@ -235,22 +312,79 @@ impl ServerCopy {
             marks.kept = true;
         }
         let shared = self.shared.clone();
-        match &self.shared.keeper {
+        let id = collection.id.clone();
+        let config = shared.local().restore(config);
+        let kept: StoreFuture<()> = match &self.shared.keeper {
             Keeper::Page { working, .. } => {
                 let held = working.hold(collection, config);
-                Box::pin(async move {
-                    held?;
-                    shared.persist().await
-                })
+                Box::pin(async move { held })
             }
-            Keeper::Desktop { copies, .. } => {
-                let kept = copies.keep_copy(collection, config);
-                Box::pin(async move {
-                    kept.await?;
-                    shared.persist().await
-                })
+            Keeper::Desktop { copies, .. } => copies.keep_copy(collection, config),
+        };
+        Box::pin(async move {
+            kept.await?;
+            let held = shared.tree().config(id).await?.config;
+            {
+                let mut local = shared.local();
+                local.keep(&held);
+                let syncable = local.syncable(&held);
+                local.level_with(&syncable);
+                shared.keep_local(&local);
             }
+            shared.persist().await?;
+            Ok(held)
+        })
+    }
+
+    /// The reader's own items (server-sync §3.4).
+    pub fn local_items(&self) -> LocalItems {
+        self.shared.local().clone()
+    }
+
+    /// Before `item` goes into `parent` (`folders` as they are): one that
+    /// leaves the reader's own folder stays theirs.
+    pub fn moving(&self, folders: &[Folder], item: &ItemId, parent: Option<&ItemId>) {
+        let mut local = self.shared.local();
+        local.moving(folders, item, parent);
+        self.shared.keep_local(&local);
+    }
+
+    /// Marks `item` the reader's own, or (`false`) makes it sync again. The
+    /// copy is unsynced or not by what syncs of it then.
+    pub fn set_local(&self, item: &ItemId, local: bool) -> StoreFuture<()> {
+        {
+            let mut items = self.shared.local();
+            if local {
+                items.mark(item);
+            } else {
+                items.unmark(item);
+            }
+            self.shared.keep_local(&items);
         }
+        let shared = self.shared.clone();
+        shared.marks().pending += 1;
+        Box::pin(async move {
+            let read = shared.tree().config(shared.collection.clone()).await;
+            if let Ok(at) = &read {
+                let mut items = shared.local();
+                items.keep(&at.config);
+                shared.keep_local(&items);
+                let unsynced = items.unsynced(&at.config);
+                drop(items);
+                let mut marks = shared.marks();
+                marks.landed += 1;
+                // Not known: one made to sync is something to sync.
+                marks.unsynced = unsynced.unwrap_or(marks.unsynced || !local);
+            }
+            let kept = shared.persist().await;
+            {
+                let mut marks = shared.marks();
+                marks.pending = marks.pending.saturating_sub(1);
+            }
+            let _ = shared.news.unbounded_send(());
+            read?;
+            kept
+        })
     }
 
     /// Whether the copy has changes the server has not had, landed or on
@@ -276,27 +410,41 @@ impl ServerCopy {
         step(Moment::Look, base, revision, self.unsynced())
     }
 
-    /// The copy as it would go up, its base, and how many writes it holds.
+    /// The copy as it would go up — the reader's own items left out —, its
+    /// base, and how many writes it holds.
     pub fn snapshot(&self) -> StoreFuture<(ProjectConfig, Option<u64>, u64)> {
         let (base, landed) = {
             let marks = self.shared.marks();
             (marks.base, marks.landed)
         };
         let call = self.shared.tree().config(self.shared.collection.clone());
-        Box::pin(async move { Ok((call.await?.config, base, landed)) })
+        let shared = self.shared.clone();
+        Box::pin(async move {
+            let config = call.await?.config;
+            let syncable = shared.local().syncable(&config);
+            Ok((syncable, base, landed))
+        })
     }
 
-    /// The snapshot taken at `landed` writes is the server's now, at
-    /// `revision`. A change that landed meanwhile stays unsynced, over the
-    /// new base. Answers whether the copy is level, and the keeping of it.
-    pub fn pushed(&self, revision: u64, landed: u64) -> (bool, StoreFuture<()>) {
-        let level = {
-            let mut marks = self.shared.marks();
-            marks.base = Some(revision);
-            marks.unsynced = marks.landed != landed;
-            !marks.unsynced
-        };
-        (level, self.shared.persist())
+    /// `pushed`, the snapshot taken at `landed` writes, is the server's now,
+    /// at `revision`. A change that landed meanwhile stays unsynced, over
+    /// the new base.
+    pub fn pushed(&self, revision: u64, landed: u64, pushed: ProjectConfig) -> StoreFuture<()> {
+        let shared = self.shared.clone();
+        Box::pin(async move {
+            {
+                let mut local = shared.local();
+                local.level_with(&pushed);
+                shared.keep_local(&local);
+            }
+            let counted = shared.clone().recount().await;
+            {
+                let mut marks = shared.marks();
+                marks.base = Some(revision);
+                marks.unsynced = counted.unwrap_or(marks.landed != landed);
+            }
+            shared.persist().await
+        })
     }
 }
 
@@ -344,17 +492,19 @@ struct CopyStore(Arc<Shared>);
 
 impl CopyStore {
     /// A write into the copy: when it lands, the copy is unsynced and kept
-    /// so.
-    fn write<T: Send + 'static>(&self, call: StoreFuture<T>) -> StoreFuture<T> {
+    /// so — unless, with the reader's own items in the tree (`tree`), what
+    /// syncs of it is what the server has.
+    fn write<T: Send + 'static>(&self, call: StoreFuture<T>, tree: bool) -> StoreFuture<T> {
         let shared = self.0.clone();
         shared.marks().pending += 1;
         Box::pin(async move {
             let answer = call.await;
             if answer.is_ok() {
+                let counted = if tree { shared.clone().recount().await } else { None };
                 {
                     let mut marks = shared.marks();
                     marks.landed += 1;
-                    marks.unsynced = true;
+                    marks.unsynced = counted.unwrap_or(true);
                 }
                 if let Err(error) = shared.persist().await {
                     tracing::warn!(%error, "an unsynced change could not be marked");
@@ -381,7 +531,7 @@ impl TreeStore for CopyStore {
         parent: Option<ItemId>,
         name: String,
     ) -> StoreFuture<Inserted<Folder>> {
-        self.write(self.0.tree().create_folder(collection, parent, name))
+        self.write(self.0.tree().create_folder(collection, parent, name), true)
     }
 
     fn create_api(
@@ -390,19 +540,19 @@ impl TreeStore for CopyStore {
         parent: Option<ItemId>,
         name: String,
     ) -> StoreFuture<Inserted<ApiSetting>> {
-        self.write(self.0.tree().create_api(collection, parent, name))
+        self.write(self.0.tree().create_api(collection, parent, name), true)
     }
 
     fn rename(&self, collection: CollectionId, item: ItemId, name: String) -> StoreFuture<()> {
-        self.write(self.0.tree().rename(collection, item, name))
+        self.write(self.0.tree().rename(collection, item, name), true)
     }
 
     fn save_request(&self, collection: CollectionId, api: ItemId, request: HttpRequest) -> StoreFuture<ApiSetting> {
-        self.write(self.0.tree().save_request(collection, api, request))
+        self.write(self.0.tree().save_request(collection, api, request), true)
     }
 
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange> {
-        self.write(self.0.tree().move_item(collection, item, to))
+        self.write(self.0.tree().move_item(collection, item, to), true)
     }
 
     fn import(
@@ -411,11 +561,11 @@ impl TreeStore for CopyStore {
         parent: Option<ItemId>,
         items: Vec<ImportItem>,
     ) -> StoreFuture<Imported> {
-        self.write(self.0.tree().import(collection, parent, items))
+        self.write(self.0.tree().import(collection, parent, items), true)
     }
 
     fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal> {
-        self.write(self.0.tree().delete(collection, item))
+        self.write(self.0.tree().delete(collection, item), true)
     }
 
     fn config(&self, collection: CollectionId) -> StoreFuture<ConfigAt> {
@@ -423,7 +573,7 @@ impl TreeStore for CopyStore {
     }
 
     fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64> {
-        self.write(self.0.tree().replace(collection, config, base))
+        self.write(self.0.tree().replace(collection, config, base), true)
     }
 }
 
@@ -433,15 +583,15 @@ impl VariableStore for CopyStore {
     }
 
     fn create(&self, input: NewVariable) -> StoreFuture<Variable> {
-        self.write(self.0.variables().create(input))
+        self.write(self.0.variables().create(input), false)
     }
 
     fn update(&self, collection: CollectionId, id: VariableId, edit: VariableEdit) -> StoreFuture<Variable> {
-        self.write(self.0.variables().update(collection, id, edit))
+        self.write(self.0.variables().update(collection, id, edit), false)
     }
 
     fn delete(&self, collection: CollectionId, ids: Vec<VariableId>) -> StoreFuture<()> {
-        self.write(self.0.variables().delete(collection, ids))
+        self.write(self.0.variables().delete(collection, ids), false)
     }
 }
 

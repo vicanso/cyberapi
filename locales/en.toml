@@ -457,6 +457,9 @@ discard = "Discard local changes"
 discard_title = "Discard the changes not synced?"
 discard_description = "The project goes back to the server's version, and the changes not synced from here are lost."
 delete_loses_draft = "Its changes that are not synced are lost too."
+make_local = "Keep local (do not sync)"
+make_synced = "Sync it"
+not_into_local = "Synced APIs and folders cannot go into a local folder: a sync would leave them out."
 
 [invites]
 open = "Invitations not used yet"

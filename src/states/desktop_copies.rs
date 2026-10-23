@@ -455,3 +455,52 @@ async fn the_last_copy_reopens_once_the_server_is_known(cx: &mut TestAppContext)
     assert_eq!(state.read_with(cx, |state, _| state.route().clone()), Route::Dashboard);
     assert_eq!(state.read_with(cx, |state, _| state.me().cloned()), None);
 }
+
+/// Server-sync §3.4 on the desktop: the reader's own items stay in the copy
+/// when the project list syncs it, and when it pulls it again.
+#[gpui_kit::test]
+async fn the_readers_own_items_stay_in_the_copy(cx: &mut TestAppContext) {
+    let machine = Machine::signed_in(cx);
+    let theirs = machine.on_server("orders").await;
+    let dashboard = machine.dashboard(cx);
+    let (workspace, _) = machine.open(theirs.clone(), cx);
+    workspace.update(cx, |state, cx| state.create_api(None, "scratch".into(), cx));
+    cx.run_until_parked();
+    let scratch = workspace.read_with(cx, |state, _| state.selected().cloned().expect("made and opened"));
+    workspace.update(cx, |state, cx| state.set_local(&scratch, true, cx));
+    cx.run_until_parked();
+    assert!(!workspace.read_with(cx, |state, _| state.unsynced()));
+    workspace.update(cx, |state, cx| state.create_api(None, "shared".into(), cx));
+    cx.run_until_parked();
+    assert!(workspace.read_with(cx, |state, _| state.unsynced()));
+    drop(workspace);
+
+    // Synced from the project list: the server has the shared one alone.
+    dashboard.update(cx, |state, cx| state.sync(&theirs.id, false, cx));
+    cx.run_until_parked();
+    assert_eq!(api_names(&machine.bridge.server.storage(), &theirs.id), ["shared"]);
+    assert!(!machine.binding(&theirs.id).expect("a copy").unsynced);
+
+    // Someone else changes it; the list pulls it again, the reader's kept.
+    machine
+        .bridge
+        .server
+        .storage()
+        .tree()
+        .create_api(theirs.id.clone(), None, "theirs".into())
+        .await
+        .expect("their change");
+    dashboard.update(cx, |state, cx| state.reload(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        api_names(&machine.local.storage(), &theirs.id),
+        ["scratch", "shared", "theirs"]
+    );
+
+    // Opened again, it is still theirs alone, and nothing is unsynced.
+    let (again, _) = machine.open(theirs.clone(), cx);
+    again.read_with(cx, |state, _| {
+        assert!(state.local_members().contains(&scratch));
+        assert!(!state.unsynced());
+    });
+}

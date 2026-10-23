@@ -33,6 +33,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, px,
 };
 use rust_i18n::t;
+use std::collections::HashSet;
 
 /// How far each level of the tree is indented.
 const INDENT: f32 = 14.;
@@ -492,7 +493,9 @@ impl TreePanel {
             )
     }
 
-    fn render_row(&self, row: &Row, cursor: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// One row; `local` the reader's own items (server-sync §3.4), marked
+    /// as theirs.
+    fn render_row(&self, row: &Row, cursor: bool, local: &HashSet<ItemId>, cx: &mut Context<Self>) -> AnyElement {
         let state = self.state.read(cx);
         let Some(node) = state.tree().get(&row.id) else {
             return div().into_any_element();
@@ -501,6 +504,7 @@ impl TreePanel {
         let theme = cx.theme();
         let selected = state.selected() == Some(&row.id);
         let pinned = state.is_pinned(&row.id);
+        let own = local.contains(&row.id);
         // What a folder holds, folded or not.
         let count = (row.kind == ItemKind::Folder)
             .then(|| state.tree().api_count(&row.id))
@@ -643,6 +647,15 @@ impl TreePanel {
             })
             .child(icon)
             .child(label)
+            // Not synced: the reader's alone.
+            .when(own, |this| {
+                this.child(
+                    Icon::new(Icons::CloudOff)
+                        .xsmall()
+                        .flex_none()
+                        .text_color(theme.muted_foreground),
+                )
+            })
             .when_some(count, |this, count| {
                 this.child(
                     div()
@@ -794,10 +807,11 @@ impl TreePanel {
             ),
             _ => {
                 let cursor = focused.then(|| self.cursor_at(&rows, cx)).flatten();
+                let local = self.state.read(cx).local_members();
                 let elements: Vec<AnyElement> = rows
                     .iter()
                     .enumerate()
-                    .map(|(index, row)| self.render_row(row, cursor == Some(index), cx))
+                    .map(|(index, row)| self.render_row(row, cursor == Some(index), &local, cx))
                     .collect();
                 let end = self.drop_target == Some(DropTarget::End);
                 let primary = cx.theme().primary;
@@ -929,6 +943,7 @@ fn item_menu(
     if !editable {
         return menu;
     }
+    let menu = local_item(menu, state, id, cx);
     let (rename_view, rename_id, rename_name) = (view.clone(), id.clone(), name.to_string());
     let (delete_state, delete_id, delete_name) = (state.clone(), id.clone(), name.to_string());
     let (move_state, move_id, move_name) = (state.clone(), id.clone(), name.to_string());
@@ -969,6 +984,30 @@ fn item_menu(
             .icon(Icons::Trash)
             .on_click(move |_, window, cx| {
                 confirm_delete(&delete_state, delete_id.clone(), &delete_name, kind, window, cx)
+            }),
+    )
+}
+
+/// Server-sync §3.4: an item made here, never synced, may stay the
+/// reader's own; one of theirs may sync after all.
+fn local_item(menu: PopupMenu, state: &WeakEntity<WorkspaceState>, id: &ItemId, cx: &App) -> PopupMenu {
+    let Some(workspace) = state.upgrade() else {
+        return menu;
+    };
+    let workspace = workspace.read(cx);
+    let (label, icon, local) = if workspace.can_make_local(id) {
+        (t!("sync.make_local"), Icons::CloudOff, true)
+    } else if workspace.is_local_root(id) {
+        (t!("sync.make_synced"), Icons::Cloud, false)
+    } else {
+        return menu;
+    };
+    let (state, id) = (state.clone(), id.clone());
+    menu.separator().item(
+        PopupMenuItem::new(label.to_string())
+            .icon(icon)
+            .on_click(move |_, _, cx| {
+                let _ = state.update(cx, |state, cx| state.set_local(&id, local, cx));
             }),
     )
 }

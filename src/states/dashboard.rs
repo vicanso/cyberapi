@@ -15,6 +15,7 @@
 use super::copy::{self, Pushed};
 use super::{Load, ServerState, run_store};
 use crate::drafts_local::{self, Draft};
+use crate::{local_items, pins_local};
 use cyberapi_core::model::Collection;
 use cyberapi_core::sync::{self, CopyBinding, Moment, ProjectConfig, Step};
 use cyberapi_core::{AccountId, CollectionId};
@@ -49,6 +50,13 @@ struct Desktop {
     server: Storage,
     copies: Arc<dyn ServerCopyStore>,
     account: AccountId,
+}
+
+impl Desktop {
+    /// Whose own items the copies hold (`crate::local_items`).
+    fn scope(&self) -> String {
+        pins_local::scope(Some(self.account.as_str()))
+    }
 }
 
 pub struct DashboardState {
@@ -324,6 +332,12 @@ impl DashboardState {
         });
     }
 
+    /// Whose own items this list's server projects hold: the page's reader,
+    /// or the desktop's account.
+    fn local_scope(&self) -> Option<String> {
+        self.scope.clone().or_else(|| self.desktop.as_ref().map(Desktop::scope))
+    }
+
     fn stale(&self, project: &Collection) -> bool {
         let here = self.listed.iter().any(|collection| collection.id == project.id);
         match self.mine(&project.id) {
@@ -336,7 +350,8 @@ impl DashboardState {
     /// Copies `projects` here as the server has them; `then` hears of the
     /// first, made.
     fn pull(&mut self, desktop: Desktop, projects: Vec<Collection>, then: Option<Collection>, cx: &mut Context<Self>) {
-        run_store(cx, pull_copies(desktop, projects), move |this, result, cx| {
+        let local = self.storage.clone();
+        run_store(cx, pull_copies(desktop, local, projects), move |this, result, cx| {
             match result {
                 Ok(bound) => {
                     this.note_bound(bound, cx);
@@ -447,6 +462,9 @@ impl DashboardState {
             Ok(()) => {
                 this.listed.retain(|found| found.id != deleted);
                 this.drafts.remove(&deleted);
+                if let Some(scope) = this.local_scope() {
+                    local_items::remove(&scope, &deleted);
+                }
                 this.bound.retain(|found| found.collection != deleted);
                 if let Some(server) = &this.server_state {
                     server.update(cx, |server, cx| server.forget_bound(&deleted, cx));
@@ -524,14 +542,20 @@ impl DashboardState {
         let call: StoreFuture<(Pushed, Option<CopyBinding>)> = Box::pin(async move {
             let config = local.tree().config(binding.collection.clone()).await?.config;
             let (server, id) = (desktop.server.clone(), binding.collection.clone());
+            // The reader's own items stay here (server-sync §3.4).
+            let scope = desktop.scope();
+            let mut own = local_items::get(&scope, &id);
+            let config = own.syncable(&config);
             let pushed = if over {
-                copy::push_over(server, id, config).await?
+                copy::push_over(server, id.clone(), config.clone()).await?
             } else {
-                copy::push(server, id, config, binding.base).await?
+                copy::push(server, id.clone(), config.clone(), binding.base).await?
             };
             let Pushed::Written(revision) = pushed else {
                 return Ok((pushed, None));
             };
+            own.level_with(&config);
+            local_items::set(&scope, &id, &own);
             let level = CopyBinding {
                 base: Some(revision),
                 unsynced: false,
@@ -560,10 +584,14 @@ impl DashboardState {
     fn sync_draft(&mut self, collection: Collection, draft: Draft, over: bool, cx: &mut Context<Self>) {
         let (server, id) = (self.storage.clone(), collection.id.clone());
         self.syncing.insert(id.clone());
+        // The reader's own items stay in this browser (server-sync §3.4).
+        let scope = self.scope.clone().unwrap_or_default();
+        let mut own = local_items::get(&scope, &id);
+        let config = own.syncable(&draft.config);
         let call = if over {
-            copy::push_over(server, id.clone(), draft.config.clone())
+            copy::push_over(server, id.clone(), config.clone())
         } else {
-            copy::push(server, id.clone(), draft.config.clone(), draft.base)
+            copy::push(server, id.clone(), config.clone(), draft.base)
         };
         run_store(cx, call, move |this, result, cx| {
             this.syncing.remove(&id);
@@ -575,6 +603,8 @@ impl DashboardState {
                     {
                         drafts_local::remove(scope, &id);
                     }
+                    own.level_with(&config);
+                    local_items::set(&scope, &id, &own);
                     cx.emit(DashboardEvent::Synced(collection));
                     this.reload(cx);
                 }
@@ -606,13 +636,23 @@ impl DashboardState {
     }
 }
 
-/// The server's `projects` as copies here, level with it: what they bind.
-fn pull_copies(desktop: Desktop, projects: Vec<Collection>) -> StoreFuture<Vec<CopyBinding>> {
+/// The server's `projects` as copies here in `local`, level with it, the
+/// reader's own items put back (server-sync §3.4): what they bind.
+fn pull_copies(desktop: Desktop, local: Storage, projects: Vec<Collection>) -> StoreFuture<Vec<CopyBinding>> {
     Box::pin(async move {
         let mut bound = Vec::new();
+        let scope = desktop.scope();
         for project in projects {
             let at = desktop.server.tree().config(project.id.clone()).await?;
-            desktop.copies.keep_copy(project.clone(), at.config).await?;
+            let mut own = local_items::get(&scope, &project.id);
+            desktop
+                .copies
+                .keep_copy(project.clone(), own.restore(at.config))
+                .await?;
+            let held = local.tree().config(project.id.clone()).await?.config;
+            own.keep(&held);
+            own.level_with(&own.syncable(&held));
+            local_items::set(&scope, &project.id, &own);
             let binding = CopyBinding {
                 collection: project.id,
                 account: desktop.account.clone(),
@@ -709,6 +749,58 @@ mod tests {
         );
         assert_eq!(state.read_with(cx, |state, _| state.unsynced(&shop.id)), None);
         assert_eq!(drafts_local::get(READER, &shop.id), None);
+    }
+
+    /// Server-sync §3.4: a draft synced from its card leaves the reader's
+    /// own items in this browser.
+    #[gpui_kit::test]
+    async fn a_cards_sync_leaves_the_readers_own_out(cx: &mut TestAppContext) {
+        use cyberapi_core::local_only::LocalItems;
+        use cyberapi_core::model::{ApiSetting, Folder};
+
+        let server = MemoryStore::new().storage();
+        let shop = project(&server, "shop").await;
+        let at = server.tree().config(shop.id.clone()).await.expect("config");
+        let mut draft = at.config.clone();
+        draft.folders.push(Folder {
+            id: "mine".into(),
+            collection: shop.id.clone(),
+            name: "mine".into(),
+            ..Default::default()
+        });
+        draft.apis.push(ApiSetting {
+            id: "shared".into(),
+            collection: shop.id.clone(),
+            name: "shared".into(),
+            ..Default::default()
+        });
+        draft.top_order = vec!["mine".into(), "shared".into()];
+        drafts_local::set(
+            READER,
+            &shop.id,
+            &Draft {
+                base: Some(at.revision),
+                config: draft.clone(),
+            },
+        );
+        let mut own = LocalItems::default();
+        own.level_with(&at.config);
+        own.mark(&"mine".into());
+        own.keep(&draft);
+        local_items::set(READER, &shop.id, &own);
+
+        let state = cx.new(|cx| DashboardState::new(server.clone(), Some(READER.into()), None, cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.sync(&shop.id, false, cx));
+        cx.run_until_parked();
+        let synced = server.tree().config(shop.id.clone()).await.expect("config").config;
+        assert!(synced.folders.is_empty(), "the reader's folder stays here");
+        assert_eq!(synced.top_order, vec![cyberapi_core::ItemId::from("shared")]);
+        assert_eq!(
+            local_items::get(READER, &shop.id).kept.folders.len(),
+            1,
+            "kept for the next pull"
+        );
     }
 
     #[gpui_kit::test]

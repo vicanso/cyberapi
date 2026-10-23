@@ -457,6 +457,9 @@ discard = "放弃本地修改"
 discard_title = "放弃还没同步的修改？"
 discard_description = "这个项目会改回服务器上的版本，本地还没同步的修改都会丢掉。"
 delete_loses_draft = "它还有没同步的修改，也会一起丢掉。"
+make_local = "设为仅本地（不同步）"
+make_synced = "改为同步"
+not_into_local = "已同步的接口和目录不能移进仅本地的目录：同步时它们会被留在本地。"
 
 [invites]
 open = "未使用的邀请"

@@ -14,6 +14,7 @@ mod assets;
 mod drafts_local;
 mod i18n;
 mod json_view_local;
+mod local_items;
 mod pacing;
 #[cfg(not(target_family = "wasm"))]
 mod paths;

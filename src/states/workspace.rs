@@ -24,7 +24,7 @@ use cyberapi_core::ItemId;
 use cyberapi_core::import::{ImportBundle, ImportItem};
 use cyberapi_core::model::{ApiSetting, Collection, Folder, Variable, VariableCategory};
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
-use cyberapi_core::sync::{self, ConfigAt, Moment, Step};
+use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, Step};
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
 use cyberapi_service::Sender;
 use cyberapi_store::{Storage, StoreError, StoreFuture};
@@ -63,6 +63,9 @@ pub enum WorkspaceEvent {
     Conflict,
     /// The server's content is the copy's now, the reader's changes gone.
     TookServers,
+    /// A move would have put the server's items into the reader's own
+    /// folder, which a sync leaves out (§3.4): it did not happen.
+    NotIntoLocal,
 }
 
 /// What opening a copy found: what this machine kept, and the server's
@@ -309,7 +312,15 @@ impl WorkspaceState {
             self.collection.description = draft.description.clone();
         }
         match copy.copy.resume(collection, kept) {
-            Ok(()) => self.load_all(cx),
+            Ok(()) => {
+                let adopt = copy.copy.adopt();
+                run_serial(cx, &self.gate, adopt, |_, result, _| {
+                    if let Err(error) = result {
+                        warn!(%error, "the reader's own items could not be settled");
+                    }
+                });
+                self.load_all(cx)
+            }
             Err(error) => {
                 self.load = Load::Failed(error);
                 cx.notify();
@@ -380,7 +391,15 @@ impl WorkspaceState {
         let call = copy.copy.take(collection, at.config.clone(), at.revision);
         copy.behind = false;
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
-            Ok(()) => this.took(at, forget, cx),
+            // With the reader's own items back in it.
+            Ok(config) => this.took(
+                ConfigAt {
+                    revision: at.revision,
+                    config,
+                },
+                forget,
+                cx,
+            ),
             Err(error) => {
                 if this.load != Load::Loaded {
                     this.load = Load::Failed(error.clone());
@@ -454,6 +473,54 @@ impl WorkspaceState {
         self.unsynced() && self.copy.as_ref().is_some_and(|copy| copy.behind)
     }
 
+    /// The reader's own items and everything in them (server-sync §3.4):
+    /// none outside a server project.
+    pub fn local_members(&self) -> HashSet<ItemId> {
+        self.copy
+            .as_ref()
+            .map(|copy| copy.copy.local_items().members(&self.data.folders))
+            .unwrap_or_default()
+    }
+
+    /// Whether `item` may become the reader's own: made here, never synced.
+    pub fn can_make_local(&self, item: &ItemId) -> bool {
+        self.syncs()
+            && self
+                .copy
+                .as_ref()
+                .is_some_and(|copy| copy.copy.local_items().can_mark(&self.data.folders, item))
+    }
+
+    /// Whether `item` is the reader's own and not inside another of theirs:
+    /// what may be made to sync again.
+    pub fn is_local_root(&self, item: &ItemId) -> bool {
+        self.syncs()
+            && self
+                .copy
+                .as_ref()
+                .is_some_and(|copy| copy.copy.local_items().is_outer(&self.data.folders, item))
+    }
+
+    /// Marks `item` the reader's own, never synced, or (`false`) makes it
+    /// sync again.
+    pub fn set_local(&mut self, item: &ItemId, local: bool, cx: &mut Context<Self>) {
+        let Some(copy) = &self.copy else { return };
+        let allowed = if local {
+            self.can_make_local(item)
+        } else {
+            self.is_local_root(item)
+        };
+        if !allowed {
+            return;
+        }
+        let call = copy.copy.set_local(item, local);
+        run_serial(cx, &self.gate, call, |_, result, cx| match result {
+            Ok(()) => cx.notify(),
+            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+        });
+        cx.notify();
+    }
+
     /// A push, a pull or giving changes up is on its way.
     pub fn syncing(&self) -> bool {
         self.copy.as_ref().is_some_and(|copy| copy.busy)
@@ -487,24 +554,24 @@ impl WorkspaceState {
         };
         let Some(over) = copy.push.take() else { return };
         let (server, snapshot) = (copy.server.clone(), copy.copy.snapshot());
-        let call: StoreFuture<(Pushed, u64)> = Box::pin(async move {
+        let call: StoreFuture<(Pushed, u64, ProjectConfig)> = Box::pin(async move {
             let (config, base, landed) = snapshot.await?;
             let pushed = if over {
-                copy::push_over(server, id, config).await?
+                copy::push_over(server, id, config.clone()).await?
             } else {
-                copy::push(server, id, config, base).await?
+                copy::push(server, id, config.clone(), base).await?
             };
-            Ok((pushed, landed))
+            Ok((pushed, landed, config))
         });
         run_store(cx, call, |this, result, cx| this.pushed(result, cx));
     }
 
-    fn pushed(&mut self, result: Result<(Pushed, u64), StoreError>, cx: &mut Context<Self>) {
+    fn pushed(&mut self, result: Result<(Pushed, u64, ProjectConfig), StoreError>, cx: &mut Context<Self>) {
         let Some(copy) = self.copy.as_mut() else { return };
         copy.busy = false;
         match result {
-            Ok((Pushed::Written(revision), landed)) => {
-                let (_, keep) = copy.copy.pushed(revision, landed);
+            Ok((Pushed::Written(revision), landed, config)) => {
+                let keep = copy.copy.pushed(revision, landed, config);
                 cx.background_spawn(async move {
                     if let Err(error) = keep.await {
                         warn!(%error, "the synced copy could not be marked");
@@ -514,7 +581,7 @@ impl WorkspaceState {
                 copy.behind = false;
                 cx.emit(WorkspaceEvent::Synced);
             }
-            Ok((Pushed::Conflict, _)) => cx.emit(WorkspaceEvent::Conflict),
+            Ok((Pushed::Conflict, ..)) => cx.emit(WorkspaceEvent::Conflict),
             // Not the reader's to change any more, or not reachable: the
             // changes stay, unsynced.
             Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
@@ -906,8 +973,19 @@ impl WorkspaceState {
         });
     }
 
-    /// F3.7.
+    /// F3.7. The server's items stay out of the reader's own folders
+    /// (server-sync §3.4), where a sync would leave them out.
     pub fn move_item(&mut self, id: ItemId, to: Placement, cx: &mut Context<Self>) {
+        if let Some(copy) = &self.copy {
+            if !copy
+                .copy
+                .local_items()
+                .may_move(&self.data.folders, &id, to.parent.as_ref())
+            {
+                return cx.emit(WorkspaceEvent::NotIntoLocal);
+            }
+            copy.copy.moving(&self.data.folders, &id, to.parent.as_ref());
+        }
         let call = self
             .sender
             .storage
@@ -1965,6 +2043,117 @@ mod tests {
             // Its own push is no news on the next beat.
             beat(cx);
             assert!(!again.read_with(cx, |state, _| state.server_moved()));
+        }
+
+        /// The children of the folder `id`, as the copy has them.
+        fn children(state: &Entity<WorkspaceState>, id: &ItemId, cx: &mut TestAppContext) -> Vec<ItemId> {
+            state.read_with(cx, |state, _| {
+                state
+                    .data
+                    .folders
+                    .iter()
+                    .find(|folder| &folder.id == id)
+                    .map(|folder| folder.children.clone())
+                    .unwrap_or_default()
+            })
+        }
+
+        /// Server-sync §3.4: what the reader keeps to themselves stays here
+        /// — out of every sync, back after every pull — and changing it is
+        /// nothing to sync.
+        #[gpui_kit::test]
+        async fn the_readers_own_items_stay_here(cx: &mut TestAppContext) {
+            let server = MemoryStore::new().storage();
+            let collection = project(&server).await;
+            let users = server
+                .tree()
+                .create_folder(collection.id.clone(), None, "users".into())
+                .await
+                .expect("create")
+                .item
+                .id;
+            let login = server
+                .tree()
+                .create_api(collection.id.clone(), Some(users.clone()), "login".into())
+                .await
+                .expect("create")
+                .item
+                .id;
+            let collection = server.collections().get(collection.id.clone()).await.expect("get");
+            let (state, told) = open_copy(&server, collection.clone(), cx);
+            let can = |state: &Entity<WorkspaceState>, id: &ItemId, cx: &mut TestAppContext| {
+                state.read_with(cx, |state, _| state.can_make_local(id))
+            };
+            assert!(!can(&state, &users, cx), "the server's stay the server's");
+
+            state.update(cx, |state, cx| {
+                state.create_folder(Some(users.clone()), "mine".into(), cx)
+            });
+            cx.run_until_parked();
+            let mine = find(&state, "mine", cx);
+            assert!(unsynced(&state, cx), "new, and so far to sync");
+            assert!(can(&state, &mine, cx));
+            state.update(cx, |state, cx| state.set_local(&mine, true, cx));
+            cx.run_until_parked();
+            assert!(!unsynced(&state, cx), "what is new is the reader's own");
+            assert!(state.read_with(cx, |state, _| state.is_local_root(&mine)));
+
+            // Made inside it, the reader's own too: nothing to sync.
+            state.update(cx, |state, cx| {
+                state.create_api(Some(mine.clone()), "scratch".into(), cx)
+            });
+            cx.run_until_parked();
+            let scratch = find(&state, "scratch", cx);
+            assert!(state.read_with(cx, |state, _| state.local_members().contains(&scratch)));
+            assert!(!unsynced(&state, cx));
+
+            // The server's do not go into it.
+            let into_mine = Placement {
+                parent: Some(mine.clone()),
+                before: None,
+            };
+            state.update(cx, |state, cx| state.move_item(login.clone(), into_mine, cx));
+            cx.run_until_parked();
+            assert!(told.borrow().iter().any(|event| event == "NotIntoLocal"));
+            assert_eq!(children(&state, &users, cx), [login.clone(), mine.clone()]);
+
+            // A change to the server's syncs; the sync leaves the reader's out.
+            state.update(cx, |state, cx| state.rename(login.clone(), "sign in".into(), cx));
+            cx.run_until_parked();
+            assert!(unsynced(&state, cx));
+            state.update(cx, |state, cx| state.sync(false, cx));
+            cx.run_until_parked();
+            assert_eq!(server_rows(&server, &collection), ["sign in"]);
+            let on_server = server.tree().load(collection.id.clone()).await.expect("load");
+            assert_eq!(on_server.folders.len(), 1, "no folder of the reader's");
+            assert!(!unsynced(&state, cx));
+
+            // Someone adds theirs: the pull puts the reader's back in place.
+            let logout = server
+                .tree()
+                .create_api(collection.id.clone(), Some(users.clone()), "logout".into())
+                .await
+                .expect("create")
+                .item
+                .id;
+            beat(cx);
+            assert_eq!(children(&state, &users, cx), [login.clone(), mine.clone(), logout]);
+            assert_eq!(children(&state, &mine, cx), std::slice::from_ref(&scratch));
+            assert!(!unsynced(&state, cx));
+
+            // A refresh still has it.
+            drop(state);
+            let (again, _) = open_copy(&server, collection.clone(), cx);
+            assert_eq!(find(&again, "scratch", cx), scratch);
+            assert!(!unsynced(&again, cx));
+
+            // Made to sync after all, it goes up with the next sync.
+            again.update(cx, |state, cx| state.set_local(&mine, false, cx));
+            cx.run_until_parked();
+            assert!(unsynced(&again, cx));
+            again.update(cx, |state, cx| state.sync(false, cx));
+            cx.run_until_parked();
+            assert_eq!(server_rows(&server, &collection), ["logout", "scratch", "sign in"]);
         }
 
         #[gpui_kit::test]
