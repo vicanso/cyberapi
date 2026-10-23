@@ -10,6 +10,7 @@ gpui_kit::assets::icon_assets!(
     [
         ArchiveRestore,
         Braces,
+        ChevronsDownUp,
         CircleUser,
         ClipboardPaste,
         Clock,
@@ -75,6 +76,7 @@ mod tests {
         for icon in [
             IconName::ArchiveRestore,
             IconName::Braces,
+            IconName::ChevronsDownUp,
             IconName::CircleUser,
             IconName::ClipboardPaste,
             IconName::Clock,

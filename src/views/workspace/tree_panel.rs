@@ -441,7 +441,9 @@ impl TreePanel {
                 Button::new("tree-collapse")
                     .ghost()
                     .small()
-                    .icon(IconName::ChevronsUpDown)
+                    // Drawing in, as collapsing does; up-and-down reads as
+                    // a picker.
+                    .icon(Icons::ChevronsDownUp)
                     .tooltip(t!("workspace.collapse_all").to_string())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.state.update(cx, |state, cx| state.collapse_all(cx));
