@@ -496,15 +496,10 @@ impl Render for KvEditor {
         // A table: the fields sit in its cells without frames of their own,
         // the lines between the cells drawing the grid.
         let cell = move || div().h_full().flex().items_center().border_l_1().border_color(border);
-        // Room for the file button on a row, or the presets' in the header.
-        let wide = files || !self.options.presets.is_empty();
-        let actions = move || {
-            h_flex()
-                .w(px(if wide { 56. } else { 32. }))
-                .flex_none()
-                .justify_end()
-                .pr_0p5()
-        };
+        // Room for the file button on a row, or the presets' in the header;
+        // as wide in every list, so the column line stays put between the
+        // request's tabs.
+        let actions = || h_flex().w(px(56.)).flex_none().justify_end().pr_0p5();
         let header = h_flex()
             .h(px(26.))
             .bg(theme.muted)
