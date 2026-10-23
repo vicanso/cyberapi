@@ -201,7 +201,6 @@ view_outside = "打开"
 
 [menu]
 settings = "设置"
-no_project = "打开项目后可设置它的变量"
 
 [variables]
 env_title = "环境变量"

@@ -428,7 +428,7 @@ impl CyberApi {
                                 .icon(Icons::ArchiveRestore)
                                 .on_click(|_, window, cx| pick_backup(window, cx)),
                         ),
-                    None => menu.item(PopupMenuItem::new(t!("menu.no_project").to_string()).disabled(true)),
+                    None => menu,
                 };
                 let menu = menu
                     .separator()

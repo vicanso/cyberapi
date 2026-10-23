@@ -201,7 +201,6 @@ view_outside = "Open"
 
 [menu]
 settings = "Settings"
-no_project = "Open a project for its variables"
 
 [variables]
 env_title = "Environment variables"
