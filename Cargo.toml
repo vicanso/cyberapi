@@ -118,6 +118,9 @@ cyberapi-store-bridge = { workspace = true }
 # (`states::copy`).
 futures = { workspace = true }
 gpui-kit = { workspace = true }
+# The code editors' completion items, for the template hints
+# (`views::template_hints`); the version gpui-base's own completion takes.
+lsp-types = "0.97.0"
 # Shared with gpui-component (same major), so one `set_locale` translates both
 # the app's strings and the components' own.
 rust-i18n = { workspace = true }

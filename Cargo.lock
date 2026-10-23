@@ -1831,6 +1831,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "js-sys",
+ "lsp-types",
  "os_info",
  "pollster 1.0.1",
  "rust-i18n",

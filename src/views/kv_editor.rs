@@ -5,7 +5,11 @@
 //!
 //! The list can also be edited as text, a `key: value` a line (`kv_text`),
 //! which takes a block of headers pasted whole.
+//!
+//! A list whose values are templates (query, headers, form fields) offers
+//! the template hints as one types `{{` in a value (M6).
 
+use super::template_hints::{self, FieldHints, HintKey, HintSource, Hints};
 use crate::this_build;
 use cyberapi_core::model::{KvParam, kv_from_text, kv_text};
 use gpui_kit::base::input::Position;
@@ -16,8 +20,8 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task, Window, div, px,
+    AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task, Window, div, px,
 };
 use rust_i18n::t;
 use std::time::Duration;
@@ -54,6 +58,7 @@ struct Row {
 struct Bulk {
     text: Entity<EditorState>,
     _events: Subscription,
+    _hints: Option<[Subscription; 2]>,
 }
 
 pub struct KvEditor {
@@ -64,6 +69,12 @@ pub struct KvEditor {
     /// The row whose remove button was clicked once, and the wait for the
     /// second click.
     removing: Option<(usize, Task<()>)>,
+    /// Where the values' template hints come from, in a list of templates.
+    hints: Option<HintSource>,
+    /// The hints open under a row's value.
+    menu: Option<FieldHints>,
+    /// Hints that wait for an answer a `get` path reads.
+    hints_later: Option<Task<()>>,
 }
 
 impl EventEmitter<KvEvent> for KvEditor {}
@@ -76,9 +87,18 @@ impl KvEditor {
             options,
             report: None,
             removing: None,
+            hints: None,
+            menu: None,
+            hints_later: None,
         };
         editor.set_list(list, window, cx);
         editor
+    }
+
+    /// Values are templates: typing `{{` in one offers the hints.
+    pub fn hints(mut self, source: HintSource) -> Self {
+        self.hints = Some(source);
+        self
     }
 
     /// Shows `list` in place of what the rows hold, without reporting it.
@@ -98,6 +118,7 @@ impl KvEditor {
         );
         self.report = None;
         self.removing = None;
+        self.menu = None;
         cx.notify();
     }
 
@@ -124,14 +145,24 @@ impl KvEditor {
                 .masked(masked)
                 .default_value(kv.value.clone())
         });
-        let watch = |input: &Entity<InputState>, cx: &mut Context<Self>| {
-            cx.subscribe_in(input, window, |this, _, event: &InputEvent, window, cx| {
-                if matches!(event, InputEvent::Change) {
+        let watch_key = cx.subscribe_in(&key, window, |this, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.edited(window, cx);
+            }
+        });
+        let watch_value = cx.subscribe_in(
+            &value,
+            window,
+            |this, value, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
                     this.edited(window, cx);
+                    this.refresh_hints(value, cx);
                 }
-            })
-        };
-        let subscriptions = [watch(&key, cx), watch(&value, cx)];
+                InputEvent::Blur => this.close_hints(value, cx),
+                _ => {}
+            },
+        );
+        let subscriptions = [watch_key, watch_value];
         self.rows.push(Row {
             enabled: kv.enabled,
             key,
@@ -173,6 +204,86 @@ impl KvEditor {
         self.report_later(cx);
     }
 
+    /// The hints for `value`'s caret, under its row. Ones that wait for an
+    /// answer show once it is read, if the field still reads the same.
+    fn refresh_hints(&mut self, value: &Entity<InputState>, cx: &mut Context<Self>) {
+        let Some(source) = self.hints.clone() else { return };
+        let Some(row) = self.rows.iter().position(|row| &row.value == value) else {
+            return;
+        };
+        let (text, caret) = {
+            let input = value.read(cx);
+            (input.value().to_string(), input.cursor())
+        };
+        self.hints_later = None;
+        match source.hints(&text, caret, cx) {
+            Hints::Now(hints) => self.menu = FieldHints::new(row, hints),
+            Hints::Later(hints) => {
+                // Not the last list, while this one is read.
+                self.menu = None;
+                let value = value.downgrade();
+                self.hints_later = Some(cx.spawn(async move |this, cx| {
+                    let hints = hints.await;
+                    let _ = this.update(cx, |this, cx| {
+                        let Some(value) = value.upgrade() else { return };
+                        let input = value.read(cx);
+                        if input.value().as_ref() != text || input.cursor() != caret {
+                            return;
+                        }
+                        let row = this.rows.iter().position(|row| row.value == value);
+                        this.menu = row.and_then(|row| FieldHints::new(row, hints));
+                        cx.notify();
+                    });
+                }));
+            }
+        }
+        cx.notify();
+    }
+
+    fn close_hints(&mut self, value: &Entity<InputState>, cx: &mut Context<Self>) {
+        let open = self.menu.as_ref().map(|menu| menu.field);
+        if open.is_some_and(|row| self.rows.get(row).is_some_and(|row| &row.value == value)) {
+            self.menu = None;
+            cx.notify();
+        }
+    }
+
+    /// The keys the open hints take before their field does.
+    fn hint_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(menu) = self.menu.as_mut() else { return };
+        let row = menu.field;
+        match menu.key(event) {
+            HintKey::Moved => cx.stop_propagation(),
+            HintKey::Choose(hint) => {
+                cx.stop_propagation();
+                self.choose_hint(row, hint, window, cx);
+            }
+            HintKey::Close => {
+                cx.stop_propagation();
+                self.menu = None;
+            }
+            HintKey::Leave => self.menu = None,
+            HintKey::Pass => return,
+        }
+        cx.notify();
+    }
+
+    fn choose_hint(
+        &mut self,
+        row: usize,
+        hint: cyberapi_core::template_hints::Hint,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        if let Some(value) = self.rows.get(row).map(|row| row.value.clone()) {
+            // Written, the field's change opens what comes next, a
+            // variable after `value(`.
+            template_hints::apply(&value, &hint, window, cx);
+        }
+        cx.notify();
+    }
+
     fn report_later(&mut self, cx: &mut Context<Self>) {
         self.removing = None;
         cx.notify();
@@ -199,6 +310,7 @@ impl KvEditor {
         }
         if matches!(self.removing, Some((asked, _)) if asked == index) {
             self.rows.remove(index);
+            self.menu = None;
             self.report_later(cx);
             return;
         }
@@ -253,12 +365,17 @@ impl KvEditor {
             return;
         }
         let text = kv_text(&self.list(cx));
+        let hints = self.hints.clone();
         let text = cx.new(|cx| {
-            EditorState::new(window, cx)
+            let mut text = EditorState::new(window, cx)
                 .language("text")
                 .soft_wrap(true)
                 .placeholder(t!("editor.bulk_placeholder").to_string())
-                .default_value(text)
+                .default_value(text);
+            if let Some(source) = &hints {
+                template_hints::complete_in(&mut text, source);
+            }
+            text
         });
         text.update(cx, |text, cx| text.focus(window, cx));
         let events = cx.subscribe(&text, |this, _, event: &InputEvent, cx| {
@@ -266,8 +383,14 @@ impl KvEditor {
                 this.report_later(cx);
             }
         });
-        self.bulk = Some(Bulk { text, _events: events });
+        let follow = hints.map(|_| template_hints::watch(&text, window, cx));
+        self.bulk = Some(Bulk {
+            text,
+            _events: events,
+            _hints: follow,
+        });
         self.removing = None;
+        self.menu = None;
         cx.notify();
     }
 
@@ -366,6 +489,7 @@ impl Render for KvEditor {
                 })
         });
         let removing = self.removing.as_ref().map(|(index, _)| *index);
+        let (menu, view) = (self.menu.as_ref(), cx.entity().downgrade());
         let files = self.options.files && this_build::reads_files();
         let theme = cx.theme();
         let (border, muted) = (theme.border, theme.muted_foreground);
@@ -442,7 +566,21 @@ impl Render for KvEditor {
                             cell()
                                 .flex_1()
                                 .min_w_0()
-                                .child(Input::new(&row.value).small().appearance(false)),
+                                .relative()
+                                .child(Input::new(&row.value).small().appearance(false))
+                                .when_some(menu.filter(|menu| menu.field == index), |cell, menu| {
+                                    let view = view.clone();
+                                    cell.capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                                        this.hint_key(event, window, cx)
+                                    }))
+                                    .child(menu.render(
+                                        move |hint, window, cx| {
+                                            let _ =
+                                                view.update(cx, |this, cx| this.choose_hint(index, hint, window, cx));
+                                        },
+                                        cx,
+                                    ))
+                                }),
                         ),
                 )
                 .child(

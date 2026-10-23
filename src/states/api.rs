@@ -358,6 +358,9 @@ impl ApiState {
                 self.responses.insert(0, Arc::new(response));
                 self.responses.truncate(HISTORY_LIMIT);
                 self.shown = None;
+                // What a `get` path's fields were read from is not the last.
+                let api = self.api.clone();
+                let _ = self.workspace.update(cx, |workspace, _| workspace.forget_answer(&api));
             }
             Err(failure) => cx.emit(ApiEvent::NotSent(failure.to_string())),
         }

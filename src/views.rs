@@ -20,6 +20,7 @@ mod shortcuts_dialog;
 mod startup;
 mod sync_dialog;
 mod teams_dialog;
+mod template_hints;
 mod variables_dialog;
 mod workspace;
 

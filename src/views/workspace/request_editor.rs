@@ -10,6 +10,7 @@ use crate::this_build;
 use crate::views::json_tree::{JsonTree, json_view_switch};
 use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::open_variables_dialog;
+use crate::views::template_hints::{self, HintSource};
 use cyberapi_core::import::request_from_curl;
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
 use cyberapi_core::prefs::RequestTab;
@@ -82,13 +83,20 @@ pub struct RequestEditor {
     body_as_tree: Option<bool>,
     /// Whether the body editor wraps long lines (F14.7).
     wrap: bool,
+    /// What typing `{{` in the body or a value offers (M6).
+    hints: HintSource,
     _subscriptions: Vec<Subscription>,
 }
 
 /// The body editor for a content type: JSON and XML (in HTML's grammar)
 /// are highlighted where the grammars are compiled in (the desktop). Long
 /// lines wrap as the settings say (F14.7).
-fn body_state(request: &HttpRequest, window: &mut Window, cx: &mut Context<RequestEditor>) -> Entity<EditorState> {
+fn body_state(
+    request: &HttpRequest,
+    hints: &HintSource,
+    window: &mut Window,
+    cx: &mut Context<RequestEditor>,
+) -> Entity<EditorState> {
     let language = match request.content_type {
         ContentType::Json => "json",
         ContentType::Xml => "html",
@@ -101,7 +109,7 @@ fn body_state(request: &HttpRequest, window: &mut Window, cx: &mut Context<Reque
     };
     let wrap = AppStore::global(cx).state().read(cx).prefs().text.wrap;
     cx.new(|cx| {
-        EditorState::new(window, cx)
+        let mut body = EditorState::new(window, cx)
             .language(language)
             .line_number(true)
             .soft_wrap(wrap)
@@ -109,7 +117,9 @@ fn body_state(request: &HttpRequest, window: &mut Window, cx: &mut Context<Reque
                 tab_size: 2,
                 hard_tabs: false,
             })
-            .default_value(text)
+            .default_value(text);
+        template_hints::complete_in(&mut body, hints);
+        body
     })
 }
 
@@ -126,9 +136,17 @@ impl RequestEditor {
                 .placeholder(t!("editor.uri_placeholder").to_string())
                 .default_value(split_env_prefix(&request.uri).1.to_string())
         });
-        let body = body_state(&request, window, cx);
-        let kv = |list, options, window: &mut Window, cx: &mut Context<Self>| {
-            cx.new(|cx| KvEditor::new(list, options, window, cx))
+        let hints = HintSource::new(&workspace);
+        let body = body_state(&request, &hints, window, cx);
+        // Values that are templates offer the hints; Basic auth's are not.
+        let kv = |list, options, hints: Option<&HintSource>, window: &mut Window, cx: &mut Context<Self>| {
+            cx.new(|cx| {
+                let kv = KvEditor::new(list, options, window, cx);
+                match hints {
+                    Some(hints) => kv.hints(hints.clone()),
+                    None => kv,
+                }
+            })
         };
         let fields = form_fields(&request.body);
         let form = kv(
@@ -137,16 +155,18 @@ impl RequestEditor {
                 files: request.content_type == ContentType::Multipart,
                 ..Default::default()
             },
+            Some(&hints),
             window,
             cx,
         );
-        let query = kv(&request.query, KvOptions::default(), window, cx);
+        let query = kv(&request.query, KvOptions::default(), Some(&hints), window, cx);
         let headers = kv(
             &request.headers,
             KvOptions {
                 presets: &COMMON_HEADERS,
                 ..Default::default()
             },
+            Some(&hints),
             window,
             cx,
         );
@@ -156,6 +176,7 @@ impl RequestEditor {
                 masked: true,
                 ..Default::default()
             },
+            None,
             window,
             cx,
         );
@@ -220,6 +241,7 @@ impl RequestEditor {
             }),
         ];
         subscriptions.push(Self::watch_body(&body, window, cx));
+        subscriptions.extend(template_hints::watch(&body, window, cx));
         let app = AppStore::global(cx).state().clone();
         let wrap = app.read(cx).prefs().text.wrap;
         subscriptions.push(cx.observe_in(&app, window, |this, app, window, cx| {
@@ -246,6 +268,7 @@ impl RequestEditor {
             json_tree,
             body_as_tree: None,
             wrap,
+            hints,
             _subscriptions: subscriptions,
         };
         editor.follow_sending(cx);
@@ -312,8 +335,10 @@ impl RequestEditor {
         let request = self.api.read(cx).request().clone();
         let rest = split_env_prefix(&request.uri).1.to_string();
         self.uri.update(cx, |input, cx| input.set_value(rest, window, cx));
-        self.body = body_state(&request, window, cx);
+        self.body = body_state(&request, &self.hints, window, cx);
         self._subscriptions.push(Self::watch_body(&self.body, window, cx));
+        self._subscriptions
+            .extend(template_hints::watch(&self.body, window, cx));
         self.form
             .update(cx, |form, cx| form.set_list(&form_fields(&request.body), window, cx));
         self.query.update(cx, |kv, cx| kv.set_list(&request.query, window, cx));
@@ -417,10 +442,13 @@ impl RequestEditor {
     fn apply_content_type(&mut self, content_type: ContentType, window: &mut Window, cx: &mut Context<Self>) {
         self.api.update(cx, |api, cx| api.set_content_type(content_type, cx));
         let request = self.api.read(cx).request().clone();
-        self.body = body_state(&request, window, cx);
+        self.body = body_state(&request, &self.hints, window, cx);
         self._subscriptions.push(Self::watch_body(&self.body, window, cx));
+        self._subscriptions
+            .extend(template_hints::watch(&self.body, window, cx));
         self.check_json(cx);
         self.sync_body_tree_if_shown(cx);
+        let hints = self.hints.clone();
         self.form = cx.new(|cx| {
             KvEditor::new(
                 &[],
@@ -431,6 +459,7 @@ impl RequestEditor {
                 window,
                 cx,
             )
+            .hints(hints)
         });
         self._subscriptions
             .push(cx.subscribe(&self.form, |this, _, KvEvent::Changed(list), cx| {

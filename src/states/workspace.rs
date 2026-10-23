@@ -25,13 +25,14 @@ use cyberapi_core::import::{ImportBundle, ImportItem};
 use cyberapi_core::model::{ApiSetting, Collection, Folder, Variable, VariableCategory};
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
 use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, Step};
+use cyberapi_core::template_hints;
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
 use cyberapi_service::Sender;
 use cyberapi_store::{Storage, StoreError, StoreFuture};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, Task};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
@@ -116,6 +117,12 @@ pub struct WorkspaceState {
     /// The project's global request headers, for the file an `openFile`
     /// in one of them asks for before a send.
     global_headers: Vec<Variable>,
+    /// The project's custom variables, for what `{{value(` offers (M6).
+    custom: Vec<Variable>,
+    /// The JSON of APIs' last answers, read for the fields a `get` path
+    /// offers (M6): `None` for one with no JSON answer. Kept until the API
+    /// answers again.
+    answers: HashMap<ItemId, Option<Arc<serde_json::Value>>>,
     /// A server project's working copy; `None` for a project of this
     /// machine's, whose changes are written at once.
     copy: Option<CopyState>,
@@ -187,6 +194,8 @@ impl WorkspaceState {
             pin_open: None,
             environment: Vec::new(),
             global_headers: Vec::new(),
+            custom: Vec::new(),
+            answers: HashMap::new(),
             copy,
             _poll: poll.map(|every| Self::poll(every, cx)),
         };
@@ -645,21 +654,73 @@ impl WorkspaceState {
         &self.global_headers
     }
 
+    /// M6: what a template's `{{` offers: the enabled custom variables and
+    /// the APIs, the ones near the opened API first. `files`: whether this
+    /// build reads files.
+    pub fn hint_sources(&self, files: bool) -> template_hints::Sources {
+        template_hints::Sources {
+            custom: self
+                .custom
+                .iter()
+                .filter(|variable| variable.enabled)
+                .map(|variable| (variable.name.clone(), variable.value.clone()))
+                .collect(),
+            apis: template_hints::apis(&self.tree, self.opened()),
+            files,
+            response: None,
+        }
+    }
+
+    /// M6: the JSON of `api`'s last answer, which a `get` path's fields
+    /// come from: as read before, or read now. One that cannot be read is
+    /// not kept, so the next asks again.
+    pub fn answer(&mut self, api: ItemId, cx: &mut Context<Self>) -> Task<Option<Arc<serde_json::Value>>> {
+        if let Some(known) = self.answers.get(&api) {
+            return Task::ready(known.clone());
+        }
+        let call = self
+            .sender
+            .storage
+            .history()
+            .latest(self.collection.id.clone(), vec![api.clone()]);
+        cx.spawn(async move |this, cx| {
+            let found = match cx.background_spawn(call).await {
+                Ok(responses) => responses
+                    .into_iter()
+                    .find(|response| response.api == api)
+                    .and_then(|response| response.body_json())
+                    .map(Arc::new),
+                Err(error) => {
+                    warn!(%error, "an API's last answer could not be read");
+                    return None;
+                }
+            };
+            let _ = this.update(cx, |this, _| this.answers.insert(api, found.clone()));
+            found
+        })
+    }
+
+    /// `api`'s last answer as read before, if it was: `Some(None)` for one
+    /// with no JSON answer.
+    pub fn known_answer(&self, api: &ItemId) -> Option<Option<Arc<serde_json::Value>>> {
+        self.answers.get(api).cloned()
+    }
+
+    /// `api` answered: the answer its fields were read from is not the last.
+    pub fn forget_answer(&mut self, api: &ItemId) {
+        self.answers.remove(api);
+    }
+
     /// Reads the variables kept here again: the project changed.
     fn refresh_kept_variables(&mut self, cx: &mut Context<Self>) {
         self.refresh_variables(VariableCategory::Environment, cx);
         self.refresh_variables(VariableCategory::GlobalRequestHeader, cx);
+        self.refresh_variables(VariableCategory::Custom, cx);
     }
 
     /// Reads a category's variables again, when it is one kept here: they
     /// changed.
     pub fn refresh_variables(&mut self, category: VariableCategory, cx: &mut Context<Self>) {
-        if !matches!(
-            category,
-            VariableCategory::Environment | VariableCategory::GlobalRequestHeader
-        ) {
-            return;
-        }
         let call = self
             .sender
             .storage
@@ -669,7 +730,8 @@ impl WorkspaceState {
             Ok(variables) => {
                 match category {
                     VariableCategory::Environment => this.environment = variables,
-                    _ => this.global_headers = variables,
+                    VariableCategory::GlobalRequestHeader => this.global_headers = variables,
+                    VariableCategory::Custom => this.custom = variables,
                 }
                 cx.notify();
             }
@@ -1360,6 +1422,108 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(names(&state, cx).1, ["X-Sign", "X-Trace"]);
+    }
+
+    /// M6: what `{{` offers, the custom variables kept up to date.
+    #[gpui_kit::test]
+    async fn the_template_hints_know_the_variables_and_the_apis(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let variable = |name: &str, enabled: bool| NewVariable {
+            collection: collection.id.clone(),
+            category: VariableCategory::Custom,
+            name: name.into(),
+            value: format!("{name}-value"),
+            enabled,
+        };
+        storage
+            .variables()
+            .create(variable("token", true))
+            .await
+            .expect("create");
+        storage
+            .variables()
+            .create(variable("off", false))
+            .await
+            .expect("create");
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_folder(None, "users".into(), cx));
+        cx.run_until_parked();
+        let users = find(&state, "users", cx);
+        state.update(cx, |state, cx| state.create_api(Some(users), "login".into(), cx));
+        state.update(cx, |state, cx| state.create_api(None, "ping".into(), cx));
+        cx.run_until_parked();
+        let login = find(&state, "login", cx);
+
+        let sources = state.read_with(cx, |state, _| state.hint_sources(true));
+        assert_eq!(
+            sources.custom,
+            [("token".to_string(), "token-value".to_string())],
+            "the enabled ones"
+        );
+        let apis: Vec<(&str, &str)> = sources
+            .apis
+            .iter()
+            .map(|api| (api.name.as_str(), api.place.as_str()))
+            .collect();
+        assert_eq!(apis, [("login", "users"), ("ping", "")], "the one being edited last");
+        assert_eq!(sources.apis[0].id, login.as_str());
+        assert!(sources.files);
+
+        storage
+            .variables()
+            .create(variable("tenant", true))
+            .await
+            .expect("create");
+        state.update(cx, |state, cx| state.refresh_variables(VariableCategory::Custom, cx));
+        cx.run_until_parked();
+        let names = state.read_with(cx, |state, _| state.hint_sources(false).custom.len());
+        assert_eq!(names, 2);
+    }
+
+    /// M6: the last answer a `get` path's fields come from, read once and
+    /// again only after the API answers anew.
+    #[gpui_kit::test]
+    async fn an_apis_last_answer_is_read_for_its_fields_until_it_answers_again(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_api(None, "login".into(), cx));
+        cx.run_until_parked();
+        let login = find(&state, "login", cx);
+        let answer = |body: &str| cyberapi_core::response::HttpResponse {
+            api: login.clone(),
+            collection: collection.id.clone(),
+            status: Some(200),
+            body: body.as_bytes().to_vec(),
+            ..Default::default()
+        };
+        storage
+            .history()
+            .add(answer(r#"{"token": "t-1"}"#))
+            .await
+            .expect("kept");
+
+        let read = |state: &Entity<WorkspaceState>, cx: &mut TestAppContext| {
+            state.update(cx, |state, cx| state.answer(login.clone(), cx))
+        };
+        let token = |value: &str| Some(Arc::new(serde_json::json!({ "token": value })));
+        assert_eq!(read(&state, cx).await, token("t-1"));
+
+        // Kept: a newer answer is not read until the API is said to have one.
+        storage
+            .history()
+            .add(answer(r#"{"token": "t-2"}"#))
+            .await
+            .expect("kept");
+        assert_eq!(read(&state, cx).await, token("t-1"));
+        state.update(cx, |state, _| state.forget_answer(&login));
+        assert_eq!(read(&state, cx).await, token("t-2"));
+
+        // Not JSON: nothing to offer.
+        storage.history().add(answer("plain text")).await.expect("kept");
+        state.update(cx, |state, _| state.forget_answer(&login));
+        assert_eq!(read(&state, cx).await, None);
     }
 
     #[gpui_kit::test]

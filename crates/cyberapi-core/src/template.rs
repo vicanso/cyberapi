@@ -274,7 +274,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// lodash `get`: `data.0.name`, and `data[0].name`.
-fn json_path<'a>(json: &'a Json, path: &str) -> Option<&'a Json> {
+pub(crate) fn json_path<'a>(json: &'a Json, path: &str) -> Option<&'a Json> {
     path.replace('[', ".")
         .replace(']', "")
         .split('.')

@@ -22,6 +22,7 @@ pub mod search;
 pub mod send;
 pub mod sync;
 pub mod template;
+pub mod template_hints;
 mod time;
 pub mod tree;
 
