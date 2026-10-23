@@ -12,6 +12,7 @@ use crate::views::pick::pick;
 use crate::views::sync_dialog::open_conflict_dialog;
 use cyberapi_core::access::CollectionRole;
 use cyberapi_core::collection::{SortOrder, group_names, group_of, grouped};
+use cyberapi_core::directory::Team;
 use cyberapi_core::format::{Ago, ago};
 use cyberapi_core::model::Collection;
 use cyberapi_core::{CollectionId, TeamId, Timestamp};
@@ -1025,9 +1026,15 @@ fn project_mark(name: &str, cx: &App) -> impl IntoElement {
 }
 
 /// A server project's: the team it belongs to, unless the reader's own
-/// space, and the reader's role where it is less than managing.
+/// space, and the reader's role where it is less than managing. This
+/// machine's, said as such where the desktop lists them among a server's.
 fn place_of(collection: &Collection, cx: &App) -> Option<String> {
-    collection.owner.as_ref()?;
+    if collection.owner.is_none() {
+        let beside_server = AppStore::global(cx)
+            .server()
+            .is_some_and(|server| matches!(server.read(cx).status(), ServerStatus::SignedIn(_)));
+        return beside_server.then(|| t!("dashboard.this_computer").to_string());
+    }
     let me = AppStore::global(cx).state().read(cx).me()?;
     let team = me.teams.iter().find(|team| Some(&team.id) == collection.owner.as_ref());
     let team = match team {
@@ -1065,16 +1072,21 @@ fn team_field(team: &Rc<RefCell<Option<TeamId>>>, cx: &App) -> Option<AnyElement
             .clone()
             .or_else(|| teams.first().map(|first| first.id.clone())),
     };
+    // The reader's own space by what it is, not only by their name.
+    let name = |team: &Team| match team.personal {
+        true => format!("{} · {}", team.name, t!("teams.personal")),
+        false => team.name.clone(),
+    };
     let label = teams
         .iter()
         .find(|candidate| Some(&candidate.id) == chosen.as_ref())
-        .map(|candidate| candidate.name.clone())
+        .map(name)
         .or_else(|| here.clone())
         .unwrap_or_default();
     let options: Vec<(Option<TeamId>, String)> = here
         .map(|here| (None, here))
         .into_iter()
-        .chain(teams.iter().map(|team| (Some(team.id.clone()), team.name.clone())))
+        .chain(teams.iter().map(|team| (Some(team.id.clone()), name(team))))
         .collect();
     let team = team.clone();
     Some(
