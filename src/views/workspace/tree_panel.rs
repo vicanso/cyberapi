@@ -638,15 +638,14 @@ impl TreePanel {
                 } else {
                     theme.muted_foreground
                 };
-                // Faint until the row is hovered, so a long list is not a column
-                // of pins. Pinned ones stay dark. The click is the pin's,
-                // not the row's.
+                // Hidden until the row is hovered, so a long list is not a
+                // column of pins; pinned ones stay, dark. The click is the
+                // pin's, not the row's.
                 this.child(
                     div()
                         .flex_none()
                         .when(!pinned, |pin| {
-                            pin.opacity(0.45)
-                                .group_hover(pin_group.clone(), |style| style.opacity(1.))
+                            pin.invisible().group_hover(pin_group.clone(), |style| style.visible())
                         })
                         .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                             cx.stop_propagation();
