@@ -3,10 +3,12 @@
 //! (`docs/server-sync.md` §3.2, §3.3): while the reader has changes the
 //! server has not, it says so, and that the server moved on too when it
 //! did, beside the button that syncs them. No sync for a project of this
-//! machine's, or for a viewer.
+//! machine's, or for a viewer, who is told instead that changes are not
+//! kept.
 
 use crate::states::WorkspaceState;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::{
@@ -41,6 +43,28 @@ impl Render for ProjectTitle {
             .text_sm()
             .font_medium()
             .child(state.collection().name.clone());
+        // A viewer may change a request to send it, but nothing is kept:
+        // said beside the name, where it stays in sight.
+        if !state.editable() {
+            let hint = t!("workspace.viewer_hint").to_string();
+            return h_flex()
+                .flex_none()
+                .items_center()
+                .mr_3()
+                .child(name.mr_2())
+                .child(
+                    div()
+                        .id("viewer-status")
+                        .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+                        .child(
+                            Tag::secondary()
+                                .small()
+                                .rounded_full()
+                                .child(t!("roles.viewer").to_string()),
+                        ),
+                )
+                .into_any_element();
+        }
         // A long name gives way to the pins beside it.
         if !state.unsynced() {
             return name.into_any_element();
