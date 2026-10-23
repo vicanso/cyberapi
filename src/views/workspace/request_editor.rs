@@ -17,7 +17,7 @@ use cyberapi_core::prefs::RequestTab;
 use cyberapi_core::send::{self, form_fields};
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::ANIMATION_DURATION;
-use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, TabSize};
+use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::notification::Notification;
@@ -113,10 +113,7 @@ fn body_state(
             .language(language)
             .line_number(true)
             .soft_wrap(wrap)
-            .tab_size(TabSize {
-                tab_size: 2,
-                hard_tabs: false,
-            })
+            .tab_size(crate::views::json_tab())
             .default_value(text);
         template_hints::complete_in(&mut body, hints);
         body

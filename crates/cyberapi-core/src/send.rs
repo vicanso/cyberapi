@@ -182,8 +182,8 @@ pub fn strip_json_comments(body: &str) -> String {
         .join("\n")
 }
 
-/// A JSON body indented by two spaces, as the editor's Format does it
-/// (F4.7). Comment lines go, as sending drops them; `{{…}}` templates stay
+/// A JSON body indented as everywhere ([`crate::format::json`]), as the
+/// editor's Format does it (F4.7). Comment lines go, as sending drops them; `{{…}}` templates stay
 /// as written, in a string or in place of a value. `Err` says why the body
 /// is no JSON.
 pub fn format_json(body: &str) -> Result<String, String> {
@@ -222,7 +222,7 @@ pub fn format_json(body: &str) -> Result<String, String> {
         at += ch.len_utf8();
     }
     let value: serde_json::Value = serde_json::from_str(&held).map_err(|error| error.to_string())?;
-    let mut pretty = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
+    let mut pretty = crate::format::json(&value);
     for (n, (template, in_string)) in templates.into_iter().enumerate() {
         let stand_in = if in_string {
             token(n)
@@ -488,7 +488,7 @@ mod tests {
             "{\"z\":1,\n// a note\n\"a\":{{value(x)}},\"c\":\"id-{{get(01J, token)}}\",\"q\":\"say \\\"{{hi}}\\\"\"}";
         assert_eq!(
             format_json(body),
-            Ok("{\n  \"z\": 1,\n  \"a\": {{value(x)}},\n  \"c\": \"id-{{get(01J, token)}}\",\n  \"q\": \"say \\\"{{hi}}\\\"\"\n}".to_string())
+            Ok("{\n    \"z\": 1,\n    \"a\": {{value(x)}},\n    \"c\": \"id-{{get(01J, token)}}\",\n    \"q\": \"say \\\"{{hi}}\\\"\"\n}".to_string())
         );
         assert!(format_json("{\"a\": 1 \"b\": 2}").is_err());
     }

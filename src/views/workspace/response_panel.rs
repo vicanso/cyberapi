@@ -78,6 +78,7 @@ impl ResponsePanel {
             EditorState::new(window, cx)
                 .language("json")
                 .line_number(true)
+                .tab_size(crate::views::json_tab())
                 .soft_wrap(wrap)
                 .searchable(true)
         });
@@ -156,6 +157,7 @@ impl ResponsePanel {
             EditorState::new(window, cx)
                 .language(language)
                 .line_number(true)
+                .tab_size(crate::views::json_tab())
                 .soft_wrap(wrap)
                 .searchable(true)
                 .default_value(text)

@@ -28,7 +28,7 @@ fn importable(text: &str) -> String {
     let looks_json =
         (trimmed.starts_with('{') && trimmed.ends_with('}')) || (trimmed.starts_with('[') && trimmed.ends_with(']'));
     match serde_json::from_str::<serde_json::Value>(trimmed) {
-        Ok(json) if looks_json => serde_json::to_string_pretty(&json).unwrap_or_else(|_| trimmed.to_string()),
+        Ok(json) if looks_json => cyberapi_core::format::json(&json),
         _ => String::new(),
     }
 }
@@ -85,6 +85,7 @@ pub fn open_import_dialog(
         EditorState::new(window, cx)
             .language("json")
             .line_number(true)
+            .tab_size(crate::views::json_tab())
             .soft_wrap(true)
             .placeholder(t!("import.placeholder").to_string())
     });
@@ -235,7 +236,7 @@ mod tests {
     #[test]
     fn only_what_imports_fills_the_dialog() {
         assert_eq!(importable("  curl https://a.test \n"), "curl https://a.test");
-        assert_eq!(importable(r#"{"item":[]}"#), "{\n  \"item\": []\n}");
+        assert_eq!(importable(r#"{"item":[]}"#), "{\n    \"item\": []\n}");
         assert_eq!(importable("hello"), "");
         assert_eq!(importable("{ not json }"), "");
         assert_eq!(importable(""), "");

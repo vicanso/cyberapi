@@ -159,7 +159,7 @@ impl JsonTree {
             self.doc
                 .as_ref()
                 .and_then(|doc| json_view::value_at(doc, path.as_ref()))
-                .and_then(|found| serde_json::to_string_pretty(found).ok())
+                .map(cyberapi_core::format::json)
         } else {
             Some(path.to_string())
         };

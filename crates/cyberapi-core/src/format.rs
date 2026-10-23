@@ -2,6 +2,25 @@
 
 use crate::Timestamp;
 use chrono::Datelike;
+use serde::Serialize;
+
+/// The spaces JSON is indented by wherever a reader sees it: a response, a
+/// formatted body, an imported example, a copied value, an export, and the
+/// JSON editors' Tab. Four, as the old app printed responses.
+pub const JSON_INDENT: usize = 4;
+
+/// `value` as JSON indented by [`JSON_INDENT`] spaces. What does not
+/// serialize — a map with keys that are not strings — is empty.
+pub fn json(value: &impl Serialize) -> String {
+    let indent = [b' '; JSON_INDENT];
+    let mut out = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(&indent);
+    let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
+    match value.serialize(&mut serializer) {
+        Ok(()) => String::from_utf8(out).unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
 
 /// A time, short: `MM-DD HH:mm` within the reader's current year,
 /// `YYYY-MM-DD` before it. Shown in `now`'s offset — the reader's — whatever
@@ -67,6 +86,16 @@ pub fn days_until(at: Timestamp, now: Timestamp) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_is_indented_by_four_spaces_wherever_it_is_shown() {
+        let value = serde_json::json!({"a": [1, {"b": null}]});
+        assert_eq!(
+            json(&value),
+            "{\n    \"a\": [\n        1,\n        {\n            \"b\": null\n        }\n    ]\n}"
+        );
+        assert_eq!(JSON_INDENT, 4);
+    }
 
     #[test]
     fn a_day_begun_counts() {

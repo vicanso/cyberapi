@@ -160,7 +160,7 @@ fn operation(
             "body" => {
                 if let Some(schema) = parameter.get("schema") {
                     request.content_type = ContentType::Json;
-                    request.body = serde_json::to_string_pretty(&example(json, schema, 0)).unwrap_or_default();
+                    request.body = crate::format::json(&example(json, schema, 0));
                 }
             }
             _ => {}
@@ -196,7 +196,7 @@ fn operation(
                 .or_else(|| media.get("schema").map(|schema| example(json, schema, 0)))
                 .unwrap_or_else(|| json!({}));
             request.content_type = ContentType::Json;
-            request.body = serde_json::to_string_pretty(&value).unwrap_or_default();
+            request.body = crate::format::json(&value);
         } else if let Some((kind, media)) = content
             .iter()
             .find(|(kind, _)| kind.contains("form-urlencoded") || kind.contains("multipart"))

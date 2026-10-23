@@ -305,15 +305,11 @@ pub fn body_kind(content_type: &str) -> BodyKind {
     }
 }
 
-/// JSON indented by four spaces, as the old app printed it. A body that is
+/// JSON indented as everywhere ([`crate::format::json`]). A body that is
 /// not one value but one per line (NDJSON) is each line indented (F15.5).
 pub fn pretty_json(bytes: &[u8]) -> Option<String> {
     fn pretty(value: &serde_json::Value) -> Option<String> {
-        let mut out = Vec::new();
-        let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
-        let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
-        value.serialize(&mut serializer).ok()?;
-        String::from_utf8(out).ok()
+        Some(crate::format::json(value)).filter(|text| !text.is_empty())
     }
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
         return pretty(&value);

@@ -128,12 +128,8 @@ fn api_record(api: &ApiSetting) -> Record {
 }
 
 fn pretty(records: &impl Serialize) -> String {
-    let mut out = Vec::new();
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
-    let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
     // Plain records serialize.
-    let _ = records.serialize(&mut serializer);
-    String::from_utf8(out).unwrap_or_default()
+    crate::format::json(records)
 }
 
 /// F3.9: one API as its record, for the clipboard; importing the text adds
