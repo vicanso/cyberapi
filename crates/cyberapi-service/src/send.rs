@@ -151,10 +151,16 @@ pub async fn send(
             created_at: kept.created_at,
             ..response
         }),
-        // The answer still shows; it is only not kept.
+        // The answer still shows, with an id and a time of its own so the
+        // next is not taken for it; it is only not kept (an API only in a
+        // page's draft is unknown to the server).
         Err(error) => {
             warn!(%error, "the response could not be kept");
-            Ok(response)
+            Ok(HttpResponse {
+                id: unkept_id(),
+                created_at: now(),
+                ..response
+            })
         }
     }
 }
@@ -207,6 +213,13 @@ async fn add_cookies(sender: &Sender, prepared: &mut PreparedRequest) -> Result<
         prepared.headers.push(("Cookie".into(), cookie));
     }
     Ok(())
+}
+
+/// An id for an answer the history did not keep: one no store gives (they
+/// give ULIDs), different for each.
+fn unkept_id() -> String {
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    format!("unkept-{}", COUNT.fetch_add(1, Ordering::Relaxed))
 }
 
 fn now() -> Timestamp {
@@ -741,5 +754,31 @@ mod tests {
         assert!(setup.engine.sent.lock().expect("sent").is_empty());
         let history = pollster::block_on(setup.storage.history().list(setup.collection.clone(), api)).expect("list");
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn an_answer_the_history_cannot_keep_is_still_one_of_its_own() {
+        // An API the store does not know, as one only in a page's draft is
+        // to the server.
+        let setup = setup(ok(200, "{}"));
+        let before = now();
+        let answer = || {
+            pollster::block_on(send(
+                setup.sender.clone(),
+                setup.collection.clone(),
+                "only-in-a-draft".into(),
+                HttpRequest {
+                    uri: "http://a.test".into(),
+                    ..Default::default()
+                },
+                None,
+            ))
+            .expect("sent")
+        };
+        let (first, second) = (answer(), answer());
+        // Told apart, as the panel and the history menu tell them.
+        assert!(!first.id.is_empty());
+        assert_ne!(first.id, second.id);
+        assert!(first.created_at >= before, "{:?}", first.created_at);
     }
 }
