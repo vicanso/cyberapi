@@ -106,7 +106,23 @@ pub struct HttpResponse {
     pub truncated: bool,
 }
 
+/// How the id of an answer the history did not keep starts: no store gives
+/// one like it (they give ULIDs).
+const UNKEPT: &str = "unkept-";
+
 impl HttpResponse {
+    /// The id of an answer the history did not keep, `n` telling it from
+    /// the others.
+    pub fn unkept_id(n: u64) -> String {
+        format!("{UNKEPT}{n}")
+    }
+
+    /// The history kept this answer: it is still there once the project is
+    /// opened again.
+    pub fn kept(&self) -> bool {
+        !self.id.starts_with(UNKEPT)
+    }
+
     /// Every value of a header, ignoring case.
     pub fn header_values<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> {
         self.headers

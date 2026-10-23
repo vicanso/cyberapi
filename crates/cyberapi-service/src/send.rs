@@ -215,11 +215,10 @@ async fn add_cookies(sender: &Sender, prepared: &mut PreparedRequest) -> Result<
     Ok(())
 }
 
-/// An id for an answer the history did not keep: one no store gives (they
-/// give ULIDs), different for each.
+/// An id for an answer the history did not keep, different for each.
 fn unkept_id() -> String {
     static COUNT: AtomicU64 = AtomicU64::new(0);
-    format!("unkept-{}", COUNT.fetch_add(1, Ordering::Relaxed))
+    HttpResponse::unkept_id(COUNT.fetch_add(1, Ordering::Relaxed))
 }
 
 fn now() -> Timestamp {
@@ -450,6 +449,7 @@ mod tests {
         .expect("sent");
         assert_eq!(first.status, Some(200));
         assert!(!first.id.is_empty(), "kept in the history");
+        assert!(first.kept());
 
         let request = HttpRequest {
             method: HttpMethod::Post,
@@ -776,9 +776,11 @@ mod tests {
             .expect("sent")
         };
         let (first, second) = (answer(), answer());
-        // Told apart, as the panel and the history menu tell them.
+        // Told apart, as the panel and the history menu tell them; and
+        // known not to be kept, as the panel says.
         assert!(!first.id.is_empty());
         assert_ne!(first.id, second.id);
+        assert!(!first.kept() && !second.kept());
         assert!(first.created_at >= before, "{:?}", first.created_at);
     }
 }

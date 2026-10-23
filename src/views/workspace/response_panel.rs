@@ -408,8 +408,9 @@ impl ResponsePanel {
             .into_any_element()
     }
 
-    /// The body, under a note when the answer is a redirect (F14.8) and one
-    /// when it was longer than the engine reads.
+    /// The body, under a note when the history did not keep the answer,
+    /// one when the answer is a redirect (F14.8) and one when it was longer
+    /// than the engine reads.
     fn render_cut_body(&self, response: &HttpResponse, cx: &mut Context<Self>) -> AnyElement {
         let body = self.render_body(response, cx);
         // Where it points, and how to go there by itself: with following
@@ -434,11 +435,14 @@ impl ResponsePanel {
             let limit = format_size(RESPONSE_LIMIT as u64);
             note(t!("response.truncated", size = limit).to_string(), Vec::new(), cx)
         });
-        if redirect.is_none() && cut.is_none() {
+        // Shown now, gone once the project opens again: said before then.
+        let unkept = (!response.kept()).then(|| note(t!("response.unkept").to_string(), Vec::new(), cx));
+        if redirect.is_none() && cut.is_none() && unkept.is_none() {
             return body;
         }
         v_flex()
             .size_full()
+            .children(unkept)
             .children(redirect)
             .children(cut)
             .child(div().flex_1().min_h_0().child(body))
