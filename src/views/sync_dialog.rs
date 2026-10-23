@@ -40,23 +40,29 @@ pub fn open_conflict_dialog(
             .footer(
                 DialogFooter::new()
                     .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))
+                    // Each as wide as the cancel button, which the kit lays
+                    // out to fill its share: three equal choices.
                     .child(
-                        Button::new("conflict-servers")
-                            .outline()
-                            .label(t!("sync.use_servers").to_string())
-                            .on_click(move |_, window, cx| {
-                                servers(cx);
-                                window.close_dialog(cx);
-                            }),
+                        div().size_full().child(
+                            Button::new("conflict-servers")
+                                .outline()
+                                .label(t!("sync.use_servers").to_string())
+                                .on_click(move |_, window, cx| {
+                                    servers(cx);
+                                    window.close_dialog(cx);
+                                }),
+                        ),
                     )
                     .child(
-                        Button::new("conflict-mine")
-                            .with_variant(ButtonVariant::Danger)
-                            .label(t!("sync.use_mine").to_string())
-                            .on_click(move |_, window, cx| {
-                                mine(cx);
-                                window.close_dialog(cx);
-                            }),
+                        div().size_full().child(
+                            Button::new("conflict-mine")
+                                .with_variant(ButtonVariant::Danger)
+                                .label(t!("sync.use_mine").to_string())
+                                .on_click(move |_, window, cx| {
+                                    mine(cx);
+                                    window.close_dialog(cx);
+                                }),
+                        ),
                     ),
             )
             // No button is the default: Enter chooses nothing.
