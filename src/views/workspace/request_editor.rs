@@ -29,7 +29,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Task, Window, div, px,
+    ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Task, Window, div, px, rems,
 };
 use rust_i18n::t;
 use std::time::Duration;
@@ -659,8 +659,12 @@ impl RequestEditor {
                             h_flex()
                                 .gap_1()
                                 .items_center()
+                                // As wide as OPTIONS for every method: the
+                                // address after it stays put from one API
+                                // to the next.
                                 .child(
                                     div()
+                                        .w(rems(3.5))
                                         .text_xs()
                                         .font_bold()
                                         .text_color(method_color)
