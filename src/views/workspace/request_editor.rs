@@ -50,12 +50,6 @@ const COMMON_HEADERS: [(&str, &str); 7] = [
 /// it (F4.14).
 pub const EDITOR_SHARES: [f32; 3] = [0.3, 0.5, 0.7];
 
-/// Two letters of an environment name for the address bar (`onlinehall2` → `ON`).
-/// The menu keeps the full name.
-fn env_mark(name: &str) -> String {
-    name.chars().take(2).collect::<String>().to_uppercase()
-}
-
 pub enum RequestEditorEvent {
     /// A preset asks for the editor column at this share (F4.14).
     EditorShare(f32),
@@ -681,14 +675,18 @@ impl RequestEditor {
                         .xsmall()
                         .ml_1()
                         .child(match &env {
+                            // The whole name; a long one is cut, and the
+                            // tooltip and the menu still give it all.
                             Some(name) => div()
+                                .max_w(rems(8.))
+                                .truncate()
                                 .px_1p5()
                                 .rounded(theme.radius)
                                 .bg(env_color.opacity(0.14))
                                 .text_color(env_color)
                                 .text_xs()
                                 .font_medium()
-                                .child(env_mark(name)),
+                                .child(name.clone()),
                             None => div()
                                 .text_xs()
                                 .text_color(muted)
