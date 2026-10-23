@@ -113,6 +113,8 @@ empty_description = "Add an API, or a folder to group APIs in."
 no_match = "No API matches “%{keyword}”"
 nothing_selected = "Select an API in the tree"
 select_hint = "Its request and responses show here."
+start_title = "Start with an API"
+start_hint = "Create one, import a collection or paste a cURL command; its request and responses show here."
 copy_config = "Copy config"
 config_copied = "The API's config is on the clipboard; Import reads it back."
 

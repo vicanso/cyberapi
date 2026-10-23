@@ -113,6 +113,8 @@ empty_description = "新建一个接口，或者先建一个目录给接口分�
 no_match = "没有与“%{keyword}”匹配的接口"
 nothing_selected = "在左侧选择一个接口"
 select_hint = "请求和响应会显示在这里。"
+start_title = "从一个接口开始"
+start_hint = "新建接口、导入集合或粘贴 cURL 命令，请求和响应会显示在这里。"
 copy_config = "复制配置"
 config_copied = "接口配置已复制到剪贴板，可以通过“导入”粘贴回来。"
 

@@ -628,6 +628,13 @@ impl WorkspaceView {
             )
         })
         .collect();
+        // An empty project has nothing to select yet: what to start with.
+        let state = self.state.read(cx);
+        let (title, hint) = if state.tree().is_empty() && state.editable() {
+            (t!("workspace.start_title"), t!("workspace.start_hint"))
+        } else {
+            (t!("workspace.nothing_selected"), t!("workspace.select_hint"))
+        };
         v_flex().size_full().justify_center().items_center().child(
             v_flex().max_w(px(420.)).px_8().items_center().child(
                 Empty::new()
@@ -638,8 +645,8 @@ impl WorkspaceView {
                                     .with_variant(EmptyMediaVariant::Icon)
                                     .child(Icon::new(IconName::FileText)),
                             )
-                            .title(EmptyTitle::new().child(t!("workspace.nothing_selected").to_string()))
-                            .description(EmptyDescription::new().child(t!("workspace.select_hint").to_string())),
+                            .title(EmptyTitle::new().child(title.to_string()))
+                            .description(EmptyDescription::new().child(hint.to_string())),
                     )
                     .when(!shortcuts.is_empty(), |empty| {
                         empty.content(EmptyContent::new().child(v_flex().gap_2().children(shortcuts)))
