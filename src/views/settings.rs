@@ -73,8 +73,11 @@ pub fn open_settings(window: &mut Window, cx: &mut App) {
         return;
     }
     let view = cx.new(|cx| SettingsView::new(None, window, cx));
+    // Sized by the text as it was when opened: measured afresh, a dialog
+    // centred on the page widened on both sides with each step of the text
+    // size, and the step button ran from under the pointer.
+    let rem = window.rem_size();
     window.open_dialog(cx, move |dialog, window, _| {
-        let rem = window.rem_size();
         let viewport = window.viewport_size();
         let height = (viewport.height - px(160.)).min(rem * 40.).max(px(280.));
         dialog
