@@ -20,7 +20,7 @@ use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::{CollectionId, ItemId};
 use cyberapi_service::{SendFailure, Sender};
 use cyberapi_store::StoreError;
-use gpui_kit::{AppContext as _, Context, EventEmitter, Task, WeakEntity};
+use gpui_kit::{App, AppContext as _, Context, EventEmitter, Task, WeakEntity};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
@@ -328,15 +328,8 @@ impl ApiState {
             return;
         }
         self.save_now(cx);
-        // Timeouts are read when the request goes out. The sender was built
-        // when this API was opened, so a change in settings would otherwise
-        // wait for the next launch (#42). A workspace opened on its own, as
-        // the state tests do, has no app state and keeps the timeouts it set.
-        if let Some(store) = cx.try_global::<super::AppStore>() {
-            self.sender.timeouts = store.state().read(cx).prefs().timeouts;
-        }
         let call = cyberapi_service::send(
-            self.sender.clone(),
+            self.sender(cx),
             self.collection.clone(),
             self.api.clone(),
             self.request.clone(),
@@ -423,9 +416,23 @@ impl ApiState {
         cx.notify();
     }
 
+    /// Timeouts and how a request goes out are read when it goes out. The
+    /// sender was built when this API was opened, so a change in settings
+    /// would otherwise wait for the next launch (#42). A workspace opened on
+    /// its own, as the state tests do, has no app state and keeps the
+    /// settings it set.
+    fn sender(&mut self, cx: &App) -> Sender {
+        if let Some(store) = cx.try_global::<super::AppStore>() {
+            let prefs = store.state().read(cx).prefs();
+            self.sender.timeouts = prefs.timeouts;
+            self.sender.sending = prefs.sending;
+        }
+        self.sender.clone()
+    }
+
     /// F7.8: the command of the request as the editor holds it.
     pub fn copy_curl(&mut self, cx: &mut Context<Self>) {
-        let call = cyberapi_service::curl(self.sender.clone(), self.collection.clone(), self.request.clone());
+        let call = cyberapi_service::curl(self.sender(cx), self.collection.clone(), self.request.clone());
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(call).await;
             let _ = this.update(cx, |_, cx| match result {

@@ -5,16 +5,22 @@
 //! is not one — is refused before anything goes out, and nothing is kept
 //! (F5.7). A request that went out and failed is kept like any other answer,
 //! with the reason as its error.
+//!
+//! When the reader follows redirects (F14.8), each hop is a request of its
+//! own (`cyberapi_core::redirect`): its cookies are kept, the next one gets
+//! the jar's for where it goes, and the last answer is the one kept, with
+//! the address it came from and the time of every hop.
 
 use cyberapi_core::Timestamp;
 use cyberapi_core::cookie::{cookie_header, parse_set_cookie};
 use cyberapi_core::model::{HttpRequest, Variable, VariableCategory};
-use cyberapi_core::prefs::Timeouts;
-use cyberapi_core::response::HttpResponse;
+use cyberapi_core::prefs::{SendPrefs, Timeouts};
+use cyberapi_core::redirect::{self, MAX_REDIRECTS};
+use cyberapi_core::response::{Exchange, HttpResponse};
 use cyberapi_core::send::{self, PrepareError, PreparedRequest};
 use cyberapi_core::template::{FileReader, Inputs};
 use cyberapi_core::{CollectionId, ItemId};
-use cyberapi_http::HttpEngine;
+use cyberapi_http::{HttpEngine, SendError};
 use cyberapi_store::{Storage, StoreError};
 use snafu::Snafu;
 use std::sync::Arc;
@@ -44,6 +50,7 @@ pub struct Sender {
     pub files: Arc<dyn FileReader + Send + Sync>,
     pub user_agent: String,
     pub timeouts: Timeouts,
+    pub sending: SendPrefs,
 }
 
 /// A boundary no body will contain by chance: the time and a counter.
@@ -69,25 +76,45 @@ pub async fn send(
     request: HttpRequest,
     picked_file: Option<String>,
 ) -> Result<HttpResponse, SendFailure> {
-    let prepared = prepare(&sender, &collection, &request, picked_file).await?;
-    let sent_to = prepared.url.clone();
-    let url = url::Url::parse(&prepared.url).ok();
-    let started = Instant::now();
-    let answered = sender.engine.send(prepared).await;
-    // F9.2: the answer's cookies are kept, an expired one removing its own.
-    if let (Ok(exchange), Some(url)) = (&answered, &url) {
-        let cookies: Vec<_> = exchange
-            .headers
-            .iter()
-            .filter(|(name, _)| name == "set-cookie")
-            .filter_map(|(_, value)| parse_set_cookie(value, url, now()))
-            .collect();
-        if !cookies.is_empty()
-            && let Err(error) = sender.storage.cookies().put(cookies).await
-        {
-            warn!(%error, "the response's cookies could not be kept");
-        }
+    let mut prepared = prepare(&sender, &collection, &request, picked_file).await?;
+    // The jar's cookies go to each hop's own address. A Cookie the request
+    // names itself stays with the origin it was written for; past it, the
+    // jar's are sent.
+    let from_jar = prepared.header("cookie").is_none();
+    if from_jar {
+        add_cookies(&sender, &mut prepared).await?;
     }
+    let started = Instant::now();
+    let mut earlier = Duration::ZERO;
+    let mut hops = 0;
+    let (sent_to, answered) = loop {
+        let sent_to = prepared.url.clone();
+        let answered = sender.engine.send(prepared.clone()).await;
+        let Ok(exchange) = &answered else {
+            break (sent_to, answered);
+        };
+        keep_cookies(&sender, exchange, &sent_to).await;
+        let next = sender
+            .sending
+            .follow_redirects
+            .then(|| redirect::next(&prepared, exchange.status, &exchange.headers))
+            .flatten();
+        let Some(mut next) = next else {
+            break (sent_to, answered);
+        };
+        if hops == MAX_REDIRECTS {
+            break (sent_to, Err(SendError::Redirects { count: hops }));
+        }
+        hops += 1;
+        earlier += exchange.stats.total;
+        if from_jar {
+            next.headers.retain(|(name, _)| !name.eq_ignore_ascii_case("cookie"));
+        }
+        if next.header("cookie").is_none() {
+            add_cookies(&sender, &mut next).await?;
+        }
+        prepared = next;
+    };
     // Never zero (F5.7).
     let floor = |latency: Duration| latency.max(Duration::from_millis(1));
     let response = match answered {
@@ -101,7 +128,8 @@ pub async fn send(
             body: exchange.body,
             error: None,
             body_size: exchange.body_size,
-            latency: floor(exchange.stats.total),
+            // Every hop's: the stats are the last one's alone.
+            latency: floor(earlier + exchange.stats.total),
             stats: exchange.stats,
             ..Default::default()
         },
@@ -133,8 +161,51 @@ pub async fn send(
 /// F7.8: the cURL command of `request`, prepared as sending would prepare
 /// it. An `openFile` in it is not asked: its parameter stands.
 pub async fn curl(sender: Sender, collection: CollectionId, request: HttpRequest) -> Result<String, SendFailure> {
-    let prepared = prepare(&sender, &collection, &request, None).await?;
-    Ok(cyberapi_core::curl::curl(&prepared, &request, &[]))
+    let mut prepared = prepare(&sender, &collection, &request, None).await?;
+    if prepared.header("cookie").is_none() {
+        add_cookies(&sender, &mut prepared).await?;
+    }
+    Ok(cyberapi_core::curl::curl(
+        &prepared,
+        &request,
+        &[],
+        sender.sending.follow_redirects,
+    ))
+}
+
+/// F9.2: the answer's cookies are kept, an expired one removing its own.
+async fn keep_cookies(sender: &Sender, exchange: &Exchange, sent_to: &str) {
+    let Ok(url) = url::Url::parse(sent_to) else {
+        return;
+    };
+    let cookies: Vec<_> = exchange
+        .headers
+        .iter()
+        .filter(|(name, _)| name == "set-cookie")
+        .filter_map(|(_, value)| parse_set_cookie(value, &url, now()))
+        .collect();
+    if !cookies.is_empty()
+        && let Err(error) = sender.storage.cookies().put(cookies).await
+    {
+        warn!(%error, "the response's cookies could not be kept");
+    }
+}
+
+/// F9.3: the jar's cookies for where `prepared` goes.
+async fn add_cookies(sender: &Sender, prepared: &mut PreparedRequest) -> Result<(), SendFailure> {
+    let Ok(url) = url::Url::parse(&prepared.url) else {
+        return Ok(());
+    };
+    let jar = sender
+        .storage
+        .cookies()
+        .list()
+        .await
+        .map_err(|source| SendFailure::Store { source })?;
+    if let Some(cookie) = cookie_header(&jar, &url, now()) {
+        prepared.headers.push(("Cookie".into(), cookie));
+    }
+    Ok(())
 }
 
 fn now() -> Timestamp {
@@ -146,9 +217,9 @@ fn now() -> Timestamp {
     )
 }
 
-/// Everything before the engine: the variables, the responses the template
-/// functions read, then `cyberapi_core::send::prepare`, and the cookies that
-/// go with it (F9.3) — unless the request names its own `Cookie`.
+/// Everything before the engine but the cookies: the variables, the
+/// responses the template functions read, then
+/// `cyberapi_core::send::prepare`.
 async fn prepare(
     sender: &Sender,
     collection: &CollectionId,
@@ -202,7 +273,7 @@ async fn prepare(
             .collect(),
         picked_file,
     };
-    let mut prepared = send::prepare(
+    send::prepare(
         request,
         &send::Context {
             variables: &variables,
@@ -210,44 +281,40 @@ async fn prepare(
             files: sender.files.as_ref(),
             user_agent: &sender.user_agent,
             timeouts: sender.timeouts,
+            accept_invalid_certs: sender.sending.accept_invalid_certs,
             boundary: &boundary(),
         },
     )
-    .map_err(|source| SendFailure::Prepare { source })?;
-    if prepared.header("cookie").is_none()
-        && let Ok(url) = url::Url::parse(&prepared.url)
-    {
-        let jar = sender.storage.cookies().list().await.map_err(store)?;
-        if let Some(cookie) = cookie_header(&jar, &url, now()) {
-            prepared.headers.push(("Cookie".into(), cookie));
-        }
-    }
-    Ok(prepared)
+    .map_err(|source| SendFailure::Prepare { source })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use cyberapi_core::model::{ContentType, HttpMethod, KvParam};
-    use cyberapi_core::response::Exchange;
+    use cyberapi_core::response::HttpStats;
     use cyberapi_core::template::{BaseDir, TemplateError};
-    use cyberapi_http::{SendError, SendFuture};
+    use cyberapi_http::SendFuture;
     use cyberapi_store::{MemoryStore, NewCollection, NewVariable};
     use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
     use std::sync::Mutex;
 
-    /// Answers each request with `answer` and keeps what it was sent.
+    /// Answers a request with its URL's route, else with `answer`, and
+    /// keeps what it was sent.
     struct Engine {
         answer: Result<Exchange, SendError>,
+        routes: Mutex<HashMap<String, Exchange>>,
         sent: Mutex<Vec<PreparedRequest>>,
     }
 
     impl HttpEngine for Engine {
         fn send(&self, request: PreparedRequest) -> SendFuture {
+            let routed = self.routes.lock().expect("routes").get(&request.url).cloned();
             if let Ok(mut sent) = self.sent.lock() {
                 sent.push(request);
             }
-            let answer = self.answer.clone();
+            let answer = routed.map(Ok).unwrap_or_else(|| self.answer.clone());
             Box::pin(async move { answer })
         }
     }
@@ -282,6 +349,7 @@ mod tests {
         let storage = MemoryStore::new().storage();
         let engine = Arc::new(Engine {
             answer,
+            routes: Mutex::default(),
             sent: Mutex::new(Vec::new()),
         });
         let collection = pollster::block_on(storage.collections().create(NewCollection {
@@ -296,6 +364,7 @@ mod tests {
             files: Arc::new(Files),
             user_agent: "CyberAPI/test".into(),
             timeouts: Timeouts::default(),
+            sending: SendPrefs::default(),
         };
         Setup {
             storage,
@@ -442,6 +511,130 @@ mod tests {
         assert_eq!(sent[1].header("cookie"), Some("sid=s-1"));
         assert_eq!(sent[2].header("cookie"), None);
         assert_eq!(sent[3].header("cookie"), Some("mine=1"), "the request's own wins");
+    }
+
+    fn redirect(to: &str, cookie: Option<&str>) -> Exchange {
+        let mut headers = vec![("location".to_string(), to.to_string())];
+        headers.extend(cookie.map(|cookie| ("set-cookie".to_string(), cookie.to_string())));
+        Exchange {
+            status: 302,
+            headers,
+            stats: HttpStats {
+                total: Duration::from_millis(30),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn route(setup: &Setup, url: &str, exchange: Exchange) {
+        setup.engine.routes.lock().expect("routes").insert(url.into(), exchange);
+    }
+
+    fn send_to(setup: &Setup, method: HttpMethod, uri: &str) -> HttpResponse {
+        let api = new_api(setup, "a");
+        pollster::block_on(send(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            api,
+            HttpRequest {
+                method,
+                uri: uri.into(),
+                content_type: ContentType::Json,
+                body: "{}".into(),
+                ..Default::default()
+            },
+            None,
+        ))
+        .expect("sent")
+    }
+
+    #[test]
+    fn redirects_are_answers_unless_followed() {
+        let mut setup = setup(Ok(Exchange {
+            status: 200,
+            body: b"me".to_vec(),
+            stats: HttpStats {
+                total: Duration::from_millis(20),
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        route(&setup, "https://api.test/login", redirect("/me", Some("sid=1; Path=/")));
+        let answer = send_to(&setup, HttpMethod::Post, "https://api.test/login");
+        assert_eq!(answer.status, Some(302), "not followed by default");
+        assert_eq!(setup.engine.sent.lock().expect("sent").len(), 1);
+
+        setup.sender.sending.follow_redirects = true;
+        let answer = send_to(&setup, HttpMethod::Post, "https://api.test/login");
+        assert_eq!(answer.status, Some(200));
+        assert_eq!(answer.body, b"me".to_vec());
+        assert_eq!(answer.url, "https://api.test/me", "where the answer came from");
+        assert_eq!(answer.request.method, HttpMethod::Post, "the request kept is the API's");
+        assert_eq!(answer.latency, Duration::from_millis(50), "every hop's time");
+        let sent = setup.engine.sent.lock().expect("sent").clone();
+        let me = &sent[2];
+        assert_eq!((me.method, me.body.is_empty()), (HttpMethod::Get, true));
+        assert_eq!(
+            me.header("cookie"),
+            Some("sid=1"),
+            "the first hop's cookie goes to the next"
+        );
+        let kept = pollster::block_on(
+            setup
+                .storage
+                .history()
+                .list(setup.collection.clone(), answer.api.clone()),
+        )
+        .expect("history");
+        assert_eq!(kept.len(), 1, "one answer per send, not one per hop");
+    }
+
+    #[test]
+    fn each_hop_gets_the_jars_cookies_for_where_it_goes() {
+        let mut setup = setup(ok(200, "{}"));
+        setup.sender.sending.follow_redirects = true;
+        pollster::block_on(setup.storage.cookies().put(vec![
+            parse_set_cookie("a=1", &url::Url::parse("https://a.test/").expect("url"), now()).expect("cookie"),
+            parse_set_cookie("b=2", &url::Url::parse("https://b.test/").expect("url"), now()).expect("cookie"),
+        ]))
+        .expect("cookies");
+        route(&setup, "https://a.test/", redirect("https://b.test/", None));
+        route(&setup, "https://a.test/mine", redirect("/", None));
+        send_to(&setup, HttpMethod::Get, "https://a.test/");
+        let sent = setup.engine.sent.lock().expect("sent").clone();
+        assert_eq!(sent[0].header("cookie"), Some("a=1"));
+        assert_eq!(sent[1].header("cookie"), Some("b=2"));
+
+        // The request's own Cookie stays with its origin, then the jar's go.
+        let api = new_api(&setup, "mine");
+        pollster::block_on(send(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            api,
+            HttpRequest {
+                uri: "https://a.test/mine".into(),
+                headers: vec![kv("Cookie", "mine=1")],
+                ..Default::default()
+            },
+            None,
+        ))
+        .expect("sent");
+        let sent = setup.engine.sent.lock().expect("sent").clone();
+        let cookies: Vec<_> = sent[2..].iter().map(|request| request.header("cookie")).collect();
+        assert_eq!(cookies, vec![Some("mine=1"), Some("mine=1"), Some("b=2")]);
+    }
+
+    #[test]
+    fn a_redirect_loop_stops() {
+        let mut setup = setup(ok(200, "{}"));
+        setup.sender.sending.follow_redirects = true;
+        route(&setup, "https://api.test/a", redirect("/b", None));
+        route(&setup, "https://api.test/b", redirect("/a", None));
+        let answer = send_to(&setup, HttpMethod::Get, "https://api.test/a");
+        assert_eq!(answer.status, None);
+        assert_eq!(answer.error.as_deref(), Some("stopped after 10 redirects"));
+        assert_eq!(setup.engine.sent.lock().expect("sent").len(), MAX_REDIRECTS + 1);
     }
 
     #[test]

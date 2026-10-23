@@ -84,6 +84,9 @@ impl Transport for EngineTransport {
             headers,
             body,
             timeouts: Timeouts::default().effective(),
+            // The account's password and session go here: the server's
+            // certificate is checked whatever the reader's requests take.
+            accept_invalid_certs: false,
         };
         let call = self.engine.send(request);
         Box::pin(async move {

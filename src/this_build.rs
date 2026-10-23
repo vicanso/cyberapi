@@ -65,7 +65,7 @@ pub fn sizes_window() -> bool {
     false
 }
 
-/// Where the data is kept, for the about section (F1.7).
+/// Where the data is kept, for the settings' Data section (F1.7).
 #[cfg(not(target_family = "wasm"))]
 pub fn data_location() -> String {
     crate::paths::data_dir()
@@ -77,7 +77,7 @@ pub fn data_location() -> String {
     rust_i18n::t!("settings.on_the_server").to_string()
 }
 
-/// Whether the data folder can be shown (the settings' about section).
+/// Whether the data folder can be shown (the settings' Data section).
 #[cfg(not(target_family = "wasm"))]
 pub fn shows_data() -> bool {
     true

@@ -4,7 +4,9 @@
 //! headers merged — so the command sends what the app sends. As the old app
 //! did: `-v`, the method, a JSON body on one line, a cookie header from the
 //! cookies whose domain is part of the host. Unlike it, quotes inside values
-//! are escaped for the shell, and a multipart body becomes `-F` fields.
+//! are escaped for the shell, and a multipart body becomes `-F` fields. A
+//! send that follows redirects is `-L`, one that takes any certificate `-k`
+//! (F14.8, F14.9).
 
 use crate::model::{ContentType, HttpRequest};
 use crate::send::{PreparedRequest, form_fields};
@@ -22,12 +24,20 @@ fn quote(text: &str) -> String {
 }
 
 /// `request` is what the API holds, for its multipart fields.
-pub fn curl(prepared: &PreparedRequest, request: &HttpRequest, cookies: &[CurlCookie<'_>]) -> String {
-    let mut parts = vec![
-        "curl".to_string(),
-        "-v".to_string(),
-        format!("-X{}", prepared.method.as_str()),
-    ];
+pub fn curl(
+    prepared: &PreparedRequest,
+    request: &HttpRequest,
+    cookies: &[CurlCookie<'_>],
+    follow_redirects: bool,
+) -> String {
+    let mut parts = vec!["curl".to_string(), "-v".to_string()];
+    if follow_redirects {
+        parts.push("-L".to_string());
+    }
+    if prepared.accept_invalid_certs {
+        parts.push("-k".to_string());
+    }
+    parts.push(format!("-X{}", prepared.method.as_str()));
     let multipart = prepared.method.has_body() && request.content_type == ContentType::Multipart;
 
     if multipart {
@@ -118,7 +128,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            curl(&prepared, &request, &cookies),
+            curl(&prepared, &request, &cookies, false),
             r#"curl -v -XPOST -d '{"name":"o'\''neil"}' -H 'Cookie: sid=1' -H 'Content-Type: application/json' -H 'X-Note: it'\''s' 'https://api.test/v1/users?q=a'"#
         );
     }
@@ -139,7 +149,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            curl(&prepared, &request, &[]),
+            curl(&prepared, &request, &[], false),
             "curl -v -XPOST -F 'a=1' -F 'f=@/tmp/x.png' 'http://h.test/'"
         );
     }
@@ -151,8 +161,21 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            curl(&prepared, &HttpRequest::default(), &[]),
+            curl(&prepared, &HttpRequest::default(), &[], false),
             "curl -v -XGET 'http://h.test/'"
+        );
+    }
+
+    #[test]
+    fn the_send_settings_are_flags() {
+        let prepared = PreparedRequest {
+            url: "https://h.test/".into(),
+            accept_invalid_certs: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            curl(&prepared, &HttpRequest::default(), &[], true),
+            "curl -v -L -k -XGET 'https://h.test/'"
         );
     }
 }

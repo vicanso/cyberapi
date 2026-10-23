@@ -8,7 +8,7 @@ use async_lock::Mutex;
 use cyberapi_core::collection::SortOrder;
 use cyberapi_core::directory::Me;
 use cyberapi_core::model::Collection;
-use cyberapi_core::prefs::{AppPrefs, ColumnWidths, ThemeMode, Timeouts, WindowPrefs};
+use cyberapi_core::prefs::{AppPrefs, ColumnWidths, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
 #[cfg(not(target_family = "wasm"))]
 use cyberapi_core::prefs::{MonitorPlacement, remember_monitor};
 use cyberapi_core::{CollectionId, Timestamp};
@@ -127,6 +127,7 @@ impl AppStore {
             files: this_build::files(),
             user_agent: this_build::user_agent(),
             timeouts: self.state.read(cx).prefs().timeouts,
+            sending: self.state.read(cx).prefs().sending,
         }
     }
 
@@ -428,6 +429,24 @@ impl AppState {
         }
     }
 
+    /// F14.6, F14.7: text sizes and wrapping, applied at once.
+    pub fn set_text(&mut self, text: TextPrefs, cx: &mut Context<Self>) {
+        if self.prefs.text != text {
+            self.prefs.text = text;
+            self.save_prefs(cx);
+            cx.notify();
+        }
+    }
+
+    /// F14.8, F14.9: read by the next request that goes out.
+    pub fn set_sending(&mut self, sending: SendPrefs, cx: &mut Context<Self>) {
+        if self.prefs.sending != sending {
+            self.prefs.sending = sending;
+            self.save_prefs(cx);
+            cx.notify();
+        }
+    }
+
     /// F14.2: the window's size, applied by the view and at the next launch.
     pub fn set_window(&mut self, window: WindowPrefs, cx: &mut Context<Self>) {
         if self.prefs.window != window {
@@ -704,6 +723,35 @@ mod tests {
             crate::json_view_local::JsonView::Text
         );
         assert_eq!(crate::json_view_local::get(""), crate::json_view_local::JsonView::Text);
+    }
+
+    /// F14.6–F14.9: kept, handed to the next send, and reset.
+    #[gpui_kit::test]
+    async fn text_and_sending_settings_are_kept(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let (state, _) = launch(&store, cx);
+        let text = TextPrefs {
+            ui_size: 16,
+            editor_size: 15,
+            wrap: false,
+        };
+        let sending = SendPrefs {
+            follow_redirects: true,
+            accept_invalid_certs: true,
+        };
+        state.update(cx, |state, cx| {
+            state.set_text(text, cx);
+            state.set_sending(sending, cx);
+        });
+        cx.run_until_parked();
+        let kept = pollster::block_on(store.storage().prefs().app()).expect("prefs");
+        assert_eq!((kept.text, kept.sending), (text, sending));
+        assert_eq!(cx.update(|cx| AppStore::global(cx).sender(cx).sending), sending);
+
+        state.update(cx, |state, cx| state.reset_prefs(cx));
+        cx.run_until_parked();
+        let kept = pollster::block_on(store.storage().prefs().app()).expect("prefs");
+        assert_eq!((kept.text, kept.sending), (TextPrefs::default(), SendPrefs::default()));
     }
 
     /// The reader's groups: set, renamed, folded, kept by a reset, and left

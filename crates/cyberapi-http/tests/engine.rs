@@ -205,6 +205,66 @@ async fn dropping_the_send_cancels_it() {
     assert!(started.elapsed() < Duration::from_secs(1));
 }
 
+/// An HTTPS server for `localhost` with a self-signed certificate, which
+/// answers every request with `secret`.
+async fn serve_self_signed() -> SocketAddr {
+    let made = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("a certificate");
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(made.signing_key.serialize_der().into());
+    let config =
+        rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .expect("TLS versions")
+            .with_no_client_auth()
+            .with_single_cert(vec![made.cert.der().clone()], key)
+            .expect("a server config");
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(stream) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let service = service_fn(|_: hyper::Request<hyper::body::Incoming>| async {
+                    hyper::Response::builder().body(Full::new(Bytes::from_static(b"secret")))
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await;
+            });
+        }
+    });
+    address
+}
+
+#[tokio::test]
+async fn a_certificate_no_root_vouches_for_is_taken_only_when_asked() {
+    let address = serve_self_signed().await;
+    let request = PreparedRequest {
+        url: format!("https://localhost:{}/", address.port()),
+        timeouts: Timeouts::default().effective(),
+        ..Default::default()
+    };
+    let refused = engine().send(request.clone()).await;
+    assert!(matches!(refused, Err(SendError::Certificate { .. })), "{refused:?}");
+
+    let exchange = engine()
+        .send(PreparedRequest {
+            accept_invalid_certs: true,
+            ..request
+        })
+        .await
+        .expect("an exchange");
+    assert_eq!((exchange.status, exchange.body), (200, b"secret".to_vec()));
+    assert!(exchange.stats.is_https);
+    assert!(!exchange.stats.cipher.is_empty());
+}
+
 #[tokio::test]
 #[ignore = "reaches the internet"]
 async fn https_with_the_systems_roots() {

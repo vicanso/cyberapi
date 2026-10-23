@@ -1105,7 +1105,7 @@ mod tests {
     use crate::states::api::SAVE_DELAY;
     use cyberapi_core::access::CollectionRole;
     use cyberapi_core::model::{HttpMethod, HttpRequest, KvParam};
-    use cyberapi_core::prefs::Timeouts;
+    use cyberapi_core::prefs::{SendPrefs, Timeouts};
     use cyberapi_core::response::Exchange;
     use cyberapi_core::template::NoFiles;
     use cyberapi_core::tree::TreeError;
@@ -1143,6 +1143,7 @@ mod tests {
             files: Arc::new(NoFiles("no files in tests")),
             user_agent: "CyberAPI/test".into(),
             timeouts: Timeouts::default(),
+            sending: SendPrefs::default(),
         }
     }
 

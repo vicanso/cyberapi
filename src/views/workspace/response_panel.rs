@@ -11,6 +11,7 @@ use cyberapi_core::response::{
     BodyKind, DISPLAY_LIMIT, HttpResponse, StatusLevel, clip_text, format_duration, format_size, status_level,
     status_text,
 };
+use cyberapi_http::SendError;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::empty::{
@@ -64,22 +65,30 @@ pub struct ResponsePanel {
     json_tree: Entity<JsonTree>,
     /// Bound to one response. Another response opens in the saved default.
     body_as_tree: Option<(String, bool)>,
+    /// Whether the body wraps long lines (F14.7).
+    wrap: bool,
     _subscriptions: Vec<Subscription>,
 }
 
 impl ResponsePanel {
     pub fn new(api: Entity<ApiState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let app = AppStore::global(cx).state().clone();
+        let wrap = app.read(cx).prefs().text.wrap;
         let body = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language("json")
                 .line_number(true)
-                .soft_wrap(true)
+                .soft_wrap(wrap)
                 .searchable(true)
         });
-        let app = AppStore::global(cx).state().clone();
         let subscriptions = vec![
             cx.observe_in(&api, window, |this, _, window, cx| this.sync(window, cx)),
-            cx.observe(&app, |this, _, cx| {
+            cx.observe_in(&app, window, |this, app, window, cx| {
+                let wrap = app.read(cx).prefs().text.wrap;
+                if wrap != this.wrap {
+                    this.wrap = wrap;
+                    this.body.update(cx, |body, cx| body.set_soft_wrap(wrap, window, cx));
+                }
                 this.sync_response_tree(cx);
                 cx.notify();
             }),
@@ -93,6 +102,7 @@ impl ResponsePanel {
             tab: ResponseTab::Body,
             json_tree,
             body_as_tree: None,
+            wrap,
             _subscriptions: subscriptions,
         };
         panel.sync(window, cx);
@@ -141,11 +151,12 @@ impl ResponsePanel {
         // A body that would make the editor crawl shows its start (#17).
         let (text, clipped) = clip_text(text, DISPLAY_LIMIT);
         self.clipped = clipped;
+        let wrap = self.wrap;
         self.body = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(language)
                 .line_number(true)
-                .soft_wrap(true)
+                .soft_wrap(wrap)
                 .searchable(true)
                 .default_value(text)
         });
@@ -399,10 +410,18 @@ impl ResponsePanel {
         // F5.7: why it failed, as the failure it is.
         if let Some(error) = &response.error {
             let copied = error.clone();
+            // F14.9: where to take a certificate no root vouches for.
+            let certificate = SendError::is_untrusted_certificate(error).then(|| {
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("response.untrusted_certificate").to_string())
+            });
             return v_flex()
                 .p_3()
                 .gap_2()
                 .child(Alert::error("response-error", error.clone()).title(t!("response.failed").to_string()))
+                .children(certificate)
                 // The reason, to search for or pass on: the text cannot be
                 // selected.
                 .child(

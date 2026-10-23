@@ -32,6 +32,9 @@ pub struct PreparedRequest {
     pub body: Vec<u8>,
     /// Seconds, each above zero.
     pub timeouts: Timeouts,
+    /// HTTPS goes ahead whatever the server's certificate (F14.9).
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
 }
 
 impl PreparedRequest {
@@ -59,6 +62,8 @@ pub struct Context<'a> {
     pub files: &'a dyn FileReader,
     pub user_agent: &'a str,
     pub timeouts: Timeouts,
+    /// F14.9.
+    pub accept_invalid_certs: bool,
     /// Separates multipart fields; random, from the caller.
     pub boundary: &'a str,
 }
@@ -328,6 +333,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         headers: headers.0,
         body,
         timeouts: cx.timeouts.effective(),
+        accept_invalid_certs: cx.accept_invalid_certs,
     })
 }
 
@@ -463,6 +469,7 @@ mod tests {
                 files: &OneFile,
                 user_agent: "CyberAPI/test",
                 timeouts: Timeouts::default(),
+                accept_invalid_certs: false,
                 boundary: "XYZ",
             },
         )
@@ -659,6 +666,7 @@ mod tests {
                     files: &NoFiles("no files here"),
                     user_agent: "",
                     timeouts: Timeouts::default(),
+                    accept_invalid_certs: false,
                     boundary: "B",
                 }
             ),

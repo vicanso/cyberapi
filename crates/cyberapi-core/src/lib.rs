@@ -15,6 +15,7 @@ pub mod import;
 pub mod json_view;
 pub mod model;
 pub mod prefs;
+pub mod redirect;
 pub mod response;
 pub mod search;
 pub mod send;

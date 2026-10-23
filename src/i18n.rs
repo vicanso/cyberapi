@@ -11,7 +11,7 @@ use cyberapi_store::{Refusal, StoreError};
 use rust_i18n::t;
 
 /// The languages this build has strings for. English is the fallback.
-pub const LOCALES: [&str; 3] = ["en", "zh-CN", "uk"];
+pub const LOCALES: [&str; 2] = ["en", "zh-CN"];
 
 /// The locale to use: the reader's choice when this build has it, the
 /// system's language otherwise, English last.
@@ -25,12 +25,11 @@ pub fn resolve(preferred: Option<&str>) -> &'static str {
 /// A BCP 47 tag (`zh-Hans-CN`, `en-US`, `zh_CN`) as one of [`LOCALES`].
 fn supported(tag: &str) -> Option<&'static str> {
     let tag = tag.trim().to_ascii_lowercase().replace('_', "-");
-    let [english, chinese, ukrainian] = LOCALES;
+    let [english, chinese] = LOCALES;
     let language = tag.split('-').next().unwrap_or_default();
     match language {
         "zh" => Some(chinese),
         "en" => Some(english),
-        "uk" => Some(ukrainian),
         _ => None,
     }
 }
@@ -109,7 +108,8 @@ mod tests {
         assert_eq!(supported("zh-Hans-CN"), Some("zh-CN"));
         assert_eq!(supported("zh_TW"), Some("zh-CN"));
         assert_eq!(supported("en-GB"), Some("en"));
-        assert_eq!(supported("uk-UA"), Some("uk"));
+        // Ukrainian was dropped; a reader who chose it follows the system.
+        assert_eq!(supported("uk-UA"), None);
         assert_eq!(supported("de-DE"), None);
         assert_eq!(resolve(Some("zh-CN")), "zh-CN");
     }
@@ -141,13 +141,9 @@ mod tests {
     fn every_locale_has_every_key() {
         // A missing key silently falls back to English; this makes it loud.
         let english = keys(include_str!("../locales/en.toml"));
-        for (name, other) in [
-            ("zh-CN", keys(include_str!("../locales/zh-CN.toml"))),
-            ("uk", keys(include_str!("../locales/uk.toml"))),
-        ] {
-            let missing: Vec<_> = english.symmetric_difference(&other).collect();
-            assert!(missing.is_empty(), "keys in en or {name} only: {missing:?}");
-        }
+        let chinese = keys(include_str!("../locales/zh-CN.toml"));
+        let missing: Vec<_> = english.symmetric_difference(&chinese).collect();
+        assert!(missing.is_empty(), "keys in en or zh-CN only: {missing:?}");
         assert_ne!(
             t!("dashboard.title", locale = "zh-CN"),
             t!("dashboard.title", locale = "en")

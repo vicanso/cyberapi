@@ -4,8 +4,11 @@
 //! the stream itself records when the request was written and when the
 //! answer began.
 //!
-//! As before: HTTP/1.1 only, redirects are not followed, `gzip` / `br` (and
-//! now `deflate`) bodies are decompressed with their size as received kept.
+//! As before: HTTP/1.1 only, redirects are not followed (the send pipeline
+//! follows them when the reader asks, one request per hop), `gzip` / `br`
+//! (and now `deflate`) bodies are decompressed with their size as received
+//! kept. A request may take any certificate (F14.9); the handshake is still
+//! verified to be with the holder of the one presented.
 //! Header values that are not UTF-8 are read lossily instead of failing the
 //! request (#11). The connect timeout bounds resolving, connecting and TLS;
 //! the write and read timeouts together bound the exchange after that.
@@ -15,7 +18,10 @@ use bytes::Bytes;
 use cyberapi_core::response::HttpStats;
 use http_body_util::{BodyExt as _, Full};
 use hyper_util::rt::TokioIo;
-use rustls::pki_types::ServerName;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 use std::io::Read as _;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -67,29 +73,79 @@ impl Drop for AbortOnDrop {
     }
 }
 
-fn tls_config() -> Arc<rustls::ClientConfig> {
-    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
-    CONFIG
-        .get_or_init(|| {
-            // The system's roots, as the old app used; Mozilla's when the
-            // system offers none.
-            let mut roots = rustls::RootCertStore::empty();
-            for cert in rustls_native_certs::load_native_certs().certs {
-                let _ = roots.add(cert);
-            }
-            if roots.is_empty() {
-                roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            }
-            let mut config =
-                rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                    .with_safe_default_protocol_versions()
-                    .expect("ring supports the default TLS versions")
-                    .with_root_certificates(roots)
-                    .with_no_client_auth();
-            config.alpn_protocols = vec![b"http/1.1".to_vec()];
-            Arc::new(config)
-        })
+fn tls_config(accept_invalid_certs: bool) -> Arc<rustls::ClientConfig> {
+    static CHECKED: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    static ANY: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    let config = if accept_invalid_certs { &ANY } else { &CHECKED };
+    config
+        .get_or_init(|| Arc::new(client_config(!accept_invalid_certs)))
         .clone()
+}
+
+fn client_config(check_certs: bool) -> rustls::ClientConfig {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the default TLS versions");
+    let mut config = if check_certs {
+        // The system's roots, as the old app used; Mozilla's when the
+        // system offers none.
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in rustls_native_certs::load_native_certs().certs {
+            let _ = roots.add(cert);
+        }
+        if roots.is_empty() {
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        }
+        builder.with_root_certificates(roots).with_no_client_auth()
+    } else {
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AnyCertificate(provider)))
+            .with_no_client_auth()
+    };
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config
+}
+
+/// Takes the certificate a server presents, whoever issued it and whatever
+/// name it is for, and still checks the server signs with its key.
+#[derive(Debug)]
+struct AnyCertificate(Arc<CryptoProvider>);
+
+impl ServerCertVerifier for AnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
 }
 
 fn seconds(value: u32) -> Duration {
@@ -181,12 +237,16 @@ async fn exchange(request: PreparedRequest, policy: TargetPolicy) -> Result<Exch
         .map_err(|error| invalid(error.to_string()))?;
         let tls = timeout(
             connect_limit,
-            tokio_rustls::TlsConnector::from(tls_config()).connect(name, stream),
+            tokio_rustls::TlsConnector::from(tls_config(request.accept_invalid_certs)).connect(name, stream),
         )
         .await
         .map_err(|_| timed_out("TLS", timeouts.connect))?
-        .map_err(|error| SendError::Tls {
-            message: error.to_string(),
+        .map_err(|error| {
+            let message = error.to_string();
+            match error.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()) {
+                Some(rustls::Error::InvalidCertificate(_)) => SendError::Certificate { message },
+                _ => SendError::Tls { message },
+            }
         })?;
         stats.tls = shaking.elapsed();
         stats.cipher = tls

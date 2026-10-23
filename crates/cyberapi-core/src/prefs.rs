@@ -9,6 +9,7 @@ use crate::model::HttpMethod;
 use crate::{CollectionId, ItemId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::ops::RangeInclusive;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -16,6 +17,8 @@ pub struct AppPrefs {
     pub theme: ThemeMode,
     /// `None` follows the system language (F15.2).
     pub language: Option<String>,
+    /// Text sizes and wrapping (F14.6, F14.7).
+    pub text: TextPrefs,
     pub collection_sort: SortOrder,
     pub columns: ColumnWidths,
     pub window: WindowPrefs,
@@ -30,6 +33,8 @@ pub struct AppPrefs {
     /// [`opening_monitor`]).
     pub last_monitor: String,
     pub timeouts: Timeouts,
+    /// How a request goes out besides its timeouts (F14.8, F14.9).
+    pub sending: SendPrefs,
     /// The project open when the app last left it, opened again at the
     /// next start (F1.1, F1.9); `None` was the project list.
     pub last_collection: Option<CollectionId>,
@@ -48,6 +53,73 @@ pub enum ThemeMode {
     System,
     Light,
     Dark,
+}
+
+/// How text shows: sizes in pixels, `0` the default (F14.6), and whether
+/// long lines in the code editors wrap (F14.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TextPrefs {
+    /// The interface's: the rem everything is measured in.
+    pub ui_size: u32,
+    /// The code editors': a request's body and a response's.
+    pub editor_size: u32,
+    pub wrap: bool,
+}
+
+impl Default for TextPrefs {
+    fn default() -> Self {
+        Self {
+            ui_size: 0,
+            editor_size: 0,
+            wrap: true,
+        }
+    }
+}
+
+impl TextPrefs {
+    /// The kit's 16 px is a document's; a tool's panels read better
+    /// denser, as Zed's do.
+    pub const DEFAULT_UI: u32 = 14;
+    /// The kit's code size.
+    pub const DEFAULT_EDITOR: u32 = 13;
+    /// The sizes offered. The interface stops at 18: rows of a fixed height
+    /// hold no larger text.
+    pub const UI_SIZES: RangeInclusive<u32> = 12..=18;
+    pub const EDITOR_SIZES: RangeInclusive<u32> = 11..=20;
+
+    /// The interface's size to use: the setting, kept to the sizes offered,
+    /// or the default.
+    pub fn ui(&self) -> u32 {
+        within(self.ui_size, Self::DEFAULT_UI, Self::UI_SIZES)
+    }
+
+    /// The code editors' size to use, as [`Self::ui`].
+    pub fn editor(&self) -> u32 {
+        within(self.editor_size, Self::DEFAULT_EDITOR, Self::EDITOR_SIZES)
+    }
+}
+
+/// `value` within `sizes`; `0` is `default`.
+fn within(value: u32, default: u32, sizes: RangeInclusive<u32>) -> u32 {
+    if value == 0 {
+        default
+    } else {
+        value.clamp(*sizes.start(), *sizes.end())
+    }
+}
+
+/// How a request goes out besides its timeouts. Both off is how the old
+/// app sent, and what a document from before them reads as.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SendPrefs {
+    /// A redirect is followed to where it points (F14.8); off, the
+    /// redirect is the answer.
+    pub follow_redirects: bool,
+    /// HTTPS goes to a server whose certificate does not verify:
+    /// self-signed, expired, or for another name (F14.9).
+    pub accept_invalid_certs: bool,
 }
 
 /// The workspace's columns (F14.5): the tree in pixels, then the request
@@ -327,6 +399,20 @@ mod tests {
         let prefs: AppPrefs = serde_json::from_str("{}").expect("defaults");
         assert_eq!(prefs, AppPrefs::default());
         assert_eq!(prefs.columns.tree, 300.);
+        assert!(prefs.text.wrap, "long lines wrap, as they did before the setting");
+        assert_eq!(
+            prefs.sending,
+            SendPrefs::default(),
+            "redirects stay answers, certificates are checked"
+        );
+        let text: TextPrefs = serde_json::from_str(r#"{"uiSize":16}"#).expect("defaults");
+        assert_eq!(
+            text,
+            TextPrefs {
+                ui_size: 16,
+                ..TextPrefs::default()
+            }
+        );
         let workspace: WorkspacePrefs = serde_json::from_str(r#"{"pinned":["a"],"gone":1}"#).expect("defaults");
         assert_eq!(workspace.pinned, vec![ItemId::from("a")]);
     }
@@ -497,6 +583,33 @@ mod tests {
         assert!(fills_monitor(1400, 820, 1440, 860));
         assert!(!fills_monitor(1100, 720, 1440, 860));
         assert!(!fills_monitor(1440, 860, 0, 0));
+    }
+
+    #[test]
+    fn text_sizes_default_and_stay_within_those_offered() {
+        let text = TextPrefs::default();
+        assert_eq!((text.ui(), text.editor()), (14, 13));
+        let chosen = TextPrefs {
+            ui_size: 16,
+            editor_size: 20,
+            wrap: false,
+        };
+        assert_eq!((chosen.ui(), chosen.editor()), (16, 20));
+        // A document edited by hand cannot make the window unreadable.
+        let odd = TextPrefs {
+            ui_size: 3,
+            editor_size: 90,
+            wrap: true,
+        };
+        assert_eq!((odd.ui(), odd.editor()), (12, 20));
+        assert!(TextPrefs::UI_SIZES.contains(&TextPrefs::DEFAULT_UI));
+        assert!(TextPrefs::EDITOR_SIZES.contains(&TextPrefs::DEFAULT_EDITOR));
+        let inside = TextPrefs {
+            ui_size: 17,
+            editor_size: 19,
+            wrap: true,
+        };
+        assert_eq!((inside.ui(), inside.editor()), (17, 19), "any size in the range");
     }
 
     #[test]

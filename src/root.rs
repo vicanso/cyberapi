@@ -4,13 +4,13 @@ use crate::APP_NAME;
 use crate::i18n;
 use crate::states::{AppEvent, AppStore, Route, WorkspaceState};
 use crate::views::{
-    DashboardView, WorkspaceView, open_accounts_dialog, open_cookies_dialog, open_password_dialog,
-    open_settings_dialog, open_shortcuts_dialog, open_teams_dialog, open_variables_dialog,
+    DashboardView, WorkspaceView, open_accounts_dialog, open_cookies_dialog, open_password_dialog, open_settings,
+    open_shortcuts_dialog, open_teams_dialog, open_variables_dialog,
 };
 use cyberapi_core::model::VariableCategory;
-use cyberapi_core::prefs::ThemeMode;
 #[cfg(not(target_family = "wasm"))]
 use cyberapi_core::prefs::{MonitorPlacement, fills_monitor};
+use cyberapi_core::prefs::{TextPrefs, ThemeMode};
 use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -72,6 +72,7 @@ pub struct CyberApi {
     page: Page,
     /// The settings the window was last drawn with, to see what changed.
     theme: ThemeMode,
+    text: TextPrefs,
     language: Option<String>,
     _subscriptions: Vec<Subscription>,
     /// A windowed position waiting until it stops moving. A zoom drops it,
@@ -88,13 +89,14 @@ pub struct CyberApi {
 impl CyberApi {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppStore::global(cx).state().clone();
-        apply_theme(state.read(cx).prefs().theme, window, cx);
+        let prefs = state.read(cx).prefs();
+        apply_theme(prefs.theme, prefs.text, window, cx);
         let subscriptions = vec![
             // F14.1: "follow the system" keeps following it.
             cx.observe_window_appearance(window, |_, window, cx| {
-                let theme = AppStore::global(cx).state().read(cx).prefs().theme;
-                if theme == ThemeMode::System {
-                    apply_theme(theme, window, cx);
+                let prefs = AppStore::global(cx).state().read(cx).prefs();
+                if prefs.theme == ThemeMode::System {
+                    apply_theme(prefs.theme, prefs.text, window, cx);
                 }
             }),
             cx.observe_in(&state, window, |this, _, window, cx| {
@@ -129,6 +131,7 @@ impl CyberApi {
         let root = Self {
             page,
             theme: prefs.theme,
+            text: prefs.text,
             language: prefs.language,
             _subscriptions: subscriptions,
             #[cfg(not(target_family = "wasm"))]
@@ -248,14 +251,18 @@ impl CyberApi {
         }
     }
 
-    /// F14.1 / F15.2: a new theme or language shows at once. A new language
-    /// builds the page again, so the strings its fields were made with are
-    /// the new language's too.
+    /// F14.1 / F14.6 / F15.2: a new theme, text size or language shows at
+    /// once. A new language builds the page again, so the strings its fields
+    /// were made with are the new language's too.
     fn follow_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
         if prefs.theme != self.theme {
             self.theme = prefs.theme;
-            apply_theme(prefs.theme, window, cx);
+            self.text = prefs.text;
+            apply_theme(prefs.theme, prefs.text, window, cx);
+        } else if prefs.text != self.text {
+            self.text = prefs.text;
+            apply_text(prefs.text, window, cx);
         }
         if prefs.language != self.language {
             self.language = prefs.language.clone();
@@ -326,13 +333,10 @@ impl CyberApi {
     }
 }
 
-/// The UI's text size, the rem everything is measured in. The kit's 16 px
-/// is a document's; a tool's panels read better denser, as Zed's do.
-const UI_FONT_SIZE: f32 = 14.;
 /// The editors' face, the same on every platform (`this_build::add_fonts`).
 const MONO_FONT: &str = "JetBrains Mono";
 
-fn apply_theme(mode: ThemeMode, window: &mut Window, cx: &mut App) {
+fn apply_theme(mode: ThemeMode, text: TextPrefs, window: &mut Window, cx: &mut App) {
     match mode {
         ThemeMode::System => Theme::sync_system_appearance(Some(window), cx),
         ThemeMode::Light => Theme::change(ComponentThemeMode::Light, Some(window), cx),
@@ -347,7 +351,6 @@ fn apply_theme(mode: ThemeMode, window: &mut Window, cx: &mut App) {
     let dark = Theme::global(cx).mode.is_dark();
     let accent = try_parse_color(if dark { "neutral-600" } else { "neutral-200" }).expect("neutral scale");
     Theme::update(cx, |theme| {
-        theme.font_size = px(UI_FONT_SIZE);
         theme.mono_font_family = MONO_FONT.into();
         theme.accent = accent;
         // The dark theme's backdrop hardly darkens a page that is dark already;
@@ -355,6 +358,16 @@ fn apply_theme(mode: ThemeMode, window: &mut Window, cx: &mut App) {
         if dark {
             theme.overlay = hsla(0., 0., 0., 0.55);
         }
+    });
+    apply_text(text, window, cx);
+}
+
+/// F14.6: the interface's size is the rem everything is measured in; the
+/// code editors read theirs when they draw.
+fn apply_text(text: TextPrefs, window: &mut Window, cx: &mut App) {
+    Theme::update(cx, |theme| {
+        theme.font_size = px(text.ui() as f32);
+        theme.mono_font_size = px(text.editor() as f32);
     });
     window.refresh();
 }
@@ -427,7 +440,7 @@ impl CyberApi {
                     .item(
                         PopupMenuItem::new(t!("settings.title").to_string())
                             .icon(Icons::Settings)
-                            .on_click(|_, window, cx| open_settings_dialog(window, cx)),
+                            .on_click(|_, window, cx| open_settings(window, cx)),
                     )
                     .item(
                         PopupMenuItem::new(t!("shortcuts.title").to_string())

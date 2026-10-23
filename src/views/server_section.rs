@@ -1,16 +1,18 @@
 //! The desktop's bridge in the settings (`docs/server-sync.md` §1, step 5):
-//! its address and a sign-in, or who is signed in there and a way out. The
-//! page is signed in by its own and has none of this.
+//! its address and a sign-in, or who is signed in there and a way out, as
+//! rows of the settings. The page is signed in by its own and has none of
+//! this.
 
 use crate::states::{ServerEvent, ServerState, ServerStatus, SignInFailure};
+use crate::views::settings::setting_row;
 use cyberapi_store_bridge::SignInError;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
-    Window, div, px,
+    Window, div,
 };
 use rust_i18n::t;
 
@@ -69,33 +71,42 @@ impl ServerSection {
             .update(cx, |state, cx| state.sign_in(&address, name, password, cx));
     }
 
-    fn render_form(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_form(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let signing_in = self.state.read(cx).signing_in();
-        v_flex()
-            .gap_2()
-            .child(Input::new(&self.address).small())
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(div().flex_1().child(Input::new(&self.name).small()))
-                    .child(div().flex_1().child(Input::new(&self.password).small()))
-                    .child(
-                        Button::new("server-sign-in")
-                            .primary()
-                            .small()
-                            .label(t!("server.sign_in").to_string())
-                            .loading(signing_in)
-                            .on_click(cx.listener(|this, _, _, cx| this.sign_in(cx))),
-                    ),
-            )
-            .into_any_element()
+        vec![
+            setting_row(
+                t!("server.address").to_string(),
+                Some(t!("server.address_desc").to_string()),
+                Input::new(&self.address).small(),
+                cx,
+            ),
+            setting_row(t!("server.name").to_string(), None, Input::new(&self.name).small(), cx),
+            setting_row(
+                t!("server.password").to_string(),
+                None,
+                Input::new(&self.password).small(),
+                cx,
+            ),
+            h_flex()
+                .justify_end()
+                .py_2()
+                .child(
+                    Button::new("server-sign-in")
+                        .primary()
+                        .small()
+                        .label(t!("server.sign_in").to_string())
+                        .loading(signing_in)
+                        .on_click(cx.listener(|this, _, _, cx| this.sign_in(cx))),
+                )
+                .into_any_element(),
+        ]
     }
 
     fn sign_out_button(&self) -> Button {
         let state = self.state.clone();
         Button::new("server-sign-out")
             .outline()
-            .xsmall()
+            .small()
             .label(t!("server.sign_out").to_string())
             .on_click(move |_, _, cx| state.update(cx, |state, cx| state.sign_out(cx)))
     }
@@ -112,17 +123,19 @@ fn failure_text(failure: &SignInFailure) -> String {
 
 impl Render for ServerSection {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
         let state = self.state.read(cx);
         let address = state.address().to_string();
-        let line = |text: String| div().flex_1().min_w_0().text_sm().child(text);
-        let body: AnyElement = match state.status().clone() {
+        let rows = match state.status().clone() {
             ServerStatus::SignedOut => self.render_form(cx),
-            ServerStatus::Checking => line(t!("server.checking", address = address).to_string()).into_any_element(),
-            ServerStatus::SignedIn(me) => h_flex()
-                .gap_3()
-                .items_center()
-                .child(line(
+            ServerStatus::Checking => vec![setting_row(
+                t!("server.status").to_string(),
+                Some(t!("server.checking", address = address).to_string()),
+                div(),
+                cx,
+            )],
+            ServerStatus::SignedIn(me) => vec![setting_row(
+                t!("server.account").to_string(),
+                Some(
                     t!(
                         "server.signed_in",
                         address = address,
@@ -130,34 +143,29 @@ impl Render for ServerSection {
                         login = me.account.name
                     )
                     .to_string(),
-                ))
-                .child(self.sign_out_button())
-                .into_any_element(),
+                ),
+                self.sign_out_button(),
+                cx,
+            )],
             ServerStatus::Unreachable(reason) => {
                 let state = self.state.clone();
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(line(
-                        t!("server.unreachable", address = address, reason = reason).to_string(),
-                    ))
-                    .child(
-                        Button::new("server-retry")
-                            .outline()
-                            .xsmall()
-                            .label(t!("common.retry").to_string())
-                            .on_click(move |_, _, cx| state.update(cx, |state, cx| state.check(cx))),
-                    )
-                    .child(self.sign_out_button())
-                    .into_any_element()
+                vec![setting_row(
+                    t!("server.status").to_string(),
+                    Some(t!("server.unreachable", address = address, reason = reason).to_string()),
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("server-retry")
+                                .outline()
+                                .small()
+                                .label(t!("common.retry").to_string())
+                                .on_click(move |_, _, cx| state.update(cx, |state, cx| state.check(cx))),
+                        )
+                        .child(self.sign_out_button()),
+                    cx,
+                )]
             }
         };
-        v_flex().gap_1().child(body).child(
-            div()
-                .max_w(px(520.))
-                .text_xs()
-                .text_color(muted)
-                .child(t!("server.hint").to_string()),
-        )
+        v_flex().children(rows)
     }
 }

@@ -35,6 +35,8 @@ webpki-roots = "1.0.10"
 [dev-dependencies]
 hyper = { version = "1.12.0", features = ["server", "http1"] }
 pretty_assertions = { workspace = true }
+# A certificate no root vouches for, made for the test's own HTTPS server.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring"] }
 
 [lints.clippy]
 unwrap_used = "deny"

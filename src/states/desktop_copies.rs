@@ -9,7 +9,7 @@ use crate::server_local::{self, ServerFile};
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::directory::{AccountInfo, Grant, Invite, Me, Member, NewInvite, Team, TeamPlace};
 use cyberapi_core::model::Collection;
-use cyberapi_core::prefs::Timeouts;
+use cyberapi_core::prefs::{SendPrefs, Timeouts};
 use cyberapi_core::response::Exchange;
 use cyberapi_core::template::NoFiles;
 use cyberapi_core::{AccountId, CollectionId, InviteId, TeamId};
@@ -184,6 +184,7 @@ impl Machine {
             files: Arc::new(NoFiles("no files in tests")),
             user_agent: "CyberAPI/test".into(),
             timeouts: Timeouts::default(),
+            sending: SendPrefs::default(),
         }
     }
 

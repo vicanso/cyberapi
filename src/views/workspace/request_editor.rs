@@ -80,11 +80,14 @@ pub struct RequestEditor {
     /// `Some` while this API is showing the reader's choice. `None` follows
     /// the saved default, including when that default changes.
     body_as_tree: Option<bool>,
+    /// Whether the body editor wraps long lines (F14.7).
+    wrap: bool,
     _subscriptions: Vec<Subscription>,
 }
 
 /// The body editor for a content type: JSON and XML (in HTML's grammar)
-/// are highlighted where the grammars are compiled in (the desktop).
+/// are highlighted where the grammars are compiled in (the desktop). Long
+/// lines wrap as the settings say (F14.7).
 fn body_state(request: &HttpRequest, window: &mut Window, cx: &mut Context<RequestEditor>) -> Entity<EditorState> {
     let language = match request.content_type {
         ContentType::Json => "json",
@@ -96,11 +99,12 @@ fn body_state(request: &HttpRequest, window: &mut Window, cx: &mut Context<Reque
     } else {
         request.body.clone()
     };
+    let wrap = AppStore::global(cx).state().read(cx).prefs().text.wrap;
     cx.new(|cx| {
         EditorState::new(window, cx)
             .language(language)
             .line_number(true)
-            .soft_wrap(true)
+            .soft_wrap(wrap)
             .tab_size(TabSize {
                 tab_size: 2,
                 hard_tabs: false,
@@ -217,7 +221,13 @@ impl RequestEditor {
         ];
         subscriptions.push(Self::watch_body(&body, window, cx));
         let app = AppStore::global(cx).state().clone();
-        subscriptions.push(cx.observe(&app, |this, _, cx| {
+        let wrap = app.read(cx).prefs().text.wrap;
+        subscriptions.push(cx.observe_in(&app, window, |this, app, window, cx| {
+            let wrap = app.read(cx).prefs().text.wrap;
+            if wrap != this.wrap {
+                this.wrap = wrap;
+                this.body.update(cx, |body, cx| body.set_soft_wrap(wrap, window, cx));
+            }
             this.sync_body_tree_if_shown(cx);
             cx.notify();
         }));
@@ -235,6 +245,7 @@ impl RequestEditor {
             json_problem: None,
             json_tree,
             body_as_tree: None,
+            wrap,
             _subscriptions: subscriptions,
         };
         editor.follow_sending(cx);
