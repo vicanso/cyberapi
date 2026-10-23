@@ -195,13 +195,12 @@ impl ResponsePanel {
                 } else {
                     at.format("%m-%d %H:%M")
                 };
-                (
-                    response.id.clone(),
-                    color,
-                    status,
-                    format!("{} · {}", format_duration(response.latency), body_size(response)),
-                    when.to_string(),
-                )
+                // A failure has no size: only how long it took to fail.
+                let measures = match response.status {
+                    Some(_) => format!("{} · {}", format_duration(response.latency), body_size(response)),
+                    None => format_duration(response.latency),
+                };
+                (response.id.clone(), color, status, measures, when.to_string())
             })
             .collect();
         let sending = api.sending_since();
@@ -277,22 +276,23 @@ impl ResponsePanel {
                             .into_any_element()
                     }
                 };
-                // F7.2: the size, and how much smaller it came.
-                let size = match response.compression() {
+                // F7.2: the size, and how much smaller it came. A request
+                // that failed has no answer to measure.
+                let size = response.status.map(|_| match response.compression() {
                     Some((wire, percent)) => format!(
                         "{} ({})",
                         body_size(response),
                         t!("response.compressed", size = format_size(wire), percent = percent)
                     ),
                     None => body_size(response),
-                };
+                });
                 h_flex()
                     .gap_3()
                     .items_center()
                     .text_sm()
                     .child(status)
                     .child(div().text_color(muted).child(format_duration(response.latency)))
-                    .child(div().text_color(muted).child(size))
+                    .children(size.map(|size| div().text_color(muted).child(size)))
                     .into_any_element()
             }
             (None, None) => div().into_any_element(),
