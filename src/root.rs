@@ -353,6 +353,10 @@ fn apply_theme(mode: ThemeMode, text: TextPrefs, window: &mut Window, cx: &mut A
     Theme::update(cx, |theme| {
         theme.mono_font_family = MONO_FONT.into();
         theme.accent = accent;
+        // Notes come up in the bottom corner: in the top one they lay over
+        // the response's buttons (text or tree, copy) for as long as they
+        // stayed, and opening a project with unsynced changes shows one.
+        theme.notification.placement = Anchor::BottomRight;
         // The dark theme's backdrop hardly darkens a page that is dark already;
         // a dialog should stand off it as it does in the light one.
         if dark {
