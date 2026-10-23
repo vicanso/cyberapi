@@ -434,51 +434,7 @@ impl TreePanel {
                         .to_string(),
                     )
                     .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                        let (for_api, for_folder) = (state.clone(), state.clone());
-                        let (for_import, for_export) = (state.clone(), state.clone());
-                        let for_paste = state.clone();
-                        let menu = if editable {
-                            menu.item(
-                                PopupMenuItem::new(t!("workspace.new_api").to_string())
-                                    .icon(Icons::FilePlus)
-                                    // Its shortcut beside it, where it reaches the app;
-                                    // the click is the handler's.
-                                    .when(this_build::takes_new_keys(), |item| item.action(Box::new(NewApi)))
-                                    .on_click(move |_, window, cx| new_item(&for_api, None, ItemKind::Api, window, cx)),
-                            )
-                            .item(
-                                PopupMenuItem::new(t!("workspace.new_folder").to_string())
-                                    .icon(Icons::FolderPlus)
-                                    .when(this_build::takes_new_keys(), |item| item.action(Box::new(NewFolder)))
-                                    .on_click(move |_, window, cx| {
-                                        new_item(&for_folder, None, ItemKind::Folder, window, cx)
-                                    }),
-                            )
-                            .separator()
-                            // F10.5: the clipboard is read on this click.
-                            .item(
-                                PopupMenuItem::new(t!("import.paste_curl").to_string())
-                                    .icon(Icons::ClipboardPaste)
-                                    .action(Box::new(PasteCurl))
-                                    .on_click(move |_, window, cx| paste_curl(&for_paste, None, window, cx)),
-                            )
-                            // F10.1.
-                            .item(
-                                PopupMenuItem::new(t!("import.title").to_string())
-                                    .icon(Icons::Import)
-                                    .on_click(move |_, window, cx| {
-                                        open_import_dialog(for_import.clone(), None, window, cx)
-                                    }),
-                            )
-                        } else {
-                            menu
-                        };
-                        // F11.1: a viewer may export too.
-                        menu.item(
-                            PopupMenuItem::new(t!("export.project").to_string())
-                                .icon(Icons::Download)
-                                .on_click(move |_, window, cx| export(&for_export, None, window, cx)),
-                        )
+                        project_menu(menu, &state, editable)
                     }),
             )
             .child(
@@ -818,6 +774,7 @@ impl TreePanel {
                 let end = self.drop_target == Some(DropTarget::End);
                 let primary = cx.theme().primary;
                 self.drawn = rows;
+                let (state, editable) = (self.state.downgrade(), self.state.read(cx).editable());
                 let list = div()
                     .id("tree-rows")
                     .size_full()
@@ -830,7 +787,10 @@ impl TreePanel {
                     .on_drag_move(
                         cx.listener(|this, event: &DragMoveEvent<DraggedItem>, _, cx| this.on_drag_move(event, cx)),
                     )
-                    .on_drop(cx.listener(|this, dragged: &DraggedItem, _, cx| this.on_drop(dragged, cx)));
+                    .on_drop(cx.listener(|this, dragged: &DraggedItem, _, cx| this.on_drop(dragged, cx)))
+                    // Below the rows, what the header's button offers: a row
+                    // takes its own right-click first.
+                    .context_menu(move |menu, _, _| project_menu(menu, &state, editable));
                 // The list keeps its own handle (a drop is placed by its
                 // offset), so its scrollbar is laid over it rather than the
                 // kit's scroll wrapper, which brings a handle of its own.
@@ -844,6 +804,53 @@ impl TreePanel {
             }
         }
     }
+}
+
+/// What can be added to the project, and its export (F11.1): the menu of
+/// the header's button, and of the tree where no row is. A viewer's only
+/// item is the export.
+fn project_menu(menu: PopupMenu, state: &WeakEntity<WorkspaceState>, editable: bool) -> PopupMenu {
+    let (for_api, for_folder) = (state.clone(), state.clone());
+    let (for_import, for_export) = (state.clone(), state.clone());
+    let for_paste = state.clone();
+    let menu = if editable {
+        menu.item(
+            PopupMenuItem::new(t!("workspace.new_api").to_string())
+                .icon(Icons::FilePlus)
+                // Its shortcut beside it, where it reaches the app;
+                // the click is the handler's.
+                .when(this_build::takes_new_keys(), |item| item.action(Box::new(NewApi)))
+                .on_click(move |_, window, cx| new_item(&for_api, None, ItemKind::Api, window, cx)),
+        )
+        .item(
+            PopupMenuItem::new(t!("workspace.new_folder").to_string())
+                .icon(Icons::FolderPlus)
+                .when(this_build::takes_new_keys(), |item| item.action(Box::new(NewFolder)))
+                .on_click(move |_, window, cx| new_item(&for_folder, None, ItemKind::Folder, window, cx)),
+        )
+        .separator()
+        // F10.5: the clipboard is read on this click.
+        .item(
+            PopupMenuItem::new(t!("import.paste_curl").to_string())
+                .icon(Icons::ClipboardPaste)
+                .action(Box::new(PasteCurl))
+                .on_click(move |_, window, cx| paste_curl(&for_paste, None, window, cx)),
+        )
+        // F10.1.
+        .item(
+            PopupMenuItem::new(t!("import.title").to_string())
+                .icon(Icons::Import)
+                .on_click(move |_, window, cx| open_import_dialog(for_import.clone(), None, window, cx)),
+        )
+    } else {
+        menu
+    };
+    // F11.1: a viewer may export too.
+    menu.item(
+        PopupMenuItem::new(t!("export.project").to_string())
+            .icon(Icons::Download)
+            .on_click(move |_, window, cx| export(&for_export, None, window, cx)),
+    )
 }
 
 /// An item's menu (F3.9 / F3.10). A viewer only pins and exports.
