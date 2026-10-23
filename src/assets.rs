@@ -41,6 +41,7 @@ gpui_kit::assets::icon_assets!(
         Terminal,
         Trash,
         Undo2,
+        Ungroup,
         UserCog,
         Users,
         WandSparkles
@@ -107,6 +108,7 @@ mod tests {
             IconName::Terminal,
             IconName::Trash,
             IconName::Undo2,
+            IconName::Ungroup,
             IconName::UserCog,
             IconName::Users,
             IconName::WandSparkles,

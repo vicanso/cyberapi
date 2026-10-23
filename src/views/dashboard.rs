@@ -320,6 +320,25 @@ impl DashboardView {
         );
     }
 
+    /// A group of the reader's undone, once asked: its `count` projects go
+    /// back to those in none. The projects themselves are not touched.
+    fn confirm_ungroup(&mut self, name: String, count: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let app = AppStore::global(cx).state().clone();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let (app, name) = (app.clone(), name.clone());
+            alert
+                .title(t!("dashboard.ungroup_title", name = name).to_string())
+                .description(t!("dashboard.ungroup_description", count = count).to_string())
+                .confirm()
+                .ok_text(t!("dashboard.ungroup_ok").to_string())
+                .cancel_text(t!("common.cancel").to_string())
+                .on_ok(move |_, _, cx| {
+                    app.update(cx, |app, cx| app.rename_group(&name, "", cx));
+                    true
+                })
+        });
+    }
+
     /// Server-sync §3.3: the project's unsynced changes given up.
     fn confirm_discard(&mut self, collection: Collection, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.clone();
@@ -724,12 +743,22 @@ impl DashboardView {
                                 .icon(IconName::Ellipsis)
                                 .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
                                     let (name, view) = (name.clone(), view.clone());
+                                    let (ungrouped, ungroup_view) = (name.clone(), view.clone());
                                     menu.item(
                                         PopupMenuItem::new(t!("dashboard.rename_group").to_string())
                                             .icon(Icons::Pencil)
                                             .on_click(move |_, window, cx| {
                                                 let _ = view.update(cx, |this, cx| {
                                                     this.open_rename_group(name.clone(), window, cx)
+                                                });
+                                            }),
+                                    )
+                                    .item(
+                                        PopupMenuItem::new(t!("dashboard.ungroup").to_string())
+                                            .icon(Icons::Ungroup)
+                                            .on_click(move |_, window, cx| {
+                                                let _ = ungroup_view.update(cx, |this, cx| {
+                                                    this.confirm_ungroup(ungrouped.clone(), count, window, cx)
                                                 });
                                             }),
                                     )

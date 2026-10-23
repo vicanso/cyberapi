@@ -788,6 +788,17 @@ mod tests {
         );
         assert_eq!(kept.folded_groups, ["jobs"], "folded as it was, under its new name");
 
+        // Ungrouped: every project of it in none, and no fold left behind.
+        state.update(cx, |state, cx| {
+            state.set_project_group(blog.id.clone(), "jobs", cx);
+            state.rename_group("jobs", "", cx);
+        });
+        cx.run_until_parked();
+        let kept = pollster::block_on(store.storage().prefs().app()).expect("prefs");
+        assert!(kept.project_groups.is_empty(), "{:?}", kept.project_groups);
+        assert!(kept.folded_groups.is_empty(), "{:?}", kept.folded_groups);
+        state.update(cx, |state, cx| state.set_project_group(shop.id.clone(), "jobs", cx));
+
         assert!(crate::pins_local::set(
             "",
             &shop.id,
