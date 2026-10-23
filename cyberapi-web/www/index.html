@@ -198,6 +198,11 @@
   // sees or logs it; it leaves the address once it is no longer needed.
   const inviteToken = new URLSearchParams(location.hash.slice(1)).get("invite");
   const dropInvite = () => history.replaceState(null, "", location.pathname + location.search);
+  // A link pasted into a tab already on this page changes only the `#`,
+  // which loads nothing: start again, so the link is read.
+  window.addEventListener("hashchange", () => {
+    if (new URLSearchParams(location.hash.slice(1)).get("invite")) location.reload();
+  });
 
   // The account an invitation asks for, chosen and made: resolves `true`
   // once it is signed in, `false` when the reader would rather sign in.
