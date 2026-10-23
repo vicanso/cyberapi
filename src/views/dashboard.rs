@@ -372,10 +372,12 @@ impl DashboardView {
         });
     }
 
+    /// `shown` is how many a search found, out of `total`.
     fn render_toolbar(
         &self,
         sort: SortOrder,
         total: usize,
+        shown: Option<usize>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -397,12 +399,16 @@ impl DashboardView {
                     .bg(cx.theme().muted)
                     .text_xs()
                     .text_color(muted)
-                    .child(total.to_string()),
+                    .child(match shown {
+                        Some(shown) => format!("{shown} / {total}"),
+                        None => total.to_string(),
+                    }),
             )
             .child(
                 Input::new(&self.search)
                     .w(px(280.))
                     .small()
+                    .cleanable(true)
                     .prefix(Icon::new(IconName::Search).text_color(muted))
                     .when_some(shortcut, |input, shortcut| input.suffix(shortcut)),
             )
@@ -921,8 +927,18 @@ impl Render for DashboardView {
         if window.focused(cx).is_none() {
             self.focus.focus(window, cx);
         }
-        let sort = AppStore::global(cx).state().read(cx).prefs().collection_sort;
-        let total = self.state.read(cx).collections().len();
+        let app = AppStore::global(cx).state().read(cx);
+        let sort = app.prefs().collection_sort;
+        let collections = self.state.read(cx).collections();
+        let total = collections.len();
+        // While searching, how many of them it found.
+        let keyword = self.search.read(cx).value().to_string();
+        let shown = (!keyword.trim().is_empty()).then(|| {
+            grouped(collections, &app.prefs().project_groups, &keyword, sort)
+                .iter()
+                .map(|group| group.collections.len())
+                .sum()
+        });
         v_flex()
             .size_full()
             .track_focus(&self.focus)
@@ -930,7 +946,7 @@ impl Render for DashboardView {
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 this.search.focus_handle(cx).focus(window, cx);
             }))
-            .child(self.render_toolbar(sort, total, window, cx))
+            .child(self.render_toolbar(sort, total, shown, window, cx))
             .child(self.render_body(sort, window, cx))
     }
 }
