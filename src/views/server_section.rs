@@ -133,20 +133,26 @@ impl Render for ServerSection {
                 div(),
                 cx,
             )],
-            ServerStatus::SignedIn(me) => vec![setting_row(
-                t!("server.account").to_string(),
-                Some(
+            ServerStatus::SignedIn(me) => {
+                let name = me.account.label();
+                // The login beside the name only where it is another word.
+                let account = if name == me.account.name {
+                    t!("server.signed_in", address = address, name = name)
+                } else {
                     t!(
-                        "server.signed_in",
+                        "server.signed_in_named",
                         address = address,
-                        name = me.account.label(),
+                        name = name,
                         login = me.account.name
                     )
-                    .to_string(),
-                ),
-                self.sign_out_button(),
-                cx,
-            )],
+                };
+                vec![setting_row(
+                    t!("server.account").to_string(),
+                    Some(account.to_string()),
+                    self.sign_out_button(),
+                    cx,
+                )]
+            }
             ServerStatus::Unreachable(reason) => {
                 let state = self.state.clone();
                 vec![setting_row(
