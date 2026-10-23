@@ -41,6 +41,8 @@ pub use workspace::{WorkspaceView, bind_keys as bind_workspace_keys, bind_mac_pa
 
 use cyberapi_core::format::JSON_INDENT;
 use gpui_kit::component::input::TabSize;
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{ColorName, Sizable as _};
 
 /// The Tab of an editor that holds JSON: as many spaces as the JSON written
 /// everywhere is indented by.
@@ -49,4 +51,12 @@ fn json_tab() -> TabSize {
         tab_size: JSON_INDENT,
         hard_tabs: false,
     }
+}
+
+/// The word that a project has changes the server has not had
+/// (`docs/server-sync.md` §3.2), on a card and in the title bar. Amber text
+/// on a wash of it: the solid warning tag is white on yellow in the light
+/// theme and dark on yellow in the dark one, hard to read in both.
+fn unsynced_tag() -> Tag {
+    Tag::color(ColorName::Amber).small().rounded_full()
 }

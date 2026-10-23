@@ -7,7 +7,6 @@
 
 use crate::states::WorkspaceState;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::{
@@ -64,7 +63,7 @@ impl Render for ProjectTitle {
                 div()
                     .id("sync-status")
                     .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
-                    .child(Tag::warning().small().rounded_full().child(label.to_string())),
+                    .child(crate::views::unsynced_tag().child(label.to_string())),
             )
             .child(
                 Button::new("sync-push")

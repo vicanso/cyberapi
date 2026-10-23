@@ -28,7 +28,6 @@ use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMen
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
@@ -782,7 +781,7 @@ fn sync_chip(id: CollectionId, behind: bool, syncing: bool, state: &Entity<Dashb
             div()
                 .id(SharedString::from(format!("collection-unsynced-{key}")))
                 .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
-                .child(Tag::warning().small().rounded_full().child(label.to_string())),
+                .child(crate::views::unsynced_tag().child(label.to_string())),
         )
         .child(
             Button::new(SharedString::from(format!("collection-push-{key}")))
