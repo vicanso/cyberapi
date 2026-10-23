@@ -1,10 +1,10 @@
 //! A small button that shows the current choice and drops a menu of all of
-//! them — a role, a team, an account.
+//! them — a role, a team, an account. Its chevron says it opens one.
 
 use gpui_kit::component::button::Button;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::{Disableable as _, Sizable as _};
-use gpui_kit::{Anchor, App, ElementId, IntoElement, Window};
+use gpui_kit::component::{Disableable as _, Icon, IconName, Sizable as _, h_flex};
+use gpui_kit::{Anchor, App, ElementId, IntoElement, ParentElement as _, Styled as _, Window};
 use std::rc::Rc;
 
 pub fn pick<T: PartialEq + Clone + 'static>(
@@ -19,7 +19,13 @@ pub fn pick<T: PartialEq + Clone + 'static>(
     Button::new(id)
         .outline()
         .xsmall()
-        .label(label)
+        .child(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(label)
+                .child(Icon::new(IconName::ChevronDown).xsmall()),
+        )
         .disabled(disabled)
         .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
             options.iter().fold(menu, |menu, (value, text)| {
