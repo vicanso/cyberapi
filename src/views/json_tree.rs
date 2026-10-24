@@ -116,7 +116,7 @@ impl JsonTree {
 
     fn item_for(&self, node: &JsonTreeNode, is_root: bool, rows: &mut HashMap<SharedString, Row>) -> TreeItem {
         let id: SharedString = node.path.clone().into();
-        // A container past the depth cap is one row: its preview, not "0 members".
+        // A container past the depth cap is one row: its preview, not "0 fields".
         let detail: SharedString = if node.preview.is_empty() {
             match node.kind {
                 JsonNodeKind::Object => crate::i18n::counted("editor.json_tree_member", node.len).into(),
