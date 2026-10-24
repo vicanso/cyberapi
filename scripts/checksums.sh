@@ -7,7 +7,7 @@
 #   scripts/checksums.sh <dir> vX.Y.Z     SHA256SUMS and latest.json
 #
 # SHA256SUMS is sha256sum's format, sorted by name (`sha256sum -c
-# SHA256SUMS` checks a download). latest.json is what a later in-app update
+# SHA256SUMS` checks a download). latest.json is what the desktop's update
 # reads, as zedis's: the version, and for each package its os, arch, kind,
 # download URL, sha256 and size. Its version is the tag's, which must be
 # Cargo.toml's.

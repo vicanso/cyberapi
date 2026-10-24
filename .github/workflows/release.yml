@@ -1,6 +1,7 @@
 # The packages (package.yml) attached to the release a version tag makes,
-# with their SHA256SUMS and latest.json (scripts/checksums.sh), and the
-# browser build's image pushed to Docker Hub (docker.yml). A manual run
+# with their SHA256SUMS and latest.json (scripts/checksums.sh) and the
+# version's CHANGELOG.md section as its text (scripts/release-notes.sh), and
+# the browser build's image pushed to Docker Hub (docker.yml). A manual run
 # builds the packages and keeps them as its artifacts only.
 name: Release
 
@@ -43,6 +44,10 @@ jobs:
         # SHA256SUMS and latest.json beside the packages, in place of each
         # one's own .sha256 (scripts/checksums.sh).
         run: scripts/checksums.sh dist "$GITHUB_REF_NAME"
+      - name: notes
+        # The release's text, which the desktop's update dialog shows.
+        run: scripts/release-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
+          body_path: ${{ runner.temp }}/notes.md

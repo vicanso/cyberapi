@@ -100,6 +100,18 @@ pub fn redirected(url: &str, location: &str) -> Option<String> {
     base.join(location.trim()).ok().map(String::from)
 }
 
+/// A release's notes as the update dialog shows them: without their own
+/// heading (`## [0.3.0](…) - date`, as a section of CHANGELOG.md starts),
+/// which the dialog's title says already.
+pub fn notes_body(notes: &str) -> &str {
+    let notes = notes.trim_start();
+    match notes.split_once('\n') {
+        Some((first, rest)) if first.starts_with("## ") => rest.trim_start(),
+        None if notes.starts_with("## ") => "",
+        _ => notes,
+    }
+}
+
 /// Whether the automatic check is due: never made, or made `interval`
 /// seconds ago or more (a clock set back counts as due too).
 pub fn check_due(last: i64, now: i64, interval: i64) -> bool {
@@ -196,6 +208,19 @@ mod tests {
             Some("https://github.com/d")
         );
         assert_eq!(redirected("not a url", "/d"), None);
+    }
+
+    #[test]
+    fn the_notes_lose_the_heading_the_title_repeats() {
+        let section = "## [0.3.0](https://example.test/compare) - 2026-10-24\r\n\r\n### Features\r\n\n- one";
+        assert_eq!(notes_body(section), "### Features\r\n\n- one");
+        assert_eq!(notes_body("- one\n- two"), "- one\n- two");
+        assert_eq!(notes_body("## [0.3.0]"), "");
+        assert_eq!(
+            notes_body("### Features\n- one"),
+            "### Features\n- one",
+            "only the version's own"
+        );
     }
 
     #[test]

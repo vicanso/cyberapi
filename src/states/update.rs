@@ -311,7 +311,7 @@ async fn latest(engine: Arc<dyn HttpEngine>, kinds: &'static [&'static str]) -> 
             return Ok(Some(UpdateInfo {
                 version,
                 page: release.html_url,
-                notes: release.body,
+                notes: update::notes_body(&release.body).to_string(),
                 asset: None,
             }));
         }
@@ -320,12 +320,15 @@ async fn latest(engine: Arc<dyn HttpEngine>, kinds: &'static [&'static str]) -> 
         return Ok(None);
     }
     let asset = update::pick_asset(&manifest.assets, std::env::consts::OS, std::env::consts::ARCH, kinds).cloned();
-    // The notes are the API's; without them the page still has them.
+    // The notes are the API's, when it speaks of the same release; without
+    // them the page still has them.
     let notes = match custom {
         Some(_) => String::new(),
         None => json::<Release>(&engine, RELEASE_API)
             .await
-            .map(|release| release.body)
+            .ok()
+            .filter(|release| release.tag_name.trim_start_matches('v') == manifest.version)
+            .map(|release| update::notes_body(&release.body).to_string())
             .unwrap_or_default(),
     };
     let page = match manifest.notes.trim() {
@@ -360,6 +363,8 @@ mod tests {
         sum: String,
         /// Whether the release has a manifest.
         manifest: bool,
+        /// The newest release the API speaks of.
+        api_version: String,
         asked: Mutex<Vec<String>>,
     }
 
@@ -372,6 +377,7 @@ mod tests {
                 payload,
                 sum,
                 manifest,
+                api_version: version.into(),
                 asked: Mutex::default(),
             }
         }
@@ -409,8 +415,8 @@ mod tests {
                     200,
                     vec![],
                     format!(
-                        r#"{{"tag_name":"v{v}","html_url":"https://releases.test/v{v}","body":"- what changed"}}"#,
-                        v = self.version
+                        r###"{{"tag_name":"v{v}","html_url":"https://releases.test/v{v}","body":"## [{v}](https://releases.test/compare) - 2026-10-24\r\n\r\n- what changed"}}"###,
+                        v = self.api_version
                     )
                     .into_bytes(),
                 ),
@@ -481,7 +487,7 @@ mod tests {
             .expect("found");
         assert_eq!(found.version, "99.0.0");
         assert_eq!(found.page, "https://releases.test/v99.0.0");
-        assert_eq!(found.notes, "- what changed", "the API's notes");
+        assert_eq!(found.notes, "- what changed", "the API's notes, without their heading");
         assert_eq!(
             found.asset.as_ref().map(|asset| asset.name.as_str()),
             Some("cyberapi.pkg")
@@ -595,6 +601,22 @@ mod tests {
         cx.executor().advance_clock(START_DELAY);
         cx.run_until_parked();
         assert!(!found(&off, cx));
+    }
+
+    /// The API's notes are another release's while it lags behind the
+    /// manifest (or runs ahead): none are better than those.
+    #[gpui_kit::test]
+    async fn the_notes_are_only_the_releases_own(cx: &mut TestAppContext) {
+        launch(cx);
+        let mut releases = Releases::new("99.0.0", true);
+        releases.api_version = "98.0.0".into();
+        let (state, _) = state(Arc::new(releases), Delivery::Replaced, cx);
+        state.update(cx, |state, cx| state.check(true, cx));
+        cx.run_until_parked();
+        let found = state
+            .read_with(cx, |state, _| state.available().cloned())
+            .expect("found");
+        assert_eq!((found.version.as_str(), found.notes.as_str()), ("99.0.0", ""));
     }
 
     /// A release made before there was a manifest is found by the API, with
