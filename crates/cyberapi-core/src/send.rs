@@ -55,6 +55,10 @@ pub enum PrepareError {
     Template { source: TemplateError },
     #[snafu(display("{uri} is not a URL: {message}"))]
     Url { uri: String, message: String },
+    /// The URI starts with `{{NAME}}` and no enabled environment variable
+    /// has that name (#50): said as that, not as the URL it leaves behind.
+    #[snafu(display("there is no enabled environment variable {name}"))]
+    Environment { name: String },
 }
 
 /// What [`prepare`] takes besides the request.
@@ -276,6 +280,11 @@ fn with_scheme(uri: &str) -> String {
 pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedRequest, PrepareError> {
     let render = |text: &str| template::render(text, cx.template, cx.files).context(TemplateSnafu);
 
+    if let (Some(name), _) = split_env_prefix(request.uri.trim())
+        && !enabled(cx.variables, VariableCategory::Environment).any(|variable| variable.name == name)
+    {
+        return Err(PrepareError::Environment { name: name.to_string() });
+    }
     // The URL, then the enabled query appended to what it already has.
     let uri = with_scheme(&resolve_uri(&request.uri, cx.variables));
     let mut url = url::Url::parse(&uri).map_err(|error| PrepareError::Url {
@@ -522,8 +531,26 @@ mod tests {
         assert_eq!(prepared.method, HttpMethod::Get);
         assert_eq!(prepared.timeouts, Timeouts::default().effective());
 
-        // No such variable: the URI stays as written.
+        // No such variable: the URI stays as written, and sending says why.
         assert_eq!(resolve_uri("{{NOPE}}/x", &variables), "{{NOPE}}/x");
+        let unknown = HttpRequest {
+            uri: "{{NOPE}}/x".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            prepare_with(&unknown, &variables),
+            Err(PrepareError::Environment { name: "NOPE".into() })
+        );
+        let disabled = [variable(VariableCategory::Environment, "HOST", "http://off", false)];
+        let only_off = HttpRequest {
+            uri: "{{HOST}}/x".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            prepare_with(&only_off, &disabled),
+            Err(PrepareError::Environment { name: "HOST".into() }),
+            "a disabled one is none"
+        );
         let broken = HttpRequest {
             uri: "http://[::1/x".into(),
             ..Default::default()

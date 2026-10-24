@@ -182,6 +182,10 @@ impl RequestEditor {
                 ApiEvent::NotSent(message) => {
                     window.push_notification(Notification::error(message.clone()), cx);
                 }
+                ApiEvent::NoEnvironment(name) => {
+                    let message = t!("editor.environment_missing", name = name).to_string();
+                    window.push_notification(Notification::error(message), cx);
+                }
                 ApiEvent::Curl(command) => {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(command.clone()));
                     window.push_notification(Notification::success(t!("response.curl_copied").to_string()), cx);

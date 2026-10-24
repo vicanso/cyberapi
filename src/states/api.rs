@@ -17,6 +17,7 @@ use super::{Load, WorkspaceState, run_store};
 use crate::this_build;
 use cyberapi_core::model::{ApiSetting, ContentType, HttpMethod, HttpRequest, KvParam};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
+use cyberapi_core::send::PrepareError;
 use cyberapi_core::{CollectionId, ItemId};
 use cyberapi_service::{SendFailure, Sender};
 use cyberapi_store::StoreError;
@@ -31,12 +32,25 @@ pub const SAVE_DELAY: Duration = Duration::from_millis(300);
 /// A send this soon after the last one is the same click (F5.1).
 const DOUBLE_CLICK: Duration = Duration::from_millis(200);
 
+/// Why nothing was sent, as the view hears it.
+fn not_sent(failure: SendFailure) -> ApiEvent {
+    match failure {
+        SendFailure::Prepare {
+            source: PrepareError::Environment { name },
+        } => ApiEvent::NoEnvironment(name),
+        other => ApiEvent::NotSent(other.to_string()),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ApiEvent {
     /// A change could not be saved, or the history could not be read.
     Failed(StoreError),
     /// Nothing was sent: the request could not be prepared (F5.7).
     NotSent(String),
+    /// Nothing was sent: the URI starts with an environment variable no
+    /// enabled one is named as (#50). Its name, for the view to say.
+    NoEnvironment(String),
     /// The request was replaced from the history (F7.10): the editor's
     /// fields read it again.
     RequestReplaced,
@@ -362,7 +376,7 @@ impl ApiState {
                 let api = self.api.clone();
                 let _ = self.workspace.update(cx, |workspace, _| workspace.forget_answer(&api));
             }
-            Err(failure) => cx.emit(ApiEvent::NotSent(failure.to_string())),
+            Err(failure) => cx.emit(not_sent(failure)),
         }
         cx.notify();
     }
@@ -440,7 +454,7 @@ impl ApiState {
             let result = cx.background_spawn(call).await;
             let _ = this.update(cx, |_, cx| match result {
                 Ok(command) => cx.emit(ApiEvent::Curl(command)),
-                Err(failure) => cx.emit(ApiEvent::NotSent(failure.to_string())),
+                Err(failure) => cx.emit(not_sent(failure)),
             });
         })
         .detach();

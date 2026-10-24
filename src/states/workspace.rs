@@ -1990,6 +1990,34 @@ mod tests {
         assert_eq!((request.method, request.uri.as_str()), (HttpMethod::Get, ""));
     }
 
+    /// #50: a URI that starts with an environment variable nobody enabled
+    /// is said as that, by its name, not as the URL it would leave.
+    #[gpui_kit::test]
+    async fn an_unknown_environment_variable_is_named(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = cx.new(|cx| WorkspaceState::new(sender(&storage, true), collection.clone(), cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.create_api(None, "ping".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let into = heard.clone();
+        cx.update(|cx| {
+            cx.subscribe(&api, move |_, event, _| match event {
+                ApiEvent::NoEnvironment(name) => into.borrow_mut().push(format!("no {name}")),
+                ApiEvent::NotSent(message) => into.borrow_mut().push(message.clone()),
+                _ => {}
+            })
+            .detach();
+        });
+        api.update(cx, |api, cx| api.set_uri("{{host}}/echo".into(), cx));
+        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        cx.run_until_parked();
+        assert_eq!(heard.borrow().as_slice(), ["no host"]);
+        assert!(api.read_with(cx, |api, _| api.responses().is_empty()), "nothing sent");
+    }
+
     #[gpui_kit::test]
     async fn sending_keeps_the_answer_and_a_second_click_cancels(cx: &mut TestAppContext) {
         let storage = MemoryStore::new().storage();
