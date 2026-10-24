@@ -29,15 +29,15 @@
 
 ## Features
 
-- **Native and fast.** macOS, Windows and Linux, drawn on the GPU with GPUI. A project with thousands of APIs opens at once.
-- **Projects, folders and APIs.** Search by name or pinyin, drag to reorder, pin the APIs you use most (⌘/Ctrl-1…9), group projects on the home page.
-- **Requests.** Query, headers, Basic auth, and JSON, form, multipart, XML or plain-text bodies; bulk-edit any list as text.
-- **Variables and functions.** Environments, custom variables and global headers per project. Template functions such as `{{g(api, data.token)}}` (a field of another API's latest response), `{{value(name)}}`, `{{timestamp()}}`, `{{md5(…)}}`, `{{sha256(…)}}`, `{{base64.readFile(…)}}`, with hints while you type.
-- **Responses.** Time split into DNS, TCP, TLS, server and transfer; HTTP/1.1 and HTTP/2; JSON raw as it came, indented, or as a tree; a history per API; cookies kept and sent; redirects followed when you want them.
+- **Native and fast.** macOS, Windows and Linux, drawn on the GPU with GPUI. A project with thousands of APIs opens at once. Light and dark themes, English and Chinese, adjustable text sizes and line wrapping; the desktop window reopens where you left it, on each screen.
+- **Projects, folders and APIs.** Search by name or pinyin, drag to reorder, duplicate, move to a folder, copy an API's config; pin the APIs you use most (⌘/Ctrl-1…9); group projects on the home page. ⌘/Ctrl-Enter sends, ⌘/Ctrl-N adds an API, the arrow keys walk the tree, and a list shows every shortcut.
+- **Requests.** Query, headers, Basic auth, and JSON, form, multipart, XML or plain-text bodies; bulk-edit any list as text. A query typed into the URL moves to the Query table. Timeouts, HTTP/1.1 or HTTP/2, redirects followed or not, and self-signed certificates accepted when you say so.
+- **Variables and functions.** Environments, custom variables and global headers per project. Template functions such as `{{g(api, data.token)}}` (a field of another API's latest response), `{{value(name)}}`, `{{timestamp()}}`, `{{md5(…)}}`, `{{sha256(…)}}`, `{{base64.readFile(…)}}`, `{{readTextFile(…)}}` and `{{openFile()}}` (a file picked as you send), with hints while you type.
+- **Responses.** Time split into DNS, TCP, TLS, server and transfer; JSON raw as it came, indented or as a tree (NDJSON too); images shown in place, a PDF in the system viewer, an HTML page in your browser (desktop); copy a body or save it to a file; a history per API. A large body stays quick: the panel shows its start, and a line too long to wrap scrolls sideways.
+- **Cookies.** Kept from every response and sent with the requests they match, across projects; search, add, edit, delete or clear them.
 - **cURL and imports.** Paste a cURL command to make an API, copy any request as cURL; import Postman, Insomnia, Swagger 2 / OpenAPI 3 and cURL; export an API, a folder or a project.
 - **Your data.** Back up and restore on the desktop, in the same format as the earlier Tauri app.
-- **Teams.** A self-hosted web version with accounts by invitation, teams and per-project roles. The desktop app signs in to the same server and works on shared projects offline, syncing when you choose.
-- Light and dark themes, English and Chinese.
+- **Teams.** A self-hosted web version — one binary or a Docker image, at the root or under a sub-path — with accounts by invitation, teams, and per-project roles (viewer, editor, manager); share a project with accounts or teams, or move it to another team. The desktop app signs in to the same server and works on shared projects offline, syncing when you choose and asking whose version to keep when someone else changed it meanwhile; APIs and folders can stay local, out of the sync.
 
 ## Install
 
