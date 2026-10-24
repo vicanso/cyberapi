@@ -1,0 +1,225 @@
+[中文](./DEPLOY_zh.md) | English
+
+# Deploying the web version
+
+The web version is one program, `cyberapi-bridge`. It serves the page (the app compiled to WebAssembly, built into the binary) and its API from one address, keeps the accounts, teams, projects, response history, cookies and settings in PostgreSQL or MySQL, and sends the requests the page prepares. It keeps nothing on its own disk.
+
+- [What you need](#what-you-need)
+- [Try it](#try-it)
+- [Docker Compose](#docker-compose)
+- [The binary, with systemd](#the-binary-with-systemd)
+- [Options](#options)
+- [The first administrator](#the-first-administrator)
+- [HTTPS behind a reverse proxy](#https-behind-a-reverse-proxy)
+- [Where requests may go](#where-requests-may-go)
+- [Accounts, teams and invitations](#accounts-teams-and-invitations)
+- [Signing in from the desktop app](#signing-in-from-the-desktop-app)
+- [Upgrading](#upgrading)
+- [Backups](#backups)
+
+## What you need
+
+- **A database**: PostgreSQL or MySQL (CI tests PostgreSQL 18 and MySQL 8.4). Give the bridge an empty database and a user that can create tables in it: it creates the schema on its first start and brings it up to date on every start after.
+- **The program**: the image [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web) for linux/amd64 and linux/arm64 (tags: each version such as `0.2.0`, `latest`, and `nightly` from `main`), or `cyberapi-web-<version>-x86_64-unknown-linux-gnu.tar.gz` from [Releases](https://github.com/vicanso/cyberapi/releases) (glibc 2.39 or newer: Ubuntu 24.04, Debian 13).
+- **HTTPS** in front of it for anything beyond a try on your own machine: the login cookie is `Secure`, which browsers send over HTTPS only.
+
+## Try it
+
+On your own machine, against a PostgreSQL you already have:
+
+```bash
+docker run --rm -p 127.0.0.1:7380:7380 \
+  -e CYBERAPI_BRIDGE_STORE=postgres://user:password@host.docker.internal:5432/cyberapi \
+  vicanso/cyberapi-web --insecure-cookie
+```
+
+`host.docker.internal` is the host as Docker Desktop names it; on Linux add `--add-host=host.docker.internal:host-gateway`. Open http://127.0.0.1:7380/ and make the first administrator with the setup token from the log ([below](#the-first-administrator)). Arguments after the image name go to the bridge; `--insecure-cookie` lets the login work over plain HTTP, for trying it only.
+
+## Docker Compose
+
+The bridge and a PostgreSQL beside it, published on this host's loopback for a reverse proxy on the same host:
+
+```yaml
+# compose.yaml
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: cyberapi
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: cyberapi
+    volumes:
+      - db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "cyberapi"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  cyberapi:
+    image: vicanso/cyberapi-web:0.2.0
+    environment:
+      CYBERAPI_BRIDGE_STORE: postgres://cyberapi:change-me@db:5432/cyberapi
+    ports:
+      - "127.0.0.1:7380:7380"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  db:
+```
+
+```bash
+docker compose up -d
+docker compose logs cyberapi | grep setup_token
+```
+
+Pin a version as above rather than `latest`, so an upgrade is a decision ([Upgrading](#upgrading)). With MySQL the address is `mysql://user:password@host:3306/cyberapi`.
+
+The image runs as a non-root user on a distroless base (no shell), listens on `0.0.0.0:7380` inside the container, and stops cleanly on `docker stop`: requests under way finish first.
+
+## The binary, with systemd
+
+```bash
+tar -xzf cyberapi-web-0.2.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 755 cyberapi-web-0.2.0-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
+```
+
+The database address goes in a file only root can read, not on the command line, where anyone who can list processes would see it:
+
+```bash
+# /etc/cyberapi/bridge.env  (chmod 600)
+CYBERAPI_BRIDGE_STORE=postgres://cyberapi:change-me@127.0.0.1:5432/cyberapi
+```
+
+```ini
+# /etc/systemd/system/cyberapi-bridge.service
+[Unit]
+Description=Cyber API web version
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/cyberapi/bridge.env
+Environment=CYBERAPI_BRIDGE_LISTEN=127.0.0.1:7380
+ExecStart=/usr/local/bin/cyberapi-bridge
+DynamicUser=yes
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now cyberapi-bridge
+journalctl -u cyberapi-bridge | grep setup_token
+```
+
+## Options
+
+Each is a flag and, where given, an environment variable.
+
+| Flag | Environment variable | |
+|---|---|---|
+| `--store <url>` | `CYBERAPI_BRIDGE_STORE` | **Required.** `postgres://…` or `mysql://…`. Prefer the variable: it is not shown in the process list, and the password is left out of the bridge's error messages. |
+| `--listen <addr>` | `CYBERAPI_BRIDGE_LISTEN` | Where to listen. `127.0.0.1:7380` by default; the image sets `0.0.0.0:7380`. |
+| `--setup-token <token>` | `CYBERAPI_BRIDGE_SETUP_TOKEN` | The token the first administrator is made with. Random, and logged, when not given. |
+| `--allow-target <ranges>` | `CYBERAPI_BRIDGE_ALLOW_TARGETS` | Address ranges requests may also go to, comma-separated, e.g. `10.0.0.0/8,192.168.1.0/24` ([Where requests may go](#where-requests-may-go)). |
+| `--insecure-cookie` | | Leave `Secure` off the login cookie, for plain HTTP on your own machine. |
+| `--www <dir>` | | Serve this directory as the page instead of the built-in one (development). |
+| | `RUST_LOG` | How much to log: `info` by default, `debug` for more. Logs go to standard output. |
+
+`cyberapi-bridge --help` lists them too.
+
+## The first administrator
+
+While the database has no account, the bridge logs a setup token on every start:
+
+```
+INFO cyberapi_bridge: no account yet: make the first administrator with this setup token setup_token=…
+```
+
+Open the page; it asks for the token, a name, a display name and a password, and makes that account a system administrator. From then on the token does nothing, and new accounts come only from invitations. The token is random on each start unless `CYBERAPI_BRIDGE_SETUP_TOKEN` sets it; wrong tokens are slowed down.
+
+## HTTPS behind a reverse proxy
+
+Let the proxy terminate TLS and pass everything to the bridge. Two settings matter: request bodies up to 64 MB (the bridge's own limit), and a read timeout above the app's default request timeout of 300 seconds, so a slow API's answer is not cut off by the proxy first.
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name cyberapi.example.com;
+    ssl_certificate     /etc/ssl/cyberapi.example.com.pem;
+    ssl_certificate_key /etc/ssl/cyberapi.example.com.key;
+
+    client_max_body_size 64m;
+
+    location / {
+        proxy_pass http://127.0.0.1:7380;
+        proxy_set_header Host $host;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+}
+```
+
+**Under a sub-path.** Every address the page uses is relative to it, so it can live at `https://example.com/cyberapi/` beside other applications. The proxy strips the prefix (note both trailing slashes):
+
+```nginx
+    location /cyberapi/ {
+        proxy_pass http://127.0.0.1:7380/;
+        proxy_set_header Host $host;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+```
+
+**Failed sign-ins are counted per account name (5 in 15 minutes) and per client address (30 in 15 minutes).** Behind a proxy the bridge sees only the proxy's address, so the per-address count is everyone's together: 30 failed sign-ins from anyone hold back every sign-in until the window passes. Limit `/v1/login` at the proxy by the real client address as well, for example with nginx's `limit_req`.
+
+## Where requests may go
+
+The bridge sends the page's requests itself, so by default it sends them **to public addresses only**: loopback, private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (including the cloud metadata address `169.254.169.254`) and similar are refused, checked after DNS resolution and again on every redirect. A server must not become a way into the network it sits in.
+
+To test the APIs of your own network, allow their ranges:
+
+```bash
+CYBERAPI_BRIDGE_ALLOW_TARGETS=10.0.0.0/8,192.168.1.0/24
+```
+
+In a container, `127.0.0.1` is the container itself; an API on the host is reached at the host's address, which then has to be allowed. Each account has at most 16 requests under way at once; more are answered "busy" at once rather than queued.
+
+The desktop app sends its requests from the computer it runs on, even for server projects, so none of this applies there.
+
+## Accounts, teams and invitations
+
+- **Accounts come from invitations.** In the page's settings menu (the gear), a system administrator opens **Accounts…** to create an invitation link for a new account with only its own space, reset a password or disable an account. A team's owner or admin opens **Teams…** to create a link that also joins the team with a chosen role (only an owner can invite another owner). A link works once, for 7 days, and can be taken back until it is used. The program sends no email: copy the link to the person, who opens it and chooses a name, display name and password.
+- **Spaces and teams.** Every account has a personal space no one else can join. Teams have owners, admins and members; members edit the team's projects, owners and admins manage them.
+- **Sharing a project.** A project's **Access…** menu shares it with another account or team as Viewer, Editor or Manager, or moves it to another team. Viewers see but do not change it.
+- **Sessions** last 30 days. Expired ones are removed every hour.
+
+System administrators manage accounts but see only the projects shared with them.
+
+## Signing in from the desktop app
+
+The desktop app can sign in to the same server: **Settings → Server**, the page's address (`https://cyberapi.example.com`, or with its sub-path), then a name and password. Accounts are made in the page; the desktop only signs in.
+
+- The address must be reachable from the desktop with a certificate the system trusts. The desktop always checks it, also when its own settings let requests skip certificate checks.
+- Once signed in, the home page lists the account's server projects beside this computer's own. Each is copied to the computer, edited there, also offline, and sent to the server when you sync; if someone else changed it meanwhile, you choose whose version to keep.
+- Requests, response history and cookies stay on the computer; the desktop's sign-in is kept in `server.json` in its data directory, not in the projects' database and not in backups.
+
+## Upgrading
+
+1. Back up the database ([Backups](#backups)).
+2. Change the image tag and `docker compose up -d`, or replace the binary and `systemctl restart cyberapi-bridge`.
+
+The new version brings the schema up to date on start. **An older bridge does not start on a database a newer one has upgraded**, so going back means restoring the backup taken before. Read [`CHANGELOG.md`](../CHANGELOG.md) for what changed. Sessions survive the upgrade; a page already open keeps the version it loaded until it is reloaded, so reload it.
+
+## Backups
+
+Everything the server keeps is in its database: back it up as you back up any database (`pg_dump`, `mysqldump`, or your provider's snapshots). Two things are not in it:
+
+- **Unsynced edits made in a browser** to a server project are a draft in that browser's local storage until synced.
+- **The desktop's copies** of server projects, and its own projects, are in the desktop's data directory; the desktop's own backup covers them.

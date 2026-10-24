@@ -2,6 +2,8 @@
 
 CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / Insomnia），同一份代码构建**桌面版**和**浏览器版**。功能范围与分层设计见 `docs/gpui-refactor-feature-analysis.md`（功能编号 `F<模块>.<序号>`，代码注释里引用这些编号）。工程结构参照 `~/github/zedis`。
 
+面向用户的文档有中英两份，内容逐节对应：`README.md` / `README_zh.md`（功能、安装、网页版概要、开发），`docs/DEPLOY.md` / `docs/DEPLOY_zh.md`（网页版部署：Compose、systemd、反向代理与子路径、选项、可发往的地址、账号与邀请、桌面登录、升级、备份）。改动 bridge 的选项、默认值、限制，或安装包的种类时，两种语言都要改。
+
 ## Commands
 
 - 运行桌面版：`make dev`（`RUST_LOG=debug` 用 `make debug`）

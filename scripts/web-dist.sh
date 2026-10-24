@@ -63,6 +63,9 @@ Failed sign-ins are slowed per name and per address; behind a reverse proxy
 every request comes from the proxy's address, so rate-limit there as well.
 --www <dir> serves a directory as the page instead of the one built in.
 RUST_LOG=debug logs more.
+
+The whole guide (Docker Compose, systemd, a reverse proxy, upgrades):
+https://github.com/vicanso/cyberapi/blob/main/docs/DEPLOY.md
 README
 
 TARBALL="$OUT_DIR/$NAME.tar.gz"
