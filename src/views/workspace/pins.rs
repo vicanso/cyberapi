@@ -1,18 +1,22 @@
-//! The pinned APIs as tags in the title bar (M12): the number, the method
-//! and the name, the one in the editor marked; a click — or Cmd/Ctrl and the
-//! number — opens it without moving the tree's selection, the close button
-//! unpins. More than the bar holds: a button at its end lists them all.
+//! The pinned APIs as tabs in the title bar (M12), after a divider and a pin
+//! so they read as a bar of their own, not more of the path before them:
+//! the number (where Cmd/Ctrl and it opens the pin), the method and the
+//! name; the one in the editor in the tree's selected color. A click opens
+//! it without moving the tree's selection; the close button, shown on the
+//! open tab and on the one under the pointer, unpins. More than the bar
+//! holds: a button at its end lists them all.
 
 use super::{KEY_CONTEXT, method_color, method_label, pin_action};
 use crate::states::WorkspaceState;
+use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px, rems,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px, rems,
 };
 use rust_i18n::t;
 
@@ -55,23 +59,20 @@ impl Render for PinsBar {
         let all = self.overflowing.then(|| self.render_all());
         let state = self.state.read(cx);
         let selected = state.opened().cloned();
+        let pinned = state.pinned();
+        let any = !pinned.is_empty();
+        let shortcuts = crate::this_build::takes_pin_keys();
         let theme = cx.theme();
-        let tags = state.pinned().into_iter().enumerate().map(|(index, api)| {
+        let tags = pinned.into_iter().enumerate().map(|(index, api)| {
             let active = selected.as_ref() == Some(&api.id);
             let (select_id, unpin_id) = (api.id.clone(), api.id.clone());
-            // The whole name, and the key that selects it. The current pin
-            // is the brighter label; the others stay quiet, with no box.
-            let action = pin_action(index).filter(|_| crate::this_build::takes_pin_keys());
+            let group = SharedString::from(format!("pin-{index}"));
+            // The whole name, and the key that selects it.
+            let action = pin_action(index).filter(|_| shortcuts);
             let name = api.name.clone();
-            let ink = if active {
-                theme.foreground
-            } else {
-                theme.muted_foreground
-            };
-            let method_ink = method_color(api.request.method, cx);
-            let method_ink = if active { method_ink } else { method_ink.opacity(0.55) };
             h_flex()
                 .id(("pin", index))
+                .group(group.clone())
                 .tooltip(move |window, cx| {
                     let tooltip = Tooltip::new(name.clone());
                     match &action {
@@ -82,41 +83,61 @@ impl Render for PinsBar {
                 })
                 .flex_none()
                 .max_w(px(200.))
-                .h(px(24.))
+                .h(px(22.))
                 .pl_2()
                 .gap_0p5()
                 .items_center()
                 .rounded(theme.radius)
+                .border_1()
                 .text_xs()
-                .text_color(ink)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.list_hover))
+                .map(|tag| {
+                    if active {
+                        tag.bg(theme.list_active)
+                            .border_color(theme.list_active_border)
+                            .text_color(theme.foreground)
+                    } else {
+                        tag.bg(theme.secondary)
+                            .border_color(theme.border)
+                            .text_color(theme.secondary_foreground)
+                            .hover(|style| style.bg(theme.secondary_hover))
+                    }
+                })
                 .child(
                     h_flex()
                         .min_w_0()
                         .gap_1p5()
                         .items_center()
-                        .child(div().child(format!("{}", index + 1)))
+                        .when(shortcuts, |row| {
+                            row.child(div().text_color(theme.muted_foreground).child(format!("{}", index + 1)))
+                        })
                         .child(
                             div()
                                 .text_size(rems(0.7))
                                 .font_bold()
-                                .text_color(method_ink)
+                                .text_color(method_color(api.request.method, cx))
                                 .child(method_label(api.request.method)),
                         )
                         .child(div().min_w_0().truncate().child(api.name.clone())),
                 )
                 .child(
-                    Button::new(("unpin", index))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .tooltip(t!("workspace.unpin").to_string())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.state
-                                .update(cx, |state, cx| state.set_pinned(&unpin_id, false, cx));
-                        })),
+                    div()
+                        .flex_none()
+                        .when(!active, |close| {
+                            close.invisible().group_hover(group, |style| style.visible())
+                        })
+                        .child(
+                            Button::new(("unpin", index))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Close)
+                                .tooltip(t!("workspace.unpin").to_string())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.state
+                                        .update(cx, |state, cx| state.set_pinned(&unpin_id, false, cx));
+                                })),
+                        ),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| state.open_pin(&select_id, cx));
@@ -135,6 +156,16 @@ impl Render for PinsBar {
             .flex_1()
             .min_w_0()
             .items_center()
+            .when(any, |bar| {
+                bar.child(div().flex_none().mx_2().w(px(1.)).h(px(16.)).bg(theme.border))
+                    .child(
+                        Icon::new(Icons::Pin)
+                            .xsmall()
+                            .flex_none()
+                            .mr_1p5()
+                            .text_color(theme.muted_foreground),
+                    )
+            })
             .child(row)
             .when_some(all, |bar, all| bar.child(all))
     }

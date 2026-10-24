@@ -309,17 +309,21 @@ impl CyberApi {
     }
 
     fn render_title(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (pins, title) = match &self.page {
-            Page::Workspace(view) => (
-                Some(view.read(cx).pins().clone()),
-                Some(view.read(cx).title_name().clone()),
-            ),
-            Page::Dashboard(_) => (None, None),
+        let (pins, title, selection) = match &self.page {
+            Page::Workspace(view) => {
+                let view = view.read(cx);
+                (
+                    Some(view.pins().clone()),
+                    Some(view.title_name().clone()),
+                    Some(view.selection_title().clone()),
+                )
+            }
+            Page::Dashboard(_) => (None, None, None),
         };
         match AppStore::global(cx).state().read(cx).route() {
             Route::Dashboard => div().text_sm().child(APP_NAME).into_any_element(),
-            // F1.9: Home > project, then the pins (F12.2). The selected
-            // request is a sibling of this row, so it can sit in the middle.
+            // F1.9: Home > project > the selected request, then the pins
+            // (F12.2), which take the rest of the bar.
             Route::Workspace(_) => h_flex()
                 .flex_1()
                 .min_w_0()
@@ -338,6 +342,7 @@ impl CyberApi {
                 )
                 .child(div().text_sm().text_color(cx.theme().muted_foreground).child("/"))
                 .children(title)
+                .children(selection)
                 .children(pins)
                 .into_any_element(),
         }
@@ -585,13 +590,6 @@ impl Render for CyberApi {
             Page::Dashboard(view) => view.clone().into_any_element(),
             Page::Workspace(view) => view.clone().into_any_element(),
         };
-        // Equal sides keep the selected request in the middle of the bar.
-        // On the project list the middle is empty, so the name stays left
-        // and the menu stays right.
-        let selection = match &self.page {
-            Page::Workspace(view) => Some(view.read(cx).selection_title().clone()),
-            Page::Dashboard(_) => None,
-        };
         let theme = cx.theme();
         v_flex()
             .size_full()
@@ -615,15 +613,7 @@ impl Render for CyberApi {
                                 .overflow_hidden()
                                 .child(self.render_title(cx)),
                         )
-                        .children(selection)
-                        .child(
-                            h_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .justify_end()
-                                .pr_2()
-                                .child(self.render_menu(cx)),
-                        ),
+                        .child(h_flex().flex_none().pr_2().child(self.render_menu(cx))),
                 ),
             )
             .child(div().flex_1().min_h_0().child(page))

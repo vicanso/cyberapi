@@ -39,7 +39,6 @@ impl Render for ProjectTitle {
             .flex_none()
             .max_w(px(240.))
             .truncate()
-            .mr_3()
             .text_sm()
             .font_medium()
             .child(state.collection().name.clone());
@@ -50,7 +49,6 @@ impl Render for ProjectTitle {
             return h_flex()
                 .flex_none()
                 .items_center()
-                .mr_3()
                 .child(name.mr_2())
                 .child(
                     div()
@@ -81,7 +79,6 @@ impl Render for ProjectTitle {
             .flex_none()
             .items_center()
             .gap_1()
-            .mr_3()
             .child(name.mr_1())
             .child(
                 div()
