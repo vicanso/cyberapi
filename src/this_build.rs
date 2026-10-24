@@ -439,12 +439,12 @@ mod tests {
             first.ends_with("a_b.json") && second.ends_with("a_b-1.json"),
             "{first} {second}"
         );
-        // A relative name is in the folder it names.
+        // A relative name is in the folder it names, where the machine has
+        // one: a Linux without XDG user directories (CI's) has none.
         let relative = desktop::resolve("x.json", Some(BaseDir::Download));
-        assert!(
-            relative.ends_with("x.json") && relative.is_absolute(),
-            "{}",
-            relative.display()
-        );
+        match directories::UserDirs::new().and_then(|dirs| dirs.download_dir().map(|dir| dir.join("x.json"))) {
+            Some(named) => assert!(named.is_absolute() && relative == named, "{}", relative.display()),
+            None => assert_eq!(relative, std::path::Path::new("x.json")),
+        }
     }
 }

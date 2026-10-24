@@ -848,7 +848,8 @@ mod tests {
                 };
                 focus.focus(window, cx);
                 window.render_frame(cx);
-                window.press("cmd-v", cx);
+                // ⌘V on a Mac, Ctrl-V elsewhere, as the binding says.
+                window.press("secondary-v", cx);
             })
             .expect("the window is open");
             cx.run_until_parked();
