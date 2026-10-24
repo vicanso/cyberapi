@@ -13,6 +13,7 @@
 //! | `GET /v1/session` | who is signed in, or 401 |
 //! | `POST /v1/store` | one store call (`cyberapi_store_bridge::Call`) |
 //! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5), a few of an account's at a time ([`in_flight`]) |
+//! | `POST /v1/mcp` | an AI assistant's tools, signed in with an account's MCP token ([`mcp`]) |
 //! | anything else | the page's files ([`static_files`]) |
 //!
 //! Under `--base-path /prefix` all of it is below the prefix — `/prefix/`,
@@ -29,6 +30,7 @@
 
 mod auth;
 mod in_flight;
+mod mcp;
 pub mod static_files;
 mod throttle;
 
@@ -87,6 +89,8 @@ struct Inner {
     throttle: Throttle,
     /// Each account's requests on their way through `/v1/send`.
     in_flight: Arc<InFlight>,
+    /// Each account's MCP calls in the last minute.
+    mcp_calls: mcp::Limiter,
 }
 
 impl Bridge {
@@ -108,6 +112,7 @@ impl Bridge {
                 base_path,
                 throttle: Throttle::default(),
                 in_flight: Arc::default(),
+                mcp_calls: mcp::Limiter::default(),
             }),
         }
     }
@@ -147,6 +152,10 @@ impl Bridge {
             .route(&at("/v1/session"), get(session))
             .route(&at(STORE_PATH), post(store_call))
             .route(&at(SEND_PATH), post(send_request))
+            .route(
+                &at("/v1/mcp"),
+                post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed),
+            )
             .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
             .fallback(move |State(bridge): State<Bridge>, request: Request| page(bridge, request, www.clone()))
             .with_state(self.clone())

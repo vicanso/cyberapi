@@ -1776,6 +1776,7 @@ dependencies = [
  "clap",
  "cyberapi-core",
  "cyberapi-http",
+ "cyberapi-service",
  "cyberapi-store",
  "cyberapi-store-bridge",
  "cyberapi-store-sql",

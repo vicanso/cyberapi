@@ -606,3 +606,286 @@ async fn a_login_is_kept_unless_asked_not_to_be() {
     let (_, set_cookie, _) = send(&router, "POST", "/v1/login", None, Some(login(true))).await;
     assert!(set_cookie.expect("a cookie").contains("Max-Age="));
 }
+
+/// One JSON-RPC request to `/v1/mcp`, with the token given; the status and
+/// the body as JSON (null when there is none).
+async fn mcp(router: &Router, authorization: Option<&str>, cookie: Option<&str>, body: Value) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/v1/mcp")
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(authorization) = authorization {
+        request = request.header(header::AUTHORIZATION, authorization);
+    }
+    if let Some(cookie) = cookie {
+        request = request.header(header::COOKIE, cookie);
+    }
+    let request = request.body(Body::from(body.to_string())).expect("a request");
+    let response = router.clone().oneshot(request).await.expect("an answer");
+    let status = response.status();
+    let bytes = response.into_body().collect().await.expect("a body").to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// A tool's call, its text parsed back into JSON when it is JSON, and
+/// whether the tool said it failed.
+async fn tool(router: &Router, token: &str, name: &str, arguments: Value) -> (Value, bool) {
+    let call =
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}});
+    let (status, body) = mcp(router, Some(&format!("Bearer {token}")), None, call).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let result = &body["result"];
+    let text = result["content"][0]["text"].as_str().unwrap_or_default();
+    let value = serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.into()));
+    (value, result["isError"] == json!(true))
+}
+
+/// An AI assistant at `/v1/mcp` (zedis-bridge's design): only an MCP token
+/// signs in there, the tools read what its account sees with the secrets
+/// masked, and only a token that may send sends — where its account edits.
+#[tokio::test]
+async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
+    use cyberapi_core::access::{CollectionRole, Grantee};
+    use cyberapi_core::directory::NewMcpToken;
+    use cyberapi_core::model::{HttpRequest, KvParam, VariableCategory};
+    use cyberapi_store::{NewCollection, NewVariable};
+    use cyberapi_store_sql::NewAccount;
+
+    let target = pong_server().await;
+    let Some(bridge) = fresh_bridge_sending_to(vec!["127.0.0.0/8".parse().expect("a range")]).await else {
+        return;
+    };
+    let (router, cookie) = signed_in_router(&bridge).await;
+    let store = bridge.store();
+    let account = |name: &str| NewAccount {
+        name: name.into(),
+        display_name: name.into(),
+        password_hash: "unused".into(),
+        admin: false,
+    };
+    let ann = store.create_account(account("ann")).await.expect("ann");
+    let bob = store.create_account(account("bob")).await.expect("bob");
+    let storage = store.scoped(ann.clone());
+    let project = storage
+        .collections()
+        .create(NewCollection {
+            name: "shop".into(),
+            description: "orders".into(),
+            owner: None,
+        })
+        .await
+        .expect("a project");
+    let api = storage
+        .tree()
+        .create_api(project.id.clone(), None, "ping".into())
+        .await
+        .expect("an API")
+        .item;
+    let param = |key: &str, value: &str| KvParam {
+        key: key.into(),
+        value: value.into(),
+        enabled: true,
+    };
+    storage
+        .tree()
+        .save_request(
+            project.id.clone(),
+            api.id.clone(),
+            HttpRequest {
+                uri: "{{HOST}}/ping".into(),
+                headers: vec![param("Authorization", "Bearer s3cret"), param("X-Token", "{{TOKEN}}")],
+                body: r#"{"user":"ann","password":"hunter2"}"#.into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("its request");
+    for (name, value) in [("HOST", format!("http://{target}")), ("TOKEN", "t0ken".into())] {
+        storage
+            .variables()
+            .create(NewVariable {
+                collection: project.id.clone(),
+                category: VariableCategory::Environment,
+                name: name.into(),
+                value,
+                enabled: true,
+            })
+            .await
+            .expect("a variable");
+    }
+    let issue = |who, name: &str, can_send| {
+        let directory = store.directory(who);
+        let input = NewMcpToken {
+            name: name.into(),
+            can_send,
+            days: None,
+        };
+        async move { directory.issue_mcp_token(input).await.expect("a token") }
+    };
+    let reader = issue(ann.clone(), "reader", false).await;
+    let sender = issue(ann.clone(), "sender", true).await;
+
+    // Only a token signs in here: not the page's cookie, nor nothing.
+    let ping = json!({"jsonrpc": "2.0", "id": 1, "method": "ping"});
+    assert_eq!(mcp(&router, None, None, ping.clone()).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        mcp(&router, None, Some(&cookie), ping.clone()).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let wrong = format!("Bearer {}0", reader.secret);
+    assert_eq!(
+        mcp(&router, Some(&wrong), None, ping.clone()).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    // And a token is no session anywhere else.
+    let (status, _, _) = send_bearer(&router, STORE_PATH, &reader.secret).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // The handshake, a notification, the tools.
+    let bearer = format!("Bearer {}", reader.secret);
+    let initialize =
+        json!({"jsonrpc": "2.0", "id": "a", "method": "initialize", "params": {"protocolVersion": "2025-03-26"}});
+    let (_, body) = mcp(&router, Some(&bearer), None, initialize).await;
+    assert_eq!(body["result"]["protocolVersion"], json!("2025-03-26"));
+    assert_eq!(body["result"]["serverInfo"]["name"], json!("cyberapi-bridge"));
+    let notified = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    assert_eq!(
+        mcp(&router, Some(&bearer), None, notified).await.0,
+        StatusCode::ACCEPTED
+    );
+    let names = |body: &Value| -> Vec<String> {
+        body["result"]["tools"]
+            .as_array()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+    let (_, body) = mcp(&router, Some(&bearer), None, list.clone()).await;
+    assert_eq!(
+        names(&body),
+        ["list_projects", "list_apis", "get_api", "get_variables", "get_history"]
+    );
+    let (_, body) = mcp(&router, Some(&format!("Bearer {}", sender.secret)), None, list).await;
+    assert!(names(&body).contains(&"send_api".to_string()));
+
+    // What it reads, with the secrets masked and the templates kept.
+    let (projects, _) = tool(&router, &reader.secret, "list_projects", json!({})).await;
+    assert_eq!(projects[0]["name"], json!("shop"));
+    assert_eq!(projects[0]["apis"], json!(1));
+    let (apis, _) = tool(&router, &reader.secret, "list_apis", json!({"project": "shop"})).await;
+    assert_eq!(apis[0]["path"], json!("ping"));
+    let (got, _) = tool(
+        &router,
+        &reader.secret,
+        "get_api",
+        json!({"project": "shop", "api": "ping"}),
+    )
+    .await;
+    assert_eq!(got["headers"][0]["value"], json!("***"));
+    assert_eq!(got["headers"][1]["value"], json!("{{TOKEN}}"));
+    assert!(
+        got["body"]
+            .as_str()
+            .is_some_and(|body| body.contains("***") && !body.contains("hunter2"))
+    );
+    let (variables, _) = tool(&router, &reader.secret, "get_variables", json!({"project": "shop"})).await;
+    assert_eq!(variables["environments"][0]["value"], json!(format!("http://{target}")));
+    assert_eq!(variables["environments"][1]["value"], json!("***"));
+    let (missing, failed) = tool(
+        &router,
+        &reader.secret,
+        "get_api",
+        json!({"project": "shop", "api": "nope"}),
+    )
+    .await;
+    assert!(failed && missing.as_str().is_some_and(|why| why.contains("list_apis")));
+
+    // Sending: not with a reading token; with a sending one, from the bridge,
+    // into the history.
+    let (refused, failed) = tool(
+        &router,
+        &reader.secret,
+        "send_api",
+        json!({"project": "shop", "api": "ping"}),
+    )
+    .await;
+    assert!(failed && refused.as_str().is_some_and(|why| why.contains("may not send")));
+    let (answer, failed) = tool(
+        &router,
+        &sender.secret,
+        "send_api",
+        json!({"project": "shop", "api": "ping"}),
+    )
+    .await;
+    assert!(!failed, "{answer}");
+    assert_eq!(
+        (answer["status"].clone(), answer["body"].clone()),
+        (json!(200), json!("pong"))
+    );
+    let (history, _) = tool(
+        &router,
+        &reader.secret,
+        "get_history",
+        json!({"project": "shop", "api": "ping"}),
+    )
+    .await;
+    assert_eq!(history.as_array().map(Vec::len), Some(1));
+
+    // Where its account only views, a sending token does not send.
+    store
+        .set_grant(
+            &project.id,
+            &Grantee::Account(bob.clone()),
+            Some(CollectionRole::Viewer),
+        )
+        .await
+        .expect("bob views it");
+    let bobs = issue(bob, "bobs", true).await;
+    let (refused, failed) = tool(
+        &router,
+        &bobs.secret,
+        "send_api",
+        json!({"project": "shop", "api": "ping"}),
+    )
+    .await;
+    assert!(failed && refused.as_str().is_some_and(|why| why.contains("editor")));
+    let (seen, _) = tool(
+        &router,
+        &bobs.secret,
+        "get_api",
+        json!({"project": "shop", "api": "ping"}),
+    )
+    .await;
+    assert_eq!(seen["method"], json!("GET"), "it reads what it views");
+
+    // Revoked, it signs in no more.
+    store
+        .directory(ann)
+        .revoke_mcp_token(reader.token.id.clone())
+        .await
+        .expect("revoke");
+    assert_eq!(
+        mcp(&router, Some(&bearer), None, ping).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// A POST of an empty store call with a bearer token.
+async fn send_bearer(router: &Router, path: &str, token: &str) -> (StatusCode, Option<String>, String) {
+    let request = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({"call": "collectionsList"}).to_string()))
+        .expect("a request");
+    let response = router.clone().oneshot(request).await.expect("an answer");
+    let status = response.status();
+    let bytes = response.into_body().collect().await.expect("a body").to_bytes();
+    (status, None, String::from_utf8_lossy(&bytes).into_owned())
+}

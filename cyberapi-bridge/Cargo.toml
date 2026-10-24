@@ -16,6 +16,8 @@ axum = "0.8.9"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 cyberapi-core = { workspace = true }
 cyberapi-http = { workspace = true }
+# An MCP token's `send_api` sends as the page does (`src/mcp.rs`).
+cyberapi-service = { workspace = true }
 cyberapi-store = { workspace = true }
 cyberapi-store-bridge = { workspace = true }
 cyberapi-store-sql = { workspace = true }
