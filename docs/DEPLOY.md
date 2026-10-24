@@ -16,6 +16,7 @@ This guide follows `main`. What a release does not have yet is marked with the v
 - [Where requests may go](#where-requests-may-go)
 - [Accounts, teams and invitations](#accounts-teams-and-invitations)
 - [Signing in from the desktop app](#signing-in-from-the-desktop-app)
+- [AI assistants (MCP)](#ai-assistants-mcp)
 - [Upgrading](#upgrading)
 - [Backups](#backups)
 
@@ -214,6 +215,21 @@ The desktop app can sign in to the same server: **Settings → Server**, the pag
 - The address must be reachable from the desktop with a certificate the system trusts. The desktop always checks it, also when its own settings let requests skip certificate checks.
 - Once signed in, the home page lists the account's server projects beside this computer's own. Each is copied to the computer, edited there, also offline, and sent to the server when you sync; if someone else changed it meanwhile, you choose whose version to keep.
 - Requests, response history and cookies stay on the computer; the desktop's sign-in is kept in `server.json` in its data directory, not in the projects' database and not in backups.
+
+## AI assistants (MCP)
+
+*0.2.2.* The bridge is a [Model Context Protocol](https://modelcontextprotocol.io) server at `/v1/mcp` (below the sub-path, if any), so Claude Code, Cursor or another MCP client can read your API projects. It answers JSON-RPC over plain HTTP: one request, one reply, no stream and no session; it has tools, not resources or prompts.
+
+**Tokens.** An assistant signs in with an **MCP token** of an account, never with its password. Open the settings menu → **MCP Tokens…**, name the token after the machine or the client (`claude-laptop`), pick how long it lasts (30 or 90 days, a year, or until revoked) and issue it. The token (`cat_…`) is shown once, with the line that adds it to Claude Code; the bridge keeps only its SHA-256. A token signs in at `/v1/mcp` and nowhere else — not the page, not the API the page uses — and revoking it in the same dialog shuts its client out at the next call. Tokens go with their account: a disabled account's sign nobody in.
+
+```bash
+claude mcp add --transport http cyberapi https://cyberapi.example.com/v1/mcp \
+  --header "Authorization: Bearer ${CYBERAPI_MCP_TOKEN}"
+```
+
+**What it can do.** The token sees what its account sees, and its tools read: `list_projects`, `list_apis` (a project's folders and APIs, each with its path and id), `get_api` (an API's saved request), `get_variables` (environments, custom variables, global headers) and `get_history` (an API's latest responses). A token issued with **May send requests** also has `send_api`, which sends a saved API from the bridge with the project's variables — subject to [where requests may go](#where-requests-may-go) and to the account's requests at a time — and keeps the response in the account's history; it sends only in projects where the account is at least an editor. Nothing a tool does changes a project.
+
+**What it is shown.** Values that look like secrets — headers such as `Authorization` and `Cookie`, Basic auth passwords, variables and form or JSON fields named like a token, a key, a password or a secret — come back as `***`; a value written with a template (`Bearer {{TOKEN}}`) is shown as written. Bodies are cut at 8 KB, a whole answer at 200 KB, and a body that is not text is described, not shown. An account makes at most 120 calls a minute, and every call is a line of the bridge's log (`mcp call`, with the account, the token's name and the tool).
 
 ## Upgrading
 

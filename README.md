@@ -38,6 +38,7 @@
 - **cURL and imports.** Paste a cURL command to make an API, copy any request as cURL; import Postman, Insomnia, Swagger 2 / OpenAPI 3 and cURL; export an API, a folder or a project.
 - **Your data.** Back up and restore on the desktop, in the same format as the earlier Tauri app.
 - **Teams.** A self-hosted web version — one binary or a Docker image, at the root or under a sub-path — with accounts by invitation, teams, and per-project roles (viewer, editor, manager); share a project with accounts or teams, or move it to another team. The desktop app signs in to the same server and works on shared projects offline, syncing when you choose and asking whose version to keep when someone else changed it meanwhile; APIs and folders can stay local, out of the sync.
+- **AI assistants.** The web version is also an MCP server: Claude Code, Cursor or another MCP client signs in with a token you issue and reads your projects, APIs, variables and responses, with secrets masked; a token you allow to may also send saved APIs.
 
 ## Install
 
