@@ -45,7 +45,8 @@ use std::sync::Arc;
 use tracing::error;
 
 pub const APP_NAME: &str = "Cyber API";
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The release's version, or a nightly's own (`cyberapi_core::version`).
+pub const VERSION: &str = cyberapi_core::version::VERSION;
 
 /// The identifier the original Tauri build used; Linux groups windows by it.
 const APP_ID: &str = "com.bigtree.cyberapi";
@@ -84,7 +85,7 @@ pub type SignOut = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Se
 #[cfg(not(target_family = "wasm"))]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     init_logger();
-    tracing::info!(version = VERSION, "cyberapi launch");
+    tracing::info!(version = %cyberapi_core::version::describe(), "cyberapi launch");
     // Before the platform starts: the first window needs the settings.
     let opened = open_desktop_storage();
     // Requests go out on a runtime of their own, alive as long as the app.

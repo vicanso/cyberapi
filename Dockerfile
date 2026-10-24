@@ -76,6 +76,11 @@ RUN if [ -n "$RUSTUP_DIST_SERVER" ]; then export RUSTUP_DIST_SERVER; else unset 
 
 COPY . .
 
+# What the bridge reports as its version (#54): a nightly's own and the
+# commit, given by docker.yml; empty, Cargo.toml's version alone.
+ARG CYBERAPI_VERSION=""
+ARG CYBERAPI_COMMIT=""
+
 # The page first, in its release form, because the bridge embeds whatever
 # `cyberapi-web/www/` holds when it is compiled, and its `build.rs` refuses a
 # release build that would embed no module. Cargo's downloads and target

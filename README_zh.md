@@ -51,7 +51,7 @@
 | Linux（x86_64、arm64） | `cyberapi_<版本>_amd64.deb`、`cyberapi_<版本>_arm64.deb` | Debian、Ubuntu 及其衍生版。 |
 | Linux（x86_64、aarch64） | `cyberapi-<版本>-<架构>-unknown-linux-gnu.tar.gz` | 只有程序本身。需要 glibc 2.35 或更新。 |
 
-`main` 有新提交时，每晚构建一个 `nightly` 预发布版。
+`main` 有新提交时，每晚构建一个 `nightly` 预发布版。它的版本号是下一个补丁版本加上日期和提交，如 `0.2.2-nightly.20261024.137a858`，应用的“关于”和 `cyberapi-bridge --version` 都会显示。
 
 桌面版启动时会检查有没有新版本，最多每两天一次；在“设置 → 关于”里可以关闭，或立即检查。只在你点击后才下载，下载后按发布时的校验和核对。macOS 上随即替换当前应用，重启后就是新版本；Windows 和 Linux 上把安装包存到下载目录，再交给系统打开安装。
 

@@ -7,7 +7,11 @@
 #   Linux    the .deb cargo-bundle makes, and a tarball of the binary
 #   Windows  a zip of cyberapi.exe
 #
-# All under <cargo target dir>/desktop-dist, each with a .sha256.
+# All under <cargo target dir>/desktop-dist, each with a .sha256. The
+# version in the names is Cargo.toml's, or a nightly's own when
+# CYBERAPI_VERSION gives it (#54; the binary reports the same): cargo-bundle
+# names the .deb for Cargo.toml's, so it is renamed, and the package inside
+# keeps that version.
 #
 # On macOS the app is ad-hoc signed unless these name a Developer ID:
 #
@@ -21,7 +25,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+CARGO_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+VERSION=${CYBERAPI_VERSION:-$CARGO_VERSION}
 TARGET=$(rustc -vV | sed -n 's/^host: //p')
 NAME="cyberapi-${VERSION}-${TARGET}"
 # CARGO_TARGET_DIR when set (CI sets it), else asked of cargo, never
@@ -78,8 +83,10 @@ case "$(uname -s)" in
     need_bundle
     cargo bundle --release --format deb
     for deb in "$TARGET_DIR"/release/bundle/deb/*.deb; do
-      cp "$deb" "$OUT_DIR/"
-      checksum "$(basename "$deb")"
+      named=$(basename "$deb")
+      named=${named/"_${CARGO_VERSION}_"/"_${VERSION}_"}
+      cp "$deb" "$OUT_DIR/$named"
+      checksum "$named"
     done
     STAGE="$OUT_DIR/$NAME"
     rm -rf "$STAGE"

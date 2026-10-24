@@ -12,10 +12,19 @@
 #   MACOS_CERTIFICATE_NAME  its identity, "Developer ID Application: Name (TEAMID)"
 #   AC_USERNAME, AC_PASSWORD (app-specific), AC_TEAM_ID   for notarization
 # Windows and Linux are unsigned.
+#
+# Every build is told the commit it is of (CYBERAPI_COMMIT); a nightly is
+# also told its own version (the `version` input, CYBERAPI_VERSION), which
+# the binaries report and the packages are named for (#54).
 name: Package
 
 on:
   workflow_call:
+    inputs:
+      version:
+        description: A nightly's version (scripts/nightly-version.sh); empty for a release
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -24,6 +33,7 @@ env:
   CARGO_TERM_COLOR: always
   # Where the scripts look for cargo's output.
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  CYBERAPI_VERSION: ${{ inputs.version }}
 
 jobs:
   desktop:
@@ -42,6 +52,9 @@ jobs:
           - { name: Windows x86_64, os: windows-latest }
     steps:
       - uses: actions/checkout@v7
+      - name: commit
+        shell: bash
+        run: echo "CYBERAPI_COMMIT=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
       - name: system libraries
         if: runner.os == 'Linux'
         run: |
@@ -109,6 +122,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+      - name: commit
+        run: echo "CYBERAPI_COMMIT=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
       - name: system libraries and wasm-opt
         run: |
           sudo apt-get update

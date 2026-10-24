@@ -3,7 +3,9 @@
 # assets are that build's, with their SHA256SUMS. The browser build's image
 # is pushed as `nightly` too (docker.yml). A night with nothing new on the
 # branch builds nothing; a manual run with `force` builds anyway, and may
-# name another branch (`gh workflow run nightly.yml --ref <branch>`).
+# name another branch (`gh workflow run nightly.yml --ref <branch>`). The
+# builds are versioned as a pre-release of the next patch, with the day and
+# the commit (scripts/nightly-version.sh, #54).
 name: Nightly
 
 on:
@@ -33,7 +35,12 @@ jobs:
       contents: write
     outputs:
       build: ${{ steps.compare.outputs.build }}
+      version: ${{ steps.version.outputs.version }}
     steps:
+      - uses: actions/checkout@v7
+      - name: version
+        id: version
+        run: echo "version=$(scripts/nightly-version.sh)" >> "$GITHUB_OUTPUT"
       - id: compare
         env:
           GH_TOKEN: ${{ github.token }}
@@ -85,6 +92,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.build == 'true'
     uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ needs.changes.outputs.version }}
     # The macOS signing secrets, when set (package.yml).
     secrets: inherit
 
@@ -93,12 +102,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.build == 'true'
     uses: ./.github/workflows/docker.yml
+    with:
+      version: ${{ needs.changes.outputs.version }}
     # The Docker Hub credentials (docker.yml).
     secrets: inherit
 
   publish:
     name: replace the nightly release
-    needs: package
+    needs: [changes, package]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -112,13 +123,17 @@ jobs:
       - name: checksums
         # SHA256SUMS beside the packages (scripts/checksums.sh); no
         # latest.json, which says a version, and this is no release of one.
+        env:
+          # What the packages are named for.
+          CYBERAPI_VERSION: ${{ needs.changes.outputs.version }}
         run: scripts/checksums.sh dist
       - name: release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.changes.outputs.version }}
         run: |
-          notes="Built from $GITHUB_REF_NAME at $GITHUB_SHA on $(date -u '+%Y-%m-%d %H:%M') UTC.
+          notes="Version $VERSION, built from $GITHUB_REF_NAME at $GITHUB_SHA on $(date -u '+%Y-%m-%d %H:%M') UTC.
 
           A development build, replaced every night. The macOS app is signed and
           notarized; the Windows and Linux packages are not signed."

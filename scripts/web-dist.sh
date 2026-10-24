@@ -5,6 +5,9 @@
 #   <cargo target dir>/web-dist/cyberapi-web-<version>-<host triple>.tar.gz
 #   (and its .sha256; the script prints the paths)
 #
+# The version in the name is Cargo.toml's, or a nightly's own when
+# CYBERAPI_VERSION gives it (#54; the bridge reports the same).
+#
 # The page is rebuilt in its release form first: the bridge embeds whatever
 # cyberapi-web/www holds when it compiles, which after a `make web-bundle`
 # is the large iteration build. The binary is the host's own: build on the
@@ -12,7 +15,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+VERSION=${CYBERAPI_VERSION:-$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)}
 TARGET=$(rustc -vV | sed -n 's/^host: //p')
 NAME="cyberapi-web-${VERSION}-${TARGET}"
 # CARGO_TARGET_DIR when set (CI sets it), else asked of cargo, never

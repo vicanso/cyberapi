@@ -12,10 +12,18 @@ use ipnet::IpNet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tracing_subscriber::EnvFilter;
 
+/// What `--version` and the start say: the release's version or a nightly's
+/// own, with the commit (#54).
+fn version() -> &'static str {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION.get_or_init(cyberapi_core::version::describe)
+}
+
 #[derive(Parser)]
-#[command(version, about = "The server of CyberAPI's browser build")]
+#[command(version = version(), about = "The server of CyberAPI's browser build")]
 struct Args {
     /// Where to listen. The image listens on every interface.
     #[arg(long, env = "CYBERAPI_BRIDGE_LISTEN", default_value = "127.0.0.1:7380")]
@@ -59,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
     let args = Args::parse();
+    tracing::info!(version = version(), "cyberapi-bridge starting");
     let base_path = cyberapi_bridge::normalize_base_path(&args.base_path)?;
 
     let store = SqlStore::connect(&args.store).await?;

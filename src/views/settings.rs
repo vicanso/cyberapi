@@ -946,7 +946,10 @@ impl SettingsView {
     fn render_about(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         let mut rows: Vec<(String, SharedString)> = vec![
-            (t!("settings.version").to_string(), crate::VERSION.into()),
+            (
+                t!("settings.version").to_string(),
+                cyberapi_core::version::describe().into(),
+            ),
             (t!("settings.platform").to_string(), this_build::platform().into()),
         ];
         if let Some(version) = this_build::os_version() {

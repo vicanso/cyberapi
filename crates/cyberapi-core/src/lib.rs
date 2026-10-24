@@ -27,6 +27,7 @@ pub mod template_hints;
 mod time;
 pub mod tree;
 pub mod update;
+pub mod version;
 
 pub use id::{AccountId, CollectionId, InviteId, ItemId, TeamId, VariableId};
 pub use time::Timestamp;

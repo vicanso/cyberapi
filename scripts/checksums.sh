@@ -10,7 +10,8 @@
 # SHA256SUMS` checks a download). latest.json is what the desktop's update
 # reads, as zedis's: the version, and for each package its os, arch, kind,
 # download URL, sha256 and size. Its version is the tag's, which must be
-# Cargo.toml's.
+# Cargo.toml's. The packages are named for that version, or for a nightly's
+# own when CYBERAPI_VERSION gives it (#54), as they were built.
 #
 # Each package's own <name>.sha256 (desktop-dist.sh and web-dist.sh make it
 # on the machine that built the package) is checked against the file here,
@@ -23,7 +24,7 @@ cd "$(dirname "$0")/.."
 DIR=${1:?usage: checksums.sh <dir> [vX.Y.Z]}
 TAG=${2:-}
 REPO=vicanso/cyberapi
-VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+VERSION=${CYBERAPI_VERSION:-$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)}
 if [ -n "$TAG" ] && [ "$TAG" != "v$VERSION" ]; then
   echo "the tag is $TAG, Cargo.toml says $VERSION" >&2
   exit 1

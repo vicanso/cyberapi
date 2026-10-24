@@ -12,6 +12,11 @@ name: Docker
 
 on:
   workflow_call:
+    inputs:
+      version:
+        description: A nightly's version (scripts/nightly-version.sh), which the bridge reports; empty for a release
+        type: string
+        default: ""
   workflow_dispatch:
 
 permissions:
@@ -81,8 +86,13 @@ jobs:
               echo "::warning::DOCKER_HUB_USERNAME / DOCKER_HUB_ACCESS_TOKEN are not set — building the image without pushing it"
             fi
           fi
-          echo "channel=${channel:-dry-run}" >> "$GITHUB_OUTPUT"
-          echo "push=$push" >> "$GITHUB_OUTPUT"
+          {
+            echo "channel=${channel:-dry-run}"
+            echo "push=$push"
+            # The image has no .git (.dockerignore): the commit the bridge
+            # reports is passed in.
+            echo "commit=$(git rev-parse --short=7 HEAD)"
+          } >> "$GITHUB_OUTPUT"
           echo "channel: ${channel:-<none, dry run>}  push: $push"
       - uses: docker/setup-buildx-action@v4
       - name: sign in to Docker Hub
@@ -104,6 +114,10 @@ jobs:
           # Per architecture and per channel, so a nightly and a release
           # running at the same time never overwrite each other's halves.
           tags: ${{ env.IMAGE_NAME }}:${{ steps.plan.outputs.channel }}-${{ matrix.platform.tag }}
+          # What `cyberapi-bridge --version` says (#54).
+          build-args: |
+            CYBERAPI_VERSION=${{ inputs.version }}
+            CYBERAPI_COMMIT=${{ steps.plan.outputs.commit }}
           push: ${{ steps.plan.outputs.push == 'true' }}
           # Without the attestation each push is a plain image, which is what
           # `imagetools create` joins below; with it each push is already a
