@@ -23,7 +23,8 @@ use tower::ServiceExt;
 const SETUP_TOKEN: &str = "setup-secret";
 
 /// A bridge on a new, empty database, or `None` when there is no server. It
-/// sends as a deployed one does: to public addresses only.
+/// sends as a deployed one does: to public and private networks, not its
+/// own host.
 async fn fresh_bridge() -> Option<Bridge> {
     fresh_bridge_sending_to(vec![]).await
 }
@@ -46,7 +47,7 @@ async fn fresh_bridge_at(allowed: Vec<ipnet::IpNet>, base_path: String) -> Optio
         .expect("create a database");
     let (server, _) = url.rsplit_once('/').expect("a database in the URL");
     let store = SqlStore::connect(&format!("{server}/{name}")).await.expect("connect");
-    let engine = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::PublicOnly { allowed });
+    let engine = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::Networks { allowed });
     Some(Bridge::new(
         store,
         Arc::new(engine),
@@ -358,7 +359,7 @@ async fn requests_are_sent_by_the_bridge() {
         ..Default::default()
     };
 
-    // A deployed bridge does not reach into its own network.
+    // A deployed bridge does not reach its own host.
     let Some(bridge) = fresh_bridge().await else { return };
     let (router, cookie) = signed_in_router(&bridge).await;
     let engine = BridgeHttpEngine::new(Arc::new(RouterTransport {

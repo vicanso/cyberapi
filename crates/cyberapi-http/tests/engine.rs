@@ -145,6 +145,28 @@ async fn redirects_are_not_followed_and_odd_headers_still_read() {
 #[tokio::test]
 async fn the_bridges_policy_refuses_inner_addresses() {
     let address = serve().await;
+    // The default reaches the team's networks, not the bridge's own host.
+    let networks = NativeEngine::new(
+        tokio::runtime::Handle::current(),
+        TargetPolicy::Networks { allowed: vec![] },
+    );
+    assert_eq!(
+        networks.send(get(address, "/echo")).await,
+        Err(SendError::Forbidden {
+            target: "127.0.0.1".into()
+        })
+    );
+    // A name is said with the address it led to.
+    let by_name = PreparedRequest {
+        url: format!("http://localhost:{}/echo", address.port()),
+        ..get(address, "/echo")
+    };
+    let refused = networks.send(by_name).await.expect_err("refused");
+    let SendError::Forbidden { target } = &refused else {
+        panic!("{refused:?}");
+    };
+    assert!(target.starts_with("localhost (") && target.ends_with(')'), "{target}");
+    assert!(refused.to_string().contains("--allow-target"), "{refused}");
     let public_only = NativeEngine::new(
         tokio::runtime::Handle::current(),
         TargetPolicy::PublicOnly { allowed: vec![] },

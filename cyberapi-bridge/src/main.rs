@@ -41,11 +41,17 @@ struct Args {
     /// HTTP on this machine.
     #[arg(long)]
     insecure_cookie: bool,
-    /// Address ranges requests may be sent to besides public addresses, e.g.
-    /// `10.0.0.0/8,127.0.0.1/32`. Loopback, private, link-local (the cloud
-    /// metadata address) and the like are refused otherwise.
+    /// Address ranges requests may be sent to besides those the policy
+    /// reaches, e.g. `127.0.0.1/32` for a service on this host, or
+    /// `10.1.0.0/16` under `--public-only`.
     #[arg(long = "allow-target", env = "CYBERAPI_BRIDGE_ALLOW_TARGETS", value_delimiter = ',')]
     allow_targets: Vec<IpNet>,
+    /// Send to public addresses only, refusing the private ranges too: for
+    /// a bridge open to the internet. Without it, requests reach public and
+    /// private networks, never this host (loopback) or its link (link-local,
+    /// the cloud metadata address among them).
+    #[arg(long, env = "CYBERAPI_BRIDGE_PUBLIC_ONLY")]
+    public_only: bool,
 }
 
 #[tokio::main]
@@ -63,15 +69,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if store.account_count().await? == 0 {
         tracing::info!(%setup_token, "no account yet: make the first administrator with this setup token");
     }
+    if args.public_only {
+        tracing::info!("requests go to public addresses only");
+    } else {
+        tracing::info!("requests go to public and private networks, not to this host or link-local addresses");
+    }
     if !args.allow_targets.is_empty() {
         tracing::info!(allowed = ?args.allow_targets, "requests may also go to these ranges");
     }
-    let engine = NativeEngine::new(
-        tokio::runtime::Handle::current(),
-        TargetPolicy::PublicOnly {
-            allowed: args.allow_targets,
-        },
-    );
+    let allowed = args.allow_targets;
+    let policy = if args.public_only {
+        TargetPolicy::PublicOnly { allowed }
+    } else {
+        TargetPolicy::Networks { allowed }
+    };
+    let engine = NativeEngine::new(tokio::runtime::Handle::current(), policy);
     let bridge = Bridge::new(
         store,
         Arc::new(engine),

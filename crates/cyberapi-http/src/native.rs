@@ -219,11 +219,15 @@ async fn exchange(request: PreparedRequest, policy: TargetPolicy, body_limit: us
                 found
             }
         };
+        let refused = addresses.first().map(SocketAddr::ip);
         let permitted: Vec<SocketAddr> = addresses.into_iter().filter(|a| policy.permits(a.ip())).collect();
         if permitted.is_empty() {
-            return Err(SendError::Forbidden {
-                target: host.to_string(),
-            });
+            // A name says where it led, which is what an allowed range names.
+            let target = match (&host, refused) {
+                (Host::Domain(name), Some(address)) => format!("{name} ({address})"),
+                _ => host.to_string(),
+            };
+            return Err(SendError::Forbidden { target });
         }
         let connecting = Instant::now();
         let mut last_error = None;

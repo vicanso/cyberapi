@@ -48,8 +48,12 @@ pub enum SendError {
     Timeout { phase: String, seconds: u32 },
     #[snafu(display("{message}"))]
     Http { message: String },
-    /// The bridge will not reach this address (`TargetPolicy`).
-    #[snafu(display("the server does not send requests to {target}"))]
+    /// The bridge will not reach this address (`TargetPolicy`). `target`
+    /// is the host as written, with the address it resolved to when it is
+    /// a name: `api.internal (10.1.2.3)`.
+    #[snafu(display(
+        "the server does not send requests to {target}; its administrator can allow that address with --allow-target"
+    ))]
     Forbidden { target: String },
     /// The browser build could not reach the bridge.
     #[snafu(display("the bridge did not answer: {message}"))]

@@ -127,7 +127,8 @@ Each is a flag and, where given, an environment variable.
 | `--store <url>` | `CYBERAPI_BRIDGE_STORE` | **Required.** `postgres://…` or `mysql://…`. Prefer the variable: it is not shown in the process list, and the password is left out of the bridge's error messages. |
 | `--listen <addr>` | `CYBERAPI_BRIDGE_LISTEN` | Where to listen. `127.0.0.1:7380` by default; the image sets `0.0.0.0:7380`. |
 | `--setup-token <token>` | `CYBERAPI_BRIDGE_SETUP_TOKEN` | The token the first administrator is made with. Random, and logged, when not given. |
-| `--allow-target <ranges>` | `CYBERAPI_BRIDGE_ALLOW_TARGETS` | Address ranges requests may also go to, comma-separated, e.g. `10.0.0.0/8,192.168.1.0/24` ([Where requests may go](#where-requests-may-go)). |
+| `--allow-target <ranges>` | `CYBERAPI_BRIDGE_ALLOW_TARGETS` | Address ranges requests may also go to, comma-separated, e.g. `127.0.0.1/32` ([Where requests may go](#where-requests-may-go)). |
+| `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | Refuse private networks too, for a bridge open to the internet. |
 | `--base-path <path>` | `CYBERAPI_BRIDGE_BASE_PATH` | Serve the page and the API under this path, e.g. `/cyberapi`, and keep the login cookie to it ([under a sub-path](#https-behind-a-reverse-proxy)). Empty by default: the root. |
 | `--insecure-cookie` | | Leave `Secure` off the login cookie, for plain HTTP on your own machine. |
 | `--www <dir>` | | Serve this directory as the page instead of the built-in one (development). |
@@ -184,15 +185,14 @@ The bridge then answers under `/cyberapi/` only, sends `/cyberapi` on to `/cyber
 
 ## Where requests may go
 
-The bridge sends the page's requests itself, so by default it sends them **to public addresses only**: loopback, private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (including the cloud metadata address `169.254.169.254`) and similar are refused, checked after DNS resolution and again on every redirect. A server must not become a way into the network it sits in.
+The bridge sends the page's requests itself, from where it runs. By default it reaches **public addresses and private networks** (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, IPv6 `fc00::/7`), since the APIs a team tests are mostly on its own network. It refuses only what is never an API under test and is where a request sent on someone's behalf does harm: **its own host** (loopback `127.0.0.0/8`, `::1`, where services trust whoever calls) and **its link** (link-local `169.254.0.0/16`, `fe80::/10`, among them the cloud metadata address `169.254.169.254`, which hands out the machine's credentials), besides unspecified, multicast, broadcast and reserved addresses. The check is on the address a name resolves to, and again on every redirect. A refused request says the name and the address it led to.
 
-To test the APIs of your own network, allow their ranges:
+Whoever can sign in to the page can therefore reach what the bridge's machine can. Run it on the network of the APIs it is for, not in a more privileged one.
 
-```bash
-CYBERAPI_BRIDGE_ALLOW_TARGETS=10.0.0.0/8,192.168.1.0/24
-```
+- To reach a service on the bridge's own host, allow it: `CYBERAPI_BRIDGE_ALLOW_TARGETS=127.0.0.1/32`. In a container, `127.0.0.1` is the container itself; an API on the host is reached at the host's address.
+- For a bridge open to the internet, `--public-only` (`CYBERAPI_BRIDGE_PUBLIC_ONLY=1`) refuses the private networks as well, and `--allow-target` lets the ranges you name back: `CYBERAPI_BRIDGE_ALLOW_TARGETS=10.1.0.0/16,192.168.10.0/24`.
 
-In a container, `127.0.0.1` is the container itself; an API on the host is reached at the host's address, which then has to be allowed. Each account has at most 16 requests under way at once; more are answered "busy" at once rather than queued.
+Ranges are written as addresses (CIDR), not names: the check is on what a name resolves to, so a name allowed by itself could lead anywhere. Each account has at most 16 requests under way at once; more are answered "busy" at once rather than queued.
 
 The desktop app sends its requests from the computer it runs on, even for server projects, so none of this applies there.
 

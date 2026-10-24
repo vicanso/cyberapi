@@ -1,13 +1,18 @@
 //! Which addresses an engine may connect to (`docs/architecture.md` §5).
 //!
 //! The desktop sends wherever its reader asks. The bridge sends for every
-//! account from inside its own network, so by default it refuses the
-//! addresses that would turn it into a way in: loopback, private and
-//! link-local ranges (the cloud metadata address among them), carrier-grade
-//! NAT, the benchmarking range (where fake-IP proxies answer), unspecified,
-//! multicast and broadcast, IPv6 unique-local; an IPv4 address inside IPv6
-//! (mapped or translated) is judged as itself. An administrator can allow
-//! ranges back.
+//! account from inside its own network. The APIs a team tests are mostly
+//! on that network, so by default it reaches public and private addresses
+//! alike ([`TargetPolicy::Networks`]), and refuses only what is never an
+//! API under test and is where a request sent on someone's behalf does
+//! harm: the bridge's own host (loopback, where services trust whoever
+//! calls), the link-local range (the cloud's metadata address, which hands
+//! out the machine's credentials), unspecified, multicast, broadcast and
+//! reserved addresses. `--public-only` ([`TargetPolicy::PublicOnly`]) also
+//! refuses the private ranges, carrier-grade NAT, the benchmarking range
+//! (where fake-IP proxies answer) and IPv6 unique-local, for a bridge open
+//! to the internet. An administrator can allow ranges back in either. An
+//! IPv4 address inside IPv6 (mapped, translated, NAT64) is judged as itself.
 //!
 //! The check is on the resolved address at connect time, so a name that
 //! resolves to an inner address — or starts to (DNS rebinding) — is refused
@@ -21,7 +26,10 @@ pub enum TargetPolicy {
     /// Any address: the desktop.
     #[default]
     Anywhere,
-    /// Public addresses, and these ranges besides: the bridge.
+    /// Public and private networks, not the bridge's own host or link, and
+    /// these ranges besides: the bridge's default.
+    Networks { allowed: Vec<IpNet> },
+    /// Public addresses, and these ranges besides: `--public-only`.
     PublicOnly { allowed: Vec<IpNet> },
 }
 
@@ -29,9 +37,55 @@ impl TargetPolicy {
     pub fn permits(&self, address: IpAddr) -> bool {
         match self {
             Self::Anywhere => true,
+            Self::Networks { allowed } => allowed.iter().any(|net| net.contains(&address)) || !is_host_or_link(address),
             Self::PublicOnly { allowed } => allowed.iter().any(|net| net.contains(&address)) || is_public(address),
         }
     }
+}
+
+/// The IPv4 address an IPv6 one carries — mapped (`::ffff:a.b.c.d`),
+/// translated (`::ffff:0:a.b.c.d`) or NAT64 (`64:ff9b::a.b.c.d`) — which it
+/// is judged as.
+fn inner_v4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
+    if let Some(v4) = v6.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    match v6.segments() {
+        [0, 0, 0, 0, 0xffff, 0, high, low] | [0x64, 0xff9b, 0, 0, 0, 0, high, low] => {
+            Some(Ipv4Addr::from((u32::from(high) << 16) | u32::from(low)))
+        }
+        _ => None,
+    }
+}
+
+/// The bridge's own host and its link, and addresses no request is for.
+fn is_host_or_link(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(v4) => is_host_or_link_v4(v4),
+        IpAddr::V6(v6) => match inner_v4(v6) {
+            Some(v4) => is_host_or_link_v4(v4),
+            None => {
+                let first = v6.segments()[0];
+                v6.is_unspecified()
+                    || v6.is_loopback()
+                    || v6.is_multicast()
+                    // fe80::/10 link local
+                    || (first & 0xffc0) == 0xfe80
+            }
+        },
+    }
+}
+
+fn is_host_or_link_v4(v4: Ipv4Addr) -> bool {
+    let a = v4.octets()[0];
+    v4.is_unspecified()
+        || v4.is_loopback()
+        || v4.is_link_local()
+        || v4.is_multicast()
+        || v4.is_broadcast()
+        // 0.0.0.0/8 "this network", 240.0.0.0/4 reserved
+        || a == 0
+        || a >= 240
 }
 
 fn is_public(address: IpAddr) -> bool {
@@ -59,19 +113,14 @@ fn is_public_v4(v4: Ipv4Addr) -> bool {
 }
 
 fn is_public_v6(v6: Ipv6Addr) -> bool {
-    // An IPv4 address wrapped in IPv6 is judged as itself: mapped
-    // (::ffff:a.b.c.d) or translated (::ffff:0:a.b.c.d).
-    if let Some(v4) = v6.to_ipv4_mapped() {
+    if let Some(v4) = inner_v4(v6) {
         return is_public_v4(v4);
-    }
-    if let [0, 0, 0, 0, 0xffff, 0, high, low] = v6.segments() {
-        return is_public_v4(Ipv4Addr::from((u32::from(high) << 16) | u32::from(low)));
     }
     let first = v6.segments()[0];
     !(v6.is_unspecified()
         || v6.is_loopback()
         || v6.is_multicast()
-        // fc00::/7 unique local, fe80::/10 link local, 64:ff9b::/96 NAT64
+        // fc00::/7 unique local, fe80::/10 link local, the rest of 64:ff9b::/96
         || (first & 0xfe00) == 0xfc00
         || (first & 0xffc0) == 0xfe80
         || (first == 0x64 && v6.segments()[1] == 0xff9b)
@@ -114,6 +163,51 @@ mod tests {
         for public in ["93.184.216.34", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"] {
             assert!(policy.permits(ip(public)), "{public} must be allowed");
         }
+    }
+
+    /// The default: the team's networks, public and private, but never the
+    /// bridge's own host or link — wherever an address hides it.
+    #[test]
+    fn the_bridge_reaches_networks_but_not_its_host_or_link() {
+        let policy = TargetPolicy::Networks { allowed: vec![] };
+        for network in [
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "100.64.0.1",
+            "198.18.4.114",
+            "fd00::1",
+            "::ffff:10.1.2.3",
+            "93.184.216.34",
+            "2606:4700:4700::1111",
+        ] {
+            assert!(policy.permits(ip(network)), "{network} must be reached");
+        }
+        for own in [
+            "127.0.0.1",
+            "127.9.9.9",
+            "169.254.169.254",
+            "0.0.0.0",
+            "0.1.2.3",
+            "255.255.255.255",
+            "224.0.0.1",
+            "240.0.0.1",
+            "::1",
+            "::",
+            "fe80::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::ffff:0:a9fe:a9fe",
+            "64:ff9b::a9fe:a9fe",
+        ] {
+            assert!(!policy.permits(ip(own)), "{own} must be refused");
+        }
+        let with_loopback = TargetPolicy::Networks {
+            allowed: vec!["127.0.0.1/32".parse().expect("a range")],
+        };
+        assert!(with_loopback.permits(ip("127.0.0.1")), "allowed back");
+        assert!(!with_loopback.permits(ip("127.0.0.2")));
     }
 
     #[test]
