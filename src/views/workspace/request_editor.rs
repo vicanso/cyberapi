@@ -11,7 +11,7 @@ use crate::views::json_tree::{JsonTree, json_view_switch};
 use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::open_variables_dialog;
 use crate::views::template_hints::{self, HintSource};
-use cyberapi_core::import::request_from_curl;
+use cyberapi_core::import::{request_from_curl, split_url};
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
 use cyberapi_core::prefs::RequestTab;
 use cyberapi_core::send::{self, form_fields};
@@ -201,10 +201,11 @@ impl RequestEditor {
             // F4.3: the URI is saved as the field is left, or on Enter —
             // which also sends it, when there is one (F3.12). Cmd/Ctrl+Enter
             // is the workspace's own Send. A cURL command there becomes the
-            // request first.
+            // request first; a query, the Query list's (#50).
             cx.subscribe_in(&uri, window, |this, _, event: &InputEvent, window, cx| match event {
                 InputEvent::Blur => {
                     if !this.take_curl(window, cx) {
+                        this.take_query(window, cx);
                         this.save_uri(cx);
                     }
                 }
@@ -213,6 +214,7 @@ impl RequestEditor {
                     // the field the text rather than the paste to the hook),
                     // is the request Enter then sends.
                     if !this.take_curl(window, cx) {
+                        this.take_query(window, cx);
                         this.save_uri(cx);
                     }
                     let has_uri = !this.api.read(cx).request().uri.trim().is_empty();
@@ -383,6 +385,26 @@ impl RequestEditor {
         self.api.update(cx, |api, cx| api.replace_request(request, cx));
         window.push_notification(Notification::success(t!("editor.curl_filled").to_string()), cx);
         true
+    }
+
+    /// #50: a query in the URI field goes to the end of the Query list, and
+    /// the field keeps the rest, so each parameter has one place. Moved as
+    /// the field is committed, not as it is typed, which would take the
+    /// text from under the caret.
+    fn take_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.uri.read(cx).value().to_string();
+        if !text.contains('?') {
+            return;
+        }
+        let (rest, pairs) = split_url(text.trim());
+        self.uri.update(cx, |input, cx| input.set_value(rest, window, cx));
+        if pairs.is_empty() {
+            return;
+        }
+        let mut query = self.query.read(cx).list(cx);
+        query.extend(pairs);
+        self.query.update(cx, |kv, cx| kv.set_list(&query, window, cx));
+        self.api.update(cx, |api, cx| api.set_query(query, cx));
     }
 
     /// The environment prefix, then what the field holds.
@@ -706,10 +728,22 @@ impl RequestEditor {
                         .child(Input::new(&self.uri).small().appearance(false).on_paste(
                             move |clipboard, window, cx| {
                                 // A pasted cURL command fills the request in rather
-                                // than landing in the field.
+                                // than landing in the field. A pasted URL lands,
+                                // and its query then goes to the list (#50).
                                 let Some(text) = clipboard.text() else { return false };
                                 paste
-                                    .update(cx, |this, cx| this.fill_from_curl(&text, window, cx))
+                                    .update(cx, |this, cx| {
+                                        if this.fill_from_curl(&text, window, cx) {
+                                            return true;
+                                        }
+                                        if text.contains('?') {
+                                            cx.defer_in(window, |this, window, cx| {
+                                                this.take_query(window, cx);
+                                                this.save_uri(cx);
+                                            });
+                                        }
+                                        false
+                                    })
                                     .unwrap_or(false)
                             },
                         )),

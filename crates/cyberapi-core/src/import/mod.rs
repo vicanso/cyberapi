@@ -176,11 +176,16 @@ pub fn curl_command(text: &str) -> Option<ImportBundle> {
 }
 
 /// A request's URL with its query moved to the query list, as every importer
-/// does (F10.3). A URL that does not parse — `{{HOST}}/a?b=1` — is split by
-/// hand.
-fn split_url(url: &str) -> (String, Vec<KvParam>) {
+/// does (F10.3), and as the URI field does with a query typed into it
+/// (#50). A URL that does not parse — `{{HOST}}/a?b=1` — is split by hand;
+/// a fragment stays with the URL, where it was.
+pub fn split_url(url: &str) -> (String, Vec<KvParam>) {
+    let (url, fragment) = match url.split_once('#') {
+        Some((url, fragment)) => (url, format!("#{fragment}")),
+        None => (url, String::new()),
+    };
     let Some((base, query)) = url.split_once('?') else {
-        return (url.to_string(), Vec::new());
+        return (format!("{url}{fragment}"), Vec::new());
     };
     let pairs = url::form_urlencoded::parse(query.as_bytes())
         .map(|(key, value)| KvParam {
@@ -189,7 +194,7 @@ fn split_url(url: &str) -> (String, Vec<KvParam>) {
             enabled: true,
         })
         .collect();
-    (base.to_string(), pairs)
+    (format!("{base}{fragment}"), pairs)
 }
 
 /// A body's type when nothing says it: JSON when it looks like JSON.
@@ -338,6 +343,17 @@ mod tests {
             split_url("{{HOST}}/a?b=1&c=x%20y"),
             ("{{HOST}}/a".to_string(), vec![kv("b", "1", true), kv("c", "x y", true)])
         );
+        // A key alone, an empty pair, a template, a fragment.
+        assert_eq!(
+            split_url("/a?flag&&t={{value(token)}}#top"),
+            (
+                "/a#top".to_string(),
+                vec![kv("flag", "", true), kv("t", "{{value(token)}}", true)]
+            )
+        );
+        assert_eq!(split_url("/a"), ("/a".to_string(), vec![]));
+        assert_eq!(split_url("/a?"), ("/a".to_string(), vec![]));
+        assert_eq!(split_url("/a#x"), ("/a#x".to_string(), vec![]));
         assert_eq!(
             content_type_of("application/json; charset=utf-8"),
             Some(ContentType::Json)
