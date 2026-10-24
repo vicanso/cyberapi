@@ -309,21 +309,18 @@ impl CyberApi {
     }
 
     fn render_title(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (pins, title, selection) = match &self.page {
-            Page::Workspace(view) => {
-                let view = view.read(cx);
-                (
-                    Some(view.pins().clone()),
-                    Some(view.title_name().clone()),
-                    Some(view.selection_title().clone()),
-                )
-            }
-            Page::Dashboard(_) => (None, None, None),
+        let (pins, title) = match &self.page {
+            Page::Workspace(view) => (
+                Some(view.read(cx).pins().clone()),
+                Some(view.read(cx).title_name().clone()),
+            ),
+            Page::Dashboard(_) => (None, None),
         };
         match AppStore::global(cx).state().read(cx).route() {
             Route::Dashboard => div().text_sm().child(APP_NAME).into_any_element(),
-            // F1.9: Home > project > the selected request, then the pins
-            // (F12.2), which take the rest of the bar.
+            // F1.9: Home > project, then the pins (F12.2), which take the
+            // rest of the bar. The selected request is the tree's selected
+            // row and, when pinned, the open tab; not repeated here.
             Route::Workspace(_) => h_flex()
                 .flex_1()
                 .min_w_0()
@@ -342,7 +339,6 @@ impl CyberApi {
                 )
                 .child(div().text_sm().text_color(cx.theme().muted_foreground).child("/"))
                 .children(title)
-                .children(selection)
                 .children(pins)
                 .into_any_element(),
         }

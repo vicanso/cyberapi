@@ -8,7 +8,6 @@ mod pins;
 mod project_title;
 mod request_editor;
 mod response_panel;
-mod selection_title;
 mod tree_panel;
 
 use crate::APP_NAME;
@@ -35,7 +34,6 @@ use gpui_kit::{
 };
 pub use pins::PinsBar;
 pub use project_title::ProjectTitle;
-use selection_title::SelectionTitle;
 // For the shortcuts' list.
 use request_editor::{RequestEditor, RequestEditorEvent};
 use response_panel::ResponsePanel;
@@ -352,7 +350,6 @@ pub struct WorkspaceView {
     tree: Entity<TreePanel>,
     pins: Entity<PinsBar>,
     title_name: Entity<ProjectTitle>,
-    selection_title: Entity<SelectionTitle>,
     selected: Option<Selected>,
     columns: Entity<ResizableState>,
     focus: FocusHandle,
@@ -375,7 +372,6 @@ impl WorkspaceView {
         let tree = cx.new(|cx| TreePanel::new(state.clone(), window, cx));
         let pins = cx.new(|cx| PinsBar::new(state.clone(), cx));
         let title_name = cx.new(|cx| ProjectTitle::new(state.clone(), cx));
-        let selection_title = cx.new(|cx| SelectionTitle::new(state.clone(), cx));
         let subscriptions = vec![
             cx.observe_in(&state, window, |this, _, window, cx| {
                 this.follow_selection(window, cx);
@@ -460,7 +456,6 @@ impl WorkspaceView {
             tree,
             pins,
             title_name,
-            selection_title,
             selected: None,
             columns,
             focus,
@@ -596,11 +591,6 @@ impl WorkspaceView {
     /// The project's name and its sync, for the title bar.
     pub fn title_name(&self) -> &Entity<ProjectTitle> {
         &self.title_name
-    }
-
-    /// The selection and the folders around it, drawn in the middle of the title bar.
-    pub fn selection_title(&self) -> &Entity<SelectionTitle> {
-        &self.selection_title
     }
 
     /// The workspace's state, for the title bar's menu.
