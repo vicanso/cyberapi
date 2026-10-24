@@ -119,7 +119,8 @@ pub enum ImportError {
 /// F10.2.
 pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportError> {
     let trimmed = text.trim_start();
-    if trimmed.len() >= 4 && trimmed[..4].eq_ignore_ascii_case("curl") {
+    // `get`, not a slice: four bytes may end inside a character.
+    if trimmed.get(..4).is_some_and(|start| start.eq_ignore_ascii_case("curl")) {
         return Ok((Format::Curl, None));
     }
     let json: serde_json::Value = serde_json::from_str(text).map_err(|error| ImportError::Unreadable {
@@ -277,6 +278,9 @@ mod tests {
         assert_eq!(format(r#"{"resources": []}"#), Ok(Format::Insomnia));
         assert_eq!(format("[]"), Ok(Format::CyberApi));
         assert!(matches!(format("hello"), Err(ImportError::Unreadable { .. })));
+        // A character of several bytes across the fourth is text, not a panic.
+        assert!(matches!(format("新建接口"), Err(ImportError::Unreadable { .. })));
+        assert!(matches!(format("cu新"), Err(ImportError::Unreadable { .. })));
         assert_eq!(parse("[]"), Err(ImportError::Empty));
     }
 

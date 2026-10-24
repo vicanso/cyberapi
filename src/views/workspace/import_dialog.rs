@@ -22,7 +22,8 @@ use std::rc::Rc;
 /// — JSON, formatted, or a cURL command; nothing otherwise.
 fn importable(text: &str) -> String {
     let trimmed = text.trim();
-    if trimmed.len() >= 4 && trimmed[..4].eq_ignore_ascii_case("curl") {
+    // `get`, not a slice: four bytes may end inside a character.
+    if trimmed.get(..4).is_some_and(|start| start.eq_ignore_ascii_case("curl")) {
         return trimmed.to_string();
     }
     let looks_json =
@@ -251,5 +252,8 @@ mod tests {
         assert_eq!(importable("hello"), "");
         assert_eq!(importable("{ not json }"), "");
         assert_eq!(importable(""), "");
+        // A character of several bytes across the fourth: no panic.
+        assert_eq!(importable("新建接口"), "");
+        assert_eq!(importable("cu新"), "");
     }
 }
