@@ -7,13 +7,14 @@ use crate::json_view_local::JsonView;
 use crate::states::{ApiState, AppStore};
 use crate::this_build;
 use crate::views::json_tree::{JsonTree, response_view_switch};
+use cyberapi_core::media::{self, HEX_LIMIT, ImageType};
 use cyberapi_core::response::{
     BodyKind, DISPLAY_LIMIT, HttpResponse, RESPONSE_LIMIT, StatusLevel, clip_text, format_duration, format_size,
     status_level, status_text, unwrappable_line,
 };
 use cyberapi_http::SendError;
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::empty::{
     Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
@@ -21,17 +22,18 @@ use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::scroll::{ScrollableElement as _, Scrollbar, ScrollbarAxis};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _,
+    h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, Hsla, Image, ImageFormat, ImageSource,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window,
-    div, img, px, relative,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription, Window, div, img, px, relative,
 };
 use rust_i18n::t;
 use std::sync::Arc;
@@ -44,6 +46,9 @@ enum ResponseTab {
     Cookies,
     Info,
 }
+
+/// The scales an image steps through, of its own size (F7.4).
+const ZOOMS: [f32; 10] = [0.1, 0.25, 0.5, 0.75, 1., 1.5, 2., 3., 4., 8.];
 
 const TABS: [ResponseTab; 4] = [
     ResponseTab::Body,
@@ -61,8 +66,20 @@ pub struct ResponsePanel {
     /// The editor holds that response's JSON indented (the pretty view), not
     /// as it came.
     shown_pretty: bool,
-    /// The editor holds only the start of a body over `DISPLAY_LIMIT`.
-    clipped: bool,
+    /// The editor holds only the start of the body: this much of it
+    /// (`DISPLAY_LIMIT` of text, `HEX_LIMIT` of bytes).
+    clipped: Option<usize>,
+    /// The editor holds bytes as hex, whose lines never wrap.
+    hex: bool,
+    /// The shown body as an image to draw, made once for each response.
+    image: Option<Arc<Image>>,
+    /// The image is drawn at this scale of its own size; `None` fits it to
+    /// the panel, never larger than it is.
+    zoom: Option<f32>,
+    /// The image's bytes (an SVG's text) are shown in place of it.
+    image_raw: bool,
+    /// Where the scaled image is scrolled to.
+    image_scroll: ScrollHandle,
     /// The longest line of what the editor holds, when too long to wrap
     /// (`WRAP_LINE_LIMIT`): that editor scrolls sideways, said in a note.
     long_line: Option<usize>,
@@ -95,7 +112,7 @@ impl ResponsePanel {
                 let wrap = app.read(cx).prefs().text.wrap;
                 if wrap != this.wrap {
                     this.wrap = wrap;
-                    let wraps = wrap && this.long_line.is_none();
+                    let wraps = wrap && this.long_line.is_none() && !this.hex;
                     this.body.update(cx, |body, cx| body.set_soft_wrap(wraps, window, cx));
                 }
                 // A new default view may want the body in the other form.
@@ -110,7 +127,12 @@ impl ResponsePanel {
             body,
             shown: None,
             shown_pretty: false,
-            clipped: false,
+            clipped: None,
+            hex: false,
+            image: None,
+            zoom: None,
+            image_raw: false,
+            image_scroll: ScrollHandle::new(),
             long_line: None,
             tab: ResponseTab::Body,
             json_tree,
@@ -165,26 +187,30 @@ impl ResponsePanel {
             return;
         }
         self.shown_pretty = pretty;
-        let (language, text) = match &shown {
-            Some(response) => {
-                let text = if pretty {
-                    response.body_text()
-                } else {
-                    response.raw_body_text()
-                };
-                (language_of(response), text.unwrap_or_default())
-            }
-            None => ("text", String::new()),
+        if changed {
+            // Another response opens fitted, as a picture.
+            self.zoom = None;
+            self.image_raw = false;
+            self.image_scroll = ScrollHandle::new();
+            self.image = shown.as_ref().and_then(|response| {
+                let format = image_format(response.image_type()?)?;
+                (response.error.is_none() && !response.body.is_empty())
+                    .then(|| Arc::new(Image::from_bytes(format, response.body.clone())))
+            });
+        }
+        let (language, text, clipped, hex) = match &shown {
+            Some(response) => editor_text(response, pretty),
+            None => ("text", String::new(), None, false),
         };
-        // A body that would make the editor crawl shows its start (#17).
-        let (text, clipped) = clip_text(text, DISPLAY_LIMIT);
         self.clipped = clipped;
+        self.hex = hex;
         self.long_line = unwrappable_line(&text);
-        let wrap = self.wrap && self.long_line.is_none();
+        let wrap = self.wrap && self.long_line.is_none() && !hex;
         self.body = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(language)
-                .line_number(true)
+                // Each line of hex starts with its offset.
+                .line_number(!hex)
                 .tab_size(crate::views::json_tab())
                 .soft_wrap(wrap)
                 .searchable(true)
@@ -366,6 +392,11 @@ impl ResponsePanel {
             && response.body_omitted.is_none()
             && !response.body.is_empty()
             && matches!(response.body_kind(), BodyKind::Json | BodyKind::Text);
+        // F7.4: a picture, or its bytes; and the file, opened or kept.
+        let pictured = self.tab == ResponseTab::Body
+            && response.error.is_none()
+            && response.body_omitted.is_none()
+            && self.image.is_some();
         TabBar::new("response-tabs")
             .underline()
             .small()
@@ -431,6 +462,40 @@ impl ResponsePanel {
                                     if let Some(text) = text {
                                         copy(text, window, cx);
                                     }
+                                })),
+                        ),
+                )
+            })
+            .when(pictured, |bar| {
+                bar.suffix(
+                    h_flex()
+                        .gap_0p5()
+                        .items_center()
+                        .child(image_view_switch(
+                            self.image_raw,
+                            cx.listener(|this, picks: &Vec<usize>, _, cx| {
+                                this.image_raw = picks.first() == Some(&1);
+                                cx.notify();
+                            }),
+                        ))
+                        .child(
+                            Button::new("response-open-image")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::ExternalLink)
+                                .tooltip(t!("response.open_image").to_string())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.api.update(cx, |api, cx| api.view_body(cx));
+                                })),
+                        )
+                        .child(
+                            Button::new("response-save-image")
+                                .ghost()
+                                .xsmall()
+                                .icon(gpui_kit::assets::IconName::Download)
+                                .tooltip(t!("response.save_body").to_string())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.api.update(cx, |api, cx| api.save_body(cx));
                                 })),
                         ),
                 )
@@ -532,12 +597,7 @@ impl ResponsePanel {
                 let body: AnyElement = if tree {
                     div().size_full().child(self.json_tree.clone()).into_any_element()
                 } else {
-                    Editor::new(&self.body)
-                        .w_full()
-                        .h_full()
-                        .readonly(true)
-                        .bordered(false)
-                        .into_any_element()
+                    self.render_editor()
                 };
                 // Wrapping it would hold the window (#51): said, and for
                 // JSON where it reads indented.
@@ -552,47 +612,210 @@ impl ResponsePanel {
                 });
                 v_flex()
                     .size_full()
-                    .when(self.clipped, |this| {
-                        let shown = format_size(DISPLAY_LIMIT as u64);
-                        let text = t!("response.clipped", size = shown).to_string();
+                    .when_some(self.clipped, |this, shown| {
+                        let text = t!("response.clipped", size = format_size(shown as u64)).to_string();
                         this.child(note(text, vec![save_button(cx)], cx))
                     })
                     .when_some(long_line, |this, text| this.child(note(text, Vec::new(), cx)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .relative()
-                            .child(div().absolute().inset_0().child(body)),
-                    )
+                    .child(fill(body))
                     .into_any_element()
             }
             // F7.4.
-            BodyKind::Image => match image_format(&response.content_type()) {
-                Some(format) => div()
-                    .size_full()
-                    .p_3()
-                    .flex()
-                    .items_start()
-                    .justify_center()
-                    .child(
-                        img(ImageSource::Image(Arc::new(Image::from_bytes(
-                            format,
-                            response.body.clone(),
-                        ))))
-                        .max_w_full()
-                        .max_h_full(),
-                    )
-                    .into_any_element(),
-                None => viewed_outside(t!("response.image", size = body_size(response)).to_string(), cx),
-            },
-            BodyKind::Pdf => viewed_outside(t!("response.pdf", size = body_size(response)).to_string(), cx),
-            BodyKind::Binary => note(
-                t!("response.binary", size = body_size(response)).to_string(),
-                vec![save_button(cx)],
+            BodyKind::Image if self.image.is_some() => self.render_image(response, cx),
+            BodyKind::Image => self.render_bytes(
+                viewed_outside(t!("response.image", size = body_size(response)).to_string(), cx),
+                cx,
+            ),
+            BodyKind::Pdf => self.render_bytes(
+                viewed_outside(t!("response.pdf", size = body_size(response)).to_string(), cx),
+                cx,
+            ),
+            BodyKind::Binary => self.render_bytes(
+                note(
+                    t!("response.binary", size = body_size(response)).to_string(),
+                    vec![save_button(cx)],
+                    cx,
+                ),
                 cx,
             ),
         }
+    }
+
+    /// The editor, read only, filling what is left of the panel.
+    fn render_editor(&self) -> AnyElement {
+        Editor::new(&self.body)
+            .w_full()
+            .h_full()
+            .readonly(true)
+            .bordered(false)
+            .into_any_element()
+    }
+
+    /// A body that is not text: what it is and what can be done with it,
+    /// then its bytes as hex.
+    fn render_bytes(&self, about: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+        v_flex()
+            .size_full()
+            .child(about)
+            .when_some(self.clipped, |this, shown| {
+                let text = t!("response.clipped", size = format_size(shown as u64)).to_string();
+                this.child(note(text, Vec::new(), cx))
+            })
+            .child(fill(self.render_editor()))
+            .into_any_element()
+    }
+
+    /// F7.4: the picture, fitted to the panel or at a scale of its own
+    /// size, under its format and size; or its bytes in its place.
+    fn render_image(&self, response: &HttpResponse, cx: &mut Context<Self>) -> AnyElement {
+        let Some(image) = self.image.clone() else {
+            return div().into_any_element();
+        };
+        if self.image_raw {
+            return v_flex()
+                .size_full()
+                .when_some(self.clipped, |this, shown| {
+                    let text = t!("response.clipped", size = format_size(shown as u64)).to_string();
+                    this.child(note(text, Vec::new(), cx))
+                })
+                .child(fill(self.render_editor()))
+                .into_any_element();
+        }
+        let theme = cx.theme();
+        let (muted, border) = (theme.muted_foreground, theme.border);
+        let kind = response.image_type().unwrap_or(ImageType::Other);
+        let size = response.image_size();
+        let about = match size {
+            Some((width, height)) => format!("{} · {width} × {height} · {}", kind.label(), body_size(response)),
+            None => format!("{} · {}", kind.label(), body_size(response)),
+        };
+        let picture = img(ImageSource::Image(image)).with_fallback(move || {
+            div()
+                .p_3()
+                .text_sm()
+                .text_color(muted)
+                .child(t!("response.image_broken").to_string())
+                .into_any_element()
+        });
+        let view = match (self.zoom, size) {
+            (Some(scale), Some((width, height))) => {
+                let (width, height) = (px(width as f32 * scale), px(height as f32 * scale));
+                // As big as the picture and its margin, so both ways scroll.
+                // The kit's `overflow_scrollbar` did not take the wheel here.
+                let margin = px(12.);
+                div()
+                    .size_full()
+                    .relative()
+                    .child(
+                        div()
+                            .id("response-image")
+                            .size_full()
+                            .overflow_scroll()
+                            .track_scroll(&self.image_scroll)
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(width + margin * 2.)
+                                    .h(height + margin * 2.)
+                                    .p(margin)
+                                    .child(picture.size_full()),
+                            ),
+                    )
+                    .child(
+                        div().absolute().inset_0().child(
+                            Scrollbar::new(&self.image_scroll)
+                                .axis(ScrollbarAxis::Both)
+                                .viewport_from_layout(),
+                        ),
+                    )
+                    .into_any_element()
+            }
+            _ => div()
+                .size_full()
+                .p_3()
+                .flex()
+                .items_start()
+                .justify_center()
+                .child(picture.max_w_full().max_h_full())
+                .into_any_element(),
+        };
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .h(px(32.))
+                    .px_3()
+                    .gap_2()
+                    .items_center()
+                    .flex_none()
+                    .border_b_1()
+                    .border_color(border)
+                    .text_xs()
+                    .text_color(muted)
+                    .child(div().flex_1().min_w_0().truncate().child(about))
+                    // Its own size is what a scale is of: without it, fitted only.
+                    .children(size.map(|_| self.render_zoom(cx))),
+            )
+            .child(div().flex_1().min_h_0().child(view))
+            .into_any_element()
+    }
+
+    /// Smaller, larger, and between fitted and its own size.
+    fn render_zoom(&self, cx: &mut Context<Self>) -> AnyElement {
+        let scale = self.zoom.unwrap_or(1.);
+        let (smallest, largest) = (ZOOMS[0], ZOOMS[ZOOMS.len() - 1]);
+        let (label, tooltip) = match self.zoom {
+            None => (
+                t!("response.zoom_fit").to_string(),
+                t!("response.zoom_actual").to_string(),
+            ),
+            Some(scale) => (
+                format!("{}%", (scale * 100.).round()),
+                t!("response.zoom_to_fit").to_string(),
+            ),
+        };
+        h_flex()
+            .gap_0p5()
+            .items_center()
+            .child(
+                Button::new("response-zoom-out")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Minus)
+                    .tooltip(t!("response.zoom_out").to_string())
+                    .disabled(self.zoom.is_some() && scale <= smallest)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.zoom = Some(zoom_step(this.zoom.unwrap_or(1.), false));
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("response-zoom")
+                    .ghost()
+                    .xsmall()
+                    .label(label)
+                    .tooltip(tooltip)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.zoom = match this.zoom {
+                            Some(_) => None,
+                            None => Some(1.),
+                        };
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("response-zoom-in")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Plus)
+                    .tooltip(t!("response.zoom_in").to_string())
+                    .disabled(scale >= largest)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.zoom = Some(zoom_step(this.zoom.unwrap_or(1.), true));
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
     }
 
     /// The rows, or `empty` said when there are none.
@@ -782,23 +1005,79 @@ fn language_of(response: &HttpResponse) -> &'static str {
 }
 
 /// F7.4 for the formats an image element can draw.
-fn image_format(content_type: &str) -> Option<ImageFormat> {
-    let lower = content_type.to_ascii_lowercase();
-    [
-        ("png", ImageFormat::Png),
-        ("jpeg", ImageFormat::Jpeg),
-        ("jpg", ImageFormat::Jpeg),
-        ("gif", ImageFormat::Gif),
-        ("webp", ImageFormat::Webp),
-        ("svg", ImageFormat::Svg),
-        ("bmp", ImageFormat::Bmp),
-        ("tif", ImageFormat::Tiff),
-        ("icon", ImageFormat::Ico),
-        ("portable-", ImageFormat::Pnm),
-    ]
-    .into_iter()
-    .find(|(name, _)| lower.contains(name))
-    .map(|(_, format)| format)
+fn image_format(kind: ImageType) -> Option<ImageFormat> {
+    match kind {
+        ImageType::Png => Some(ImageFormat::Png),
+        ImageType::Jpeg => Some(ImageFormat::Jpeg),
+        ImageType::Gif => Some(ImageFormat::Gif),
+        ImageType::Webp => Some(ImageFormat::Webp),
+        ImageType::Svg => Some(ImageFormat::Svg),
+        ImageType::Bmp => Some(ImageFormat::Bmp),
+        ImageType::Tiff => Some(ImageFormat::Tiff),
+        ImageType::Ico => Some(ImageFormat::Ico),
+        ImageType::Pnm => Some(ImageFormat::Pnm),
+        ImageType::Avif | ImageType::Heic | ImageType::Other => None,
+    }
+}
+
+/// What the editor holds for `response`, in which grammar, how much of the
+/// body that is when not all of it, and whether it is hex: JSON and text as
+/// the view wants them (#51), an SVG's text, any other body's bytes.
+fn editor_text(response: &HttpResponse, pretty: bool) -> (&'static str, String, Option<usize>, bool) {
+    let text = match response.body_kind() {
+        BodyKind::Json | BodyKind::Text if pretty => response.body_text(),
+        BodyKind::Json | BodyKind::Text => response.raw_body_text(),
+        BodyKind::Image if response.image_type() == Some(ImageType::Svg) => {
+            Some(String::from_utf8_lossy(&response.body).into_owned())
+        }
+        BodyKind::Image | BodyKind::Pdf | BodyKind::Binary => {
+            let shown = &response.body[..response.body.len().min(HEX_LIMIT)];
+            let clipped = (shown.len() < response.body.len()).then_some(HEX_LIMIT);
+            return ("text", media::hex_dump(shown), clipped, true);
+        }
+    };
+    // A body that would make the editor crawl shows its start (#17).
+    let (text, clipped) = clip_text(text.unwrap_or_default(), DISPLAY_LIMIT);
+    (language_of(response), text, clipped.then_some(DISPLAY_LIMIT), false)
+}
+
+/// The next scale of [`ZOOMS`] past `scale`, larger or smaller.
+fn zoom_step(scale: f32, larger: bool) -> f32 {
+    let next = if larger {
+        ZOOMS.iter().find(|step| **step > scale + f32::EPSILON)
+    } else {
+        ZOOMS.iter().rev().find(|step| **step < scale - f32::EPSILON)
+    };
+    next.copied().unwrap_or(scale)
+}
+
+/// The image, or its bytes (an SVG's text) in its place.
+fn image_view_switch(raw: bool, on_click: impl Fn(&Vec<usize>, &mut Window, &mut App) + 'static) -> ButtonGroup {
+    ButtonGroup::new("response-image-view")
+        .compact()
+        .small()
+        .outline()
+        .child(
+            Button::new(("response-image-view", 0usize))
+                .label(t!("response.image_view").to_string())
+                .selected(!raw),
+        )
+        .child(
+            Button::new(("response-image-view", 1usize))
+                .label(t!("editor.json_view_raw").to_string())
+                .selected(raw),
+        )
+        .on_click(on_click)
+}
+
+/// `body` over all the room left below the notes.
+fn fill(body: AnyElement) -> AnyElement {
+    div()
+        .flex_1()
+        .min_h_0()
+        .relative()
+        .child(div().absolute().inset_0().child(body))
+        .into_any_element()
 }
 
 /// F7.2: how big the body is — as it came, or as it was decoded from a
