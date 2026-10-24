@@ -235,6 +235,23 @@ pub fn relaunch() {
 #[cfg(target_family = "wasm")]
 pub fn relaunch() {}
 
+/// Where an MCP client reaches the bridge (`/v1/mcp`): the desktop's
+/// server, or the page's own address, below its base path.
+#[cfg(not(target_family = "wasm"))]
+pub fn mcp_endpoint(server: Option<&str>) -> String {
+    format!("{}/v1/mcp", server.unwrap_or_default().trim_end_matches('/'))
+}
+#[cfg(target_family = "wasm")]
+pub fn mcp_endpoint(_server: Option<&str>) -> String {
+    let page = web_sys::window()
+        .and_then(|window| window.location().href().ok())
+        .unwrap_or_default();
+    let page = page.split(['#', '?']).next().unwrap_or_default();
+    // The page is the mount's directory: `/` or `/prefix/`.
+    let directory = page.rfind('/').map_or(page, |at| &page[..=at]);
+    format!("{directory}v1/mcp")
+}
+
 /// A text file the reader picked.
 #[cfg(not(target_family = "wasm"))]
 pub fn read_text(path: &std::path::Path) -> Result<String, String> {

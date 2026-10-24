@@ -10,8 +10,8 @@
 use super::{AppStore, run_store};
 use crate::this_build;
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
-use cyberapi_core::directory::{AccountInfo, Grant, Invite, Me, Member, TeamPlace};
-use cyberapi_core::{AccountId, CollectionId, InviteId, TeamId};
+use cyberapi_core::directory::{AccountInfo, Grant, Invite, McpToken, Me, Member, NewMcpToken, TeamPlace};
+use cyberapi_core::{AccountId, CollectionId, InviteId, McpTokenId, TeamId};
 use cyberapi_store::{AccountEdit, DirectoryStore, StoreError};
 use gpui_kit::{Context, EventEmitter};
 use std::collections::HashMap;
@@ -29,6 +29,8 @@ pub enum DirectoryDone {
     PasswordReset,
     PasswordChanged,
     Transferred,
+    /// An MCP token, shown this once (`DirectoryState::issued`).
+    McpTokenIssued,
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +50,10 @@ pub struct DirectoryState {
     /// The one just made, and its link: shown this once, as only now its
     /// token is known.
     made: Option<(InviteId, String)>,
+    /// The reader's MCP tokens that still sign in.
+    mcp_tokens: Vec<McpToken>,
+    /// The token just issued, and its secret: shown this once.
+    issued: Option<(McpTokenId, String)>,
 }
 
 impl EventEmitter<DirectoryEvent> for DirectoryState {}
@@ -63,6 +69,8 @@ impl DirectoryState {
             grants: None,
             invites: Vec::new(),
             made: None,
+            mcp_tokens: Vec::new(),
+            issued: None,
         }
     }
 
@@ -97,6 +105,16 @@ impl DirectoryState {
     /// The invitation just made, and its link.
     pub fn made(&self) -> Option<&(InviteId, String)> {
         self.made.as_ref()
+    }
+
+    /// The reader's MCP tokens, once read, oldest first.
+    pub fn mcp_tokens(&self) -> &[McpToken] {
+        &self.mcp_tokens
+    }
+
+    /// The MCP token just issued, and its secret.
+    pub fn issued(&self) -> Option<&(McpTokenId, String)> {
+        self.issued.as_ref()
     }
 
     fn failed(cx: &mut Context<Self>, error: StoreError) {
@@ -319,6 +337,50 @@ impl DirectoryState {
             self.directory.reset_password(account, password),
             |_, result, cx| match result {
                 Ok(()) => cx.emit(DirectoryEvent::Done(DirectoryDone::PasswordReset)),
+                Err(error) => Self::failed(cx, error),
+            },
+        );
+    }
+
+    pub fn reload_mcp_tokens(&mut self, cx: &mut Context<Self>) {
+        run_store(cx, self.directory.mcp_tokens(), |this, result, cx| match result {
+            Ok(tokens) => {
+                this.mcp_tokens = tokens;
+                cx.notify();
+            }
+            Err(error) => Self::failed(cx, error),
+        });
+    }
+
+    pub fn issue_mcp_token(&mut self, input: NewMcpToken, cx: &mut Context<Self>) {
+        run_store(
+            cx,
+            self.directory.issue_mcp_token(input),
+            |this, result, cx| match result {
+                Ok(issued) => {
+                    this.issued = Some((issued.token.id.clone(), issued.secret));
+                    this.mcp_tokens.push(issued.token);
+                    cx.emit(DirectoryEvent::Done(DirectoryDone::McpTokenIssued));
+                    cx.notify();
+                }
+                Err(error) => Self::failed(cx, error),
+            },
+        );
+    }
+
+    pub fn revoke_mcp_token(&mut self, id: McpTokenId, cx: &mut Context<Self>) {
+        let revoked = id.clone();
+        run_store(
+            cx,
+            self.directory.revoke_mcp_token(id),
+            move |this, result, cx| match result {
+                Ok(()) => {
+                    this.mcp_tokens.retain(|token| token.id != revoked);
+                    if this.issued.as_ref().is_some_and(|(issued, _)| issued == &revoked) {
+                        this.issued = None;
+                    }
+                    cx.notify();
+                }
                 Err(error) => Self::failed(cx, error),
             },
         );

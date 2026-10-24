@@ -4,8 +4,8 @@ use crate::APP_NAME;
 use crate::i18n;
 use crate::states::{AppEvent, AppStore, Route, WorkspaceState};
 use crate::views::{
-    DashboardView, WorkspaceView, follow_update, open_accounts_dialog, open_cookies_dialog, open_password_dialog,
-    open_settings, open_shortcuts_dialog, open_teams_dialog, open_variables_dialog, update_chip,
+    DashboardView, WorkspaceView, follow_update, open_accounts_dialog, open_cookies_dialog, open_mcp_dialog,
+    open_password_dialog, open_settings, open_shortcuts_dialog, open_teams_dialog, open_variables_dialog, update_chip,
 };
 use cyberapi_core::model::VariableCategory;
 #[cfg(not(target_family = "wasm"))]
@@ -549,6 +549,11 @@ fn account_items(menu: PopupMenu, cx: &App) -> PopupMenu {
         menu
     };
     menu.item(
+        PopupMenuItem::new(t!("mcp.menu").to_string())
+            .icon(Icons::Bot)
+            .on_click(|_, window, cx| open_mcp_dialog(window, cx)),
+    )
+    .item(
         PopupMenuItem::new(t!("account.change_password").to_string())
             .icon(Icons::KeyRound)
             .on_click(|_, window, cx| open_password_dialog(window, cx)),
