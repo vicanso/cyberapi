@@ -14,6 +14,7 @@ mod id;
 pub mod import;
 pub mod json_view;
 pub mod local_only;
+pub mod media;
 pub mod model;
 pub mod prefs;
 pub mod redirect;

@@ -395,7 +395,7 @@ impl ApiState {
             return;
         };
         if let Err(message) =
-            this_build::view_outside(&response.file_name(), &response.content_type(), &response.body, cx)
+            this_build::view_outside(&response.file_name(), &response.media_type(), &response.body, cx)
         {
             cx.emit(ApiEvent::NotSaved(message));
         }

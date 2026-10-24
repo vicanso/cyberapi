@@ -1,6 +1,7 @@
 //! What came back (4.4, M7): the engine's [`Exchange`], the [`HttpResponse`]
 //! kept in an API's history, and the rules for showing one.
 
+use crate::media::{self, ImageType, Sniffed};
 use crate::model::HttpRequest;
 use crate::redirect;
 use crate::send::base64_bytes;
@@ -146,14 +147,58 @@ impl HttpResponse {
         self.header_values("content-type").collect::<Vec<_>>().join(" ")
     }
 
-    /// F7.1. A declared type wins. With none, a UTF-8 body is text and an
-    /// object or array is JSON; bytes that are not UTF-8 stay binary (#43).
+    /// F7.1. A declared type wins, unless it says only "bytes"
+    /// (`application/octet-stream`): an image or a PDF among them is shown
+    /// as one. With no type, the first bytes tell an image or a PDF; a
+    /// UTF-8 body is text and an object or array is JSON; bytes that are
+    /// not UTF-8 stay binary (#43).
     pub fn body_kind(&self) -> BodyKind {
         let declared = self.content_type();
         if declared.trim().is_empty() {
-            sniffed_kind(&self.body)
-        } else {
-            body_kind(&declared)
+            return sniffed_kind(&self.body);
+        }
+        match body_kind(&declared) {
+            BodyKind::Binary => match media::sniff(&self.body) {
+                Some(Sniffed::Image(_)) => BodyKind::Image,
+                Some(Sniffed::Pdf) => BodyKind::Pdf,
+                None => BodyKind::Binary,
+            },
+            kind => kind,
+        }
+    }
+
+    /// An image body's format (F7.4): what its bytes start as, or else
+    /// what its content type names.
+    pub fn image_type(&self) -> Option<ImageType> {
+        if self.body_kind() != BodyKind::Image {
+            return None;
+        }
+        Some(match media::sniff(&self.body) {
+            Some(Sniffed::Image(kind)) => kind,
+            _ => ImageType::declared(&self.content_type()).unwrap_or(ImageType::Other),
+        })
+    }
+
+    /// An image body's width and height, when its header says (F7.4).
+    pub fn image_size(&self) -> Option<(u32, u32)> {
+        media::image_size(&self.body, self.image_type()?)
+    }
+
+    /// The body's media type: the declared one when it says what the body
+    /// is shown as, otherwise the one its bytes were told as. For handing
+    /// the body to something outside the app (F7.4).
+    pub fn media_type(&self) -> String {
+        let declared = self.content_type();
+        let kind = self.body_kind();
+        if !declared.trim().is_empty() && body_kind(&declared) == kind {
+            return declared;
+        }
+        match kind {
+            BodyKind::Json => "application/json".into(),
+            BodyKind::Text => "text/plain; charset=utf-8".into(),
+            BodyKind::Image => self.image_type().unwrap_or(ImageType::Other).media_type().into(),
+            BodyKind::Pdf => "application/pdf".into(),
+            BodyKind::Binary => "application/octet-stream".into(),
         }
     }
 
@@ -218,7 +263,9 @@ impl HttpResponse {
                     "txt".to_string()
                 }
             }
-            BodyKind::Image | BodyKind::Pdf | BodyKind::Binary => {
+            BodyKind::Image => self.image_type().unwrap_or(ImageType::Other).extension().to_string(),
+            BodyKind::Pdf => "pdf".to_string(),
+            BodyKind::Binary => {
                 let content_type = self.content_type();
                 let subtype = content_type
                     .split(';')
@@ -306,9 +353,15 @@ pub enum BodyKind {
     Binary,
 }
 
-/// A body whose response named no content type (#43). Bytes that are not
-/// UTF-8 stay binary; a zero byte is UTF-8 and reads as text.
+/// A body whose response named no content type (#43): an image or a PDF
+/// by its first bytes. Other bytes that are not UTF-8 stay binary; a zero
+/// byte is UTF-8 and reads as text.
 fn sniffed_kind(bytes: &[u8]) -> BodyKind {
+    match media::sniff(bytes) {
+        Some(Sniffed::Image(_)) => return BodyKind::Image,
+        Some(Sniffed::Pdf) => return BodyKind::Pdf,
+        None => {}
+    }
     let Ok(text) = std::str::from_utf8(bytes) else {
         return BodyKind::Binary;
     };
@@ -319,15 +372,15 @@ fn sniffed_kind(bytes: &[u8]) -> BodyKind {
 }
 
 /// F7.1 / F7.4 by content type. XML and HTML read as text; the old app
-/// showed XML as binary.
+/// showed XML as binary. An SVG is an image, though it is XML.
 pub fn body_kind(content_type: &str) -> BodyKind {
     let lower = content_type.to_ascii_lowercase();
     if lower.contains("application/json") || lower.contains("+json") {
         BodyKind::Json
-    } else if lower.contains("text") || lower.contains("javascript") || lower.contains("xml") {
-        BodyKind::Text
     } else if lower.contains("image") {
         BodyKind::Image
+    } else if lower.contains("text") || lower.contains("javascript") || lower.contains("xml") {
+        BodyKind::Text
     } else if lower.contains("pdf") {
         BodyKind::Pdf
     } else {
@@ -605,6 +658,21 @@ mod tests {
             response(&[("content-type", "application/x-thing")], b"").file_name(),
             "response.bin"
         );
+        assert_eq!(
+            response(&[("content-type", "image/svg+xml")], b"<svg/>").file_name(),
+            "response.svg",
+            "a type that is not one word names its image"
+        );
+        assert_eq!(
+            response(&[("content-type", "image/x-icon")], b"").file_name(),
+            "response.ico"
+        );
+        assert_eq!(
+            response(&[("content-type", "application/octet-stream")], PNG).file_name(),
+            "response.png",
+            "bytes told as an image by their start"
+        );
+        assert_eq!(response(&[], b"%PDF-1.4\n").file_name(), "response.pdf");
     }
 
     #[test]
@@ -649,6 +717,7 @@ mod tests {
         assert_eq!(body_kind("application/xml"), BodyKind::Text);
         assert_eq!(body_kind("application/problem+json"), BodyKind::Json);
         assert_eq!(body_kind("image/png"), BodyKind::Image);
+        assert_eq!(body_kind("image/svg+xml"), BodyKind::Image, "drawn, though XML");
         assert_eq!(body_kind("application/pdf"), BodyKind::Pdf);
         assert_eq!(body_kind("application/octet-stream"), BodyKind::Binary);
         // No type and not UTF-8: still binary. A zero byte is UTF-8, so it
@@ -670,6 +739,40 @@ mod tests {
             response(&[("content-type", "  ")], b"hello").body_kind(),
             BodyKind::Text
         );
+    }
+
+    /// A PNG's first bytes, and its header: 640 × 480.
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x02\x80\x00\x00\x01\xe0\x08\x06\x00\x00\x00";
+
+    #[test]
+    fn an_image_or_a_pdf_is_told_by_its_first_bytes_when_the_type_does_not_say() {
+        let untyped = response(&[], PNG);
+        assert_eq!(untyped.body_kind(), BodyKind::Image);
+        assert_eq!(untyped.image_type(), Some(ImageType::Png));
+        assert_eq!(untyped.image_size(), Some((640, 480)));
+        assert_eq!(untyped.media_type(), "image/png");
+        let bytes = response(&[("content-type", "application/octet-stream")], PNG);
+        assert_eq!(bytes.body_kind(), BodyKind::Image);
+        assert_eq!(bytes.media_type(), "image/png", "what it was told as");
+        assert_eq!(response(&[], b"%PDF-1.7\n").body_kind(), BodyKind::Pdf);
+        assert_eq!(response(&[], b"%PDF-1.7\n").media_type(), "application/pdf");
+        assert_eq!(
+            response(&[("content-type", "application/octet-stream")], b"PK\x03\x04").body_kind(),
+            BodyKind::Binary
+        );
+        // The bytes, over a type that names another format: they are what
+        // the image is decoded as.
+        let mislabeled = response(&[("content-type", "image/jpeg")], PNG);
+        assert_eq!(mislabeled.image_type(), Some(ImageType::Png));
+        assert_eq!(mislabeled.media_type(), "image/jpeg", "a declared image type is kept");
+        let svg = response(&[("content-type", "image/svg+xml")], br#"<svg width="3" height="2"/>"#);
+        assert_eq!(svg.image_type(), Some(ImageType::Svg));
+        assert_eq!(svg.image_size(), Some((3, 2)));
+        assert_eq!(
+            response(&[("content-type", "image/jxl")], b"\xff\x0a").image_type(),
+            Some(ImageType::Other)
+        );
+        assert_eq!(response(&[], b"hello").image_type(), None);
     }
 
     #[test]

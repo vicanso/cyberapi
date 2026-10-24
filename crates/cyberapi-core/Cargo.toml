@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 base64 = { workspace = true }
 chrono = { workspace = true }
+imagesize = { workspace = true }
 md-5 = { workspace = true }
 mime_guess = { workspace = true }
 percent-encoding = { workspace = true }
