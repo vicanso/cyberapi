@@ -22,15 +22,16 @@ use crate::{local_items, pins_local};
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::local_only::{LocalItems, fingerprint, ids};
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
-use cyberapi_core::response::HttpResponse;
+use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::sync::{ConfigAt, CopyBinding, Moment, ProjectConfig, Step, step};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{AccountId, CollectionId, ItemId, VariableId};
+use cyberapi_core::{AccountId, CollectionId, ItemId, Timestamp, VariableId};
 use cyberapi_store::{
     Entity, HistoryStore, Imported, Inserted, MemoryStore, NewVariable, ServerCopyStore, Storage, StoreError,
     StoreFuture, TreeStore, VariableEdit, VariableStore,
 };
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// Where a copy stands against the server.
@@ -79,6 +80,10 @@ struct Shared {
     marks: Mutex<Marks>,
     /// The reader's own items (server-sync §3.4).
     local: Mutex<LocalItems>,
+    /// A page's answers to APIs the server does not know yet, newest first:
+    /// kept while the project is open, and given to the history once a
+    /// sync takes their API there (#52).
+    waiting: Mutex<Vec<HttpResponse>>,
     /// A write finished.
     news: UnboundedSender<()>,
 }
@@ -90,6 +95,10 @@ impl Shared {
 
     fn local(&self) -> MutexGuard<'_, LocalItems> {
         self.local.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn waiting(&self) -> MutexGuard<'_, Vec<HttpResponse>> {
+        self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn keep_local(&self, local: &LocalItems) {
@@ -209,6 +218,7 @@ impl ServerCopy {
             collection: collection.id.clone(),
             scope,
             local: Mutex::new(local),
+            waiting: Mutex::default(),
             marks: Mutex::new(Marks {
                 base: None,
                 unsynced: false,
@@ -227,9 +237,39 @@ impl ServerCopy {
     pub fn storage(&self, server: &Storage) -> Storage {
         let copy = Arc::new(CopyStore(self.shared.clone()));
         match &self.shared.keeper {
-            Keeper::Page { .. } => server.with_project(copy.clone(), copy, Arc::new(CopyHistory(server.clone()))),
+            Keeper::Page { .. } => server.with_project(
+                copy.clone(),
+                copy,
+                Arc::new(CopyHistory {
+                    server: server.clone(),
+                    shared: self.shared.clone(),
+                }),
+            ),
             Keeper::Desktop { local, .. } => local.with_content(copy.clone(), copy),
         }
+    }
+
+    /// After a sync: the answers the page kept for APIs the server did not
+    /// know go into its history, oldest first, as each API is there now (an
+    /// API kept local never is). Answers whether any went (#52, #53).
+    pub fn keep_waiting(&self, server: &Storage) -> StoreFuture<bool> {
+        let shared = self.shared.clone();
+        let server = server.clone();
+        Box::pin(async move {
+            let waiting: Vec<HttpResponse> = shared.waiting().iter().rev().cloned().collect();
+            let mut moved = false;
+            for response in waiting {
+                match server.history().add(response.clone()).await {
+                    Ok(_) => {
+                        shared.waiting().retain(|kept| kept.id != response.id);
+                        moved = true;
+                    }
+                    Err(error) if unknown_api(&error) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(moved)
+        })
     }
 
     /// What was kept of the copy: a page's draft, the desktop's binding.
@@ -596,36 +636,108 @@ impl VariableStore for CopyStore {
 }
 
 /// A page's history: the server's, of which an API made here and not synced
-/// yet has none — the server does not know it. Its responses still show;
-/// they are not kept until it is synced.
-struct CopyHistory(Storage);
+/// yet has none — the server does not know it. Such an API's answers are
+/// kept in the page instead, while the project is open (#52), and go to the
+/// server's history with the sync that takes the API there
+/// ([`ServerCopy::keep_waiting`]).
+struct CopyHistory {
+    server: Storage,
+    shared: Arc<Shared>,
+}
 
 fn unknown_api(error: &StoreError) -> bool {
     matches!(error, StoreError::NotFound { what: Entity::Api, .. })
 }
 
+/// An id for an answer the page keeps, different for each.
+fn waiting_id() -> String {
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    HttpResponse::waiting_id(COUNT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// The page's answers of `api` among `waiting`, newest first.
+fn waiting_of(waiting: &[HttpResponse], collection: &CollectionId, api: &ItemId) -> Vec<HttpResponse> {
+    waiting
+        .iter()
+        .filter(|response| &response.collection == collection && &response.api == api)
+        .cloned()
+        .collect()
+}
+
 impl HistoryStore for CopyHistory {
     fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse> {
-        self.0.history().add(response)
-    }
-
-    fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
-        let call = self.0.history().list(collection, api);
+        let call = self.server.history().add(response.clone());
+        let shared = self.shared.clone();
         Box::pin(async move {
             match call.await {
-                Err(error) if unknown_api(&error) => Ok(Vec::new()),
+                Err(error) if unknown_api(&error) => {
+                    let kept = HttpResponse {
+                        id: waiting_id(),
+                        created_at: Timestamp::from_unix(chrono::Utc::now().timestamp()),
+                        ..response
+                    };
+                    let mut waiting = shared.waiting();
+                    waiting.insert(0, kept.clone());
+                    // As many of each API as the history keeps.
+                    let mut count = 0;
+                    waiting.retain(|other| {
+                        let of_api = other.collection == kept.collection && other.api == kept.api;
+                        count += usize::from(of_api);
+                        !of_api || count <= HISTORY_LIMIT
+                    });
+                    Ok(kept)
+                }
                 answer => answer,
             }
         })
     }
 
+    fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
+        let call = self.server.history().list(collection.clone(), api.clone());
+        let shared = self.shared.clone();
+        Box::pin(async move {
+            let kept = match call.await {
+                Err(error) if unknown_api(&error) => Vec::new(),
+                answer => answer?,
+            };
+            let waiting = waiting_of(&shared.waiting(), &collection, &api);
+            if waiting.is_empty() {
+                return Ok(kept);
+            }
+            // Synced, and not given to the history yet: both, newest first.
+            let mut all: Vec<HttpResponse> = waiting.into_iter().chain(kept).collect();
+            all.sort_by_key(|response| std::cmp::Reverse(response.created_at));
+            all.truncate(HISTORY_LIMIT);
+            Ok(all)
+        })
+    }
+
     fn latest(&self, collection: CollectionId, apis: Vec<ItemId>) -> StoreFuture<Vec<HttpResponse>> {
-        self.0.history().latest(collection, apis)
+        let call = self.server.history().latest(collection.clone(), apis.clone());
+        let shared = self.shared.clone();
+        Box::pin(async move {
+            let mut latest = call.await?;
+            // An API only the page knows has its newest here (`get`, M6).
+            let waiting = shared.waiting();
+            for api in apis {
+                if latest.iter().any(|response| response.api == api) {
+                    continue;
+                }
+                if let Some(newest) = waiting_of(&waiting, &collection, &api).into_iter().next() {
+                    latest.push(newest);
+                }
+            }
+            Ok(latest)
+        })
     }
 
     fn clear(&self, collection: CollectionId, api: ItemId) -> StoreFuture<()> {
-        let call = self.0.history().clear(collection, api);
+        let call = self.server.history().clear(collection.clone(), api.clone());
+        let shared = self.shared.clone();
         Box::pin(async move {
+            shared
+                .waiting()
+                .retain(|response| response.collection != collection || response.api != api);
             match call.await {
                 Err(error) if unknown_api(&error) => Ok(()),
                 answer => answer,
@@ -634,6 +746,11 @@ impl HistoryStore for CopyHistory {
     }
 
     fn clear_all(&self) -> StoreFuture<()> {
-        self.0.history().clear_all()
+        let call = self.server.history().clear_all();
+        let shared = self.shared.clone();
+        Box::pin(async move {
+            shared.waiting().clear();
+            call.await
+        })
     }
 }

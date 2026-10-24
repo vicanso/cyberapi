@@ -536,8 +536,17 @@ impl ResponsePanel {
             let limit = format_size(RESPONSE_LIMIT as u64);
             note(t!("response.truncated", size = limit).to_string(), Vec::new(), cx)
         });
-        // Shown now, gone once the project opens again: said before then.
-        let unkept = (!response.kept()).then(|| note(t!("response.unkept").to_string(), Vec::new(), cx));
+        // Not in the history: said, with why and for how long it stays.
+        let unkept = (!response.kept()).then(|| {
+            let text = if !response.waits_for_sync() {
+                t!("response.unkept")
+            } else if self.api.read(cx).local_only(cx) {
+                t!("response.waiting_local")
+            } else {
+                t!("response.waiting")
+            };
+            note(text.to_string(), Vec::new(), cx)
+        });
         if redirect.is_none() && cut.is_none() && unkept.is_none() {
             return body;
         }

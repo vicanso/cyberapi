@@ -178,6 +178,19 @@ impl ApiState {
         self.sending.as_ref().map(|sending| sending.started)
     }
 
+    /// The history read again: answers the page kept until a sync are in
+    /// it now (#52).
+    pub fn reload_history(&mut self, cx: &mut Context<Self>) {
+        self.load_history(cx);
+    }
+
+    /// Whether this API is kept local, out of the sync (server-sync §3.4).
+    pub fn local_only(&self, cx: &App) -> bool {
+        self.workspace
+            .upgrade()
+            .is_some_and(|workspace| workspace.read(cx).local_members().contains(&self.api))
+    }
+
     fn load_history(&mut self, cx: &mut Context<Self>) {
         let call = self
             .sender
@@ -189,6 +202,15 @@ impl ApiState {
                 Ok(responses) => {
                     this.responses = responses.into_iter().map(Arc::new).collect();
                     this.history = Load::Loaded;
+                    // One chosen that is gone (kept again under a new id)
+                    // gives way to the newest.
+                    if this
+                        .shown
+                        .as_ref()
+                        .is_some_and(|id| !this.responses.iter().any(|response| &response.id == id))
+                    {
+                        this.shown = None;
+                    }
                 }
                 Err(error) => {
                     this.history = Load::Failed(error.clone());

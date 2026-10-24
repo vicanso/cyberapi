@@ -115,6 +115,9 @@ pub struct HttpResponse {
 /// How the id of an answer the history did not keep starts: no store gives
 /// one like it (they give ULIDs).
 const UNKEPT: &str = "unkept-";
+/// How the id of an answer a page keeps for the session starts: its API is
+/// not on the server yet (#52).
+const WAITING: &str = "waiting-";
 
 impl HttpResponse {
     /// The id of an answer the history did not keep, `n` telling it from
@@ -123,10 +126,22 @@ impl HttpResponse {
         format!("{UNKEPT}{n}")
     }
 
+    /// The id of an answer a page keeps until its API reaches the server,
+    /// `n` telling it from the others.
+    pub fn waiting_id(n: u64) -> String {
+        format!("{WAITING}{n}")
+    }
+
     /// The history kept this answer: it is still there once the project is
     /// opened again.
     pub fn kept(&self) -> bool {
-        !self.id.starts_with(UNKEPT)
+        !self.id.starts_with(UNKEPT) && !self.waits_for_sync()
+    }
+
+    /// The page keeps this answer while the project is open, and the
+    /// history takes it once its API is synced (#52, #53).
+    pub fn waits_for_sync(&self) -> bool {
+        self.id.starts_with(WAITING)
     }
 
     /// Every value of a header, ignoring case.

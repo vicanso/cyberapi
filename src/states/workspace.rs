@@ -592,6 +592,18 @@ impl WorkspaceState {
                 })
                 .detach();
                 copy.behind = false;
+                // What the page kept of APIs now on the server goes into
+                // its history, and the open API reads its history again.
+                let keep = copy.copy.keep_waiting(&copy.server);
+                run_store(cx, keep, |this, result, cx| match result {
+                    Ok(true) => {
+                        if let Some(api) = this.api.clone() {
+                            api.update(cx, |api, cx| api.reload_history(cx));
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(error) => warn!(%error, "the page's answers could not go into the history"),
+                });
                 cx.emit(WorkspaceEvent::Synced);
             }
             Ok((Pushed::Conflict, ..)) => cx.emit(WorkspaceEvent::Conflict),
@@ -2537,6 +2549,55 @@ mod tests {
             cx.run_until_parked();
             let history = editor(&state, cx).read_with(cx, |api, _| api.history().clone());
             assert_eq!(history, Load::Loaded, "not a failure: the server has none");
+        }
+
+        /// #52, #53: an answer of an API only the page knows stays while
+        /// the project is open, and goes into the history with the sync
+        /// that takes the API to the server.
+        #[gpui_kit::test]
+        async fn an_answer_of_an_api_made_here_waits_in_the_page_until_synced(cx: &mut TestAppContext) {
+            let server = MemoryStore::new().storage();
+            let collection = project(&server).await;
+            let (state, _) = open_copy(&server, collection.clone(), cx);
+            state.update(cx, |state, cx| state.create_api(None, "first".into(), cx));
+            cx.run_until_parked();
+            let first = state
+                .read_with(cx, |state, _| state.selected().cloned())
+                .expect("selected");
+            let api = editor(&state, cx);
+            api.update(cx, |api, cx| api.set_uri("http://example.test/".into(), cx));
+            api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+            cx.run_until_parked();
+            let shown = api
+                .read_with(cx, |api, _| api.shown_response().cloned())
+                .expect("answered");
+            assert!(shown.waits_for_sync() && !shown.kept());
+
+            // Another API, and back: the answer is still there.
+            state.update(cx, |state, cx| state.create_api(None, "second".into(), cx));
+            cx.run_until_parked();
+            state.update(cx, |state, cx| state.select(&first, cx));
+            cx.run_until_parked();
+            let back = editor(&state, cx).read_with(cx, |api, _| api.responses().to_vec());
+            assert_eq!(
+                back.iter().map(|response| response.id.clone()).collect::<Vec<_>>(),
+                std::slice::from_ref(&shown.id)
+            );
+
+            // Synced: the server's history has it, and so does the panel.
+            state.update(cx, |state, cx| state.sync(false, cx));
+            cx.run_until_parked();
+            let kept = server
+                .history()
+                .list(collection.id.clone(), first.clone())
+                .await
+                .expect("the API is on the server");
+            assert_eq!(kept.len(), 1);
+            let shown = editor(&state, cx)
+                .read_with(cx, |api, _| api.shown_response().cloned())
+                .expect("shown");
+            assert!(shown.kept(), "the note goes");
+            assert_eq!(shown.id, kept[0].id);
         }
 
         #[gpui_kit::test]
