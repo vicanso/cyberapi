@@ -222,7 +222,7 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 | 内容 | 桌面 | 浏览器 |
 |---|---|---|
 | 固定的接口（按项目，顺序即固定顺序） | `pins.json` | `cyberapi.pins` |
-| JSON 默认以文本还是树打开 | `json-view.json` | `cyberapi.json_view` |
+| JSON 默认以原始、美化还是树打开 | `json-view.json` | `cyberapi.json_view` |
 | 服务器地址、会话令牌和它的账号 | `server.json`（仅本人可读） | 无：页面靠自己的 Cookie 登录 |
 | 服务器项目未同步的修改 | 无：在库里的副本中 | `cyberapi.draft.<账号>.<项目>`，每个项目一条，同步或放弃后删除 |
 

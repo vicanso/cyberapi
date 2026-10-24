@@ -1,33 +1,44 @@
 //! How JSON opens, kept on this machine.
 //!
-//! The panel's Text / Tree switch changes only the document on screen. This
-//! is the default every JSON opens as, and it is not part of the settings
-//! document the server keeps. Desktop: `json-view.json` beside the database.
+//! The panel's Raw / Pretty / Tree switch changes only the document on
+//! screen. This is the default every JSON opens as, and it is not part of
+//! the settings document the server keeps. Desktop: `json-view.json` beside the database.
 //! Browser: `localStorage` key `cyberapi.json_view`, one value per account.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tracing::warn;
 
-/// How a JSON document opens.
+/// How a JSON document opens. A request's body, which is the reader's own
+/// text, has no raw and pretty forms: it is text unless this is the tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum JsonView {
+    /// As the server sent it (#51).
     #[default]
-    Text,
+    Raw,
+    /// Indented ([`cyberapi_core::format::json`]).
+    Pretty,
     Tree,
 }
 
 impl JsonView {
+    /// In the order the switch and the settings offer them.
+    pub const ALL: [Self; 3] = [Self::Raw, Self::Pretty, Self::Tree];
+
     fn name(self) -> &'static str {
         match self {
-            Self::Text => "text",
+            Self::Raw => "raw",
+            Self::Pretty => "pretty",
             Self::Tree => "tree",
         }
     }
 
+    /// `text` is what the indented view was called before there was a raw
+    /// one: whoever chose it keeps it.
     fn parse(name: &str) -> Option<Self> {
         match name {
-            "text" => Some(Self::Text),
+            "raw" => Some(Self::Raw),
+            "pretty" | "text" => Some(Self::Pretty),
             "tree" => Some(Self::Tree),
             _ => None,
         }
@@ -35,10 +46,10 @@ impl JsonView {
 }
 
 /// The default for this reader. A missing entry, or a file that cannot be
-/// read, is [`JsonView::Text`].
+/// read, is [`JsonView::Raw`].
 pub fn get(scope: &str) -> JsonView {
     let Some(file) = storage::read_document() else {
-        return JsonView::Text;
+        return JsonView::Raw;
     };
     file.readers
         .get(scope)
@@ -206,12 +217,21 @@ mod tests {
 
     #[test]
     fn a_choice_is_kept_for_its_reader() {
-        assert_eq!(get("alice"), JsonView::Text);
+        assert_eq!(get("alice"), JsonView::Raw, "raw until chosen otherwise");
         assert!(set("alice", JsonView::Tree));
         assert_eq!(get("alice"), JsonView::Tree);
-        assert_eq!(get("bob"), JsonView::Text, "another reader keeps their own");
-        assert!(set("alice", JsonView::Text));
-        assert_eq!(get("alice"), JsonView::Text);
+        assert_eq!(get("bob"), JsonView::Raw, "another reader keeps their own");
+        assert!(set("alice", JsonView::Pretty));
+        assert_eq!(get("alice"), JsonView::Pretty);
+    }
+
+    #[test]
+    fn the_indented_view_chosen_before_raw_was_one_is_kept() {
+        assert_eq!(JsonView::parse("text"), Some(JsonView::Pretty));
+        for view in JsonView::ALL {
+            assert_eq!(JsonView::parse(view.name()), Some(view));
+        }
+        assert_eq!(JsonView::parse("hex"), None);
     }
 
     #[test]

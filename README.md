@@ -33,7 +33,7 @@
 - **Projects, folders and APIs.** Search by name or pinyin, drag to reorder, pin the APIs you use most (⌘/Ctrl-1…9), group projects on the home page.
 - **Requests.** Query, headers, Basic auth, and JSON, form, multipart, XML or plain-text bodies; bulk-edit any list as text.
 - **Variables and functions.** Environments, custom variables and global headers per project. Template functions such as `{{g(api, data.token)}}` (a field of another API's latest response), `{{value(name)}}`, `{{timestamp()}}`, `{{md5(…)}}`, `{{sha256(…)}}`, `{{base64.readFile(…)}}`, with hints while you type.
-- **Responses.** Time split into DNS, TCP, TLS, server and transfer; HTTP/1.1 and HTTP/2; JSON highlighted or as a tree; a history per API; cookies kept and sent; redirects followed when you want them.
+- **Responses.** Time split into DNS, TCP, TLS, server and transfer; HTTP/1.1 and HTTP/2; JSON raw as it came, indented, or as a tree; a history per API; cookies kept and sent; redirects followed when you want them.
 - **cURL and imports.** Paste a cURL command to make an API, copy any request as cURL; import Postman, Insomnia, Swagger 2 / OpenAPI 3 and cURL; export an API, a folder or a project.
 - **Your data.** Back up and restore on the desktop, in the same format as the earlier Tauri app.
 - **Teams.** A self-hosted web version with accounts by invitation, teams and per-project roles. The desktop app signs in to the same server and works on shared projects offline, syncing when you choose.

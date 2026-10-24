@@ -466,8 +466,8 @@ impl AppState {
             folded_groups: std::mem::take(&mut self.prefs.folded_groups),
             ..AppPrefs::default()
         };
-        self.json_view = JsonView::Text;
-        if !crate::json_view_local::set(&self.pin_scope(), JsonView::Text) {
+        self.json_view = JsonView::default();
+        if !crate::json_view_local::set(&self.pin_scope(), JsonView::default()) {
             warn!("the json view could not be saved");
         }
         self.save_prefs(cx);
@@ -720,9 +720,9 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(
             state.read_with(cx, |state, _| state.json_view()),
-            crate::json_view_local::JsonView::Text
+            crate::json_view_local::JsonView::Raw
         );
-        assert_eq!(crate::json_view_local::get(""), crate::json_view_local::JsonView::Text);
+        assert_eq!(crate::json_view_local::get(""), crate::json_view_local::JsonView::Raw);
     }
 
     /// F14.6–F14.9: kept, handed to the next send, and reset.

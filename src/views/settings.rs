@@ -15,6 +15,7 @@ use crate::states::AppStore;
 use crate::this_build;
 use crate::views::fixed_rem::fixed_rem;
 use crate::views::inline_confirm::inline_confirm;
+use crate::views::json_tree::json_view_label;
 use crate::views::server_section::ServerSection;
 use cyberapi_core::prefs::{HttpVersion, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
 use cyberapi_core::redirect::MAX_REDIRECTS;
@@ -44,8 +45,6 @@ const LANGUAGES: [(Option<&str>, &str); 3] = [(None, ""), (Some("zh-CN"), "ä¸­æ–
 
 /// F14.1, in the list's order.
 const THEMES: [ThemeMode; 3] = [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark];
-
-const JSON_VIEWS: [JsonView; 2] = [JsonView::Text, JsonView::Tree];
 
 /// F14.10, in the list's order.
 const HTTP_VERSIONS: [HttpVersion; 3] = [HttpVersion::Auto, HttpVersion::Http1, HttpVersion::Http2];
@@ -259,14 +258,11 @@ impl SettingsView {
         );
         let shown = app.read(cx).json_view();
         let json_view = Self::choices(
-            vec![
-                t!("editor.json_view_text").to_string(),
-                t!("editor.json_view_tree").to_string(),
-            ],
-            JSON_VIEWS.iter().position(|view| *view == shown).unwrap_or(0),
+            JsonView::ALL.into_iter().map(json_view_label).collect(),
+            JsonView::ALL.iter().position(|view| *view == shown).unwrap_or(0),
             |index, cx| {
                 let app = AppStore::global(cx).state().clone();
-                app.update(cx, |app, cx| app.set_json_view(JSON_VIEWS[index], cx));
+                app.update(cx, |app, cx| app.set_json_view(JsonView::ALL[index], cx));
             },
             window,
             cx,

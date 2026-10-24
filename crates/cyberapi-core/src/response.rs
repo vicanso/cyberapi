@@ -16,6 +16,11 @@ pub const HISTORY_BODY_LIMIT: usize = 2 * 1024 * 1024;
 /// The most of a text body the response panel shows; the rest is left out,
 /// and the panel says so.
 pub const DISPLAY_LIMIT: usize = 1024 * 1024;
+/// The longest line the panel wraps (#51). Wrapping one line costs about
+/// five microseconds a byte, all before the panel draws: a 600 KB body of
+/// minified JSON, raw, held the window for three seconds. A longer line
+/// scrolls sideways, and the panel says so.
+pub const WRAP_LINE_LIMIT: usize = 64 * 1024;
 /// The most of a body the engine reads, as it comes and once decompressed:
 /// a bigger one is cut there, so one answer, or a small archive that
 /// unpacks to gigabytes, cannot take the memory of a bridge everyone uses.
@@ -152,14 +157,23 @@ impl HttpResponse {
         }
     }
 
-    /// F7.1: JSON indented by four spaces; text as it is; anything else, and
-    /// JSON that does not parse, as the kind says.
+    /// F7.1, the pretty view: JSON indented by four spaces; text as it is;
+    /// anything else, and JSON that does not parse, as the kind says.
     pub fn body_text(&self) -> Option<String> {
         match self.body_kind() {
             BodyKind::Json => {
                 Some(pretty_json(&self.body).unwrap_or_else(|| String::from_utf8_lossy(&self.body).into()))
             }
             BodyKind::Text => Some(String::from_utf8_lossy(&self.body).into_owned()),
+            BodyKind::Image | BodyKind::Pdf | BodyKind::Binary => None,
+        }
+    }
+
+    /// The raw view (#51): JSON and text exactly as the server sent them,
+    /// nothing reindented; anything else as the kind says.
+    pub fn raw_body_text(&self) -> Option<String> {
+        match self.body_kind() {
+            BodyKind::Json | BodyKind::Text => Some(String::from_utf8_lossy(&self.body).into_owned()),
             BodyKind::Image | BodyKind::Pdf | BodyKind::Binary => None,
         }
     }
@@ -348,6 +362,15 @@ pub fn pretty_json(bytes: &[u8]) -> Option<String> {
 
 /// At most `limit` bytes of `text`, cut at a character, and whether it was
 /// cut.
+/// The longest line of `text`, in bytes, when it is longer than
+/// [`WRAP_LINE_LIMIT`]: too long to wrap.
+pub fn unwrappable_line(text: &str) -> Option<usize> {
+    text.split('\n')
+        .map(str::len)
+        .max()
+        .filter(|longest| *longest > WRAP_LINE_LIMIT)
+}
+
 pub fn clip_text(mut text: String, limit: usize) -> (String, bool) {
     if text.len() <= limit {
         return (text, false);
@@ -591,6 +614,18 @@ mod tests {
     }
 
     #[test]
+    fn a_line_too_long_to_wrap_is_found() {
+        let long = "x".repeat(WRAP_LINE_LIMIT + 1);
+        assert_eq!(unwrappable_line(&long), Some(WRAP_LINE_LIMIT + 1));
+        assert_eq!(unwrappable_line(&format!("{{\n{long}\n}}")), Some(WRAP_LINE_LIMIT + 1));
+        // Many lines at the limit, which is the pretty view of a big body,
+        // wrap: only one line's length counts.
+        let lines = vec!["y".repeat(WRAP_LINE_LIMIT); 4].join("\n");
+        assert_eq!(unwrappable_line(&lines), None);
+        assert_eq!(unwrappable_line(""), None);
+    }
+
+    #[test]
     fn bodies_are_shown_by_content_type() {
         let json = response(
             &[("content-type", "application/json; charset=utf-8")],
@@ -600,6 +635,11 @@ mod tests {
         assert_eq!(
             json.body_text().as_deref(),
             Some("{\n    \"a\": [\n        1,\n        2\n    ]\n}")
+        );
+        assert_eq!(
+            json.raw_body_text().as_deref(),
+            Some(r#"{"a":[1,2]}"#),
+            "the raw view keeps it as it came"
         );
         let broken = response(&[("content-type", "application/json")], b"{nope");
         assert_eq!(broken.body_text().as_deref(), Some("{nope"));
@@ -614,6 +654,7 @@ mod tests {
         // No type and not UTF-8: still binary. A zero byte is UTF-8, so it
         // is text; the byte that is not is what stays binary (#43).
         assert_eq!(response(&[], b"\xff").body_text(), None);
+        assert_eq!(response(&[], b"\xff").raw_body_text(), None);
     }
 
     #[test]

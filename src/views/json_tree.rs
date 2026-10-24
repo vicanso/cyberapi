@@ -1,7 +1,9 @@
-//! A JSON document drawn as a tree. The Text / Tree switch that shows it
-//! changes only the document on screen; the default every document opens as
-//! is the local setting ([`crate::json_view_local`]).
+//! A JSON document drawn as a tree. The switch that shows it — Text / Tree
+//! for a request's body, Raw / Pretty / Tree for a response's — changes only
+//! the document on screen; the default every document opens as is the local
+//! setting ([`crate::json_view_local`]).
 
+use crate::json_view_local::JsonView;
 use cyberapi_core::json_view::{self, JsonNodeKind, JsonTreeNode};
 use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::list::ListItem;
@@ -48,6 +50,40 @@ pub(crate) fn json_view_switch(
             Button::new((id, 1_usize))
                 .label(t!("editor.json_view_tree").to_string())
                 .selected(tree),
+        )
+        .on_click(on_click)
+}
+
+/// A view's name, as the response's switch and the settings offer it.
+pub(crate) fn json_view_label(view: JsonView) -> String {
+    match view {
+        JsonView::Raw => t!("editor.json_view_raw"),
+        JsonView::Pretty => t!("editor.json_view_pretty"),
+        JsonView::Tree => t!("editor.json_view_tree"),
+    }
+    .to_string()
+}
+
+/// Raw, Pretty or Tree for a response's JSON, as one outline group, `view`
+/// pressed. `on_click` receives the group's selection: an index into
+/// [`JsonView::ALL`].
+pub(crate) fn response_view_switch(
+    id: &'static str,
+    view: JsonView,
+    on_click: impl Fn(&Vec<usize>, &mut Window, &mut App) + 'static,
+) -> ButtonGroup {
+    JsonView::ALL
+        .into_iter()
+        .enumerate()
+        .fold(
+            ButtonGroup::new(id).compact().small().outline(),
+            |group, (index, choice)| {
+                group.child(
+                    Button::new((id, index))
+                        .label(json_view_label(choice))
+                        .selected(choice == view),
+                )
+            },
         )
         .on_click(on_click)
 }

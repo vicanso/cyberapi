@@ -6,10 +6,10 @@ use super::{KEY_CONTEXT, Send as SendAction};
 use crate::json_view_local::JsonView;
 use crate::states::{ApiState, AppStore};
 use crate::this_build;
-use crate::views::json_tree::{JsonTree, json_view_switch};
+use crate::views::json_tree::{JsonTree, response_view_switch};
 use cyberapi_core::response::{
     BodyKind, DISPLAY_LIMIT, HttpResponse, RESPONSE_LIMIT, StatusLevel, clip_text, format_duration, format_size,
-    status_level, status_text,
+    status_level, status_text, unwrappable_line,
 };
 use cyberapi_http::SendError;
 use gpui_kit::component::alert::Alert;
@@ -58,13 +58,20 @@ pub struct ResponsePanel {
     body: Entity<EditorState>,
     /// Which response the body editor holds.
     shown: Option<String>,
+    /// The editor holds that response's JSON indented (the pretty view), not
+    /// as it came.
+    shown_pretty: bool,
     /// The editor holds only the start of a body over `DISPLAY_LIMIT`.
     clipped: bool,
+    /// The longest line of what the editor holds, when too long to wrap
+    /// (`WRAP_LINE_LIMIT`): that editor scrolls sideways, said in a note.
+    long_line: Option<usize>,
     tab: ResponseTab,
     /// The body as a tree, when this response's JSON is shown that way.
     json_tree: Entity<JsonTree>,
-    /// Bound to one response. Another response opens in the saved default.
-    body_as_tree: Option<(String, bool)>,
+    /// The view picked on the panel, bound to one response. Another response
+    /// opens in the saved default.
+    body_view: Option<(String, JsonView)>,
     /// Whether the body wraps long lines (F14.7).
     wrap: bool,
     _subscriptions: Vec<Subscription>,
@@ -88,8 +95,11 @@ impl ResponsePanel {
                 let wrap = app.read(cx).prefs().text.wrap;
                 if wrap != this.wrap {
                     this.wrap = wrap;
-                    this.body.update(cx, |body, cx| body.set_soft_wrap(wrap, window, cx));
+                    let wraps = wrap && this.long_line.is_none();
+                    this.body.update(cx, |body, cx| body.set_soft_wrap(wraps, window, cx));
                 }
+                // A new default view may want the body in the other form.
+                this.sync(window, cx);
                 this.sync_response_tree(cx);
                 cx.notify();
             }),
@@ -99,10 +109,12 @@ impl ResponsePanel {
             api,
             body,
             shown: None,
+            shown_pretty: false,
             clipped: false,
+            long_line: None,
             tab: ResponseTab::Body,
             json_tree,
-            body_as_tree: None,
+            body_view: None,
             wrap,
             _subscriptions: subscriptions,
         };
@@ -110,13 +122,16 @@ impl ResponsePanel {
         panel
     }
 
-    /// The tree, when this response was switched to it; otherwise the default.
-    fn response_shows_tree(&self, cx: &App) -> bool {
-        let default = AppStore::global(cx).state().read(cx).json_view() == JsonView::Tree;
-        match (&self.shown, &self.body_as_tree) {
-            (Some(id), Some((bound, tree))) if bound == id => *tree,
-            _ => default,
+    /// The view this response was switched to; otherwise the default.
+    fn response_view(&self, cx: &App) -> JsonView {
+        match (&self.shown, &self.body_view) {
+            (Some(id), Some((bound, view))) if bound == id => *view,
+            _ => AppStore::global(cx).state().read(cx).json_view(),
         }
+    }
+
+    fn response_shows_tree(&self, cx: &App) -> bool {
+        self.response_view(cx) == JsonView::Tree
     }
 
     fn shown_json(&self, cx: &App) -> bool {
@@ -136,23 +151,36 @@ impl ResponsePanel {
         self.json_tree.update(cx, |tree, cx| tree.set_text(&text, cx));
     }
 
-    /// Puts the shown response's body in the editor when it changes.
+    /// Puts the shown response's body in the editor when it, or the form
+    /// its view wants it in, changes: indented for the pretty view, as it
+    /// came for the raw one (#51) and the tree, which reads the same JSON.
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let shown = self.api.read(cx).shown_response().cloned();
         let id = shown.as_ref().map(|response| response.id.clone());
-        if id == self.shown && id.is_some() {
+        let changed = id != self.shown;
+        self.shown = id.clone();
+        let pretty = self.shown_json(cx) && self.response_view(cx) == JsonView::Pretty;
+        if !changed && pretty == self.shown_pretty {
             cx.notify();
             return;
         }
-        self.shown = id;
+        self.shown_pretty = pretty;
         let (language, text) = match &shown {
-            Some(response) => (language_of(response), response.body_text().unwrap_or_default()),
+            Some(response) => {
+                let text = if pretty {
+                    response.body_text()
+                } else {
+                    response.raw_body_text()
+                };
+                (language_of(response), text.unwrap_or_default())
+            }
             None => ("text", String::new()),
         };
         // A body that would make the editor crawl shows its start (#17).
         let (text, clipped) = clip_text(text, DISPLAY_LIMIT);
         self.clipped = clipped;
-        let wrap = self.wrap;
+        self.long_line = unwrappable_line(&text);
+        let wrap = self.wrap && self.long_line.is_none();
         self.body = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(language)
@@ -352,15 +380,18 @@ impl ResponsePanel {
                         .gap_0p5()
                         .items_center()
                         .when(json, |this| {
-                            let tree = self.response_shows_tree(cx);
-                            this.child(json_view_switch(
+                            this.child(response_view_switch(
                                 "response-json-view",
-                                tree,
-                                cx.listener(|this, picks: &Vec<usize>, _, cx| {
-                                    let Some(id) = this.shown.clone() else {
+                                self.response_view(cx),
+                                cx.listener(|this, picks: &Vec<usize>, window, cx| {
+                                    let (Some(id), Some(view)) = (
+                                        this.shown.clone(),
+                                        picks.first().and_then(|index| JsonView::ALL.get(*index)),
+                                    ) else {
                                         return;
                                     };
-                                    this.body_as_tree = Some((id, picks.first().copied() == Some(1)));
+                                    this.body_view = Some((id, *view));
+                                    this.sync(window, cx);
                                     this.sync_response_tree(cx);
                                     cx.notify();
                                 }),
@@ -386,13 +417,17 @@ impl ResponsePanel {
                                 .icon(IconName::Copy)
                                 .tooltip(t!("response.copy_body").to_string())
                                 // The body as text, whole: the editor may
-                                // show only its start.
+                                // show only its start. Indented when it is
+                                // shown so, as it came otherwise.
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    let text = this
-                                        .api
-                                        .read(cx)
-                                        .shown_response()
-                                        .and_then(|response| response.body_text());
+                                    let pretty = this.response_view(cx) == JsonView::Pretty;
+                                    let text = this.api.read(cx).shown_response().and_then(|response| {
+                                        if pretty {
+                                            response.body_text()
+                                        } else {
+                                            response.raw_body_text()
+                                        }
+                                    });
                                     if let Some(text) = text {
                                         copy(text, window, cx);
                                     }
@@ -504,6 +539,17 @@ impl ResponsePanel {
                         .bordered(false)
                         .into_any_element()
                 };
+                // Wrapping it would hold the window (#51): said, and for
+                // JSON where it reads indented.
+                let long_line = self.long_line.filter(|_| self.wrap && !tree).map(|longest| {
+                    let size = format_size(longest as u64);
+                    if response.body_kind() == BodyKind::Json {
+                        t!("response.long_line_json", size = size)
+                    } else {
+                        t!("response.long_line", size = size)
+                    }
+                    .to_string()
+                });
                 v_flex()
                     .size_full()
                     .when(self.clipped, |this| {
@@ -511,6 +557,7 @@ impl ResponsePanel {
                         let text = t!("response.clipped", size = shown).to_string();
                         this.child(note(text, vec![save_button(cx)], cx))
                     })
+                    .when_some(long_line, |this, text| this.child(note(text, Vec::new(), cx)))
                     .child(
                         div()
                             .flex_1()
