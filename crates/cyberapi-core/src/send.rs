@@ -83,6 +83,14 @@ fn enabled(variables: &[Variable], category: VariableCategory) -> impl Iterator<
         .filter(move |variable| variable.enabled && variable.category == category)
 }
 
+/// The project's global headers that are sent: enabled, with a name and a
+/// value (#50). A row left without one is unfinished, not a header to put
+/// on every request; a request's own header may be empty on purpose.
+fn global_headers(variables: &[Variable]) -> impl Iterator<Item = &Variable> {
+    enabled(variables, VariableCategory::GlobalRequestHeader)
+        .filter(|variable| !variable.name.trim().is_empty() && !variable.value.trim().is_empty())
+}
+
 /// F5.2: the URI with its environment variable's value in place of
 /// `{{NAME}}` — the first enabled variable of that name; left as written when
 /// there is none.
@@ -102,13 +110,11 @@ pub fn resolve_uri(uri: &str, variables: &[Variable]) -> String {
 pub fn fill_values(request: &HttpRequest, variables: &[Variable]) -> HttpRequest {
     let mut filled = request.clone();
     filled.uri = resolve_uri(&request.uri, variables);
-    filled.headers.extend(
-        enabled(variables, VariableCategory::GlobalRequestHeader).map(|variable| KvParam {
-            key: variable.name.clone(),
-            value: variable.value.clone(),
-            enabled: true,
-        }),
-    );
+    filled.headers.extend(global_headers(variables).map(|variable| KvParam {
+        key: variable.name.trim().to_string(),
+        value: variable.value.clone(),
+        enabled: true,
+    }));
     filled
 }
 
@@ -131,7 +137,7 @@ fn templated_texts<'a>(request: &'a HttpRequest, variables: &'a [Variable]) -> V
             .filter(|kv| kv.enabled)
             .map(|kv| kv.value.as_str().into()),
     );
-    texts.extend(enabled(variables, VariableCategory::GlobalRequestHeader).map(|v| v.value.as_str().into()));
+    texts.extend(global_headers(variables).map(|v| v.value.as_str().into()));
     texts
 }
 
@@ -297,8 +303,8 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
 
     let mut headers = Headers::default();
     headers.set("User-Agent", cx.user_agent);
-    for variable in enabled(cx.variables, VariableCategory::GlobalRequestHeader) {
-        headers.set(&variable.name, &render(&variable.value)?);
+    for variable in global_headers(cx.variables) {
+        headers.set(variable.name.trim(), &render(&variable.value)?);
     }
     if let Some(auth) = request.auth.iter().find(|kv| kv.enabled) {
         let token = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", auth.key, auth.value));
@@ -576,6 +582,9 @@ mod tests {
             variable(VariableCategory::GlobalRequestHeader, "X-Team", "global", true),
             variable(VariableCategory::GlobalRequestHeader, "X-Trace", "{{ts()}}", true),
             variable(VariableCategory::GlobalRequestHeader, "X-Off", "no", false),
+            // Unfinished rows (#50): no value, no name.
+            variable(VariableCategory::GlobalRequestHeader, "X-Empty", " ", true),
+            variable(VariableCategory::GlobalRequestHeader, " ", "orphan", true),
         ];
         let request = HttpRequest {
             uri: "http://a.test".into(),
@@ -739,6 +748,7 @@ mod tests {
         let variables = [
             variable(VariableCategory::Environment, "HOST", "https://h", true),
             variable(VariableCategory::GlobalRequestHeader, "X-G", "g", true),
+            variable(VariableCategory::GlobalRequestHeader, "X-Empty", "", true),
         ];
         let request = HttpRequest {
             uri: "{{HOST}}/a".into(),
