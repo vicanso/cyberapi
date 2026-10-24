@@ -3,7 +3,7 @@
 //! skips.
 
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
-use cyberapi_core::directory::TeamPlace;
+use cyberapi_core::directory::{MCP_TOKEN_PREFIX, NewMcpToken, TeamPlace};
 use cyberapi_core::model::{HttpRequest, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, ThemeMode, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
@@ -928,4 +928,148 @@ async fn postgres_invitations() {
 #[tokio::test]
 async fn mysql_invitations() {
     invitations("CYBERAPI_TEST_MYSQL").await;
+}
+
+/// An MCP token's hash, as the bridge looks one up.
+fn token_hash(token: &str) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(token.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// MCP tokens: an account's own, shown once, signing in while they last and
+/// the account is enabled.
+async fn mcp_tokens(variable: &str) {
+    let Ok(url) = std::env::var(variable) else {
+        eprintln!("skipped: {variable} is not set");
+        return;
+    };
+    let store = SqlStore::connect(&url).await.expect("connect");
+    let (alice_id, bob_id) = (account(&store, "alice").await, account(&store, "bob").await);
+    let (alice, bob) = (store.directory(alice_id.clone()), store.directory(bob_id.clone()));
+    let input = |name: &str, can_send, days| NewMcpToken {
+        name: name.into(),
+        can_send,
+        days,
+    };
+    let now = || {
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+        i64::try_from(since.map(|since| since.as_secs()).unwrap_or_default()).unwrap_or_default()
+    };
+
+    let laptop = alice
+        .issue_mcp_token(input(" laptop ", false, Some(90)))
+        .await
+        .expect("issue");
+    assert!(laptop.secret.starts_with(MCP_TOKEN_PREFIX) && laptop.secret.len() == MCP_TOKEN_PREFIX.len() + 64);
+    assert_eq!(laptop.token.name, "laptop", "trimmed");
+    let lasts = laptop.token.expires_at.expect("an end").get().timestamp() - now();
+    assert!((89 * 24 * 3600..=90 * 24 * 3600).contains(&lasts));
+    let ci = alice.issue_mcp_token(input("ci", true, None)).await.expect("issue");
+    assert_eq!(ci.token.expires_at, None);
+    assert_eq!(
+        alice.mcp_tokens().await.expect("list"),
+        [laptop.token.clone(), ci.token.clone()]
+    );
+    assert!(bob.mcp_tokens().await.expect("list").is_empty(), "each account its own");
+
+    refused(
+        alice.issue_mcp_token(input("laptop", true, None)).await,
+        Refusal::TokenNameTaken,
+    );
+    refused(
+        alice.issue_mcp_token(input("  ", false, None)).await,
+        Refusal::BadTokenName,
+    );
+    refused(
+        alice.issue_mcp_token(input("x", false, Some(7))).await,
+        Refusal::BadTokenDays,
+    );
+    bob.issue_mcp_token(input("laptop", false, None))
+        .await
+        .expect("another account's name");
+
+    // It signs in as its account, and only with the token itself.
+    let (who, token) = store
+        .mcp_token_account(&token_hash(&ci.secret), now())
+        .await
+        .expect("look up")
+        .expect("signs in");
+    assert_eq!((who.id, token), (alice_id.clone(), ci.token.clone()));
+    assert!(
+        store
+            .mcp_token_account(&token_hash("cat_0"), now())
+            .await
+            .expect("look up")
+            .is_none()
+    );
+    assert!(
+        store
+            .mcp_token_account(&ci.secret, now())
+            .await
+            .expect("look up")
+            .is_none(),
+        "not the token"
+    );
+
+    // Past its end it is gone; a disabled account's sign nobody in.
+    let pool = sqlx::AnyPool::connect(&url).await.expect("a pool");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE mcp_tokens SET expires_at = 1 WHERE id = '{}'",
+        laptop.token.id
+    )))
+    .execute(&pool)
+    .await
+    .expect("age it");
+    assert!(
+        store
+            .mcp_token_account(&token_hash(&laptop.secret), now())
+            .await
+            .expect("look up")
+            .is_none()
+    );
+    assert_eq!(alice.mcp_tokens().await.expect("list"), std::slice::from_ref(&ci.token));
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE accounts SET disabled = 1 WHERE id = '{alice_id}'"
+    )))
+    .execute(&pool)
+    .await
+    .expect("disable");
+    assert!(
+        store
+            .mcp_token_account(&token_hash(&ci.secret), now())
+            .await
+            .expect("look up")
+            .is_none()
+    );
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE accounts SET disabled = 0 WHERE id = '{alice_id}'"
+    )))
+    .execute(&pool)
+    .await
+    .expect("enable");
+
+    // Revoked by its owner only.
+    not_found(bob.revoke_mcp_token(ci.token.id.clone()).await, Entity::McpToken);
+    alice.revoke_mcp_token(ci.token.id.clone()).await.expect("revoke");
+    assert!(
+        store
+            .mcp_token_account(&token_hash(&ci.secret), now())
+            .await
+            .expect("look up")
+            .is_none()
+    );
+    not_found(alice.revoke_mcp_token(ci.token.id.clone()).await, Entity::McpToken);
+}
+
+#[tokio::test]
+async fn postgres_mcp_tokens() {
+    mcp_tokens("CYBERAPI_TEST_POSTGRES").await;
+}
+
+#[tokio::test]
+async fn mysql_mcp_tokens() {
+    mcp_tokens("CYBERAPI_TEST_MYSQL").await;
 }

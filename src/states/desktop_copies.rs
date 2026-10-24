@@ -7,12 +7,14 @@ use super::copy::ServerCopy;
 use super::{DashboardState, ServerState, WorkspaceEvent, WorkspaceState};
 use crate::server_local::{self, ServerFile};
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
-use cyberapi_core::directory::{AccountInfo, Grant, Invite, Me, Member, NewInvite, Team, TeamPlace};
+use cyberapi_core::directory::{
+    AccountInfo, Grant, Invite, IssuedMcpToken, McpToken, Me, Member, NewInvite, NewMcpToken, Team, TeamPlace,
+};
 use cyberapi_core::model::Collection;
 use cyberapi_core::prefs::{SendPrefs, Timeouts};
 use cyberapi_core::response::Exchange;
 use cyberapi_core::template::NoFiles;
-use cyberapi_core::{AccountId, CollectionId, InviteId, TeamId};
+use cyberapi_core::{AccountId, CollectionId, InviteId, McpTokenId, TeamId};
 use cyberapi_http::{HttpEngine, PreparedRequest, SendError, SendFuture};
 use cyberapi_service::Sender;
 use cyberapi_store::{
@@ -139,6 +141,15 @@ impl DirectoryStore for NoDirectory {
         none()
     }
     fn change_password(&self, _: String, _: String) -> StoreFuture<()> {
+        none()
+    }
+    fn mcp_tokens(&self) -> StoreFuture<Vec<McpToken>> {
+        none()
+    }
+    fn issue_mcp_token(&self, _: NewMcpToken) -> StoreFuture<IssuedMcpToken> {
+        none()
+    }
+    fn revoke_mcp_token(&self, _: McpTokenId) -> StoreFuture<()> {
         none()
     }
 }

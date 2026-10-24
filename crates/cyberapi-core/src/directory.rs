@@ -2,13 +2,20 @@
 //! a reader sees them, and the rules for new ones. The desktop has none.
 
 use crate::access::{CollectionRole, Grantee, TeamRole};
-use crate::{AccountId, InviteId, TeamId, Timestamp};
+use crate::{AccountId, InviteId, McpTokenId, TeamId, Timestamp};
 use serde::{Deserialize, Serialize};
 
 pub const MIN_PASSWORD_CHARS: usize = 8;
 pub const MAX_ACCOUNT_NAME_CHARS: usize = 64;
 /// How long an invitation can be used (`docs/server-sync.md` §5).
 pub const INVITE_DAYS: i64 = 7;
+/// The longest an MCP token's name is.
+pub const MAX_TOKEN_NAME_CHARS: usize = 64;
+/// How every MCP token starts, so one pasted somewhere is recognised.
+pub const MCP_TOKEN_PREFIX: &str = "cat_";
+/// The lifetimes a new MCP token may be given, in days, the default first;
+/// or none, for one that lasts until it is revoked.
+pub const MCP_TOKEN_DAYS: [u32; 3] = [90, 30, 365];
 
 /// An account, as every signed-in reader may see it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +109,45 @@ pub struct Invite {
 pub struct NewInvite {
     pub invite: Invite,
     pub token: String,
+}
+
+/// An MCP token of the reader's: how an AI assistant signs in as them at the
+/// bridge's `/v1/mcp`, and nowhere else. It reads what the account reads;
+/// `can_send` lets it send the account's saved requests too.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToken {
+    pub id: McpTokenId,
+    /// The machine or the client it is for, unique among the account's.
+    pub name: String,
+    pub can_send: bool,
+    pub created_at: Timestamp,
+    /// `None`: until it is revoked.
+    pub expires_at: Option<Timestamp>,
+}
+
+/// A token to issue: its name, whether it may send, and how many days it
+/// lasts (one of [`MCP_TOKEN_DAYS`], or `None` for no end).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewMcpToken {
+    pub name: String,
+    pub can_send: bool,
+    pub days: Option<u32>,
+}
+
+/// A token just issued, and the secret itself: shown this once, never kept.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssuedMcpToken {
+    pub token: McpToken,
+    pub secret: String,
+}
+
+/// A token's name: 1 to 64 characters, not all blank.
+pub fn valid_token_name(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty() && name.chars().count() <= MAX_TOKEN_NAME_CHARS
 }
 
 /// What an invitation's link says before an account is made with it.

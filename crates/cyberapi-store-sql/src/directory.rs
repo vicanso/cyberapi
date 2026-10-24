@@ -7,10 +7,10 @@ use crate::sql;
 use crate::{db, new_id, new_token, now, rows, token_hash, unix_now};
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::directory::{
-    AccountInfo, Grant, INVITE_DAYS, Invite, Me, Member, NewInvite, Team, TeamPlace, invite_needs, sort_teams,
-    valid_password,
+    AccountInfo, Grant, INVITE_DAYS, Invite, IssuedMcpToken, MCP_TOKEN_DAYS, MCP_TOKEN_PREFIX, McpToken, Me, Member,
+    NewInvite, NewMcpToken, Team, TeamPlace, invite_needs, sort_teams, valid_password, valid_token_name,
 };
-use cyberapi_core::{AccountId, CollectionId, InviteId, TeamId, Timestamp};
+use cyberapi_core::{AccountId, CollectionId, InviteId, McpTokenId, TeamId, Timestamp};
 use cyberapi_store::rules::required_name;
 use cyberapi_store::{AccountEdit, DirectoryStore, Entity, Refusal, StoreError, StoreFuture};
 use sqlx::any::AnyRow;
@@ -67,6 +67,20 @@ fn team(row: &AnyRow) -> Result<Team, StoreError> {
 
 fn team_role(text: &str) -> TeamRole {
     TeamRole::parse(text).unwrap_or(TeamRole::Member)
+}
+
+/// `id, name, can_send, created_at, expires_at`, from column `start` on.
+pub(crate) fn mcp_token(row: &AnyRow, start: usize) -> Result<McpToken, StoreError> {
+    Ok(McpToken {
+        id: McpTokenId::new(rows::text(row, start)?),
+        name: rows::text(row, start + 1)?,
+        can_send: row.try_get::<i32, _>(start + 2).map_err(db)? != 0,
+        created_at: Timestamp::parse_lenient(&rows::text(row, start + 3)?),
+        expires_at: row
+            .try_get::<Option<i64>, _>(start + 4)
+            .map_err(db)?
+            .map(Timestamp::from_unix),
+    })
 }
 
 /// `id, team, team name, role, created_at, expires_at`.
@@ -557,6 +571,88 @@ impl DirectoryStore for Scoped {
                 .execute(&mut *conn)
                 .await
                 .map_err(db)?;
+            Ok(())
+        })
+    }
+
+    fn mcp_tokens(&self) -> StoreFuture<Vec<McpToken>> {
+        self.run(|this| async move {
+            let mut tokens = sqlx::query(this.dialect.sql(sql::MCP_TOKENS_OF))
+                .bind(this.account())
+                .bind(unix_now())
+                .fetch_all(&this.pool)
+                .await
+                .map_err(db)?
+                .iter()
+                .map(|row| mcp_token(row, 0))
+                .collect::<Result<Vec<_>, _>>()?;
+            // Within a second, the ids (ULIDs) are in the order made.
+            tokens.sort_by(|a, b| (a.created_at, a.id.as_str()).cmp(&(b.created_at, b.id.as_str())));
+            Ok(tokens)
+        })
+    }
+
+    fn issue_mcp_token(&self, input: NewMcpToken) -> StoreFuture<IssuedMcpToken> {
+        self.run(|this| async move {
+            let name = input.name.trim().to_string();
+            if !valid_token_name(&name) {
+                return Err(refused(Refusal::BadTokenName));
+            }
+            if input.days.is_some_and(|days| !MCP_TOKEN_DAYS.contains(&days)) {
+                return Err(refused(Refusal::BadTokenDays));
+            }
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            let taken = sqlx::query(this.dialect.sql(sql::MCP_TOKEN_NAME_COUNT))
+                .bind(this.account())
+                .bind(name.clone())
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(db)?
+                .try_get::<i64, _>(0)
+                .map_err(db)?;
+            if taken > 0 {
+                return Err(refused(Refusal::TokenNameTaken));
+            }
+            let secret = format!("{MCP_TOKEN_PREFIX}{}", new_token()?);
+            let id = McpTokenId::new(new_id());
+            let created_at = now();
+            let expires_at = input.days.map(|days| unix_now() + i64::from(days) * 24 * 60 * 60);
+            sqlx::query(this.dialect.sql(sql::MCP_TOKEN_INSERT))
+                .bind(id.as_str().to_string())
+                .bind(token_hash(&secret))
+                .bind(this.account())
+                .bind(name.clone())
+                .bind(i32::from(input.can_send))
+                .bind(created_at.to_rfc3339())
+                .bind(expires_at)
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+            Ok(IssuedMcpToken {
+                token: McpToken {
+                    id,
+                    name,
+                    can_send: input.can_send,
+                    created_at,
+                    expires_at: expires_at.map(Timestamp::from_unix),
+                },
+                secret,
+            })
+        })
+    }
+
+    fn revoke_mcp_token(&self, id: McpTokenId) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let revoked = sqlx::query(this.dialect.sql(sql::MCP_TOKEN_DELETE))
+                .bind(id.as_str().to_string())
+                .bind(this.account())
+                .execute(&this.pool)
+                .await
+                .map_err(db)?
+                .rows_affected();
+            if revoked == 0 {
+                return Err(StoreError::not_found(Entity::McpToken, &id));
+            }
             Ok(())
         })
     }

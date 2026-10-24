@@ -77,3 +77,8 @@ string_id!(
     /// An invitation to make an account (`docs/server-sync.md` §5).
     InviteId
 );
+string_id!(
+    /// An MCP token: how an AI assistant signs in as an account at the
+    /// bridge's `/v1/mcp` (`docs/DEPLOY.md`, AI assistants).
+    McpTokenId
+);

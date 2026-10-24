@@ -29,14 +29,16 @@ pub use memory::MemoryStore;
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
-use cyberapi_core::directory::{AccountInfo, Grant, Invite, Me, Member, NewInvite, Team, TeamPlace};
+use cyberapi_core::directory::{
+    AccountInfo, Grant, Invite, IssuedMcpToken, McpToken, Me, Member, NewInvite, NewMcpToken, Team, TeamPlace,
+};
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{AccountId, CollectionId, InviteId, ItemId, TeamId, VariableId};
+use cyberapi_core::{AccountId, CollectionId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -316,6 +318,14 @@ pub trait DirectoryStore: Send + Sync {
     fn reset_password(&self, account: AccountId, password: String) -> StoreFuture<()>;
     /// The reader's own, given the one it has now.
     fn change_password(&self, current: String, password: String) -> StoreFuture<()>;
+    /// The reader's MCP tokens (an AI assistant's way in at the bridge's
+    /// `/v1/mcp`) that still sign in, oldest first.
+    fn mcp_tokens(&self) -> StoreFuture<Vec<McpToken>>;
+    /// A new one for the reader; its secret is answered this once, and the
+    /// store keeps only its hash.
+    fn issue_mcp_token(&self, input: NewMcpToken) -> StoreFuture<IssuedMcpToken>;
+    /// One of the reader's, which signs in no more.
+    fn revoke_mcp_token(&self, id: McpTokenId) -> StoreFuture<()>;
 }
 
 /// One backend's stores, as the layers above hold them.

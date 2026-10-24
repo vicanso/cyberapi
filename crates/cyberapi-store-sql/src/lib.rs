@@ -18,7 +18,7 @@ pub use sql::Dialect;
 
 use chrono::Utc;
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
-use cyberapi_core::directory::{AccountInfo, InviteInfo, invite_needs, valid_account_name, valid_password};
+use cyberapi_core::directory::{AccountInfo, InviteInfo, McpToken, invite_needs, valid_account_name, valid_password};
 use cyberapi_core::{AccountId, CollectionId, TeamId, Timestamp};
 use cyberapi_store::{DirectoryStore, Refusal, Storage, StoreError};
 use directory::NoPasswords;
@@ -453,6 +453,24 @@ impl SqlStore {
             .await
             .map_err(db)?;
         row.map(|row| account(&row)).transpose()
+    }
+
+    /// The enabled account an MCP token signs in as while it lasts (`now` in
+    /// unix seconds), and the token. The store matches `token_hash`, never
+    /// the token.
+    pub async fn mcp_token_account(
+        &self,
+        token_hash: &str,
+        now: i64,
+    ) -> Result<Option<(Account, McpToken)>, StoreError> {
+        let row = sqlx::query(self.dialect.sql(sql::MCP_TOKEN_ACCOUNT))
+            .bind(token_hash.to_string())
+            .bind(now)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        row.map(|row| Ok((account(&row)?, directory::mcp_token(&row, 4)?)))
+            .transpose()
     }
 
     /// Forgets the logins that ran out by `now` (unix seconds); how many.

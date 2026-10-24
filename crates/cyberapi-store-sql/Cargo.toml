@@ -31,6 +31,8 @@ ulid = { workspace = true }
 
 [dev-dependencies]
 cyberapi-store-sql = { workspace = true, features = ["conformance"] }
+# A token's hash, as the bridge takes it.
+sha2 = { workspace = true }
 # Ages an invitation past its end, which no store call does.
 sqlx = { workspace = true }
 tokio = { workspace = true }

@@ -50,6 +50,7 @@ pub fn store_error(error: &StoreError) -> String {
             Entity::Team => t!("errors.team_not_found").into(),
             Entity::Account => t!("errors.account_not_found").into(),
             Entity::Invite => t!("errors.invite_not_found").into(),
+            Entity::McpToken => t!("errors.mcp_token_not_found").into(),
         },
         StoreError::Refused { reason } => match reason {
             Refusal::AdminOnly => t!("errors.refused_admin_only").into(),
@@ -63,6 +64,9 @@ pub fn store_error(error: &StoreError) -> String {
             Refusal::WrongPassword => t!("errors.refused_wrong_password").into(),
             Refusal::NotYourself => t!("errors.refused_not_yourself").into(),
             Refusal::InviteGone => t!("errors.refused_invite_gone").into(),
+            Refusal::BadTokenName => t!("errors.refused_bad_token_name").into(),
+            Refusal::TokenNameTaken => t!("errors.refused_token_name_taken").into(),
+            Refusal::BadTokenDays => t!("errors.refused_bad_token_days").into(),
         },
         StoreError::Forbidden { .. } => t!("errors.forbidden").into(),
         StoreError::NameRequired => t!("errors.name_required").into(),

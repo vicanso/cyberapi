@@ -178,6 +178,18 @@ pub const INVITE_OPEN: &str = "SELECT a.name, a.display_name, t.name \
 pub const INVITE_CLAIM: &str = "UPDATE invites SET used_by = $1 \
     WHERE token_hash = $2 AND used_by IS NULL AND revoked = 0 AND expires_at > $3";
 pub const INVITE_PLACE: &str = "SELECT inviter, team, role FROM invites WHERE token_hash = $1";
+pub const MCP_TOKEN_INSERT: &str = "INSERT INTO mcp_tokens \
+    (id, token_hash, account, name, can_send, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7)";
+/// An account's tokens that still sign in at unix `$2`.
+pub const MCP_TOKENS_OF: &str = "SELECT id, name, can_send, created_at, expires_at FROM mcp_tokens \
+    WHERE account = $1 AND (expires_at IS NULL OR expires_at > $2)";
+pub const MCP_TOKEN_NAME_COUNT: &str = "SELECT COUNT(*) FROM mcp_tokens WHERE account = $1 AND name = $2";
+pub const MCP_TOKEN_DELETE: &str = "DELETE FROM mcp_tokens WHERE id = $1 AND account = $2";
+/// The enabled account a token signs in as at unix `$2`, and the token.
+pub const MCP_TOKEN_ACCOUNT: &str = "SELECT a.id, a.name, a.display_name, a.admin, \
+    t.id, t.name, t.can_send, t.created_at, t.expires_at \
+    FROM mcp_tokens t JOIN accounts a ON a.id = t.account \
+    WHERE t.token_hash = $1 AND (t.expires_at IS NULL OR t.expires_at > $2) AND a.disabled = 0";
 /// The teams an account is in, with its place in each.
 pub const TEAMS_OF: &str = "SELECT t.id, t.name, t.personal_of, tm.role \
     FROM teams t JOIN team_members tm ON tm.team = t.id WHERE tm.account = $1";
@@ -325,6 +337,11 @@ mod tests {
         INVITE_OPEN,
         INVITE_CLAIM,
         INVITE_PLACE,
+        MCP_TOKEN_INSERT,
+        MCP_TOKENS_OF,
+        MCP_TOKEN_NAME_COUNT,
+        MCP_TOKEN_DELETE,
+        MCP_TOKEN_ACCOUNT,
         COLLECTIONS_VISIBLE,
         ROLE_OF,
         COLLECTION_GET,

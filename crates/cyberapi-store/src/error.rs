@@ -81,6 +81,7 @@ pub enum Entity {
     Team,
     Account,
     Invite,
+    McpToken,
 }
 
 /// Why a change to accounts or teams was refused.
@@ -110,4 +111,10 @@ pub enum Refusal {
     /// The invitation was used, revoked or ran out — or never was
     /// (`docs/server-sync.md` §5).
     InviteGone,
+    /// An MCP token's name is 1 to 64 characters, not all blank.
+    BadTokenName,
+    /// The account has a token of that name already.
+    TokenNameTaken,
+    /// A token lasts one of `MCP_TOKEN_DAYS`, or until revoked.
+    BadTokenDays,
 }

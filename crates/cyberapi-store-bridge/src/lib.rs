@@ -21,14 +21,16 @@
 
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::cookie::Cookie;
-use cyberapi_core::directory::{AccountInfo, Grant, Invite, Me, Member, NewInvite, Team, TeamPlace};
+use cyberapi_core::directory::{
+    AccountInfo, Grant, Invite, IssuedMcpToken, McpToken, Me, Member, NewInvite, NewMcpToken, Team, TeamPlace,
+};
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{AccountId, CollectionId, InviteId, ItemId, TeamId, VariableId};
+use cyberapi_core::{AccountId, CollectionId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
 use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, SendError, SendFuture};
 use cyberapi_store::{
     AccountEdit, CollectionEdit, CollectionStore, CookieStore, DirectoryStore, HistoryStore, Imported, Inserted,
@@ -232,6 +234,13 @@ pub enum Call {
         current: String,
         password: String,
     },
+    DirectoryMcpTokens,
+    DirectoryIssueMcpToken {
+        input: NewMcpToken,
+    },
+    DirectoryRevokeMcpToken {
+        id: McpTokenId,
+    },
 }
 
 /// What a call answers: the method's value, or the store's refusal.
@@ -339,6 +348,9 @@ pub async fn dispatch(storage: &Storage, directory: &dyn DirectoryStore, call: C
         Call::DirectoryChangePassword { current, password } => {
             reply(directory.change_password(current, password).await)
         }
+        Call::DirectoryMcpTokens => reply(directory.mcp_tokens().await),
+        Call::DirectoryIssueMcpToken { input } => reply(directory.issue_mcp_token(input).await),
+        Call::DirectoryRevokeMcpToken { id } => reply(directory.revoke_mcp_token(id).await),
     }
 }
 
@@ -467,6 +479,18 @@ impl DirectoryStore for BridgeStore {
 
     fn change_password(&self, current: String, password: String) -> StoreFuture<()> {
         self.call(Call::DirectoryChangePassword { current, password })
+    }
+
+    fn mcp_tokens(&self) -> StoreFuture<Vec<McpToken>> {
+        self.call(Call::DirectoryMcpTokens)
+    }
+
+    fn issue_mcp_token(&self, input: NewMcpToken) -> StoreFuture<IssuedMcpToken> {
+        self.call(Call::DirectoryIssueMcpToken { input })
+    }
+
+    fn revoke_mcp_token(&self, id: McpTokenId) -> StoreFuture<()> {
+        self.call(Call::DirectoryRevokeMcpToken { id })
     }
 }
 
