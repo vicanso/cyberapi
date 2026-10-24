@@ -44,6 +44,37 @@ pub struct AppPrefs {
     pub project_groups: BTreeMap<CollectionId, String>,
     /// The groups folded on the project list; `""` is the projects in none.
     pub folded_groups: Vec<String>,
+    /// The desktop's update check. A page leaves it as it is.
+    pub updates: UpdatePrefs,
+}
+
+/// How the desktop looks for a newer release ([`crate::update`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UpdatePrefs {
+    /// Look at start, at most once in [`UpdatePrefs::INTERVAL`].
+    pub auto_check: bool,
+    /// When it last looked, by itself or asked, in Unix seconds; 0 for
+    /// never.
+    pub last_check: i64,
+    /// A version the reader asked not to be told of again. Asked to look,
+    /// the app still says it is there.
+    pub skipped: String,
+}
+
+impl UpdatePrefs {
+    /// Two days between the automatic checks.
+    pub const INTERVAL: i64 = 2 * 24 * 60 * 60;
+}
+
+impl Default for UpdatePrefs {
+    fn default() -> Self {
+        Self {
+            auto_check: true,
+            last_check: 0,
+            skipped: String::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -640,6 +671,19 @@ mod tests {
         assert!(!fills_monitor(1380, 890, 1441, 949), "a window made large by hand");
         assert!(!fills_monitor(1100, 720, 1441, 949));
         assert!(!fills_monitor(1441, 949, 0, 0));
+    }
+
+    /// A document written before the update check looks for updates.
+    #[test]
+    fn the_update_check_is_on_unless_turned_off() {
+        let old: AppPrefs = serde_json::from_str("{}").expect("parses");
+        assert!(old.updates.auto_check);
+        let empty: AppPrefs = serde_json::from_str(r#"{"updates":{}}"#).expect("parses");
+        assert_eq!(empty.updates, UpdatePrefs::default());
+        let off: AppPrefs =
+            serde_json::from_str(r#"{"updates":{"autoCheck":false,"skipped":"0.3.0"}}"#).expect("parses");
+        assert!(!off.updates.auto_check);
+        assert_eq!(off.updates.skipped, "0.3.0");
     }
 
     #[test]
