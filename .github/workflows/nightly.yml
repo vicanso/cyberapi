@@ -1,9 +1,9 @@
 # The default branch, packaged every night (package.yml) into the `nightly`
 # prerelease, replaced each time: its tag moves to the commit built and its
-# assets are that build's. The browser build's image is pushed as `nightly`
-# too (docker.yml). A night with nothing new on the branch builds
-# nothing; a manual run with `force` builds anyway, and may name another
-# branch (`gh workflow run nightly.yml --ref <branch>`).
+# assets are that build's, with their SHA256SUMS. The browser build's image
+# is pushed as `nightly` too (docker.yml). A night with nothing new on the
+# branch builds nothing; a manual run with `force` builds anyway, and may
+# name another branch (`gh workflow run nightly.yml --ref <branch>`).
 name: Nightly
 
 on:
@@ -103,10 +103,16 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
+          pattern: package-*
           path: dist
           merge-multiple: true
+      - name: checksums
+        # SHA256SUMS beside the packages (scripts/checksums.sh); no
+        # latest.json, which says a version, and this is no release of one.
+        run: scripts/checksums.sh dist
       - name: release
         env:
           GH_TOKEN: ${{ github.token }}

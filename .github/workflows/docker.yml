@@ -94,6 +94,10 @@ jobs:
       - name: build and push
         id: build
         uses: docker/build-push-action@v7
+        env:
+          # No build record kept as an artifact: it is of no use here, and
+          # the run's artifacts are what the releases take their files from.
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           platforms: ${{ matrix.platform.arch }}

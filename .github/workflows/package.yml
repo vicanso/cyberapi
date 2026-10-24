@@ -2,7 +2,8 @@
 # the desktop app for macOS (Apple silicon and Intel), Linux (x86_64 and
 # arm64) and Windows, and the bridge with the browser build in it. Called by
 # release.yml (a version tag) and nightly.yml, with `secrets: inherit`; what
-# they do with the artifacts is theirs.
+# they do with the artifacts is theirs. Each artifact's name starts with
+# `package-`, which is how they take these and nothing else the run keeps.
 #
 # macOS is signed with a Developer ID and notarized when these secrets are
 # set, and ad-hoc signed when they are not:
@@ -92,7 +93,7 @@ jobs:
         run: scripts/desktop-dist.sh
       - uses: actions/upload-artifact@v7
         with:
-          name: desktop-${{ matrix.os }}
+          name: package-desktop-${{ matrix.os }}
           path: |
             target/desktop-dist/*.dmg
             target/desktop-dist/*.deb
@@ -125,7 +126,7 @@ jobs:
         run: scripts/web-dist.sh
       - uses: actions/upload-artifact@v7
         with:
-          name: web-linux
+          name: package-web-linux
           path: |
             target/web-dist/*.tar.gz
             target/web-dist/*.sha256
