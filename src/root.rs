@@ -189,8 +189,9 @@ impl CyberApi {
     }
 
     /// A settled windowed frame is kept. A zoom, a fullscreen, or a frame
-    /// that already fills the monitor is not: that would replace the size
-    /// from before the double-click.
+    /// that fills the monitor (a Fill) is kept as being zoomed there, over
+    /// the size from before the double-click: the next launch opens zoomed,
+    /// and returns to that size.
     #[cfg(not(target_family = "wasm"))]
     fn sample_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = monitor_id(window, cx) else {
@@ -212,6 +213,7 @@ impl CyberApi {
             y: px_i32(window.bounds().origin.y),
             width: px_u32(window.viewport_size().width),
             height: px_u32(window.viewport_size().height),
+            zoomed: false,
         };
         if !placement.usable() {
             return;

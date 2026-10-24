@@ -23,9 +23,10 @@ pub struct AppPrefs {
     pub columns: ColumnWidths,
     pub window: WindowPrefs,
     /// Where the window last sat on each monitor, keyed by that monitor's
-    /// stable id. Desktop only; a page leaves this empty. The size here is
-    /// the one before a double-click zoom, never the frame that fills the
-    /// monitor.
+    /// stable id, and whether it was zoomed there. Desktop only; a page
+    /// leaves this empty. The size here is the one before a zoom, never the
+    /// frame that fills the monitor: a zoomed window opens zoomed and
+    /// returns to it.
     pub monitors: BTreeMap<String, MonitorPlacement>,
     /// The monitor the window was on last. Empty when none was recorded.
     /// The next launch opens there while it is connected, else on another
@@ -177,8 +178,8 @@ impl WindowPrefs {
     pub const MIN_HEIGHT: u32 = 600;
 }
 
-/// Position and content size of the window on one monitor. The origin is
-/// that monitor's top left, in pixels.
+/// Position and content size of the window on one monitor, and whether it
+/// was zoomed there. The origin is that monitor's top left, in pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MonitorPlacement {
@@ -186,12 +187,23 @@ pub struct MonitorPlacement {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    /// Maximized, full screen or filling the monitor when the window last
+    /// left it: it opens there maximized, and the frame above is the one
+    /// it returns to. Not written while false, as before there was one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub zoomed: bool,
 }
 
 impl MonitorPlacement {
     /// Large enough to open. A zoom animation passes through smaller frames.
     pub fn usable(self) -> bool {
         self.width >= WindowPrefs::MIN_WIDTH && self.height >= WindowPrefs::MIN_HEIGHT
+    }
+
+    /// Says something about how the window opens: a frame to open at, or
+    /// that it opens zoomed.
+    pub fn kept(self) -> bool {
+        self.usable() || self.zoomed
     }
 
     /// Moved, and shrunk when larger, into `area`: the monitor's visible
@@ -213,17 +225,19 @@ impl MonitorPlacement {
             y: within(self.y, area.y, area.height, height),
             width,
             height,
+            zoomed: self.zoomed,
         }
     }
 }
 
-/// The placement kept for `monitor`, when it is large enough to open.
+/// The placement kept for `monitor`, when it says how to open there (see
+/// [`MonitorPlacement::kept`]).
 pub fn placement_for<'a>(
     monitors: &'a BTreeMap<String, MonitorPlacement>,
     monitor: &str,
 ) -> Option<&'a MonitorPlacement> {
     let placement = monitors.get(monitor)?;
-    placement.usable().then_some(placement)
+    placement.kept().then_some(placement)
 }
 
 /// The monitor the window opens on, among those `connected` now (the one a
@@ -231,6 +245,8 @@ pub fn placement_for<'a>(
 /// monitor it was on last while that one is connected, with its placement
 /// when one was kept (`None`: centered there); else the first connected
 /// monitor that has one. `None` when neither: the default monitor, centered.
+/// A zoomed placement opens maximized, over its frame when it has a usable
+/// one and over the centered size when not.
 pub fn opening_monitor<'a>(
     monitors: &BTreeMap<String, MonitorPlacement>,
     last: &str,
@@ -244,10 +260,12 @@ pub fn opening_monitor<'a>(
         .find_map(|id| Some((*id, Some(*placement_for(monitors, id)?))))
 }
 
-/// A double-click Fill sits a few pixels inside the monitor. That frame is
-/// the monitor, not a size to restore.
+/// A double-click Fill sits a few pixels inside the monitor (the system's
+/// margins for tiled windows). That frame is the monitor, a zoom, not a size
+/// to restore. Only a few pixels: on a laptop's screen a window made large
+/// by hand is well within a wider margin, and is a size to keep.
 pub fn fills_monitor(width: u32, height: u32, monitor_width: u32, monitor_height: u32) -> bool {
-    const MARGIN: u32 = 64;
+    const MARGIN: u32 = 16;
     if monitor_width == 0 || monitor_height == 0 {
         return false;
     }
@@ -264,9 +282,9 @@ pub struct MonitorRecord {
     pub last_monitor: String,
 }
 
-/// `zoomed` remembers which monitor the window is on and leaves the size
-/// from before the zoom. A windowed sample replaces that monitor's position
-/// and size.
+/// `zoomed` marks the monitor the window is on as zoomed and leaves the
+/// frame from before the zoom, to return to. A windowed sample replaces that
+/// monitor's position and size, and the mark.
 pub fn remember_monitor(
     monitors: &BTreeMap<String, MonitorPlacement>,
     last: &str,
@@ -277,23 +295,24 @@ pub fn remember_monitor(
     if id.is_empty() {
         return None;
     }
-    if zoomed {
-        if last == id {
-            return None;
+    let next = if zoomed {
+        MonitorPlacement {
+            zoomed: true,
+            ..monitors.get(id).copied().unwrap_or_default()
         }
-        return Some(MonitorRecord {
-            monitors: monitors.clone(),
-            last_monitor: id.to_string(),
-        });
-    }
-    if !placement.usable() {
+    } else if placement.usable() {
+        MonitorPlacement {
+            zoomed: false,
+            ..placement
+        }
+    } else {
         return None;
-    }
-    if last == id && monitors.get(id) == Some(&placement) {
+    };
+    if last == id && monitors.get(id) == Some(&next) {
         return None;
     }
     let mut monitors = monitors.clone();
-    monitors.insert(id.to_string(), placement);
+    monitors.insert(id.to_string(), next);
     Some(MonitorRecord {
         monitors,
         last_monitor: id.to_string(),
@@ -450,48 +469,63 @@ mod tests {
         assert_eq!(prefs.tab(&api, HttpMethod::Get), RequestTab::Query);
     }
 
+    /// A frame on a monitor, not zoomed.
+    fn frame(x: i32, y: i32, width: u32, height: u32) -> MonitorPlacement {
+        MonitorPlacement {
+            x,
+            y,
+            width,
+            height,
+            zoomed: false,
+        }
+    }
+
     #[test]
-    fn a_zoom_keeps_the_size_and_a_window_records_its_monitor() {
-        let placed = MonitorPlacement {
-            x: 40,
-            y: 24,
-            width: 1100,
-            height: 720,
-        };
+    fn a_zoom_is_remembered_over_the_size_from_before_it() {
+        let placed = frame(40, 24, 1100, 720);
         let mut monitors = BTreeMap::new();
         monitors.insert("a".into(), placed);
 
+        let zoomed = remember_monitor(&monitors, "a", "a", MonitorPlacement::default(), true).expect("zoom");
         assert_eq!(
-            remember_monitor(&monitors, "a", "a", MonitorPlacement::default(), true),
-            None,
-            "zooming again on the same monitor writes nothing"
+            zoomed.monitors.get("a"),
+            Some(&MonitorPlacement { zoomed: true, ..placed }),
+            "the frame from before the zoom is kept under the mark"
         );
-        let moved = remember_monitor(&monitors, "a", "b", MonitorPlacement::default(), true).expect("other monitor");
-        assert_eq!(moved.last_monitor, "b");
-        assert_eq!(moved.monitors.get("a"), Some(&placed), "the filled frame is not stored");
+        assert_eq!(
+            remember_monitor(&zoomed.monitors, "a", "a", MonitorPlacement::default(), true),
+            None,
+            "zooming again writes nothing"
+        );
+        let unzoomed = remember_monitor(&zoomed.monitors, "a", "a", placed, false).expect("back to a window");
+        assert_eq!(unzoomed.monitors.get("a"), Some(&placed));
 
-        let next = MonitorPlacement {
-            x: 80,
-            y: 10,
-            width: 1000,
-            height: 700,
-        };
+        let elsewhere =
+            remember_monitor(&monitors, "a", "b", MonitorPlacement::default(), true).expect("other monitor");
+        assert_eq!(elsewhere.last_monitor, "b");
+        assert_eq!(elsewhere.monitors.get("a"), Some(&placed));
+        assert_eq!(
+            elsewhere.monitors.get("b"),
+            Some(&MonitorPlacement {
+                zoomed: true,
+                ..MonitorPlacement::default()
+            }),
+            "zoomed on a monitor it has no frame for yet"
+        );
+        assert!(
+            placement_for(&elsewhere.monitors, "b").is_some(),
+            "a zoom alone says how to open"
+        );
+
+        let next = frame(80, 10, 1000, 700);
         let recorded = remember_monitor(&monitors, "a", "a", next, false).expect("resize");
         assert_eq!(recorded.monitors.get("a"), Some(&next));
         assert_eq!(remember_monitor(&recorded.monitors, "a", "a", next, false), None);
-
+        let sampled = remember_monitor(&monitors, "a", "a", MonitorPlacement { zoomed: true, ..next }, false)
+            .expect("a windowed sample");
+        assert_eq!(sampled.monitors.get("a"), Some(&next), "a window is not zoomed");
         assert_eq!(
-            remember_monitor(
-                &monitors,
-                "a",
-                "a",
-                MonitorPlacement {
-                    width: 800,
-                    height: 700,
-                    ..placed
-                },
-                false
-            ),
+            remember_monitor(&monitors, "a", "a", frame(40, 24, 800, 700), false),
             None,
             "below the minimum is not a size"
         );
@@ -501,17 +535,33 @@ mod tests {
     }
 
     #[test]
+    fn a_placement_kept_before_the_zoom_mark_reads_as_it_was() {
+        let written = r#"{"x":153,"y":108,"width":1281,"height":801}"#;
+        let old: MonitorPlacement = serde_json::from_str(written).expect("parses");
+        assert_eq!(old, frame(153, 108, 1281, 801));
+        assert_eq!(
+            serde_json::to_string(&old).expect("writes"),
+            written,
+            "no mark while not zoomed"
+        );
+        let zoomed = MonitorPlacement { zoomed: true, ..old };
+        let again: MonitorPlacement =
+            serde_json::from_str(&serde_json::to_string(&zoomed).expect("writes")).expect("parses");
+        assert_eq!(again, zoomed);
+    }
+
+    #[test]
     fn the_window_opens_on_a_connected_monitor_it_was_placed_on() {
-        let on = |x| MonitorPlacement {
-            x,
-            y: 40,
-            width: 1100,
-            height: 720,
+        let on = |x| frame(x, 40, 1100, 720);
+        let zoomed_only = MonitorPlacement {
+            zoomed: true,
+            ..MonitorPlacement::default()
         };
         let mut monitors = BTreeMap::new();
         monitors.insert("a".to_string(), on(10));
         monitors.insert("b".to_string(), on(20));
         monitors.insert("small".to_string(), MonitorPlacement { width: 400, ..on(30) });
+        monitors.insert("z".to_string(), zoomed_only);
 
         assert_eq!(
             opening_monitor(&monitors, "b", &["a", "b"]),
@@ -528,6 +578,11 @@ mod tests {
             Some(("c", None)),
             "the last one, without a position, is centered on"
         );
+        assert_eq!(
+            opening_monitor(&monitors, "z", &["a", "z"]),
+            Some(("z", Some(zoomed_only))),
+            "zoomed there with no frame: maximized over the centered size"
+        );
         assert_eq!(opening_monitor(&monitors, "gone", &["small", "c"]), None);
         assert_eq!(
             opening_monitor(&monitors, "", &["", "c"]),
@@ -538,18 +593,8 @@ mod tests {
 
     #[test]
     fn a_placement_is_kept_inside_the_monitor() {
-        let area = MonitorPlacement {
-            x: 75,
-            y: 30,
-            width: 1845,
-            height: 1050,
-        };
-        let placed = MonitorPlacement {
-            x: 300,
-            y: 120,
-            width: 1100,
-            height: 720,
-        };
+        let area = frame(75, 30, 1845, 1050);
+        let placed = frame(300, 120, 1100, 720);
         assert_eq!(placed.fitted(area), placed, "already inside");
         assert_eq!(placed.fitted(MonitorPlacement::default()), placed, "no area known");
 
@@ -568,38 +613,33 @@ mod tests {
         );
         let above = MonitorPlacement { x: -40, y: 0, ..placed };
         assert_eq!(above.fitted(area), MonitorPlacement { x: 75, y: 30, ..placed });
+        let zoomed = MonitorPlacement {
+            zoomed: true,
+            ..past_the_edge
+        };
+        assert!(zoomed.fitted(area).zoomed, "fitting keeps the mark");
 
-        let larger = MonitorPlacement {
-            x: 0,
-            y: 0,
-            width: 2400,
-            height: 1400,
-        };
+        let larger = frame(0, 0, 2400, 1400);
         assert_eq!(larger.fitted(area), area, "shrunk to the visible part");
-        let tiny = MonitorPlacement {
-            x: 100,
-            y: 100,
-            width: 800,
-            height: 500,
-        };
+        let tiny = frame(100, 100, 800, 500);
         assert_eq!(
             placed.fitted(tiny),
-            MonitorPlacement {
-                x: 100,
-                y: 100,
-                width: WindowPrefs::MIN_WIDTH,
-                height: WindowPrefs::MIN_HEIGHT,
-            },
+            frame(100, 100, WindowPrefs::MIN_WIDTH, WindowPrefs::MIN_HEIGHT),
             "never below the smallest window"
         );
     }
 
     #[test]
     fn a_frame_that_fills_the_monitor_is_not_a_window_size() {
-        assert!(fills_monitor(1440, 850, 1440, 860));
-        assert!(fills_monitor(1400, 820, 1440, 860));
-        assert!(!fills_monitor(1100, 720, 1440, 860));
-        assert!(!fills_monitor(1440, 860, 0, 0));
+        // A laptop's visible area, below the menu bar and beside the Dock.
+        assert!(fills_monitor(1441, 949, 1441, 949), "the monitor itself");
+        assert!(
+            fills_monitor(1425, 933, 1441, 949),
+            "a Fill, inside the system's margins"
+        );
+        assert!(!fills_monitor(1380, 890, 1441, 949), "a window made large by hand");
+        assert!(!fills_monitor(1100, 720, 1441, 949));
+        assert!(!fills_monitor(1441, 949, 0, 0));
     }
 
     #[test]

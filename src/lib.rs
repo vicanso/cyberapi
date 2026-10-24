@@ -263,9 +263,9 @@ fn main_window_options(cx: &App) -> WindowOptions {
         (WindowPrefs::DEFAULT_WIDTH, WindowPrefs::DEFAULT_HEIGHT)
     };
     let chosen = size(px(width as f32), px(height as f32));
-    let (display_id, bounds) =
-        remembered_bounds(chosen, cx).unwrap_or_else(|| (None, Bounds::centered(None, chosen, cx)));
-    let window_bounds = if window.maximized {
+    let (display_id, bounds, zoomed) =
+        remembered_bounds(chosen, cx).unwrap_or_else(|| (None, Bounds::centered(None, chosen, cx), false));
+    let window_bounds = if window.maximized || zoomed {
         WindowBounds::Maximized(bounds)
     } else {
         WindowBounds::Windowed(bounds)
@@ -296,8 +296,9 @@ fn main_window_options(cx: &App) -> WindowOptions {
 /// was on last while that is connected, else a connected one with a recorded
 /// position, the default display first. A recorded position is kept inside
 /// that monitor's visible area; without one the window is centered there at
-/// `chosen`, the size the settings name.
-fn remembered_bounds(chosen: Size<Pixels>, cx: &App) -> Option<(Option<DisplayId>, Bounds<Pixels>)> {
+/// `chosen`, the size the settings name. The last value: the window was
+/// zoomed there when it left, so it opens zoomed, over that frame.
+fn remembered_bounds(chosen: Size<Pixels>, cx: &App) -> Option<(Option<DisplayId>, Bounds<Pixels>, bool)> {
     let prefs = cx.try_global::<AppStore>()?.state().read(cx).prefs();
     let primary = cx.primary_display().map(|display| display.id());
     let mut displays: Vec<_> = cx
@@ -309,8 +310,13 @@ fn remembered_bounds(chosen: Size<Pixels>, cx: &App) -> Option<(Option<DisplayId
     let ids: Vec<&str> = displays.iter().map(|(id, _)| id.as_str()).collect();
     let (wanted, placement) = opening_monitor(&prefs.monitors, &prefs.last_monitor, &ids)?;
     let display = &displays.iter().find(|(id, _)| id == wanted)?.1;
-    let Some(placement) = placement else {
-        return Some((Some(display.id()), Bounds::centered(Some(display.id()), chosen, cx)));
+    let zoomed = placement.is_some_and(|placement| placement.zoomed);
+    let Some(placement) = placement.filter(|placement| placement.usable()) else {
+        return Some((
+            Some(display.id()),
+            Bounds::centered(Some(display.id()), chosen, cx),
+            zoomed,
+        ));
     };
     let visible = display.visible_bounds();
     let whole = |value: Pixels| f32::from(value).round() as i32;
@@ -319,6 +325,7 @@ fn remembered_bounds(chosen: Size<Pixels>, cx: &App) -> Option<(Option<DisplayId
         y: whole(visible.origin.y),
         width: whole(visible.size.width).max(0) as u32,
         height: whole(visible.size.height).max(0) as u32,
+        zoomed: false,
     });
     Some((
         Some(display.id()),
@@ -326,6 +333,7 @@ fn remembered_bounds(chosen: Size<Pixels>, cx: &App) -> Option<(Option<DisplayId
             origin: point(px(placement.x as f32), px(placement.y as f32)),
             size: size(px(placement.width as f32), px(placement.height as f32)),
         },
+        zoomed,
     ))
 }
 
