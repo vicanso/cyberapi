@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.1](https://github.com/vicanso/cyberapi/compare/v0.2.0..v0.2.1) - 2026-10-24
+
+### ⛰️  Features
+
+- *(pins)* The pins are tabs of their own in the title bar, and the selected API ends the path before them - ([a374b83](https://github.com/vicanso/cyberapi/commit/a374b8346a0ebf69cb703d0ab3e5b1f6c1eeb992))
+- *(release)* SHA256SUMS and latest.json beside the packages, and no docker build records among them - ([e01161b](https://github.com/vicanso/cyberapi/commit/e01161b4620657ed8e924fef6a1b32e512f53045))
+
+### 🐛 Bug Fixes
+
+- *(i18n)* One word for a JSON field and item, quotes and wording aligned between Chinese and English - ([95362fd](https://github.com/vicanso/cyberapi/commit/95362fd08789f7fa87c21a4a0372c8bad190e65d))
+- *(settings)* The window section says it reopens as it was left, and what its settings still decide - ([084396a](https://github.com/vicanso/cyberapi/commit/084396a7280e45815ae5fc0a16fd519d4c462849))
+- *(test)* The paste key and the download folder tests hold on Linux too - ([5d9469a](https://github.com/vicanso/cyberapi/commit/5d9469ade541cde57e03300feac978a8c252c0f7))
+- *(title)* The path ends at the project; the selected API is the tree's row and the open pin - ([ca5e5ba](https://github.com/vicanso/cyberapi/commit/ca5e5ba7d6d78e18cb72a00b639c746fa8e272fd))
+- *(window)* A large window keeps its size, and a zoomed one opens zoomed over the size it returns to - ([19f0851](https://github.com/vicanso/cyberapi/commit/19f085140d6f2a4829a3e62d2a7754a99e8292ea))
+
+### 📚 Documentation
+
+- README in English and Chinese, and a deployment guide for the web version in both - ([269ea3e](https://github.com/vicanso/cyberapi/commit/269ea3e0c2aa64c08f7b841fdf73e655c01ac09e))
+
 ## [0.2.0] - 2026-10-24
 
 ### ⛰️  Features
