@@ -1,4 +1,4 @@
-.PHONY: dev debug check fmt lint test release desktop-dist bundle icons nightly check-web web-bundle web-release web-serve web-dist docker db-up db-down test-sql bridge
+.PHONY: dev debug check fmt lint test release desktop-dist bundle icons nightly version version-patch version-minor version-major check-web web-bundle web-release web-serve web-dist docker db-up db-down test-sql bridge
 
 # The desktop app.
 dev:
@@ -48,6 +48,39 @@ NIGHTLY_REF ?= main
 
 nightly:
 	gh workflow run nightly.yml --ref $(NIGHTLY_REF) -f force=true
+
+# The version every crate and package carries: [workspace.package] in
+# Cargo.toml.
+VERSION := $(shell sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+
+# CHANGELOG.md's section for the coming tag v$(VERSION): the commits since the
+# last version tag, by type (git-cliff, cliff.toml). Cargo.toml must already
+# hold that version — version-{patch,minor,major} bump it first. Run it last
+# before committing (`chore: version X.Y.Z`) and tagging: it refuses a
+# version CHANGELOG.md already has, so delete that section to make it again.
+version:
+	@if grep -q '^## \[$(VERSION)\]' CHANGELOG.md 2>/dev/null; then \
+		echo "CHANGELOG.md already has $(VERSION)" >&2; exit 1; \
+	fi
+	@if [ -f CHANGELOG.md ]; then \
+		git cliff --unreleased --tag v$(VERSION) --prepend CHANGELOG.md; \
+	else \
+		git cliff --unreleased --tag v$(VERSION) --output CHANGELOG.md; \
+	fi
+
+# Bump Cargo.toml (and Cargo.lock), then `version` in a new make: VERSION is
+# read when this one starts, so only the recursive $(MAKE) sees the new one.
+version-patch:
+	scripts/bump-version.sh patch
+	$(MAKE) version
+
+version-minor:
+	scripts/bump-version.sh minor
+	$(MAKE) version
+
+version-major:
+	scripts/bump-version.sh major
+	$(MAKE) version
 
 # The SQL store against real databases: `make db-up` starts PostgreSQL and
 # MySQL in local containers (Apple's `container`), `make test-sql` runs the
