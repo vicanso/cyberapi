@@ -23,6 +23,8 @@ mod root;
 mod server_local;
 pub mod states;
 mod this_build;
+#[cfg(not(target_family = "wasm"))]
+mod update_install;
 mod views;
 
 pub use crate::pacing::set_page_visible;

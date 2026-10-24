@@ -2,6 +2,7 @@
 //! desktop and the browser differ in capability. Each is a pair of functions
 //! with one signature, the desktop's first.
 
+use crate::states::Installer;
 use cyberapi_core::template::FileReader;
 use std::sync::Arc;
 
@@ -212,6 +213,27 @@ pub fn invite_link(_server: Option<&str>, token: &str) -> String {
     let page = page.split('#').next().unwrap_or_default();
     format!("{page}#invite={token}")
 }
+
+/// This machine's half of the update check (`states/update.rs`): which
+/// packages of a release it takes, and what installs one. A page has none:
+/// its bridge is updated by whoever runs it.
+#[cfg(not(target_family = "wasm"))]
+pub fn updates() -> Option<(&'static [&'static str], Installer)> {
+    Some((crate::update_install::kinds(), Arc::new(crate::update_install::install)))
+}
+#[cfg(target_family = "wasm")]
+pub fn updates() -> Option<(&'static [&'static str], Installer)> {
+    None
+}
+
+/// Opens the app again once it has quit, after an update installed in
+/// place.
+#[cfg(not(target_family = "wasm"))]
+pub fn relaunch() {
+    crate::update_install::relaunch();
+}
+#[cfg(target_family = "wasm")]
+pub fn relaunch() {}
 
 /// A text file the reader picked.
 #[cfg(not(target_family = "wasm"))]

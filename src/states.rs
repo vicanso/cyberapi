@@ -11,6 +11,7 @@ mod dashboard;
 mod desktop_copies;
 mod directory;
 mod server;
+mod update;
 mod variables;
 mod workspace;
 
@@ -21,6 +22,7 @@ pub use copy::ServerCopy;
 pub use dashboard::{DashboardEvent, DashboardState};
 pub use directory::{DirectoryDone, DirectoryEvent, DirectoryState};
 pub use server::{ServerEvent, ServerState, ServerStatus, SignInFailure};
+pub use update::{Delivery, Installer, UpdateEvent, UpdateInfo, UpdatePhase, UpdateState};
 pub use variables::{VariablesEvent, VariablesState};
 pub use workspace::{WorkspaceEvent, WorkspaceState};
 

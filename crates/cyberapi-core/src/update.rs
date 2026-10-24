@@ -82,11 +82,15 @@ pub fn pick_asset<'a>(assets: &'a [Asset], os: &str, arch: &str, kinds: &[&str])
         .find_map(|kind| assets.iter().find(|a| a.os == os && a.arch == arch && a.kind == *kind))
 }
 
+/// `bytes`' SHA-256, in lower-case hex, as `SHA256SUMS` writes it.
+pub fn sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Whether `bytes` are what the release published: their SHA-256 is the
 /// one the manifest gives. An asset listed without one is not taken.
 pub fn verified(bytes: &[u8], sha256: &str) -> bool {
-    let digest: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
-    !sha256.is_empty() && digest.eq_ignore_ascii_case(sha256.trim())
+    !sha256.is_empty() && self::sha256(bytes).eq_ignore_ascii_case(sha256.trim())
 }
 
 /// Where a redirect's `Location` leads from `url`: absolute, or resolved

@@ -1,7 +1,7 @@
 //! What the whole application shares: the stores, where the reader is, and
 //! their settings.
 
-use super::{ServerState, ServerStatus, run_serial, run_store};
+use super::{ServerState, ServerStatus, UpdateState, run_serial, run_store};
 use crate::json_view_local::JsonView;
 use crate::{Extras, this_build};
 use async_lock::Mutex;
@@ -33,6 +33,9 @@ pub struct AppStore {
     /// The bridge the desktop signs in to (`docs/server-sync.md` step 5);
     /// a page is signed in already, by its own.
     server: Option<Entity<ServerState>>,
+    /// The desktop's update check; a page's bridge is updated by whoever
+    /// runs it.
+    updates: Option<Entity<UpdateState>>,
 }
 
 impl Global for AppStore {}
@@ -54,12 +57,17 @@ impl AppStore {
             let copies = extras.copies.clone();
             cx.new(|cx| ServerState::new(engine, copies, cx))
         });
+        let updates = this_build::updates().map(|(kinds, install)| {
+            let engine = engine.clone();
+            cx.new(|_| UpdateState::new(engine, install, kinds))
+        });
         cx.set_global(Self {
             storage,
             engine,
             extras,
             state: state.clone(),
             server,
+            updates,
         });
         state.update(cx, |state, cx| {
             state.reload_me(cx);
@@ -138,6 +146,11 @@ impl AppStore {
     /// The desktop's bridge and who is signed in there.
     pub fn server(&self) -> Option<&Entity<ServerState>> {
         self.server.as_ref()
+    }
+
+    /// The desktop's update check.
+    pub fn updates(&self) -> Option<&Entity<UpdateState>> {
+        self.updates.as_ref()
     }
 }
 
@@ -541,6 +554,30 @@ impl AppState {
         }
         self.prefs.columns = columns;
         self.schedule_save(cx);
+    }
+
+    /// The desktop looked for a newer release `at` (Unix seconds).
+    pub fn note_update_check(&mut self, at: i64, cx: &mut Context<Self>) {
+        self.prefs.updates.last_check = at;
+        self.schedule_save(cx);
+    }
+
+    /// Not to be told of `version` again, unless asked to look.
+    pub fn skip_update(&mut self, version: String, cx: &mut Context<Self>) {
+        if self.prefs.updates.skipped != version {
+            self.prefs.updates.skipped = version;
+            self.schedule_save(cx);
+            cx.notify();
+        }
+    }
+
+    /// Whether the desktop looks for a newer release at start.
+    pub fn set_auto_update_check(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.prefs.updates.auto_check != on {
+            self.prefs.updates.auto_check = on;
+            self.schedule_save(cx);
+            cx.notify();
+        }
     }
 
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
