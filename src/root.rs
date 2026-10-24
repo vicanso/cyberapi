@@ -4,8 +4,8 @@ use crate::APP_NAME;
 use crate::i18n;
 use crate::states::{AppEvent, AppStore, Route, WorkspaceState};
 use crate::views::{
-    DashboardView, WorkspaceView, open_accounts_dialog, open_cookies_dialog, open_password_dialog, open_settings,
-    open_shortcuts_dialog, open_teams_dialog, open_variables_dialog,
+    DashboardView, WorkspaceView, follow_update, open_accounts_dialog, open_cookies_dialog, open_password_dialog,
+    open_settings, open_shortcuts_dialog, open_teams_dialog, open_variables_dialog, update_chip,
 };
 use cyberapi_core::model::VariableCategory;
 #[cfg(not(target_family = "wasm"))]
@@ -91,7 +91,7 @@ impl CyberApi {
         let state = AppStore::global(cx).state().clone();
         let prefs = state.read(cx).prefs();
         apply_theme(prefs.theme, prefs.text, window, cx);
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             // F14.1: "follow the system" keeps following it.
             cx.observe_window_appearance(window, |_, window, cx| {
                 let prefs = AppStore::global(cx).state().read(cx).prefs();
@@ -126,6 +126,14 @@ impl CyberApi {
                 window.push_notification(note, cx);
             }),
         ];
+        // The desktop looks for a newer release a moment after it opens.
+        if let Some(updates) = AppStore::global(cx).updates().cloned() {
+            subscriptions.push(cx.observe(&updates, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.subscribe_in(&updates, window, |_, _, event, window, cx| {
+                follow_update(event, window, cx);
+            }));
+            updates.update(cx, |updates, cx| updates.check_at_start(cx));
+        }
         let page = Self::page_for(state.read(cx).route().clone(), window, cx);
         let prefs = state.read(cx).prefs().clone();
         let root = Self {
@@ -399,6 +407,7 @@ impl CyberApi {
         };
         let backs_up = AppStore::global(cx).backups().is_some();
         let signs_in = AppStore::global(cx).has_account(cx);
+        let checks_updates = AppStore::global(cx).updates().is_some();
         Button::new("title-settings")
             .ghost()
             .small()
@@ -463,6 +472,19 @@ impl CyberApi {
                             .icon(Icons::Keyboard)
                             .on_click(|_, window, cx| open_shortcuts_dialog(window, cx)),
                     );
+                let menu = if checks_updates {
+                    menu.item(
+                        PopupMenuItem::new(t!("update.check_menu").to_string())
+                            .icon(Icons::RefreshCw)
+                            .on_click(|_, _, cx| {
+                                if let Some(updates) = AppStore::global(cx).updates().cloned() {
+                                    updates.update(cx, |updates, cx| updates.check(true, cx));
+                                }
+                            }),
+                    )
+                } else {
+                    menu
+                };
                 if signs_in { account_items(menu, cx) } else { menu }
             })
     }
@@ -609,7 +631,15 @@ impl Render for CyberApi {
                                 .overflow_hidden()
                                 .child(self.render_title(cx)),
                         )
-                        .child(h_flex().flex_none().pr_2().child(self.render_menu(cx))),
+                        .child(
+                            h_flex()
+                                .flex_none()
+                                .pr_2()
+                                .gap_1()
+                                .items_center()
+                                .children(update_chip(cx))
+                                .child(self.render_menu(cx)),
+                        ),
                 ),
             )
             .child(div().flex_1().min_h_0().child(page))

@@ -53,6 +53,8 @@ Download from [Releases](https://github.com/vicanso/cyberapi/releases). Each rel
 
 A `nightly` prerelease is built from `main` every night when it has moved.
 
+The desktop app looks for a newer release at start, at most once every two days; Settings → About turns that off, or checks at once. Nothing is downloaded until you ask, and the package is checked against the sum the release published. On macOS it then replaces the app in place, and a restart opens the new version; on Windows and Linux it is saved in your downloads folder and opened for you to install.
+
 ### Coming from the Tauri version
 
 The macOS app has the same name and identifier as the earlier Tauri app, so installing it replaces the old one. On first launch it copies the old app's data, if there is one, and leaves the old files as they were. What is copied is the database (projects, folders, APIs, variables) and the cookies. What the old app kept in its web view is not: its settings (theme, language, timeouts), pinned APIs, open folders, chosen tabs, response history and the order of a project's top level. Those start afresh, and backups made by the old app restore as they always did.

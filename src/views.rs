@@ -22,6 +22,7 @@ mod startup;
 mod sync_dialog;
 mod teams_dialog;
 mod template_hints;
+mod update_dialog;
 mod variables_dialog;
 mod workspace;
 
@@ -37,6 +38,7 @@ pub use settings::open_settings;
 pub use shortcuts_dialog::open_shortcuts_dialog;
 pub use startup::StartupError;
 pub use teams_dialog::open_teams_dialog;
+pub use update_dialog::{follow_update, update_chip};
 pub use variables_dialog::open_variables_dialog;
 pub use workspace::{WorkspaceView, bind_keys as bind_workspace_keys, bind_mac_page_keys};
 

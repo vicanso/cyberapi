@@ -11,12 +11,13 @@ mod window;
 pub use window::is_settings_window;
 
 use crate::json_view_local::JsonView;
-use crate::states::AppStore;
+use crate::states::{AppStore, UpdateEvent, UpdatePhase};
 use crate::this_build;
 use crate::views::fixed_rem::fixed_rem;
 use crate::views::inline_confirm::inline_confirm;
 use crate::views::json_tree::json_view_label;
 use crate::views::server_section::ServerSection;
+use crate::views::update_dialog::open_update_dialog;
 use cyberapi_core::prefs::{HttpVersion, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
 use cyberapi_core::redirect::MAX_REDIRECTS;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -211,6 +212,9 @@ pub struct SettingsView {
     confirming: Option<Clearing>,
     /// The desktop's bridge (`docs/server-sync.md` step 5).
     server: Option<Entity<ServerSection>>,
+    /// What the last update check asked for here answered, when it found
+    /// nothing to show.
+    update_note: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -373,6 +377,17 @@ impl SettingsView {
             .server()
             .cloned()
             .map(|state| cx.new(|cx| ServerSection::new(state, window, cx)));
+        if let Some(updates) = AppStore::global(cx).updates().cloned() {
+            subscriptions.push(cx.observe(&updates, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.subscribe(&updates, |this: &mut Self, _, event, cx| {
+                this.update_note = match event {
+                    UpdateEvent::UpToDate => Some(t!("update.up_to_date", version = crate::VERSION).to_string()),
+                    UpdateEvent::CheckFailed(error) => Some(t!("update.check_failed", error = error).to_string()),
+                    _ => None,
+                };
+                cx.notify();
+            }));
+        }
         Self {
             section: Section::default(),
             focus_handle: cx.focus_handle(),
@@ -395,6 +410,7 @@ impl SettingsView {
             pending: None,
             confirming: None,
             server,
+            update_note: None,
             _subscriptions: subscriptions,
         }
     }
@@ -743,7 +759,11 @@ impl SettingsView {
                 .into_iter()
                 .collect(),
             Section::Data => self.render_data(cx),
-            Section::About => vec![self.render_about(cx)],
+            Section::About => {
+                let mut rows = self.render_updates(cx);
+                rows.push(self.render_about(cx));
+                rows
+            }
         }
     }
 
@@ -861,6 +881,68 @@ impl SettingsView {
     }
 
     /// F1.7: what this build is, and where it comes from.
+    /// The desktop's update check: asked for now, and whether it runs at
+    /// start. A release found here is shown in the main window, where the
+    /// title bar's chip opens it again.
+    fn render_updates(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(updates) = AppStore::global(cx).updates().cloned() else {
+            return Vec::new();
+        };
+        let state = updates.read(cx);
+        let phase = state.phase();
+        let (status, found) = match (phase, state.available()) {
+            (UpdatePhase::Checking { .. }, _) => (t!("update.checking").to_string(), false),
+            (UpdatePhase::Installed, _) => (t!("update.installed_short").to_string(), true),
+            (UpdatePhase::Downloading, Some(info)) => {
+                (t!("update.downloading_short", version = info.version).to_string(), true)
+            }
+            (_, Some(info)) => (t!("update.found", version = info.version).to_string(), true),
+            _ => (
+                self.update_note
+                    .clone()
+                    .unwrap_or_else(|| t!("update.check_desc", version = crate::VERSION).to_string()),
+                false,
+            ),
+        };
+        let control = if found {
+            let main = self.main;
+            Button::new("settings-update-show")
+                .outline()
+                .small()
+                .label(t!("update.show").to_string())
+                .on_click(move |_, _, cx| {
+                    if let Some(main) = main {
+                        let _ = main.update(cx, |_, window, cx| {
+                            window.activate_window();
+                            open_update_dialog(window, cx);
+                        });
+                    }
+                })
+        } else {
+            Button::new("settings-update-check")
+                .outline()
+                .small()
+                .label(t!("update.check").to_string())
+                .loading(matches!(phase, UpdatePhase::Checking { .. }))
+                .on_click(move |_, _, cx| updates.update(cx, |updates, cx| updates.check(true, cx)))
+        };
+        let auto_check = AppStore::global(cx).state().read(cx).prefs().updates.auto_check;
+        vec![
+            setting_row(t!("update.check").to_string(), Some(status), control, cx),
+            setting_row(
+                t!("update.auto_check").to_string(),
+                Some(t!("update.auto_check_desc").to_string()),
+                Switch::new("settings-update-auto")
+                    .checked(auto_check)
+                    .on_click(|checked, _, cx| {
+                        let app = AppStore::global(cx).state().clone();
+                        app.update(cx, |app, cx| app.set_auto_update_check(*checked, cx));
+                    }),
+                cx,
+            ),
+        ]
+    }
+
     fn render_about(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         let mut rows: Vec<(String, SharedString)> = vec![
