@@ -4,6 +4,8 @@
 
 网页版只有一个程序：`cyberapi-bridge`。它在同一个地址上提供页面（编译成 WebAssembly 的应用，内置在程序里）和页面用的 API；账号、团队、项目、响应历史、Cookie 和设置都存在 PostgreSQL 或 MySQL 里；页面准备好的请求也由它发出。它自己的磁盘上不存任何东西。
 
+本文跟随 `main`。正式版还没有的内容标注了它从哪个版本开始提供（*0.2.2*），在那之前只有 `nightly` 构建里有；某个正式版自己的部署说明在它的 tag 下：`https://github.com/vicanso/cyberapi/blob/v<版本>/docs/DEPLOY_zh.md`。
+
 - [需要什么](#需要什么)
 - [先试一下](#先试一下)
 - [Docker Compose](#docker-compose)
@@ -20,7 +22,7 @@
 ## 需要什么
 
 - **数据库**：PostgreSQL 或 MySQL（CI 测试的是 PostgreSQL 18 和 MySQL 8.4）。给 bridge 一个空库和一个能在里面建表的用户：首次启动时它会建好表，之后每次启动都会把表结构升级到当前版本。
-- **程序**：镜像 [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web)，有 linux/amd64 和 linux/arm64（tag：各个版本号如 `0.2.0`、`latest`，以及 `main` 的 `nightly`）；或者 [Releases](https://github.com/vicanso/cyberapi/releases) 里的 `cyberapi-web-<版本>-x86_64-unknown-linux-gnu.tar.gz`（需要 glibc 2.39 或更新：Ubuntu 24.04、Debian 13）。
+- **程序**：镜像 [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web)，有 linux/amd64 和 linux/arm64（tag：各个版本号如 `0.2.1`、`latest`，以及 `main` 的 `nightly`）；或者 [Releases](https://github.com/vicanso/cyberapi/releases) 里的 `cyberapi-web-<版本>-x86_64-unknown-linux-gnu.tar.gz`（需要 glibc 2.39 或更新：Ubuntu 24.04、Debian 13）。
 - **HTTPS**：除了在自己机器上试用，前面都要有 HTTPS。登录 Cookie 带 `Secure`，浏览器只在 HTTPS 下发送它。
 
 ## 先试一下
@@ -57,7 +59,7 @@ services:
     restart: unless-stopped
 
   cyberapi:
-    image: vicanso/cyberapi-web:0.2.0
+    image: vicanso/cyberapi-web:0.2.1
     environment:
       CYBERAPI_BRIDGE_STORE: postgres://cyberapi:change-me@db:5432/cyberapi
     ports:
@@ -83,8 +85,8 @@ docker compose logs cyberapi | grep setup_token
 ## 二进制加 systemd
 
 ```bash
-tar -xzf cyberapi-web-0.2.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 755 cyberapi-web-0.2.0-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
+tar -xzf cyberapi-web-0.2.1-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 755 cyberapi-web-0.2.1-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
 ```
 
 数据库地址放在只有 root 能读的文件里，不要写在命令行上：能列出进程的人都能看到命令行。
@@ -128,8 +130,8 @@ journalctl -u cyberapi-bridge | grep setup_token
 | `--listen <addr>` | `CYBERAPI_BRIDGE_LISTEN` | 监听地址，默认 `127.0.0.1:7380`；镜像里设为 `0.0.0.0:7380`。 |
 | `--setup-token <token>` | `CYBERAPI_BRIDGE_SETUP_TOKEN` | 创建第一个管理员用的 token。不设置时随机生成并写进日志。 |
 | `--allow-target <网段>` | `CYBERAPI_BRIDGE_ALLOW_TARGETS` | 请求还可以发往的网段，逗号分隔，如 `127.0.0.1/32`（见[请求能发往哪里](#请求能发往哪里)）。 |
-| `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | 连内网也拒绝，用于开放到公网的 bridge。 |
-| `--base-path <路径>` | `CYBERAPI_BRIDGE_BASE_PATH` | 把页面和接口放在这个路径下，如 `/cyberapi`，登录 Cookie 也只在这个路径下有效（见[子路径](#反向代理和-https)）。默认为空，即根路径。 |
+| `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | *0.2.2*。连内网也拒绝，用于开放到公网的 bridge。 |
+| `--base-path <路径>` | `CYBERAPI_BRIDGE_BASE_PATH` | *0.2.2*。把页面和接口放在这个路径下，如 `/cyberapi`，登录 Cookie 也只在这个路径下有效（见[子路径](#反向代理和-https)）。默认为空，即根路径。 |
 | `--insecure-cookie` | | 登录 Cookie 不带 `Secure`，用于在自己机器上走纯 HTTP。 |
 | `--www <dir>` | | 用这个目录作为页面，代替内置的页面（开发用）。 |
 | | `RUST_LOG` | 日志详细程度：默认 `info`，`debug` 更详细。日志写到标准输出。 |
@@ -168,7 +170,7 @@ server {
 }
 ```
 
-**放在子路径下。** 要和其他应用共用一个域名、放在 `https://example.com/cyberapi/` 下，用 `--base-path /cyberapi`（或 `CYBERAPI_BRIDGE_BASE_PATH=/cyberapi`）启动 bridge，代理把路径原样转发：
+**放在子路径下**（*0.2.2*）。要和其他应用共用一个域名、放在 `https://example.com/cyberapi/` 下，用 `--base-path /cyberapi`（或 `CYBERAPI_BRIDGE_BASE_PATH=/cyberapi`）启动 bridge，代理把路径原样转发：
 
 ```nginx
     location /cyberapi/ {
@@ -185,7 +187,7 @@ server {
 
 ## 请求能发往哪里
 
-页面的请求由 bridge 在它所在的位置代发。默认**公网和内网都能访问**（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`100.64.0.0/10`、IPv6 `fc00::/7`），因为团队要测的接口大多在自己的内网里。只拒绝那些不会是被测接口、而代人发请求时又最容易出事的地址：**bridge 所在的本机**（回环 `127.0.0.0/8`、`::1`，那里的服务往往默认信任本机来的请求），以及**链路本地**（`169.254.0.0/16`、`fe80::/10`，其中包括云服务器的元数据地址 `169.254.169.254`，能拿到这台机器的云账号凭证），另外还有未指定、组播、广播和保留地址。检查的是域名解析后的地址，每次重定向都会再查一次。被拒绝时，报错会写出域名和它解析到的地址。
+页面的请求由 bridge 在它所在的位置代发。默认（*0.2.2*；0.2.1 及以前只能访问公网）**公网和内网都能访问**（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`100.64.0.0/10`、IPv6 `fc00::/7`），因为团队要测的接口大多在自己的内网里。只拒绝那些不会是被测接口、而代人发请求时又最容易出事的地址：**bridge 所在的本机**（回环 `127.0.0.0/8`、`::1`，那里的服务往往默认信任本机来的请求），以及**链路本地**（`169.254.0.0/16`、`fe80::/10`，其中包括云服务器的元数据地址 `169.254.169.254`，能拿到这台机器的云账号凭证），另外还有未指定、组播、广播和保留地址。检查的是域名解析后的地址，每次重定向都会再查一次。被拒绝时，报错会写出域名和它解析到的地址。
 
 也就是说，能登录网页版的人，能访问 bridge 这台机器能访问的地方。请把它部署在要测的接口所在的网段，不要放进权限更大的网段。
 
@@ -201,7 +203,7 @@ server {
 - **账号只能通过邀请创建。** 在页面的设置菜单（齿轮）里，系统管理员打开**账号管理…**，可以生成邀请链接（新账号只有自己的个人空间）、重置密码、停用账号。团队的所有者或管理员打开**团队…**，生成的链接会让对方以选定的角色加入该团队（只有所有者能邀请另一位所有者）。链接只能用一次，7 天内有效，使用前可以撤回。程序不发邮件：把链接复制给对方，对方打开后自己填写用户名、显示名和密码。
 - **个人空间和团队。** 每个账号有一个别人不能加入的个人空间。团队有所有者、管理员和成员：成员可以编辑团队的项目，所有者和管理员负责管理。
 - **共享项目。** 项目的**访问权限…**菜单可以把项目以查看者、编辑者或管理者的身份共享给其他账号或团队，也可以把项目移到另一个团队。查看者只能看，不能改。
-- **登录会话。** 登录表单上有“保持登录 30 天”，默认勾选。取消勾选时，关闭浏览器即退出；即使浏览器一直开着，bridge 上的会话也最多保留 12 小时。桌面版的登录总是保持 30 天。过期的会话每小时清理一次。
+- **登录会话。** 登录表单上有“保持登录 30 天”（*0.2.2*），默认勾选。取消勾选时，关闭浏览器即退出；即使浏览器一直开着，bridge 上的会话也最多保留 12 小时。桌面版的登录总是保持 30 天。过期的会话每小时清理一次。
 
 系统管理员管理账号，但只能看到共享给他的项目。
 
@@ -218,7 +220,7 @@ server {
 1. 先备份数据库（见[备份](#备份)）。
 2. 改镜像的 tag 后执行 `docker compose up -d`，或者替换二进制后 `systemctl restart cyberapi-bridge`。
 
-新版本启动时会把表结构升级到当前版本。**旧版本的 bridge 无法在新版本升级过的数据库上启动**，所以要回退只能恢复升级前的备份。改动内容见 [`CHANGELOG.md`](../CHANGELOG.md)。登录会话在升级后仍然有效；已经打开的页面会一直用它加载时的版本，刷新一下即可。
+`cyberapi-bridge --version` 和它启动时打印的第一行日志会写出运行的是哪个构建：正式版是版本号和提交，如 `0.2.2 (abc1234)`；nightly 是带日期和提交的版本号，如 `0.2.2-nightly.20261024.137a858`（*0.2.2*）。新版本启动时会把表结构升级到当前版本。**旧版本的 bridge 无法在新版本升级过的数据库上启动**，所以要回退只能恢复升级前的备份。改动内容见 [`CHANGELOG.md`](../CHANGELOG.md)。登录会话在升级后仍然有效；已经打开的页面会一直用它加载时的版本，刷新一下即可。
 
 ## 备份
 

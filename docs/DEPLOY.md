@@ -4,6 +4,8 @@
 
 The web version is one program, `cyberapi-bridge`. It serves the page (the app compiled to WebAssembly, built into the binary) and its API from one address, keeps the accounts, teams, projects, response history, cookies and settings in PostgreSQL or MySQL, and sends the requests the page prepares. It keeps nothing on its own disk.
 
+This guide follows `main`. What a release does not have yet is marked with the version it comes in (*0.2.2*), and is in the `nightly` builds until then; a release's own guide is at its tag, `https://github.com/vicanso/cyberapi/blob/v<version>/docs/DEPLOY.md`.
+
 - [What you need](#what-you-need)
 - [Try it](#try-it)
 - [Docker Compose](#docker-compose)
@@ -20,7 +22,7 @@ The web version is one program, `cyberapi-bridge`. It serves the page (the app c
 ## What you need
 
 - **A database**: PostgreSQL or MySQL (CI tests PostgreSQL 18 and MySQL 8.4). Give the bridge an empty database and a user that can create tables in it: it creates the schema on its first start and brings it up to date on every start after.
-- **The program**: the image [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web) for linux/amd64 and linux/arm64 (tags: each version such as `0.2.0`, `latest`, and `nightly` from `main`), or `cyberapi-web-<version>-x86_64-unknown-linux-gnu.tar.gz` from [Releases](https://github.com/vicanso/cyberapi/releases) (glibc 2.39 or newer: Ubuntu 24.04, Debian 13).
+- **The program**: the image [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web) for linux/amd64 and linux/arm64 (tags: each version such as `0.2.1`, `latest`, and `nightly` from `main`), or `cyberapi-web-<version>-x86_64-unknown-linux-gnu.tar.gz` from [Releases](https://github.com/vicanso/cyberapi/releases) (glibc 2.39 or newer: Ubuntu 24.04, Debian 13).
 - **HTTPS** in front of it for anything beyond a try on your own machine: the login cookie is `Secure`, which browsers send over HTTPS only.
 
 ## Try it
@@ -57,7 +59,7 @@ services:
     restart: unless-stopped
 
   cyberapi:
-    image: vicanso/cyberapi-web:0.2.0
+    image: vicanso/cyberapi-web:0.2.1
     environment:
       CYBERAPI_BRIDGE_STORE: postgres://cyberapi:change-me@db:5432/cyberapi
     ports:
@@ -83,8 +85,8 @@ The image runs as a non-root user on a distroless base (no shell), listens on `0
 ## The binary, with systemd
 
 ```bash
-tar -xzf cyberapi-web-0.2.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 755 cyberapi-web-0.2.0-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
+tar -xzf cyberapi-web-0.2.1-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 755 cyberapi-web-0.2.1-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
 ```
 
 The database address goes in a file only root can read, not on the command line, where anyone who can list processes would see it:
@@ -128,8 +130,8 @@ Each is a flag and, where given, an environment variable.
 | `--listen <addr>` | `CYBERAPI_BRIDGE_LISTEN` | Where to listen. `127.0.0.1:7380` by default; the image sets `0.0.0.0:7380`. |
 | `--setup-token <token>` | `CYBERAPI_BRIDGE_SETUP_TOKEN` | The token the first administrator is made with. Random, and logged, when not given. |
 | `--allow-target <ranges>` | `CYBERAPI_BRIDGE_ALLOW_TARGETS` | Address ranges requests may also go to, comma-separated, e.g. `127.0.0.1/32` ([Where requests may go](#where-requests-may-go)). |
-| `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | Refuse private networks too, for a bridge open to the internet. |
-| `--base-path <path>` | `CYBERAPI_BRIDGE_BASE_PATH` | Serve the page and the API under this path, e.g. `/cyberapi`, and keep the login cookie to it ([under a sub-path](#https-behind-a-reverse-proxy)). Empty by default: the root. |
+| `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | *0.2.2.* Refuse private networks too, for a bridge open to the internet. |
+| `--base-path <path>` | `CYBERAPI_BRIDGE_BASE_PATH` | *0.2.2.* Serve the page and the API under this path, e.g. `/cyberapi`, and keep the login cookie to it ([under a sub-path](#https-behind-a-reverse-proxy)). Empty by default: the root. |
 | `--insecure-cookie` | | Leave `Secure` off the login cookie, for plain HTTP on your own machine. |
 | `--www <dir>` | | Serve this directory as the page instead of the built-in one (development). |
 | | `RUST_LOG` | How much to log: `info` by default, `debug` for more. Logs go to standard output. |
@@ -168,7 +170,7 @@ server {
 }
 ```
 
-**Under a sub-path.** To live at `https://example.com/cyberapi/` beside other applications, start the bridge with `--base-path /cyberapi` (or `CYBERAPI_BRIDGE_BASE_PATH=/cyberapi`) and let the proxy pass the path on as it is:
+**Under a sub-path** (*0.2.2*). To live at `https://example.com/cyberapi/` beside other applications, start the bridge with `--base-path /cyberapi` (or `CYBERAPI_BRIDGE_BASE_PATH=/cyberapi`) and let the proxy pass the path on as it is:
 
 ```nginx
     location /cyberapi/ {
@@ -185,7 +187,7 @@ The bridge then answers under `/cyberapi/` only, sends `/cyberapi` on to `/cyber
 
 ## Where requests may go
 
-The bridge sends the page's requests itself, from where it runs. By default it reaches **public addresses and private networks** (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, IPv6 `fc00::/7`), since the APIs a team tests are mostly on its own network. It refuses only what is never an API under test and is where a request sent on someone's behalf does harm: **its own host** (loopback `127.0.0.0/8`, `::1`, where services trust whoever calls) and **its link** (link-local `169.254.0.0/16`, `fe80::/10`, among them the cloud metadata address `169.254.169.254`, which hands out the machine's credentials), besides unspecified, multicast, broadcast and reserved addresses. The check is on the address a name resolves to, and again on every redirect. A refused request says the name and the address it led to.
+The bridge sends the page's requests itself, from where it runs. By default (*0.2.2*; up to 0.2.1, public addresses only) it reaches **public addresses and private networks** (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, IPv6 `fc00::/7`), since the APIs a team tests are mostly on its own network. It refuses only what is never an API under test and is where a request sent on someone's behalf does harm: **its own host** (loopback `127.0.0.0/8`, `::1`, where services trust whoever calls) and **its link** (link-local `169.254.0.0/16`, `fe80::/10`, among them the cloud metadata address `169.254.169.254`, which hands out the machine's credentials), besides unspecified, multicast, broadcast and reserved addresses. The check is on the address a name resolves to, and again on every redirect. A refused request says the name and the address it led to.
 
 Whoever can sign in to the page can therefore reach what the bridge's machine can. Run it on the network of the APIs it is for, not in a more privileged one.
 
@@ -201,7 +203,7 @@ The desktop app sends its requests from the computer it runs on, even for server
 - **Accounts come from invitations.** In the page's settings menu (the gear), a system administrator opens **Accounts…** to create an invitation link for a new account with only its own space, reset a password or disable an account. A team's owner or admin opens **Teams…** to create a link that also joins the team with a chosen role (only an owner can invite another owner). A link works once, for 7 days, and can be taken back until it is used. The program sends no email: copy the link to the person, who opens it and chooses a name, display name and password.
 - **Spaces and teams.** Every account has a personal space no one else can join. Teams have owners, admins and members; members edit the team's projects, owners and admins manage them.
 - **Sharing a project.** A project's **Access…** menu shares it with another account or team as Viewer, Editor or Manager, or moves it to another team. Viewers see but do not change it.
-- **Sessions.** The sign-in forms have "Keep me signed in for 30 days", ticked by default. Unticked, the login ends when the browser closes, and on the bridge within 12 hours even while it stays open. The desktop app's sign-in is always kept for 30 days. Expired sessions are removed every hour.
+- **Sessions.** The sign-in forms have "Keep me signed in for 30 days" (*0.2.2*), ticked by default. Unticked, the login ends when the browser closes, and on the bridge within 12 hours even while it stays open. The desktop app's sign-in is always kept for 30 days. Expired sessions are removed every hour.
 
 System administrators manage accounts but see only the projects shared with them.
 
@@ -218,7 +220,7 @@ The desktop app can sign in to the same server: **Settings → Server**, the pag
 1. Back up the database ([Backups](#backups)).
 2. Change the image tag and `docker compose up -d`, or replace the binary and `systemctl restart cyberapi-bridge`.
 
-The new version brings the schema up to date on start. **An older bridge does not start on a database a newer one has upgraded**, so going back means restoring the backup taken before. Read [`CHANGELOG.md`](../CHANGELOG.md) for what changed. Sessions survive the upgrade; a page already open keeps the version it loaded until it is reloaded, so reload it.
+`cyberapi-bridge --version`, and the first line it logs, say which build runs: a release's version and commit, `0.2.2 (abc1234)`, or a nightly's version with its day and commit, `0.2.2-nightly.20261024.137a858` (*0.2.2*). The new version brings the schema up to date on start. **An older bridge does not start on a database a newer one has upgraded**, so going back means restoring the backup taken before. Read [`CHANGELOG.md`](../CHANGELOG.md) for what changed. Sessions survive the upgrade; a page already open keeps the version it loaded until it is reloaded, so reload it.
 
 ## Backups
 

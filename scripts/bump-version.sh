@@ -7,7 +7,9 @@
 #
 # Cargo.lock's entries for the workspace's own crates move with it (offline,
 # and only those: `cargo update --workspace` leaves the pinned dependencies
-# alone), so the lockfile committed with the bump matches.
+# alone), so the lockfile committed with the bump matches. So do the
+# deployment guides' examples: the image tag, the tarball, the version
+# named as one in backticks (#54).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,7 +29,8 @@ NEXT="$MAJ.$MIN.$PAT"
 
 # A bump that fails part-way leaves the tree as it found it: the version is
 # read back from Cargo.toml, so a half-applied bump would skip one on retry.
-TOUCHED=(Cargo.toml Cargo.lock)
+DOCS=(docs/DEPLOY.md docs/DEPLOY_zh.md)
+TOUCHED=(Cargo.toml Cargo.lock "${DOCS[@]}")
 SNAPSHOT=$(mktemp -d)
 for f in "${TOUCHED[@]}"; do cp "$f" "$SNAPSHOT/"; done
 finish() {
@@ -47,5 +50,8 @@ CURRENT="$CURRENT" NEXT="$NEXT" perl -pi -e \
 grep -q "^version = \"$NEXT\"" Cargo.toml || { echo "failed to bump Cargo.toml" >&2; exit 1; }
 
 cargo update --workspace --offline --quiet
+
+CURRENT="$CURRENT" NEXT="$NEXT" perl -pi -e \
+  's/(cyberapi-web[:-])\Q$ENV{CURRENT}\E(?![\d.])/$1$ENV{NEXT}/g; s/`\Q$ENV{CURRENT}\E`/`$ENV{NEXT}`/g' "${DOCS[@]}"
 
 echo "version: $CURRENT -> $NEXT"
