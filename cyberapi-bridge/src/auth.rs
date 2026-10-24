@@ -86,10 +86,13 @@ pub fn unix_now() -> i64 {
 }
 
 /// The session cookie: unreadable to scripts, sent only by this origin's
-/// own pages. An empty token with no age clears it.
-pub fn session_cookie(token: &str, max_age: i64, secure: bool) -> String {
+/// own pages, and only under `path`, where the bridge is mounted: another
+/// application on the same host name does not get it. Without an age it
+/// lasts until the browser closes; an empty token aged 0 clears it.
+pub fn session_cookie(token: &str, max_age: Option<i64>, secure: bool, path: &str) -> String {
+    let age = max_age.map(|age| format!("; Max-Age={age}")).unwrap_or_default();
     let secure = if secure { "; Secure" } else { "" };
-    format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}{secure}")
+    format!("{SESSION_COOKIE}={token}; Path={path}; HttpOnly; SameSite=Strict{age}{secure}")
 }
 
 /// A cookie's value from the request.
@@ -145,6 +148,20 @@ mod tests {
         assert!(!verify_password(&hash, "wrong horse"));
         assert!(DECOY_HASH.starts_with("$argon2id$"), "the decoy is a real hash");
         assert!(!verify_password(&DECOY_HASH, ""));
+    }
+
+    #[test]
+    fn the_cookie_is_kept_under_the_mount_for_as_long_as_asked() {
+        assert_eq!(
+            session_cookie("t", Some(60), true, "/"),
+            "cyberapi_session=t; Path=/; HttpOnly; SameSite=Strict; Max-Age=60; Secure"
+        );
+        assert_eq!(
+            session_cookie("t", None, false, "/cyberapi/"),
+            "cyberapi_session=t; Path=/cyberapi/; HttpOnly; SameSite=Strict",
+            "no age: gone when the browser closes"
+        );
+        assert!(session_cookie("", Some(0), false, "/").contains("Max-Age=0"));
     }
 
     #[test]

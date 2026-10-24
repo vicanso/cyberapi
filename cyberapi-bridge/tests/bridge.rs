@@ -29,6 +29,10 @@ async fn fresh_bridge() -> Option<Bridge> {
 }
 
 async fn fresh_bridge_sending_to(allowed: Vec<ipnet::IpNet>) -> Option<Bridge> {
+    fresh_bridge_at(allowed, String::new()).await
+}
+
+async fn fresh_bridge_at(allowed: Vec<ipnet::IpNet>, base_path: String) -> Option<Bridge> {
     let Ok(url) = std::env::var("CYBERAPI_TEST_POSTGRES") else {
         eprintln!("skipped: CYBERAPI_TEST_POSTGRES is not set");
         return None;
@@ -43,7 +47,44 @@ async fn fresh_bridge_sending_to(allowed: Vec<ipnet::IpNet>) -> Option<Bridge> {
     let (server, _) = url.rsplit_once('/').expect("a database in the URL");
     let store = SqlStore::connect(&format!("{server}/{name}")).await.expect("connect");
     let engine = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::PublicOnly { allowed });
-    Some(Bridge::new(store, Arc::new(engine), SETUP_TOKEN.into(), false))
+    Some(Bridge::new(
+        store,
+        Arc::new(engine),
+        SETUP_TOKEN.into(),
+        false,
+        base_path,
+    ))
+}
+
+/// The status and the `Location` of a GET.
+async fn get_location(router: &Router, path: &str) -> (StatusCode, Option<String>) {
+    let request = Request::builder().uri(path).body(Body::empty()).expect("a request");
+    let response = router.clone().oneshot(request).await.expect("an answer");
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    (response.status(), location)
+}
+
+/// Whether the session a `Set-Cookie` carries is still good `after` seconds
+/// from now, as the bridge checks it: by the token's SHA-256.
+async fn session_lasts(bridge: &Bridge, set_cookie: &str, after: i64) -> bool {
+    use sha2::Digest as _;
+    let pair = cookie_pair(set_cookie);
+    let token = pair.split_once('=').map(|(_, token)| token).unwrap_or_default();
+    let hash = hex::encode(sha2::Sha256::digest(token.as_bytes()));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock")
+        .as_secs() as i64;
+    bridge
+        .store()
+        .session_account(&hash, now + after)
+        .await
+        .expect("a session check")
+        .is_some()
 }
 
 /// One request; the status, the `Set-Cookie` value, and the body.
@@ -449,6 +490,7 @@ async fn a_client_of_its_own_signs_in_with_a_bearer_token() {
         name: "admin".into(),
         password: password.into(),
         bearer: false,
+        remember: true,
     };
     assert_eq!(
         sign_in(engine.clone(), address.clone(), login("wrong one")).await,
@@ -472,4 +514,94 @@ async fn a_client_of_its_own_signs_in_with_a_bearer_token() {
     );
     let nobody = EngineTransport::new(engine, address, None);
     assert_eq!(session_me(&nobody).await, Ok(None));
+}
+
+/// Under a base path the page and the API are below it and nowhere else,
+/// and the login cookie is kept to it.
+#[tokio::test]
+async fn a_bridge_under_a_base_path_answers_only_there() {
+    let Some(bridge) = fresh_bridge_at(vec![], "/cyberapi".into()).await else {
+        return;
+    };
+    let router = bridge.router(None);
+
+    assert_eq!(
+        get_location(&router, "/cyberapi").await,
+        (StatusCode::TEMPORARY_REDIRECT, Some("/cyberapi/".into())),
+        "the page resolves against its own address, so it needs the slash"
+    );
+    assert_eq!(
+        get_location(&router, "/cyberapi?x=1").await.1,
+        Some("/cyberapi/?x=1".into())
+    );
+    let (status, _, body) = send(&router, "GET", "/cyberapi/", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<html"), "the page");
+    for outside in ["/", "/index.html", "/v1/setup", "/cyberapix/"] {
+        let (status, ..) = send(&router, "GET", outside, None, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{outside}");
+    }
+
+    let (status, _, body) = send(&router, "GET", "/cyberapi/v1/setup", None, None).await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, r#"{"needed":true}"#));
+    let form = json!({"token": SETUP_TOKEN, "name": "admin", "password": "long enough", "remember": false});
+    let (status, set_cookie, body) = send(&router, "POST", "/cyberapi/v1/setup", None, Some(form)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let set_cookie = set_cookie.expect("a cookie");
+    assert!(set_cookie.contains("Path=/cyberapi/"), "{set_cookie}");
+
+    let (status, set_cookie, _) = send(
+        &router,
+        "POST",
+        "/cyberapi/v1/login",
+        None,
+        Some(json!({"name": "admin", "password": "long enough"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let set_cookie = set_cookie.expect("a cookie");
+    assert!(set_cookie.contains("Path=/cyberapi/"), "{set_cookie}");
+    let cookie = cookie_pair(&set_cookie);
+    let (status, ..) = send(&router, "GET", "/cyberapi/v1/session", Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, set_cookie, _) = send(&router, "POST", "/cyberapi/v1/logout", Some(&cookie), None).await;
+    let set_cookie = set_cookie.expect("a cookie");
+    assert!(
+        set_cookie.contains("Path=/cyberapi/") && set_cookie.contains("Max-Age=0"),
+        "the cookie cleared where it was set: {set_cookie}"
+    );
+}
+
+/// "Keep me signed in" is on unless the page says otherwise: a kept login
+/// lasts its 30 days; one not kept ends with the browser, and on the bridge
+/// within the day.
+#[tokio::test]
+async fn a_login_is_kept_unless_asked_not_to_be() {
+    let Some(bridge) = fresh_bridge().await else { return };
+    let router = bridge.router(None);
+    let form = json!({"token": SETUP_TOKEN, "name": "admin", "password": "long enough"});
+    let (status, set_cookie, _) = send(&router, "POST", "/v1/setup", None, Some(form)).await;
+    assert_eq!(status, StatusCode::OK);
+    let kept = set_cookie.expect("a cookie");
+    assert!(
+        kept.contains(&format!("Max-Age={}", cyberapi_bridge::KEPT_SESSION)),
+        "{kept}"
+    );
+    assert!(session_lasts(&bridge, &kept, cyberapi_bridge::KEPT_SESSION - 60).await);
+
+    let login = |remember: bool| json!({"name": "admin", "password": "long enough", "remember": remember});
+    let (status, set_cookie, _) = send(&router, "POST", "/v1/login", None, Some(login(false))).await;
+    assert_eq!(status, StatusCode::OK);
+    let unkept = set_cookie.expect("a cookie");
+    assert!(!unkept.contains("Max-Age"), "gone when the browser closes: {unkept}");
+    assert!(session_lasts(&bridge, &unkept, cyberapi_bridge::UNKEPT_SESSION - 60).await);
+    assert!(
+        !session_lasts(&bridge, &unkept, cyberapi_bridge::UNKEPT_SESSION + 60).await,
+        "and not past the day on the bridge"
+    );
+    let (status, ..) = send(&router, "GET", "/v1/session", Some(&cookie_pair(&unkept)), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, set_cookie, _) = send(&router, "POST", "/v1/login", None, Some(login(true))).await;
+    assert!(set_cookie.expect("a cookie").contains("Max-Age="));
 }

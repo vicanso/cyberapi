@@ -128,6 +128,7 @@ Each is a flag and, where given, an environment variable.
 | `--listen <addr>` | `CYBERAPI_BRIDGE_LISTEN` | Where to listen. `127.0.0.1:7380` by default; the image sets `0.0.0.0:7380`. |
 | `--setup-token <token>` | `CYBERAPI_BRIDGE_SETUP_TOKEN` | The token the first administrator is made with. Random, and logged, when not given. |
 | `--allow-target <ranges>` | `CYBERAPI_BRIDGE_ALLOW_TARGETS` | Address ranges requests may also go to, comma-separated, e.g. `10.0.0.0/8,192.168.1.0/24` ([Where requests may go](#where-requests-may-go)). |
+| `--base-path <path>` | `CYBERAPI_BRIDGE_BASE_PATH` | Serve the page and the API under this path, e.g. `/cyberapi`, and keep the login cookie to it ([under a sub-path](#https-behind-a-reverse-proxy)). Empty by default: the root. |
 | `--insecure-cookie` | | Leave `Secure` off the login cookie, for plain HTTP on your own machine. |
 | `--www <dir>` | | Serve this directory as the page instead of the built-in one (development). |
 | | `RUST_LOG` | How much to log: `info` by default, `debug` for more. Logs go to standard output. |
@@ -166,16 +167,18 @@ server {
 }
 ```
 
-**Under a sub-path.** Every address the page uses is relative to it, so it can live at `https://example.com/cyberapi/` beside other applications. The proxy strips the prefix (note both trailing slashes):
+**Under a sub-path.** To live at `https://example.com/cyberapi/` beside other applications, start the bridge with `--base-path /cyberapi` (or `CYBERAPI_BRIDGE_BASE_PATH=/cyberapi`) and let the proxy pass the path on as it is:
 
 ```nginx
     location /cyberapi/ {
-        proxy_pass http://127.0.0.1:7380/;
+        proxy_pass http://127.0.0.1:7380;
         proxy_set_header Host $host;
         proxy_read_timeout 600s;
         proxy_send_timeout 600s;
     }
 ```
+
+The bridge then answers under `/cyberapi/` only, sends `/cyberapi` on to `/cyberapi/`, and keeps the login cookie to `/cyberapi/`, so the other applications on the host name never receive it. A proxy that strips the prefix instead (`proxy_pass http://127.0.0.1:7380/;`, Caddy's `handle_path`, Traefik's `StripPrefix`) also works with no base path, since the page addresses everything relative to itself; the cookie is then the whole host's.
 
 **Failed sign-ins are counted per account name (5 in 15 minutes) and per client address (30 in 15 minutes).** Behind a proxy the bridge sees only the proxy's address, so the per-address count is everyone's together: 30 failed sign-ins from anyone hold back every sign-in until the window passes. Limit `/v1/login` at the proxy by the real client address as well, for example with nginx's `limit_req`.
 
@@ -198,7 +201,7 @@ The desktop app sends its requests from the computer it runs on, even for server
 - **Accounts come from invitations.** In the page's settings menu (the gear), a system administrator opens **Accounts…** to create an invitation link for a new account with only its own space, reset a password or disable an account. A team's owner or admin opens **Teams…** to create a link that also joins the team with a chosen role (only an owner can invite another owner). A link works once, for 7 days, and can be taken back until it is used. The program sends no email: copy the link to the person, who opens it and chooses a name, display name and password.
 - **Spaces and teams.** Every account has a personal space no one else can join. Teams have owners, admins and members; members edit the team's projects, owners and admins manage them.
 - **Sharing a project.** A project's **Access…** menu shares it with another account or team as Viewer, Editor or Manager, or moves it to another team. Viewers see but do not change it.
-- **Sessions** last 30 days. Expired ones are removed every hour.
+- **Sessions.** The sign-in forms have "Keep me signed in for 30 days", ticked by default. Unticked, the login ends when the browser closes, and on the bridge within 12 hours even while it stays open. The desktop app's sign-in is always kept for 30 days. Expired sessions are removed every hour.
 
 System administrators manage accounts but see only the projects shared with them.
 

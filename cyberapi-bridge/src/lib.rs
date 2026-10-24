@@ -15,6 +15,13 @@
 //! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5), a few of an account's at a time ([`in_flight`]) |
 //! | anything else | the page's files ([`static_files`]) |
 //!
+//! Under `--base-path /prefix` all of it is below the prefix — `/prefix/`,
+//! `/prefix/v1/login` — for a reverse proxy that keeps the prefix, and the
+//! login cookie's path is the prefix's, so applications sharing the host
+//! name do not get it. The routes are registered at their full paths:
+//! axum's `nest` gives the inner router `/prefix` but not `/prefix/`, the
+//! one address the page lives at.
+//!
 //! Failed sign-ins, setup tries and invitations that open nothing are counted ([`throttle`]) and turned
 //! away with 429 once there are too many; serve the router with
 //! `into_make_service_with_connect_info::<SocketAddr>` so they are counted
@@ -27,9 +34,10 @@ mod throttle;
 
 use auth::{hash_password, hash_token, new_token, session_cookie, signed_in, verify_password};
 use axum::Router;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Json, State};
+use axum::body::Body;
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Json, Request, State};
 use axum::http::{Extensions, HeaderMap, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use cyberapi_core::directory::{valid_account_name, valid_password};
 use cyberapi_http::{HttpEngine, PreparedRequest, SendError};
@@ -38,15 +46,21 @@ use cyberapi_store_bridge::{BearerSession, Call, LoginForm, SEND_PATH, STORE_PAT
 use cyberapi_store_sql::{Acceptance, Account, NewAccount, SqlStore};
 use in_flight::InFlight;
 use serde::{Deserialize, Serialize};
+use static_files::Mounted;
+pub use static_files::normalize_base_path;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use throttle::{Key, Throttle};
 use tower_http::services::ServeDir;
 
-/// How long a login lasts.
-pub const SESSION_DAYS: i64 = 30;
+/// How long a kept login lasts, in seconds: the page's "keep me signed in",
+/// on by default, and every bearer session — a client keeps its token.
+pub const KEPT_SESSION: i64 = 30 * 24 * 60 * 60;
+/// A login not kept: its cookie ends with the browser, and the bridge lets
+/// it go within the working day even while the browser stays open.
+pub const UNKEPT_SESSION: i64 = 12 * 60 * 60;
 /// A request body or a kept response, base64 in JSON.
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// How often the logins that ran out are forgotten.
@@ -67,6 +81,9 @@ struct Inner {
     /// Mark the cookie `Secure`: on, unless the bridge is reached over plain
     /// HTTP (development).
     secure_cookie: bool,
+    /// Where it is mounted, as [`normalize_base_path`] leaves it: empty for
+    /// the root, else `/prefix`.
+    base_path: String,
     throttle: Throttle,
     /// Each account's requests on their way through `/v1/send`.
     in_flight: Arc<InFlight>,
@@ -74,13 +91,21 @@ struct Inner {
 
 impl Bridge {
     /// The store's directory sets and checks passwords as sign-in does.
-    pub fn new(store: SqlStore, engine: Arc<dyn HttpEngine>, setup_token: String, secure_cookie: bool) -> Self {
+    /// `base_path` as [`normalize_base_path`] leaves it.
+    pub fn new(
+        store: SqlStore,
+        engine: Arc<dyn HttpEngine>,
+        setup_token: String,
+        secure_cookie: bool,
+        base_path: String,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 store: store.with_passwords(Arc::new(auth::Argon2Passwords)),
                 engine,
                 setup_token,
                 secure_cookie,
+                base_path,
                 throttle: Throttle::default(),
                 in_flight: Arc::default(),
             }),
@@ -108,34 +133,42 @@ impl Bridge {
         &self.inner.store
     }
 
-    /// The routes, with the page behind them: the one compiled in, or the
-    /// files in `www`.
+    /// The routes, below the mount, with the page behind them: the one
+    /// compiled in, or the files in `www`.
     pub fn router(&self, www: Option<PathBuf>) -> Router {
-        let api = Router::new()
-            .route("/v1/setup", get(setup_needed).post(setup))
-            .route("/v1/login", post(login))
-            .route("/v1/logout", post(logout))
-            .route("/v1/invite", post(invite_info))
-            .route("/v1/invite/accept", post(accept_invite))
-            .route("/v1/session", get(session))
-            .route(STORE_PATH, post(store_call))
-            .route(SEND_PATH, post(send_request))
+        let at = |path: &str| format!("{}{path}", self.inner.base_path);
+        let www = www.map(Arc::new);
+        Router::new()
+            .route(&at("/v1/setup"), get(setup_needed).post(setup))
+            .route(&at("/v1/login"), post(login))
+            .route(&at("/v1/logout"), post(logout))
+            .route(&at("/v1/invite"), post(invite_info))
+            .route(&at("/v1/invite/accept"), post(accept_invite))
+            .route(&at("/v1/session"), get(session))
+            .route(&at(STORE_PATH), post(store_call))
+            .route(&at(SEND_PATH), post(send_request))
             .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-            .with_state(self.clone());
-        match www {
-            Some(dir) => api.fallback_service(ServeDir::new(dir)),
-            None => api.fallback(static_files::serve),
-        }
+            .fallback(move |State(bridge): State<Bridge>, request: Request| page(bridge, request, www.clone()))
+            .with_state(self.clone())
+    }
+
+    /// The login cookie's path: the mount's, with its slash.
+    fn cookie_path(&self) -> String {
+        format!("{}/", self.inner.base_path)
     }
 
     /// Signs `account` in, answering it with the cookie that carries the
-    /// new session — or, for a `bearer` client, the session's token.
-    async fn sign_in(&self, account: Account, bearer: bool) -> Response {
+    /// new session — or, for a `bearer` client, the session's token. A
+    /// session not `remember`ed has a cookie that ends with the browser, and
+    /// a shorter life on the bridge; a bearer session is always kept.
+    async fn sign_in(&self, account: Account, bearer: bool, remember: bool) -> Response {
         let token = match new_token() {
             Ok(token) => token,
             Err(error) => return internal(error),
         };
-        let expires_at = auth::unix_now() + SESSION_DAYS * 24 * 60 * 60;
+        let kept = remember || bearer;
+        let lifetime = if kept { KEPT_SESSION } else { UNKEPT_SESSION };
+        let expires_at = auth::unix_now() + lifetime;
         if let Err(error) = self
             .inner
             .store
@@ -147,8 +180,46 @@ impl Bridge {
         if bearer {
             return Json(BearerSession { token }).into_response();
         }
-        let cookie = session_cookie(&token, SESSION_DAYS * 24 * 60 * 60, self.inner.secure_cookie);
+        let cookie = session_cookie(
+            &token,
+            kept.then_some(KEPT_SESSION),
+            self.inner.secure_cookie,
+            &self.cookie_path(),
+        );
         ([(header::SET_COOKIE, cookie)], Json(account)).into_response()
+    }
+}
+
+/// The page's files, below the mount and nowhere else. The mount without
+/// its slash is sent to the address with it: the page resolves everything
+/// relative to where it was loaded from.
+async fn page(bridge: Bridge, request: Request, www: Option<Arc<PathBuf>>) -> Response {
+    let base = bridge.inner.base_path.clone();
+    let path = request.uri().path().to_string();
+    match static_files::mounted(&base, &path) {
+        Mounted::Outside => static_files::not_found(),
+        Mounted::NeedsSlash => {
+            let query = request.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+            Redirect::temporary(&format!("{base}/{query}")).into_response()
+        }
+        Mounted::File(below) => match www {
+            None => static_files::serve(request.headers(), below),
+            Some(dir) => from_dir(&dir, request, below).await,
+        },
+    }
+}
+
+/// `--www`: the file below the mount, out of a directory.
+async fn from_dir(dir: &Path, request: Request, below: &str) -> Response {
+    let (mut parts, body) = request.into_parts();
+    let query = parts.uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    parts.uri = match format!("{below}{query}").parse() {
+        Ok(uri) => uri,
+        Err(_) => return static_files::not_found(),
+    };
+    match ServeDir::new(dir).try_call(Request::from_parts(parts, body)).await {
+        Ok(response) => response.map(Body::new).into_response(),
+        Err(error) => internal(error),
     }
 }
 
@@ -203,6 +274,13 @@ struct SetupForm {
     #[serde(default)]
     display_name: String,
     password: String,
+    /// "Keep me signed in" ([`cyberapi_store_bridge::LoginForm::remember`]).
+    #[serde(default = "kept")]
+    remember: bool,
+}
+
+fn kept() -> bool {
+    true
 }
 
 fn already_set_up() -> Response {
@@ -260,7 +338,7 @@ async fn setup(State(bridge): State<Bridge>, extensions: Extensions, Json(form):
         display_name,
         admin: true,
     };
-    bridge.sign_in(account, false).await
+    bridge.sign_in(account, false, form.remember).await
 }
 
 fn check_new_account(name: &str, password: &str) -> Result<(), &'static str> {
@@ -299,7 +377,7 @@ async fn login(State(bridge): State<Bridge>, extensions: Extensions, Json(form):
     match account {
         Some(account) if verified => {
             bridge.inner.throttle.succeeded(&name);
-            bridge.sign_in(account, form.bearer).await
+            bridge.sign_in(account, form.bearer, form.remember).await
         }
         _ => {
             bridge.inner.throttle.failed(&keys, Instant::now());
@@ -334,6 +412,9 @@ struct AcceptForm {
     #[serde(default)]
     display_name: String,
     password: String,
+    /// "Keep me signed in".
+    #[serde(default = "kept")]
+    remember: bool,
 }
 
 /// The account an invitation asks for, made and signed in. Nothing is made
@@ -349,7 +430,7 @@ async fn accept_invite(State(bridge): State<Bridge>, extensions: Extensions, Jso
         password: form.password,
     };
     match bridge.inner.store.accept_invite(&form.token, acceptance).await {
-        Ok(account) => bridge.sign_in(account, false).await,
+        Ok(account) => bridge.sign_in(account, false, form.remember).await,
         Err(error) => invite_refused(&bridge, &keys, error),
     }
 }
@@ -382,7 +463,10 @@ async fn logout(State(bridge): State<Bridge>, headers: HeaderMap) -> Response {
     }
     (
         StatusCode::NO_CONTENT,
-        [(header::SET_COOKIE, session_cookie("", 0, bridge.inner.secure_cookie))],
+        [(
+            header::SET_COOKIE,
+            session_cookie("", Some(0), bridge.inner.secure_cookie, &bridge.cookie_path()),
+        )],
     )
         .into_response()
 }

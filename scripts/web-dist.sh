@@ -61,6 +61,11 @@ those ranges too, such as the APIs of your own network.
 
 Failed sign-ins are slowed per name and per address; behind a reverse proxy
 every request comes from the proxy's address, so rate-limit there as well.
+
+--base-path /cyberapi (or CYBERAPI_BRIDGE_BASE_PATH) serves the page and the
+API under that path, for a reverse proxy that keeps the prefix; the login
+cookie is kept to it.
+
 --www <dir> serves a directory as the page instead of the one built in.
 RUST_LOG=debug logs more.
 

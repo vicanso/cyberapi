@@ -264,6 +264,7 @@ impl ServerState {
             name: name.trim().to_string(),
             password,
             bearer: true,
+            remember: true,
         };
         let to = address.clone();
         cx.spawn(async move |this, cx| {

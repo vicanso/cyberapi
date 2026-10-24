@@ -128,6 +128,7 @@ journalctl -u cyberapi-bridge | grep setup_token
 | `--listen <addr>` | `CYBERAPI_BRIDGE_LISTEN` | 监听地址，默认 `127.0.0.1:7380`；镜像里设为 `0.0.0.0:7380`。 |
 | `--setup-token <token>` | `CYBERAPI_BRIDGE_SETUP_TOKEN` | 创建第一个管理员用的 token。不设置时随机生成并写进日志。 |
 | `--allow-target <网段>` | `CYBERAPI_BRIDGE_ALLOW_TARGETS` | 请求还可以发往的网段，逗号分隔，如 `10.0.0.0/8,192.168.1.0/24`（见[请求能发往哪里](#请求能发往哪里)）。 |
+| `--base-path <路径>` | `CYBERAPI_BRIDGE_BASE_PATH` | 把页面和接口放在这个路径下，如 `/cyberapi`，登录 Cookie 也只在这个路径下有效（见[子路径](#反向代理和-https)）。默认为空，即根路径。 |
 | `--insecure-cookie` | | 登录 Cookie 不带 `Secure`，用于在自己机器上走纯 HTTP。 |
 | `--www <dir>` | | 用这个目录作为页面，代替内置的页面（开发用）。 |
 | | `RUST_LOG` | 日志详细程度：默认 `info`，`debug` 更详细。日志写到标准输出。 |
@@ -166,16 +167,18 @@ server {
 }
 ```
 
-**放在子路径下。** 页面用到的地址都是相对于页面的，所以可以和其他应用共用一个域名，放在 `https://example.com/cyberapi/` 下。由代理去掉前缀（注意两处结尾的斜杠）：
+**放在子路径下。** 要和其他应用共用一个域名、放在 `https://example.com/cyberapi/` 下，用 `--base-path /cyberapi`（或 `CYBERAPI_BRIDGE_BASE_PATH=/cyberapi`）启动 bridge，代理把路径原样转发：
 
 ```nginx
     location /cyberapi/ {
-        proxy_pass http://127.0.0.1:7380/;
+        proxy_pass http://127.0.0.1:7380;
         proxy_set_header Host $host;
         proxy_read_timeout 600s;
         proxy_send_timeout 600s;
     }
 ```
+
+这样 bridge 只在 `/cyberapi/` 下响应，访问 `/cyberapi` 会跳到 `/cyberapi/`，登录 Cookie 也只在 `/cyberapi/` 下有效，同一域名下的其他应用收不到它。也可以不设前缀、由代理去掉前缀（`proxy_pass http://127.0.0.1:7380/;`、Caddy 的 `handle_path`、Traefik 的 `StripPrefix`），页面的地址都是相对于自身的，同样能用；只是这时 Cookie 对整个域名有效。
 
 **登录失败按用户名（15 分钟 5 次）和客户端地址（15 分钟 30 次）分别计数。** 在代理后面，bridge 只看得到代理的地址，所以按地址的计数是所有人合在一起的：任何人累计失败 30 次，所有人都要等这段时间过去才能登录。请在代理上也按真实的客户端地址限制 `/v1/login`，例如用 nginx 的 `limit_req`。
 
@@ -198,7 +201,7 @@ CYBERAPI_BRIDGE_ALLOW_TARGETS=10.0.0.0/8,192.168.1.0/24
 - **账号只能通过邀请创建。** 在页面的设置菜单（齿轮）里，系统管理员打开**账号管理…**，可以生成邀请链接（新账号只有自己的个人空间）、重置密码、停用账号。团队的所有者或管理员打开**团队…**，生成的链接会让对方以选定的角色加入该团队（只有所有者能邀请另一位所有者）。链接只能用一次，7 天内有效，使用前可以撤回。程序不发邮件：把链接复制给对方，对方打开后自己填写用户名、显示名和密码。
 - **个人空间和团队。** 每个账号有一个别人不能加入的个人空间。团队有所有者、管理员和成员：成员可以编辑团队的项目，所有者和管理员负责管理。
 - **共享项目。** 项目的**访问权限…**菜单可以把项目以查看者、编辑者或管理者的身份共享给其他账号或团队，也可以把项目移到另一个团队。查看者只能看，不能改。
-- **登录会话**有效期 30 天，过期的会话每小时清理一次。
+- **登录会话。** 登录表单上有“保持登录 30 天”，默认勾选。取消勾选时，关闭浏览器即退出；即使浏览器一直开着，bridge 上的会话也最多保留 12 小时。桌面版的登录总是保持 30 天。过期的会话每小时清理一次。
 
 系统管理员管理账号，但只能看到共享给他的项目。
 

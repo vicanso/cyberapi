@@ -12,9 +12,13 @@
 //! revalidated: the module keeps its name from build to build. A gzip a
 //! release bundle stores beside a file is sent instead of it to a browser
 //! that accepts gzip.
+//!
+//! Under `--base-path` the page lives at `/prefix/` and nowhere else
+//! ([`mounted`]): the page addresses everything relative to where it was
+//! loaded from, so it needs no telling.
 
 use axum::body::Body;
-use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
@@ -26,6 +30,49 @@ use rust_embed::RustEmbed;
 #[exclude = "wasm/package.json"]
 #[exclude = "wasm/.gitignore"]
 pub struct WebBuild;
+
+/// `--base-path` as typed, made `/a/b`: no slash at the end, one at the
+/// start; empty for the root. Each segment plain — letters, digits and
+/// `- _ . ~` — so it can stand in a route and a cookie's path as it is.
+pub fn normalize_base_path(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~');
+    for segment in trimmed.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." || !segment.chars().all(plain) {
+            return Err(format!(
+                "base path {raw:?}: each segment may hold letters, digits and - _ . ~ only"
+            ));
+        }
+    }
+    Ok(format!("/{trimmed}"))
+}
+
+/// Where a request's path falls for a bridge mounted at `base` (as
+/// [`normalize_base_path`] leaves it).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Mounted<'a> {
+    /// Under the mount: the path below it, from its `/`.
+    File(&'a str),
+    /// The mount without its slash: the page's relative addresses would
+    /// resolve against the parent, so it is sent to `base/`.
+    NeedsSlash,
+    /// Not this bridge's.
+    Outside,
+}
+
+pub fn mounted<'a>(base: &str, path: &'a str) -> Mounted<'a> {
+    if base.is_empty() {
+        return Mounted::File(path);
+    }
+    match path.strip_prefix(base) {
+        Some("") => Mounted::NeedsSlash,
+        Some(rest) if rest.starts_with('/') => Mounted::File(rest),
+        _ => Mounted::Outside,
+    }
+}
 
 /// The stored file a request path names: `index.html` for the root, and
 /// nothing for a path that climbs out or is not plain.
@@ -55,17 +102,17 @@ pub fn accepts_gzip(headers: &HeaderMap) -> bool {
         })
 }
 
-fn not_found() -> Response {
+pub fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
-/// A GET of the page's files.
-pub async fn serve(headers: HeaderMap, uri: Uri) -> Response {
-    let Some(key) = key_for(uri.path()) else {
+/// A GET of the page's files: `path` below the mount.
+pub fn serve(headers: &HeaderMap, path: &str) -> Response {
+    let Some(key) = key_for(path) else {
         return not_found();
     };
     let gzip = format!("{key}.gz");
-    let (file, encoding) = match WebBuild::get(&gzip).filter(|_| accepts_gzip(&headers)) {
+    let (file, encoding) = match WebBuild::get(&gzip).filter(|_| accepts_gzip(headers)) {
         Some(file) => (file, Some("gzip")),
         None => match WebBuild::get(&key) {
             Some(file) => (file, None),
@@ -115,6 +162,37 @@ mod tests {
     }
 
     #[test]
+    fn a_base_path_is_one_plain_prefix() {
+        assert_eq!(normalize_base_path(""), Ok(String::new()));
+        assert_eq!(normalize_base_path(" / "), Ok(String::new()));
+        assert_eq!(normalize_base_path("cyberapi"), Ok("/cyberapi".into()));
+        assert_eq!(normalize_base_path("/tools/cyberapi/"), Ok("/tools/cyberapi".into()));
+        assert!(normalize_base_path("/a//b").is_err());
+        assert!(normalize_base_path("/../x").is_err());
+        assert!(normalize_base_path("/a b").is_err());
+        assert!(normalize_base_path("/a?b").is_err());
+    }
+
+    #[test]
+    fn only_paths_under_the_mount_are_the_page() {
+        assert_eq!(mounted("", "/"), Mounted::File("/"));
+        assert_eq!(mounted("", "/wasm/x.js"), Mounted::File("/wasm/x.js"));
+        assert_eq!(mounted("/cyberapi", "/cyberapi/"), Mounted::File("/"));
+        assert_eq!(
+            mounted("/cyberapi", "/cyberapi/fonts/a.ttf"),
+            Mounted::File("/fonts/a.ttf")
+        );
+        assert_eq!(mounted("/cyberapi", "/cyberapi"), Mounted::NeedsSlash);
+        assert_eq!(mounted("/cyberapi", "/"), Mounted::Outside);
+        assert_eq!(
+            mounted("/cyberapi", "/cyberapix/"),
+            Mounted::Outside,
+            "a longer name is another"
+        );
+        assert_eq!(mounted("/cyberapi", "/other/cyberapi/"), Mounted::Outside);
+    }
+
+    #[test]
     fn gzip_is_taken_unless_refused() {
         let with = |value: &'static str| {
             let mut headers = HeaderMap::new();
@@ -130,21 +208,21 @@ mod tests {
 
     /// The page from the directory a debug build reads: its type, its tag,
     /// and nothing sent again for a tag the browser has.
-    #[tokio::test]
-    async fn the_page_is_served_and_revalidated() {
-        let page = serve(HeaderMap::new(), Uri::from_static("/")).await;
+    #[test]
+    fn the_page_is_served_and_revalidated() {
+        let page = serve(&HeaderMap::new(), "/");
         assert_eq!(page.status(), StatusCode::OK);
         assert_eq!(page.headers()[header::CONTENT_TYPE], "text/html");
         let etag = page.headers()[header::ETAG].clone();
 
         let mut headers = HeaderMap::new();
         headers.insert(header::IF_NONE_MATCH, etag);
-        let again = serve(headers, Uri::from_static("/index.html")).await;
+        let again = serve(&headers, "/index.html");
         assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
 
-        let missing = serve(HeaderMap::new(), Uri::from_static("/no-such-file")).await;
+        let missing = serve(&HeaderMap::new(), "/no-such-file");
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
-        let climbing = serve(HeaderMap::new(), Uri::from_static("/../Cargo.toml")).await;
+        let climbing = serve(&HeaderMap::new(), "/../Cargo.toml");
         assert_eq!(climbing.status(), StatusCode::NOT_FOUND);
     }
 }

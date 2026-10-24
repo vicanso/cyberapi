@@ -35,6 +35,9 @@
   button:disabled { opacity: .6; cursor: default; }
   .msg { min-height: 1.25rem; margin: 0; color: var(--bad); font-size: .8125rem; }
   .aside { color: var(--muted); font-size: .8125rem; text-align: center; }
+  .check { display: flex; align-items: center; gap: .5rem; font-size: .8125rem; cursor: pointer; }
+  .check input { width: auto; margin: 0; }
+  .check span { display: inline; margin: 0; font-weight: 400; }
 </style>
 </head>
 <body>
@@ -45,6 +48,7 @@
     <h1 data-t="login_title"></h1>
     <label><span data-t="name"></span><input id="login-name" autocomplete="username" required /></label>
     <label><span data-t="password"></span><input id="login-password" type="password" autocomplete="current-password" required /></label>
+    <label class="check"><input id="login-remember" type="checkbox" checked /><span data-t="remember"></span></label>
     <p id="login-msg" class="msg" role="alert"></p>
     <button id="login-go" data-t="sign_in"></button>
   </form>
@@ -58,6 +62,7 @@
     <label><span data-t="name"></span><input id="setup-name" autocomplete="username" required /></label>
     <label><span data-t="display_name"></span><input id="setup-display" autocomplete="name" /></label>
     <label><span data-t="password"></span><input id="setup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <label class="check"><input id="setup-remember" type="checkbox" checked /><span data-t="remember"></span></label>
     <p id="setup-msg" class="msg" role="alert"></p>
     <button id="setup-go" data-t="create_admin"></button>
   </form>
@@ -71,6 +76,7 @@
     <label><span data-t="name"></span><input id="invite-name" autocomplete="username" required /></label>
     <label><span data-t="display_name"></span><input id="invite-display" autocomplete="name" /></label>
     <label><span data-t="password"></span><input id="invite-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <label class="check"><input id="invite-remember" type="checkbox" checked /><span data-t="remember"></span></label>
     <p id="invite-msg" class="msg" role="alert"></p>
     <button id="invite-go" data-t="create_account"></button>
     <a id="invite-skip" class="aside" href="" data-t="have_account"></a>
@@ -112,6 +118,7 @@
       create_account: "Create account",
       name_taken: "That name is taken.",
       have_account: "I have an account",
+      remember: "Keep me signed in for 30 days",
     },
     zh: {
       loading: "正在加载…",
@@ -130,11 +137,12 @@
       failed: "Cyber API 无法启动：{error}",
       invite_title: "创建你的账号",
       invite_from: "{inviter} 邀请你使用 Cyber API。",
-      invite_team: "{inviter} 邀请你加入团队「{team}」。",
+      invite_team: "{inviter} 邀请你加入团队“{team}”。",
       invite_gone: "这个邀请已失效：已被使用、已撤销或已过期。请向对方要一个新的。",
       create_account: "创建账号",
       name_taken: "这个用户名已被占用。",
       have_account: "已有账号，去登录",
+      remember: "保持登录 30 天",
     },
   };
   const lang = (navigator.languages || [navigator.language]).some((l) => /^zh/i.test(l)) ? "zh" : "en";
@@ -171,8 +179,13 @@
                 name: $("setup-name").value.trim(),
                 displayName: $("setup-display").value.trim(),
                 password: $("setup-password").value,
+                remember: $("setup-remember").checked,
               })
-            : await postJson("/v1/login", { name: $("login-name").value.trim(), password: $("login-password").value });
+            : await postJson("/v1/login", {
+                name: $("login-name").value.trim(),
+                password: $("login-password").value,
+                remember: $("login-remember").checked,
+              });
           if (res.ok) return resolve();
           $(msg).textContent =
             res.status === 401
@@ -236,6 +249,7 @@
             name: $("invite-name").value.trim(),
             displayName: $("invite-display").value.trim(),
             password: $("invite-password").value,
+            remember: $("invite-remember").checked,
           });
           if (res.ok) {
             dropInvite();

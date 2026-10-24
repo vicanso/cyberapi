@@ -18,13 +18,22 @@ pub const LOGIN_PATH: &str = "/v1/login";
 pub const LOGOUT_PATH: &str = "/v1/logout";
 
 /// A sign-in.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoginForm {
     pub name: String,
     pub password: String,
     /// Answer the session's token in the body, and set no cookie.
     #[serde(default)]
     pub bearer: bool,
+    /// The page's "keep me signed in": the session lasts its 30 days.
+    /// Off, it ends with the browser, and on the bridge within the day. A
+    /// client that does not say keeps it, as a bearer session always does.
+    #[serde(default = "kept")]
+    pub remember: bool,
+}
+
+fn kept() -> bool {
+    true
 }
 
 /// A bearer sign-in's answer.

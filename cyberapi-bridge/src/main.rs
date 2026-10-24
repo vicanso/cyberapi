@@ -28,6 +28,11 @@ struct Args {
     /// (`cyberapi-web/www` after `make web-bundle`).
     #[arg(long)]
     www: Option<PathBuf>,
+    /// Serve the page and the API under this path, e.g. `/cyberapi`, for a
+    /// reverse proxy that forwards it with the prefix kept. The login
+    /// cookie is kept to it too.
+    #[arg(long, env = "CYBERAPI_BRIDGE_BASE_PATH", default_value = "")]
+    base_path: String,
     /// The token the first administrator is made with. Random, and logged,
     /// when not given; it counts only while the bridge has no account.
     #[arg(long, env = "CYBERAPI_BRIDGE_SETUP_TOKEN", hide_env_values = true)]
@@ -48,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
     let args = Args::parse();
+    let base_path = cyberapi_bridge::normalize_base_path(&args.base_path)?;
 
     let store = SqlStore::connect(&args.store).await?;
     let setup_token = match args.setup_token {
@@ -66,12 +72,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             allowed: args.allow_targets,
         },
     );
-    let bridge = Bridge::new(store, Arc::new(engine), setup_token, !args.insecure_cookie);
+    let bridge = Bridge::new(
+        store,
+        Arc::new(engine),
+        setup_token,
+        !args.insecure_cookie,
+        base_path.clone(),
+    );
     bridge.spawn_housekeeping();
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
+    let at = format!("{base_path}/");
     match &args.www {
-        Some(www) => tracing::info!(listen = %args.listen, www = %www.display(), "cyberapi-bridge serving"),
-        None => tracing::info!(listen = %args.listen, "cyberapi-bridge serving, with the page built in"),
+        Some(www) => tracing::info!(listen = %args.listen, %at, www = %www.display(), "cyberapi-bridge serving"),
+        None => tracing::info!(listen = %args.listen, %at, "cyberapi-bridge serving, with the page built in"),
     }
     // The peer's address, for counting failed sign-ins by where they come
     // from. Behind a proxy that is the proxy's.
