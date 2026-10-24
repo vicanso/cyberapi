@@ -205,8 +205,12 @@ impl AppState {
     }
 
     /// Reads who is signed in again: their teams change as they make,
-    /// leave and are added to them.
+    /// leave and are added to them. The desktop's is its server's, which
+    /// tells this one ([`ServerState::reload_me`]).
     pub fn reload_me(&mut self, cx: &mut Context<Self>) {
+        if let Some(server) = AppStore::global(cx).server().cloned() {
+            return server.update(cx, |server, cx| server.reload_me(cx));
+        }
         let Some(directory) = AppStore::global(cx).directory(cx) else {
             return;
         };

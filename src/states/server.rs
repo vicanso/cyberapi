@@ -249,6 +249,30 @@ impl ServerState {
         .detach();
     }
 
+    /// Reads who is signed in again, staying signed in meanwhile: their
+    /// teams change as they make, leave and are added to them, and a new
+    /// project's team is picked from these. A session the bridge no longer
+    /// knows, or a bridge out of reach, is [`Self::check`]'s to find.
+    pub fn reload_me(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.status, ServerStatus::SignedIn(_)) {
+            return;
+        }
+        let Some(transport) = self.transport() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let answer = cx.background_spawn(async move { session_me(&transport).await }).await;
+            let _ = this.update(cx, |this, cx| {
+                if let (Ok(Some(me)), ServerStatus::SignedIn(_)) = (answer, &this.status) {
+                    this.status = ServerStatus::SignedIn(me);
+                    this.tell_app(cx);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Signs in to the bridge at `address`, in place of any other.
     pub fn sign_in(&mut self, address: &str, name: String, password: String, cx: &mut Context<Self>) {
         if self.signing_in {
@@ -327,6 +351,8 @@ mod tests {
     #[derive(Default)]
     struct Bridge {
         seen: Mutex<Vec<(String, Option<String>)>>,
+        /// The session's teams, as JSON; none while empty.
+        teams: Mutex<String>,
     }
 
     impl HttpEngine for Bridge {
@@ -343,7 +369,11 @@ mod tests {
                     (401, String::new())
                 }
             } else if request.url.ends_with("/v1/store") && bearer.as_deref() == Some("Bearer tok") {
-                let me = r#"{"account":{"id":"a1","name":"alice","displayName":"Alice","admin":false,"disabled":false},"teams":[]}"#;
+                let teams = self.teams.lock().map(|teams| teams.clone()).unwrap_or_default();
+                let teams = if teams.is_empty() { "[]".to_string() } else { teams };
+                let me = format!(
+                    r#"{{"account":{{"id":"a1","name":"alice","displayName":"Alice","admin":false,"disabled":false}},"teams":{teams}}}"#
+                );
                 (200, format!(r#"{{"ok":{me}}}"#))
             } else if request.url.ends_with("/v1/logout") {
                 (204, String::new())
@@ -435,5 +465,31 @@ mod tests {
             seen.iter()
                 .any(|(url, bearer)| url == "https://bridge.test/v1/logout" && bearer.as_deref() == Some("Bearer tok"))
         );
+    }
+
+    /// A team made on the server after signing in is one to pick for a new
+    /// project at once, not after a restart.
+    #[gpui_kit::test]
+    async fn the_teams_are_read_again_without_signing_in_again(cx: &mut TestAppContext) {
+        let bridge = Arc::new(Bridge::default());
+        let server = state(&bridge, cx);
+        server.update(cx, |state, cx| {
+            state.sign_in("https://bridge.test", "alice".into(), "right".into(), cx)
+        });
+        cx.run_until_parked();
+        let teams = |cx: &mut TestAppContext| {
+            server.read_with(cx, |state, _| match state.status() {
+                ServerStatus::SignedIn(me) => me.teams.iter().map(|team| team.name.clone()).collect::<Vec<_>>(),
+                _ => vec!["not signed in".to_string()],
+            })
+        };
+        assert!(teams(cx).is_empty());
+
+        if let Ok(mut kept) = bridge.teams.lock() {
+            *kept = r#"[{"id":"t1","name":"new team","personal":false,"role":"owner"}]"#.into();
+        }
+        server.update(cx, |state, cx| state.reload_me(cx));
+        cx.run_until_parked();
+        assert_eq!(teams(cx), ["new team"]);
     }
 }
