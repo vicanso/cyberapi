@@ -194,6 +194,14 @@ pub struct SentHeader {
     pub from: HeaderSource,
 }
 
+impl SentHeader {
+    /// Masked till shown (#58): what the API signs in with (#66), whatever
+    /// its name, and any header whose name reads like a secret.
+    pub fn secret(&self) -> bool {
+        self.from == HeaderSource::Auth || crate::mcp::secret_name(&self.name)
+    }
+}
+
 /// Where a sent header came from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -392,6 +400,84 @@ impl HttpResponse {
             BodyKind::Json | BodyKind::Text => Some(String::from_utf8_lossy(&self.body).into_owned()),
             BodyKind::Image | BodyKind::Pdf | BodyKind::Binary => None,
         }
+    }
+
+    /// The whole exchange as `curl -v` prints it (#51): the request as it
+    /// went out, each line after `> `, then the answer's status line and
+    /// headers after `< `, then its body as it came. A sent header that
+    /// reads like a secret is masked unless `reveal` (as #58 shows them);
+    /// an entry kept before the sent request was has only the answer.
+    pub fn exchange(&self, reveal: bool) -> String {
+        let mut out = String::new();
+        let version = match self.stats.version.as_str() {
+            "" => "HTTP/1.1",
+            version => version,
+        };
+        if let Some(sent) = &self.sent {
+            let target = url::Url::parse(&sent.url)
+                .map(|url| match url.query() {
+                    Some(query) => format!("{}?{query}", url.path()),
+                    None => url.path().to_string(),
+                })
+                .unwrap_or_else(|_| sent.url.clone());
+            // The answer's version may be older than the request's: a
+            // request goes as HTTP/1.1 unless it went as HTTP/2.
+            let asked = if version.starts_with("HTTP/2") {
+                version
+            } else {
+                "HTTP/1.1"
+            };
+            out += &format!("> {} {target} {asked}\n", sent.method);
+            for header in &sent.headers {
+                let value = if !reveal && header.secret() {
+                    "••••••"
+                } else {
+                    &header.value
+                };
+                out += &format!("> {}: {value}\n", header.name);
+            }
+            out += ">\n";
+            let shown = sent.body.as_ref().map_or(0, String::len) as u64;
+            match &sent.body {
+                Some(body) if !body.is_empty() => {
+                    out += body;
+                    if !body.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    if sent.body_size > shown {
+                        out += &format!("[{} more not kept]\n", format_size(sent.body_size - shown));
+                    }
+                }
+                None if sent.body_size > 0 => {
+                    out += &format!("[{} of data, not text]\n", format_size(sent.body_size));
+                }
+                _ => {}
+            }
+            out.push('\n');
+        }
+        let Some(status) = self.status else {
+            out += &format!("* {}\n", self.error.as_deref().unwrap_or_default());
+            return out;
+        };
+        // A code the table does not name ends the line after the number.
+        let line = format!("< {version} {status} {}", status_text(status));
+        out += line.trim_end();
+        out.push('\n');
+        for (name, value) in &self.headers {
+            out += &format!("< {name}: {value}\n");
+        }
+        out += "<\n";
+        if let Some(size) = self.body_omitted {
+            out += &format!("[{} not kept in the history]\n", format_size(size));
+        } else if let Some(body) = self.raw_body_text() {
+            out += &body;
+        } else if !self.body.is_empty() {
+            out += &format!("[{} of data, not text]\n", format_size(self.body.len() as u64));
+        }
+        if self.truncated {
+            out += &format!("\n[cut at {}]\n", format_size(RESPONSE_LIMIT as u64));
+        }
+        out
     }
 
     /// The body as JSON, for the `get` template function.
@@ -794,6 +880,83 @@ mod tests {
         sent.url = String::new();
         sent.request.uri = "{{HOST}}/v1/users".into();
         assert_eq!(sent.sent_path(), "{{HOST}}/v1/users");
+    }
+
+    /// #51: the request as it went out and the answer as it came, laid out
+    /// as `curl -v` does, secrets masked till shown.
+    #[test]
+    fn the_exchange_reads_as_curl_shows_it() {
+        let header = |name: &str, value: &str, from| SentHeader {
+            name: name.into(),
+            value: value.into(),
+            from,
+        };
+        let mut exchange = response(
+            &[("content-type", "application/json"), ("x-id", "7")],
+            br#"{"ok":true}"#,
+        );
+        exchange.stats.version = "HTTP/2".into();
+        exchange.sent = Some(SentRequest {
+            method: "POST".into(),
+            url: "https://api.test/v1/users?page=2&q=a%20b".into(),
+            headers: vec![
+                header("Content-Type", "application/json", HeaderSource::Body),
+                header("Authorization", "Bearer t0k", HeaderSource::Auth),
+                header("X-Sign", "s1g", HeaderSource::Auth),
+            ],
+            body: Some(r#"{"name":"tree"}"#.into()),
+            body_size: 15,
+        });
+        assert_eq!(
+            exchange.exchange(false),
+            "> POST /v1/users?page=2&q=a%20b HTTP/2\n\
+             > Content-Type: application/json\n\
+             > Authorization: ••••••\n\
+             > X-Sign: ••••••\n\
+             >\n\
+             {\"name\":\"tree\"}\n\
+             \n\
+             < HTTP/2 200 OK\n\
+             < content-type: application/json\n\
+             < x-id: 7\n\
+             <\n\
+             {\"ok\":true}"
+        );
+        assert!(exchange.exchange(true).contains("> Authorization: Bearer t0k\n"));
+        // An HTTP/1.0 server answered a request sent as HTTP/1.1.
+        exchange.stats.version = "HTTP/1.0".into();
+        let text = exchange.exchange(false);
+        assert!(text.starts_with("> POST /v1/users?page=2&q=a%20b HTTP/1.1\n"), "{text}");
+        assert!(text.contains("\n< HTTP/1.0 200 OK\n"), "{text}");
+        exchange.stats.version = "HTTP/2".into();
+
+        // A body cut in the history, one that is not text, an answer not
+        // kept, a status the table does not name.
+        let sent = exchange.sent.as_mut().expect("sent");
+        sent.body_size = 4096 + 15;
+        assert!(
+            exchange
+                .exchange(false)
+                .contains("{\"name\":\"tree\"}\n[4.0 KB more not kept]\n")
+        );
+        let sent = exchange.sent.as_mut().expect("sent");
+        sent.body = None;
+        assert!(exchange.exchange(false).contains(">\n[4.0 KB of data, not text]\n\n<"));
+        exchange.status = Some(599);
+        exchange.body_omitted = Some(3 * 1024 * 1024);
+        let text = exchange.exchange(false);
+        assert!(text.contains("< HTTP/2 599\n"), "{text}");
+        assert!(text.ends_with("<\n[3.0 MB not kept in the history]\n"), "{text}");
+
+        // Kept before the sent request was: the answer alone; and a request
+        // that got none says why.
+        let old = response(&[], b"hi");
+        assert_eq!(old.exchange(false), "< HTTP/1.1 200 OK\n<\nhi");
+        let failed = HttpResponse {
+            error: Some("connection refused".into()),
+            ..Default::default()
+        };
+        assert_eq!(failed.exchange(false), "* connection refused\n");
     }
 
     #[test]

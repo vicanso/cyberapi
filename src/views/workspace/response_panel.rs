@@ -14,8 +14,8 @@ use cyberapi_core::grpc::GrpcStatus;
 use cyberapi_core::media::{self, HEX_LIMIT, ImageType};
 use cyberapi_core::model::{ContentType, HttpMethod};
 use cyberapi_core::response::{
-    BodyKind, DISPLAY_LIMIT, HeaderSource, HttpResponse, RESPONSE_LIMIT, SentRequest, StatusLevel, StreamEnd,
-    TREE_LIMIT, clip_text, format_duration, format_size, status_level, status_text, unwrappable_line,
+    BodyKind, DISPLAY_LIMIT, HeaderSource, HttpResponse, RESPONSE_LIMIT, SentHeader, SentRequest, StatusLevel,
+    StreamEnd, TREE_LIMIT, clip_text, format_duration, format_size, status_level, status_text, unwrappable_line,
 };
 use cyberapi_http::SendError;
 use gpui_kit::component::alert::Alert;
@@ -50,6 +50,8 @@ enum ResponseTab {
     Headers,
     Cookies,
     Info,
+    /// The whole exchange as `curl -v` prints it (#51).
+    Wire,
 }
 
 /// A history entry as the menu lists it.
@@ -67,14 +69,20 @@ struct HistoryRow {
 /// The scales an image steps through, of its own size (F7.4).
 const ZOOMS: [f32; 10] = [0.1, 0.25, 0.5, 0.75, 1., 1.5, 2., 3., 4., 8.];
 
-const TABS: [ResponseTab; 4] = [
+const TABS: [ResponseTab; 5] = [
     ResponseTab::Body,
     ResponseTab::Headers,
     ResponseTab::Cookies,
     ResponseTab::Info,
+    ResponseTab::Wire,
 ];
 /// A gRPC call's: no cookies, metadata for headers (#73).
-const GRPC_TABS: [ResponseTab; 3] = [ResponseTab::Body, ResponseTab::Headers, ResponseTab::Info];
+const GRPC_TABS: [ResponseTab; 4] = [
+    ResponseTab::Body,
+    ResponseTab::Headers,
+    ResponseTab::Info,
+    ResponseTab::Wire,
+];
 
 fn tabs_of(response: &HttpResponse) -> &'static [ResponseTab] {
     if response.request.method == HttpMethod::Grpc {
@@ -117,6 +125,12 @@ pub struct ResponsePanel {
     shown_filter: Option<String>,
     /// The body as text, read only, for selecting and searching.
     body: Entity<EditorState>,
+    /// #51: the whole exchange as text, read only.
+    wire: Entity<EditorState>,
+    /// The response the wire editor holds, and whether its secrets showed.
+    wire_of: Option<(String, bool)>,
+    /// The wire editor holds only the exchange's start.
+    wire_clipped: bool,
     /// Which response the body editor holds.
     shown: Option<String>,
     /// The editor holds that response's JSON indented (the pretty view), not
@@ -182,6 +196,13 @@ impl ResponsePanel {
                 .soft_wrap(wrap)
                 .searchable(true)
         });
+        let wire = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("text")
+                .line_number(false)
+                .soft_wrap(wrap)
+                .searchable(true)
+        });
         let subscriptions = vec![
             cx.observe_in(&api, window, |this, _, window, cx| this.sync(window, cx)),
             cx.subscribe_in(&filter, window, |this, filter, event, window, cx| {
@@ -199,6 +220,8 @@ impl ResponsePanel {
                     this.wrap = wrap;
                     let wraps = wrap && this.long_line.is_none() && !this.hex;
                     this.body.update(cx, |body, cx| body.set_soft_wrap(wraps, window, cx));
+                    // Set again, wrapped as it now says.
+                    this.wire_of = None;
                 }
                 // A new default view may want the body in the other form.
                 this.sync(window, cx);
@@ -221,6 +244,9 @@ impl ResponsePanel {
             _finding: None,
             shown_filter: None,
             body,
+            wire,
+            wire_of: None,
+            wire_clipped: false,
             shown: None,
             shown_pretty: false,
             clipped: None,
@@ -710,6 +736,7 @@ impl ResponsePanel {
             }
             ResponseTab::Cookies => format!("{} ({})", t!("response.cookies"), response.cookies().len()),
             ResponseTab::Info => t!("response.info").to_string(),
+            ResponseTab::Wire => t!("response.wire").to_string(),
         };
         let tabs = tabs_of(response);
         let shown = self.tab_for(response);
@@ -855,6 +882,40 @@ impl ResponsePanel {
                                 .tooltip(t!("response.save_body").to_string())
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.api.update(cx, |api, cx| api.save_body(cx));
+                                })),
+                        ),
+                )
+            })
+            .when(shown == ResponseTab::Wire, |bar| {
+                // #58's switch: the sent headers that read like secrets.
+                let secrets = response
+                    .sent
+                    .as_ref()
+                    .is_some_and(|sent| sent.headers.iter().any(SentHeader::secret));
+                bar.suffix(
+                    h_flex()
+                        .gap_0p5()
+                        .items_center()
+                        .when(secrets, |this| {
+                            this.child(self.reveal_button("response-wire-reveal", cx))
+                        })
+                        .child(
+                            Button::new("response-copy-wire")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .tooltip(t!("response.copy_wire").to_string())
+                                // Whole, and masked as it is shown.
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    let reveal = this.reveal;
+                                    let text = this
+                                        .api
+                                        .read(cx)
+                                        .shown_response()
+                                        .map(|response| response.exchange(reveal));
+                                    if let Some(text) = text {
+                                        copy(text, window, cx);
+                                    }
                                 })),
                         ),
                 )
@@ -1423,15 +1484,73 @@ impl ResponsePanel {
             .into_any_element()
     }
 
+    /// #58: shows or masks the sent headers that read like secrets, in
+    /// Details and on the wire alike.
+    fn reveal_button(&self, id: &'static str, cx: &mut Context<Self>) -> Button {
+        let (icon, label) = if self.reveal {
+            (IconName::EyeOff, t!("response.hide_secrets"))
+        } else {
+            (IconName::Eye, t!("response.show_secrets"))
+        };
+        Button::new(id)
+            .ghost()
+            .xsmall()
+            .icon(icon)
+            .label(label.to_string())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.reveal = !this.reveal;
+                cx.notify();
+            }))
+    }
+
+    /// #51: the wire editor holds `response`'s exchange, its secrets as
+    /// the switch says; set once for each.
+    fn sync_wire(&mut self, response: &HttpResponse, window: &mut Window, cx: &mut Context<Self>) {
+        let key = (response.id.clone(), self.reveal);
+        if self.wire_of.as_ref() == Some(&key) {
+            return;
+        }
+        self.wire_of = Some(key);
+        // As the body: its start, and no wrapping a line too long to.
+        let (text, clipped) = clip_text(response.exchange(self.reveal), DISPLAY_LIMIT);
+        self.wire_clipped = clipped;
+        let wraps = self.wrap && unwrappable_line(&text).is_none();
+        self.wire.update(cx, |editor, cx| {
+            editor.set_soft_wrap(wraps, window, cx);
+            editor.set_value(text, window, cx);
+        });
+    }
+
+    /// #51: the request as it went out and the answer as it came, as
+    /// `curl -v` prints them.
+    fn render_wire(&self, response: &HttpResponse, cx: &mut Context<Self>) -> AnyElement {
+        // Kept before the sent request was (#58): the answer alone.
+        let unsent = response
+            .sent
+            .is_none()
+            .then(|| note(t!("response.wire_unsent").to_string(), Vec::new(), cx));
+        let clipped = self.wire_clipped.then(|| {
+            let size = format_size(DISPLAY_LIMIT as u64);
+            note(t!("response.wire_clipped", size = size).to_string(), Vec::new(), cx)
+        });
+        v_flex()
+            .size_full()
+            .children(unsent)
+            .children(clipped)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(Editor::new(&self.wire).w_full().h_full().readonly(true).bordered(false)),
+            )
+            .into_any_element()
+    }
+
     /// #58: the request as it went out — every header, said where it came
     /// from, and the body — what reads like a secret masked till shown.
     fn render_sent(&self, sent: &SentRequest, cx: &mut Context<Self>) -> AnyElement {
         let reveal = self.reveal;
-        // What reads like a secret, and what the API signs in with (#66),
-        // whatever its key is called.
-        let secret = |header: &cyberapi_core::response::SentHeader| {
-            header.from == HeaderSource::Auth || cyberapi_core::mcp::secret_name(&header.name)
-        };
+        let secret = SentHeader::secret;
         let secrets = sent.headers.iter().any(secret);
         let rows: Vec<(String, String, String)> = sent
             .headers
@@ -1484,22 +1603,7 @@ impl ResponsePanel {
                             .child(t!("response.sent_title").to_string()),
                     )
                     .when(secrets, |this| {
-                        let (icon, label) = if reveal {
-                            (IconName::EyeOff, t!("response.hide_secrets"))
-                        } else {
-                            (IconName::Eye, t!("response.show_secrets"))
-                        };
-                        this.child(
-                            Button::new("response-sent-reveal")
-                                .ghost()
-                                .xsmall()
-                                .icon(icon)
-                                .label(label.to_string())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.reveal = !this.reveal;
-                                    cx.notify();
-                                })),
-                        )
+                        this.child(self.reveal_button("response-sent-reveal", cx))
                     }),
             )
             .child(sent_rows(rows, cx))
@@ -1815,6 +1919,11 @@ impl Render for ResponsePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let response = self.api.read(cx).shown_response().cloned();
         let sending = self.api.read(cx).sending_since().is_some();
+        if let Some(response) = &response
+            && self.tab_for(response) == ResponseTab::Wire
+        {
+            self.sync_wire(response, window, cx);
+        }
         let summary = self.render_summary(response.as_deref(), cx);
         let live = self.api.read(cx).live().is_some();
         let content: AnyElement = match &response {
@@ -1840,6 +1949,7 @@ impl Render for ResponsePanel {
                         cx,
                     ),
                     ResponseTab::Info => self.render_info(response, cx),
+                    ResponseTab::Wire => self.render_wire(response, cx),
                 };
                 v_flex()
                     .flex_1()
