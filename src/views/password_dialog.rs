@@ -35,7 +35,7 @@ pub fn open_password_dialog(window: &mut Window, cx: &mut App) {
         dialog
             .title(t!("password.title").to_string())
             .w(px(420.))
-            .child(form.clone())
+            .child(crate::views::dialog_body(form.clone()))
             .footer(
                 DialogFooter::new()
                     .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))

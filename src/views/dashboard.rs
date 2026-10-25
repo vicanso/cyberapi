@@ -252,7 +252,7 @@ impl DashboardView {
             dialog
                 .title(title.clone())
                 .w(px(440.))
-                .child(
+                .child(crate::views::dialog_body(
                     v_flex()
                         .gap_4()
                         .child(field(
@@ -270,7 +270,7 @@ impl DashboardView {
                         .when_some(creating.then(|| team_field(&team, cx)).flatten(), |this, field| {
                             this.child(field)
                         }),
-                )
+                ))
                 .footer(
                     DialogFooter::new()
                         .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))

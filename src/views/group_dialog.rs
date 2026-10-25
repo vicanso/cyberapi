@@ -51,7 +51,7 @@ pub fn open_group_dialog(
         dialog
             .title(title.clone())
             .w(px(420.))
-            .child(
+            .child(crate::views::dialog_body(
                 v_flex()
                     .gap_3()
                     .child(Input::new(&input))
@@ -68,7 +68,7 @@ pub fn open_group_dialog(
                                 .child(h_flex().flex_wrap().gap_1p5().children(picks)),
                         )
                     }),
-            )
+            ))
             .footer(
                 DialogFooter::new()
                     .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))

@@ -58,7 +58,7 @@ use cyberapi_core::format::JSON_INDENT;
 use gpui_kit::component::input::TabSize;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme as _, ColorName, Icon, Sizable as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, ColorName, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _,
@@ -79,6 +79,13 @@ fn json_tab() -> TabSize {
 /// theme and dark on yellow in the dark one, hard to read in both.
 fn unsynced_tag() -> Tag {
     Tag::color(ColorName::Amber).small().rounded_full()
+}
+
+/// A dialog's body, with room above and below it: the dialog clips its
+/// body at the body's edges, and a field there lost the bottom of the ring
+/// it draws when focused (gpui-component 0.8).
+fn dialog_body(body: impl gpui_kit::IntoElement) -> gpui_kit::Div {
+    v_flex().py_1().child(body)
 }
 
 /// Where a server project's sync button is, while its server cannot be

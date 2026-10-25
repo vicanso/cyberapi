@@ -70,7 +70,7 @@ pub fn open_name_dialog(
         dialog
             .title(title.clone())
             .w(px(420.))
-            .child(
+            .child(crate::views::dialog_body(
                 v_flex()
                     .gap_1p5()
                     .child(div().text_sm().font_medium().child(t!("common.name").to_string()))
@@ -83,7 +83,7 @@ pub fn open_name_dialog(
                                 .child(t!("errors.name_required").to_string()),
                         )
                     }),
-            )
+            ))
             .footer(
                 DialogFooter::new()
                     .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))

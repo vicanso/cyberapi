@@ -31,7 +31,7 @@ pub fn open_accounts_dialog(window: &mut Window, cx: &mut App) {
         dialog
             .title(t!("accounts.title").to_string())
             .w(px(860.))
-            .child(editor.clone())
+            .child(crate::views::dialog_body(editor.clone()))
             // Enter is a field's own, not the dialog's to close on.
             .on_ok(|_, _, _| false)
     });

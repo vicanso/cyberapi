@@ -50,7 +50,10 @@ pub fn open_variables_dialog(
     let editor = cx.new(|cx| VariablesEditor::new(state, editable, window, cx));
     let (title, _) = describe(category);
     window.open_dialog(cx, move |dialog, _, _| {
-        dialog.title(title.clone()).w(px(680.)).child(editor.clone())
+        dialog
+            .title(title.clone())
+            .w(px(680.))
+            .child(crate::views::dialog_body(editor.clone()))
     });
 }
 

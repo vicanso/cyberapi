@@ -126,7 +126,7 @@ pub fn open_move_dialog(
         dialog
             .title(t!("workspace.move_title", name = name).to_string())
             .w(px(520.))
-            .child(
+            .child(crate::views::dialog_body(
                 v_flex()
                     .gap_2()
                     .child(Input::new(&search).prefix(Icon::new(IconName::Search).text_color(muted)))
@@ -146,7 +146,7 @@ pub fn open_move_dialog(
                                 )
                             }),
                     ),
-            )
+            ))
             // Picking is the answer: there is no button to confirm.
             .on_ok(|_, _, _| false)
     });

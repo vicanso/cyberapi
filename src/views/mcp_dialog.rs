@@ -38,7 +38,7 @@ pub fn open_mcp_dialog(window: &mut Window, cx: &mut App) {
         dialog
             .title(t!("mcp.title").to_string())
             .w(px(600.))
-            .child(view.clone())
+            .child(crate::views::dialog_body(view.clone()))
             .footer(
                 DialogFooter::new()
                     .child(DialogClose::new().trigger(|button| button.label(t!("common.close").to_string()))),

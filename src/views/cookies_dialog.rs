@@ -53,7 +53,7 @@ pub fn open_cookies_dialog(window: &mut Window, cx: &mut App) {
         dialog
             .title(t!("cookies.title").to_string())
             .w(px(860.))
-            .child(editor.clone())
+            .child(crate::views::dialog_body(editor.clone()))
     });
 }
 

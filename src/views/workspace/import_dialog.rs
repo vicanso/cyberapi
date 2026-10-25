@@ -188,7 +188,7 @@ pub fn open_import_dialog(
         dialog
             .title(t!("import.dialog_title").to_string())
             .w(px(720.))
-            .child(
+            .child(crate::views::dialog_body(
                 v_flex()
                     .gap_2()
                     .child(div().text_sm().text_color(muted).child(t!("import.hint").to_string()))
@@ -229,7 +229,7 @@ pub fn open_import_dialog(
                     .when_some(error.borrow().clone(), |this, message| {
                         this.child(div().text_sm().text_color(danger).child(message))
                     }),
-            )
+            ))
             .footer(
                 DialogFooter::new()
                     .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))
