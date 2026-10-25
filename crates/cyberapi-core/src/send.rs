@@ -439,6 +439,11 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
                 format!("multipart/form-data; boundary={}", cx.boundary)
             }
             ContentType::GraphQl => {
+                // A subscription is answered as an event stream by the
+                // servers that answer it over HTTP (graphql-sse asks for it).
+                if graphql.as_ref().is_some_and(GraphQlBody::is_subscription) {
+                    headers.set_default("Accept", crate::sse::CONTENT_TYPE);
+                }
                 let payload = graphql
                     .as_ref()
                     .map(GraphQlBody::payload)
@@ -779,6 +784,26 @@ mod tests {
             "templates run, comments go"
         );
         assert_eq!(prepared.header("content-type"), Some("application/json"));
+        assert_eq!(prepared.header("accept"), None, "a query is answered with JSON");
+
+        // A subscription asks for an event stream, unless the request
+        // asks for something else.
+        let subscription = HttpRequest {
+            body: crate::graphql::GraphQlBody {
+                query: "subscription { tick }".into(),
+                ..Default::default()
+            }
+            .to_body(),
+            ..request.clone()
+        };
+        let prepared = prepare_with(&subscription, &[]).expect("prepare");
+        assert_eq!(prepared.header("accept"), Some("text/event-stream"));
+        let own = HttpRequest {
+            headers: vec![kv("Accept", "multipart/mixed")],
+            ..subscription
+        };
+        let prepared = prepare_with(&own, &[]).expect("prepare");
+        assert_eq!(prepared.header("accept"), Some("multipart/mixed"));
 
         request.method = HttpMethod::Get;
         let prepared = prepare_with(&request, &[]).expect("prepare");

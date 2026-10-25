@@ -82,6 +82,62 @@ impl GraphQlBody {
         Ok(Value::Object(fields))
     }
 
+    /// Whether the operation it runs is a subscription: the one named
+    /// `operation_name`, or the document's first. A scan of the top level
+    /// of the query, its comments and strings skipped.
+    pub fn is_subscription(&self) -> bool {
+        let wanted = self.operation_name.trim();
+        let mut depth = 0usize;
+        let mut chars = self.query.chars().peekable();
+        let mut words: Vec<String> = Vec::new();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '#' => while chars.next_if(|ch| *ch != '\n').is_some() {},
+                '"' => {
+                    while let Some(ch) = chars.next() {
+                        match ch {
+                            '\\' => {
+                                chars.next();
+                            }
+                            '"' => break,
+                            _ => {}
+                        }
+                    }
+                }
+                '{' | '(' => {
+                    // An operation's keyword and name are the words at the
+                    // top level just before its selection or variables.
+                    if depth == 0 {
+                        let (keyword, name) = match words.as_slice() {
+                            [.., keyword, name] if is_operation(keyword) => (keyword.as_str(), name.as_str()),
+                            [.., keyword] if is_operation(keyword) => (keyword.as_str(), ""),
+                            // A bare selection set is a query.
+                            [] => ("query", ""),
+                            _ => ("", ""),
+                        };
+                        if !keyword.is_empty() && (wanted.is_empty() || name == wanted) {
+                            return keyword == "subscription";
+                        }
+                    }
+                    words.clear();
+                    depth += 1;
+                }
+                '}' | ')' => depth = depth.saturating_sub(1),
+                ch if ch.is_alphanumeric() || ch == '_' => {
+                    let mut word = String::from(ch);
+                    while let Some(ch) = chars.next_if(|ch| ch.is_alphanumeric() || *ch == '_') {
+                        word.push(ch);
+                    }
+                    if depth == 0 {
+                        words.push(word);
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// A GET's query parameters: `query`, and `variables` (compact JSON) and
     /// `operationName` when given.
     pub fn query_params(&self) -> Result<Vec<(String, String)>, String> {
@@ -94,6 +150,10 @@ impl GraphQlBody {
         }
         Ok(params)
     }
+}
+
+fn is_operation(word: &str) -> bool {
+    matches!(word, "query" | "mutation" | "subscription")
 }
 
 /// What a GraphQL response says went wrong: each of its `errors`' message,
@@ -191,6 +251,23 @@ mod tests {
             ..Default::default()
         };
         assert!(broken.payload().is_err());
+    }
+
+    #[test]
+    fn a_subscription_is_told_from_the_operation_sent() {
+        let body = |query: &str, operation: &str| GraphQlBody {
+            query: query.into(),
+            operation_name: operation.into(),
+            ..Default::default()
+        };
+        assert!(body("subscription { tick }", "").is_subscription());
+        assert!(body("# a note { \nsubscription OnTick($n: Int) { tick(n: $n) }", "").is_subscription());
+        assert!(!body("{ me }", "").is_subscription());
+        assert!(!body("query Q { a(s: \"subscription {\") }", "").is_subscription());
+        let both = "query Q { a } subscription S { b }";
+        assert!(!body(both, "").is_subscription(), "the first runs");
+        assert!(body(both, "S").is_subscription());
+        assert!(!body("fragment F on T { a } query { ...F }", "").is_subscription());
     }
 
     #[test]
