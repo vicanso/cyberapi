@@ -6,6 +6,7 @@
 //! `{{name}}` is this app's prefix syntax already.
 
 use super::{ImportBundle, ImportItem, api, content_type_of, guess_content_type, kv};
+use crate::auth::Auth;
 use crate::graphql::GraphQlBody;
 use crate::model::{ContentType, KvParam};
 use serde_json::Value;
@@ -49,7 +50,10 @@ fn item(value: &Value) -> Option<ImportItem> {
     // A request may be just its URL.
     if let Some(url) = request.as_str() {
         let (name, request) = api(name, "GET", url);
-        return Some(ImportItem::Api { name, request });
+        return Some(ImportItem::Api {
+            name,
+            request: Box::new(request),
+        });
     }
     let url = match request.get("url") {
         Some(Value::String(url)) => url.clone(),
@@ -141,9 +145,15 @@ fn item(value: &Value) -> Option<ImportItem> {
                 .map(|pair| pair.value.clone())
                 .unwrap_or_default()
         };
-        built.auth = vec![kv(&find("username"), &find("password"), true)];
+        built.auth = Auth::Basic {
+            username: find("username"),
+            password: find("password"),
+        };
     }
-    Some(ImportItem::Api { name, request: built })
+    Some(ImportItem::Api {
+        name,
+        request: Box::new(built),
+    })
 }
 
 pub(super) fn parse(json: &Value) -> ImportBundle {
@@ -211,16 +221,19 @@ mod tests {
             children[0],
             ImportItem::Api {
                 name: "login".into(),
-                request: HttpRequest {
+                request: Box::new(HttpRequest {
                     method: HttpMethod::Post,
                     uri: "{{host}}/login".into(),
                     content_type: ContentType::Json,
                     body: "{\"a\":1}".into(),
                     query: vec![kv("debug", "1", false)],
                     headers: vec![kv("X-Off", "1", false)],
-                    auth: vec![kv("u", "p", true)],
+                    auth: Auth::Basic {
+                        username: "u".into(),
+                        password: "p".into()
+                    },
                     ..Default::default()
-                },
+                }),
             }
         );
         let ImportItem::Api { request, .. } = &bundle.items[1] else {

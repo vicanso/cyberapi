@@ -22,6 +22,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use cyberapi_core::access::CollectionRole;
+use cyberapi_core::auth::{Auth, KeyPlace};
 use cyberapi_core::directory::McpToken;
 use cyberapi_core::graphql::GraphQlBody;
 use cyberapi_core::grpc::GrpcBody;
@@ -419,13 +420,32 @@ fn params_json(params: &[KvParam]) -> Json {
     )
 }
 
+/// How an API signs in (#66), its secrets masked; null when it does not
+/// itself — inheriting signs in with nothing until folders and projects
+/// can have one.
+fn auth_json(auth: &Auth) -> Json {
+    match auth {
+        Auth::Inherit | Auth::None => Json::Null,
+        Auth::Basic { username, password } => {
+            json!({ "type": "basic", "username": username, "password": masked("password", password) })
+        }
+        Auth::Bearer { token } => json!({ "type": "bearer", "token": masked("token", token) }),
+        Auth::ApiKey { name, value, place } => json!({
+            "type": "apiKey",
+            "name": name,
+            "in": match place {
+                KeyPlace::Header => "header",
+                KeyPlace::Query => "query",
+            },
+            "value": masked("token", value),
+        }),
+    }
+}
+
 async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
     let (_, api, path) = api(storage, arguments).await?;
     let request = &api.request;
-    let auth =
-        request.auth.iter().find(|entry| entry.enabled).map(
-            |entry| json!({ "type": "basic", "username": entry.key, "password": masked("password", &entry.value) }),
-        );
+    let auth = auth_json(&request.auth);
     let body = match request.content_type {
         // A gRPC call: its method and message; its definitions (base64
         // descriptors) say nothing an assistant reads.

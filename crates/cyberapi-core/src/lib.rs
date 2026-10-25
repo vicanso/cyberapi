@@ -4,6 +4,7 @@
 //! browser and on the bridge, and it is tested without any of them.
 
 pub mod access;
+pub mod auth;
 pub mod backup;
 pub mod code;
 pub mod collection;

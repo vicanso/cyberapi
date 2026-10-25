@@ -7,6 +7,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use cyberapi_bridge::Bridge;
+use cyberapi_core::auth::Auth;
 use cyberapi_core::model::HttpMethod;
 use cyberapi_core::prefs::Timeouts;
 use cyberapi_core::version::MODEL;
@@ -779,6 +780,10 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
                 uri: "{{HOST}}/ping".into(),
                 headers: vec![param("Authorization", "Bearer s3cret"), param("X-Token", "{{TOKEN}}")],
                 body: r#"{"user":"ann","password":"hunter2"}"#.into(),
+                auth: Auth::Basic {
+                    username: "ann".into(),
+                    password: "hunter2".into(),
+                },
                 ..Default::default()
             },
         )
@@ -872,6 +877,10 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     .await;
     assert_eq!(got["headers"][0]["value"], json!("***"));
     assert_eq!(got["headers"][1]["value"], json!("{{TOKEN}}"));
+    assert_eq!(
+        got["auth"],
+        json!({"type": "basic", "username": "ann", "password": "***"})
+    );
     assert!(
         got["body"]
             .as_str()

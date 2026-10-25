@@ -21,7 +21,9 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 /// which they have (0.2.1 and before) have the first.
 ///
 /// 2: an API's own sending settings (#71, `HttpRequest.settings`).
-pub const MODEL: u32 = 2;
+/// 3: an API signs in as one of several kinds (#66, `HttpRequest.auth`,
+///    kept as `authentication`; the old Basic list is read, not written).
+pub const MODEL: u32 = 3;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

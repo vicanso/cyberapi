@@ -24,6 +24,7 @@
 
 use super::{Load, WorkspaceState, run_store};
 use crate::this_build;
+use cyberapi_core::auth::Auth;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody, ReplyReader};
@@ -426,8 +427,8 @@ impl ApiState {
         }
     }
 
-    pub fn set_auth(&mut self, auth: Vec<KvParam>, cx: &mut Context<Self>) {
-        let auth = kept(auth);
+    /// #66: how the API signs in.
+    pub fn set_auth(&mut self, auth: Auth, cx: &mut Context<Self>) {
         if self.request.auth != auth {
             self.request.auth = auth;
             self.save_later(cx);

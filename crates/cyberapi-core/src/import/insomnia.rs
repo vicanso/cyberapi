@@ -5,6 +5,7 @@
 //! variable as `{{ _.name }}`; it comes in as this app's `{{name}}`.
 
 use super::{ImportBundle, ImportItem, api, content_type_of, guess_content_type, kv};
+use crate::auth::Auth;
 use crate::graphql::GraphQlBody;
 use crate::model::{ContentType, KvParam};
 use serde_json::Value;
@@ -96,9 +97,15 @@ fn request(resource: &Value) -> ImportItem {
     if let Some(auth) = resource.get("authentication")
         && text(auth, "type") == "basic"
     {
-        built.auth = vec![kv(text(auth, "username"), text(auth, "password"), true)];
+        built.auth = Auth::Basic {
+            username: text(auth, "username").into(),
+            password: text(auth, "password").into(),
+        };
     }
-    ImportItem::Api { name, request: built }
+    ImportItem::Api {
+        name,
+        request: Box::new(built),
+    }
 }
 
 fn children(resources: &[Value], parent: &str) -> Vec<ImportItem> {
@@ -204,7 +211,13 @@ mod tests {
         assert_eq!(request.content_type, ContentType::Json);
         assert_eq!(request.query, [kv("v", "1", true)]);
         assert_eq!(request.headers, [kv("X-A", "a", false)]);
-        assert_eq!(request.auth, [kv("u", "p", true)]);
+        assert_eq!(
+            request.auth,
+            Auth::Basic {
+                username: "u".into(),
+                password: "p".into()
+            }
+        );
         assert!(matches!(&bundle.items[1], ImportItem::Api { name, .. } if name == "health"));
         let ImportItem::Api { request, .. } = &bundle.items[2] else {
             panic!("an API");

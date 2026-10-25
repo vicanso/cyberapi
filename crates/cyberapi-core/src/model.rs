@@ -8,6 +8,7 @@
 //! the bottom convert the columns that need it; each store maps the rest.
 
 use crate::access::CollectionRole;
+use crate::auth::Auth;
 use crate::prefs::RequestSettings;
 use crate::{CollectionId, ItemId, TeamId, Timestamp, VariableId};
 use serde::{Deserialize, Serialize};
@@ -75,9 +76,10 @@ pub struct ApiSetting {
 }
 
 /// The request an API saves (4.3). Every field may be missing from what the
-/// old app wrote — it saved only what had been touched — so each defaults.
+/// old app wrote — it saved only what had been touched — so each defaults;
+/// it is read as [`StoredRequest`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(from = "StoredRequest", rename_all = "camelCase")]
 pub struct HttpRequest {
     pub method: HttpMethod,
     /// May start with an environment variable: `{{HOST}}/users/v1/me`.
@@ -88,8 +90,9 @@ pub struct HttpRequest {
     pub body: String,
     pub query: Vec<KvParam>,
     pub headers: Vec<KvParam>,
-    /// Only the first enabled entry is used, as Basic auth (F4.9).
-    pub auth: Vec<KvParam>,
+    /// How it signs in (#66), kept as `authentication`.
+    #[serde(rename = "authentication", skip_serializing_if = "Auth::is_inherit")]
+    pub auth: Auth,
     /// What this API overrides of the settings' sending (#71).
     #[serde(skip_serializing_if = "RequestSettings::is_empty")]
     pub settings: RequestSettings,
@@ -98,6 +101,47 @@ pub struct HttpRequest {
     /// request saved here keeps it.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What a request is read from: what [`HttpRequest`] writes, and the auth
+/// list the old app and the versions before #66 kept, whose first enabled
+/// entry was Basic's (`docs/batch4-design.md` §4).
+#[derive(Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct StoredRequest {
+    method: HttpMethod,
+    uri: String,
+    content_type: ContentType,
+    body: String,
+    query: Vec<KvParam>,
+    headers: Vec<KvParam>,
+    auth: Vec<KvParam>,
+    /// Read apart: one this version cannot read is no auth of its own, not
+    /// a request lost.
+    authentication: Option<serde_json::Value>,
+    settings: RequestSettings,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl From<StoredRequest> for HttpRequest {
+    fn from(stored: StoredRequest) -> Self {
+        let auth = match stored.authentication {
+            Some(written) => serde_json::from_value(written).unwrap_or_default(),
+            None => Auth::from_legacy(&stored.auth),
+        };
+        Self {
+            method: stored.method,
+            uri: stored.uri,
+            content_type: stored.content_type,
+            body: stored.body,
+            query: stored.query,
+            headers: stored.headers,
+            auth,
+            settings: stored.settings,
+            extra: stored.extra,
+        }
+    }
 }
 
 impl HttpRequest {
@@ -482,21 +526,49 @@ mod tests {
     /// request goes back as it came; what this one reads is not kept twice.
     #[test]
     fn a_newer_versions_fields_are_kept() {
-        let text = r#"{"method":"PUT","uri":"/a","later":{"followRedirects":true},"authentication":{"kind":"bearer","token":"t"}}"#;
+        let text = r#"{"method":"PUT","uri":"/a","later":{"followRedirects":true},"laterToo":{"kind":"t"}}"#;
         let request = HttpRequest::from_json_lenient(text);
         assert_eq!(request.method, HttpMethod::Put);
         assert_eq!(request.uri, "/a");
         assert_eq!(
             request.extra.keys().collect::<Vec<_>>(),
-            ["later", "authentication"],
+            ["later", "laterToo"],
             "only what this version does not read, in the order written"
         );
         let written: serde_json::Value = serde_json::from_str(&request.to_json()).expect("JSON");
         assert_eq!(written["later"], serde_json::json!({"followRedirects": true}));
-        assert_eq!(written["authentication"]["token"], "t");
+        assert_eq!(written["laterToo"]["kind"], "t");
         assert_eq!(HttpRequest::from_json_lenient(&request.to_json()), request);
         assert!(HttpRequest::default().extra.is_empty());
         assert!(!HttpRequest::default().to_json().contains("extra"));
+    }
+
+    /// #66: the auth list of before reads as Basic and is written as the
+    /// kind it is; what `authentication` says comes first.
+    #[test]
+    fn the_old_auth_list_reads_as_basic_and_is_not_written_again() {
+        let old = r#"{"uri":"/a","auth":[{"key":"me","value":"pw","enabled":true}]}"#;
+        let request = HttpRequest::from_json_lenient(old);
+        let basic = Auth::Basic {
+            username: "me".into(),
+            password: "pw".into(),
+        };
+        assert_eq!(request.auth, basic);
+        let written: serde_json::Value = serde_json::from_str(&request.to_json()).expect("JSON");
+        assert_eq!(written.get("auth"), None, "the list is not written");
+        assert_eq!(
+            written["authentication"],
+            serde_json::json!({"kind": "basic", "username": "me", "password": "pw"})
+        );
+        assert_eq!(HttpRequest::from_json_lenient(&request.to_json()), request);
+
+        let both = r#"{"auth":[{"key":"me","value":"pw","enabled":true}],"authentication":{"kind":"none"}}"#;
+        assert_eq!(HttpRequest::from_json_lenient(both).auth, Auth::None);
+        // A kind this version does not know: no auth of its own, the
+        // request still read.
+        let unknown = HttpRequest::from_json_lenient(r#"{"uri":"/b","authentication":{"kind":"later"}}"#);
+        assert_eq!((unknown.uri.as_str(), unknown.auth), ("/b", Auth::Inherit));
+        assert!(!HttpRequest::default().to_json().contains("authentication"));
     }
 
     #[test]

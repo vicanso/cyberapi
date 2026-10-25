@@ -8,6 +8,7 @@
 //! are bodies; `-F` makes a multipart body; `-G` puts the data in the query.
 
 use super::{ImportBundle, ImportError, ImportItem, NoUrlSnafu, content_type_of, guess_content_type, kv, split_url};
+use crate::auth::Auth;
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam};
 
 /// The words of a shell command: quotes, backslash escapes and line
@@ -99,7 +100,7 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     let mut headers: Vec<KvParam> = Vec::new();
     let mut data: Vec<String> = Vec::new();
     let mut form: Vec<KvParam> = Vec::new();
-    let mut auth: Vec<KvParam> = Vec::new();
+    let mut auth = Auth::Inherit;
     let mut head = false;
     let mut get = false;
     let mut index = 1;
@@ -143,7 +144,10 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
             "-u" | "--user" => {
                 if let Some(user) = value() {
                     let (name, password) = user.split_once(':').unwrap_or((&user, ""));
-                    auth.push(kv(name, password, true));
+                    auth = Auth::Basic {
+                        username: name.to_string(),
+                        password: password.to_string(),
+                    };
                 }
             }
             "-A" | "--user-agent" => {
@@ -228,7 +232,7 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     Ok(ImportBundle {
         items: vec![ImportItem::Api {
             name,
-            request: HttpRequest {
+            request: Box::new(HttpRequest {
                 method,
                 uri,
                 content_type,
@@ -237,7 +241,7 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
                 headers,
                 auth,
                 ..Default::default()
-            },
+            }),
         }],
         ..Default::default()
     })
@@ -250,7 +254,7 @@ mod tests {
 
     fn request(text: &str) -> HttpRequest {
         match parse(text).expect("a command").items.remove(0) {
-            ImportItem::Api { request, .. } => request,
+            ImportItem::Api { request, .. } => *request,
             other => panic!("not an API: {other:?}"),
         }
     }
@@ -297,7 +301,13 @@ mod tests {
             serde_json::from_str::<Vec<KvParam>>(&form.body).expect("fields"),
             [kv("a", "1", true), kv("b", "x y", true)]
         );
-        assert_eq!(form.auth, [kv("me", "secret", true)]);
+        assert_eq!(
+            form.auth,
+            Auth::Basic {
+                username: "me".into(),
+                password: "secret".into()
+            }
+        );
         assert_eq!(form.headers, [kv("User-Agent", "agent/1", true)]);
 
         let get_with_body = request("curl -X GET https://a.test -H 'content-type: application/json' -d '{}'");

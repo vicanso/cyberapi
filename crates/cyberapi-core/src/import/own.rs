@@ -71,7 +71,9 @@ pub(super) fn parse_value(json: &Value) -> ImportBundle {
         if record.category.as_deref() == Some("http") {
             return Some(ImportItem::Api {
                 name: record.name.clone(),
-                request: HttpRequest::from_json_lenient(record.setting.as_deref().unwrap_or("{}")),
+                request: Box::new(HttpRequest::from_json_lenient(
+                    record.setting.as_deref().unwrap_or("{}"),
+                )),
             });
         }
         if !visiting.insert(record.id.clone()) {

@@ -1427,15 +1427,17 @@ impl ResponsePanel {
     /// from, and the body — what reads like a secret masked till shown.
     fn render_sent(&self, sent: &SentRequest, cx: &mut Context<Self>) -> AnyElement {
         let reveal = self.reveal;
-        let secrets = sent
-            .headers
-            .iter()
-            .any(|header| cyberapi_core::mcp::secret_name(&header.name));
+        // What reads like a secret, and what the API signs in with (#66),
+        // whatever its key is called.
+        let secret = |header: &cyberapi_core::response::SentHeader| {
+            header.from == HeaderSource::Auth || cyberapi_core::mcp::secret_name(&header.name)
+        };
+        let secrets = sent.headers.iter().any(secret);
         let rows: Vec<(String, String, String)> = sent
             .headers
             .iter()
             .map(|header| {
-                let value = if !reveal && cyberapi_core::mcp::secret_name(&header.name) {
+                let value = if !reveal && secret(header) {
                     "••••••".to_string()
                 } else {
                     header.value.clone()

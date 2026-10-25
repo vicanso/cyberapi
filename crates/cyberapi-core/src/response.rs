@@ -202,7 +202,7 @@ pub enum HeaderSource {
     Request,
     /// The project's global request headers.
     Global,
-    /// The request's Basic auth.
+    /// How the request signs in (#66).
     Auth,
     /// The cookie jar.
     Cookie,

@@ -16,6 +16,7 @@
 //! encoded with the definitions the API keeps, its headers the metadata,
 //! no query.
 
+use crate::auth::Signed;
 use crate::graphql::GraphQlBody;
 use crate::grpc::{self, GrpcBody};
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam, Variable, VariableCategory, split_env_prefix};
@@ -23,7 +24,6 @@ use crate::prefs::{HttpVersion, Timeouts};
 use crate::proxy::ProxyPrefs;
 use crate::response::{HeaderSource, SENT_BODY_LIMIT, SentHeader, SentRequest};
 use crate::template::{self, FileReader, Inputs, Needs, TemplateError};
-use base64::Engine as _;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use snafu::{ResultExt, Snafu};
@@ -149,7 +149,11 @@ pub fn sent_request(
             HeaderSource::Cookie
         } else if named(&request.headers, name) {
             HeaderSource::Request
-        } else if name.eq_ignore_ascii_case("authorization") && request.auth.iter().any(|kv| kv.enabled) {
+        } else if request
+            .auth
+            .header_name(takes_query(request))
+            .is_some_and(|signed| signed.eq_ignore_ascii_case(name))
+        {
             HeaderSource::Auth
         } else if globals.iter().any(|global| global.eq_ignore_ascii_case(name)) {
             HeaderSource::Global
@@ -265,6 +269,7 @@ fn templated_texts<'a>(request: &'a HttpRequest, variables: &'a [Variable]) -> V
             .map(|kv| kv.value.as_str().into()),
     );
     texts.extend(global_headers(variables).map(|v| v.value.as_str().into()));
+    texts.extend(request.auth.templates().into_iter().map(Into::into));
     texts
 }
 
@@ -441,18 +446,23 @@ fn check_environment(request: &HttpRequest, cx: &Context<'_>) -> Result<(), Prep
     }
 }
 
+/// Whether a request has a query: a gRPC call has none, and takes an API
+/// key as metadata.
+fn takes_query(request: &HttpRequest) -> bool {
+    request.method != HttpMethod::Grpc
+}
+
 /// The headers every request sends, each replacing a same-named one
-/// before it (#3): the User-Agent, the project's global headers, Basic
-/// auth, the request's own.
+/// before it (#3): the User-Agent, the project's global headers, its auth
+/// (#66), the request's own.
 fn sent_headers(request: &HttpRequest, cx: &Context<'_>) -> Result<Headers, PrepareError> {
     let mut headers = Headers::default();
     headers.set("User-Agent", cx.user_agent);
     for variable in global_headers(cx.variables) {
         headers.set(variable.name.trim(), &rendered(&variable.value, cx)?);
     }
-    if let Some(auth) = request.auth.iter().find(|kv| kv.enabled) {
-        let token = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", auth.key, auth.value));
-        headers.set("Authorization", &format!("Basic {token}"));
+    if let Some(Signed::Header { name, value }) = request.auth.sign(takes_query(request), |text| rendered(text, cx))? {
+        headers.set(&name, &value);
     }
     for kv in request
         .headers
@@ -519,6 +529,12 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
     })?;
     for kv in request.query.iter().filter(|kv| kv.enabled) {
         url.query_pairs_mut().append_pair(&kv.key, &render(&kv.value)?);
+    }
+    // An API key in the query (#66), unless the request names it itself.
+    if let Some(Signed::Query { name, value }) = request.auth.sign(true, render)?
+        && !url.query_pairs().any(|(key, _)| key == name)
+    {
+        url.query_pairs_mut().append_pair(&name, &value);
     }
     // GraphQL over HTTP: a GET asks with parameters, a POST with a body.
     let graphql = (request.content_type == ContentType::GraphQl)
@@ -684,6 +700,7 @@ pub mod base64_bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::{Auth, KeyPlace};
     use crate::template::NoFiles;
     use crate::{CollectionId, VariableId};
     use pretty_assertions::assert_eq;
@@ -840,15 +857,10 @@ mod tests {
                     enabled: false,
                 },
             ],
-            auth: vec![
-                KvParam {
-                    key: "off".into(),
-                    value: "x".into(),
-                    enabled: false,
-                },
-                kv("user", "pass"),
-                kv("second", "ignored"),
-            ],
+            auth: Auth::Basic {
+                username: "user".into(),
+                password: "pass".into(),
+            },
             ..Default::default()
         };
         let prepared = prepare_with(&request, &variables).expect("prepare");
@@ -862,6 +874,46 @@ mod tests {
             ]
         );
         assert!(prepared.body.is_empty());
+    }
+
+    /// #66: a token or a key is a template; a key goes in the header or
+    /// the query it names, the request's own of the same name winning.
+    #[test]
+    fn auth_signs_with_its_templates_rendered() {
+        let bearer = HttpRequest {
+            uri: "http://a.test".into(),
+            auth: Auth::Bearer {
+                token: "{{ts()}}".into(),
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            prepare_with(&bearer, &[]).expect("prepare").header("authorization"),
+            Some("Bearer 7")
+        );
+        let request = |place| HttpRequest {
+            uri: "http://a.test/v1?x=1".into(),
+            auth: Auth::ApiKey {
+                name: "api_key".into(),
+                value: "k{{ts()}}".into(),
+                place,
+            },
+            ..Default::default()
+        };
+        let in_header = prepare_with(&request(KeyPlace::Header), &[]).expect("prepare");
+        assert_eq!(in_header.header("api_key"), Some("k7"));
+        assert_eq!(in_header.url, "http://a.test/v1?x=1");
+        let in_query = prepare_with(&request(KeyPlace::Query), &[]).expect("prepare");
+        assert_eq!(in_query.url, "http://a.test/v1?x=1&api_key=k7");
+        assert_eq!(in_query.header("api_key"), None);
+        let named = HttpRequest {
+            query: vec![kv("api_key", "mine")],
+            ..request(KeyPlace::Query)
+        };
+        assert_eq!(
+            prepare_with(&named, &[]).expect("prepare").url,
+            "http://a.test/v1?x=1&api_key=mine"
+        );
     }
 
     #[test]
@@ -891,7 +943,10 @@ mod tests {
         let request = HttpRequest {
             method: HttpMethod::Post,
             headers: vec![kv("X-Trace", "{{uuid()}}")],
-            auth: vec![kv("u", "p")],
+            auth: Auth::Basic {
+                username: "u".into(),
+                password: "p".into(),
+            },
             ..Default::default()
         };
         let prepared = PreparedRequest {
@@ -1197,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn needs_cover_body_query_headers_and_global_headers() {
+    fn needs_cover_body_query_headers_global_headers_and_auth() {
         let variables = [variable(
             VariableCategory::GlobalRequestHeader,
             "X",
@@ -1209,10 +1264,13 @@ mod tests {
             body: "{{get(b, a)}}".into(),
             query: vec![kv("q", "{{get(q, a)}}")],
             headers: vec![kv("h", "{{of()}}")],
+            auth: Auth::Bearer {
+                token: "{{get(t, a)}}".into(),
+            },
             ..Default::default()
         };
         let needs = needs(&request, &variables);
-        assert_eq!(needs.responses, ["b", "q", "g"]);
+        assert_eq!(needs.responses, ["b", "q", "g", "t"]);
         assert!(needs.picks_file);
     }
 

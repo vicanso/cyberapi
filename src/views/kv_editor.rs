@@ -1,4 +1,4 @@
-//! A key / value list (F4.10): query, headers, auth, form fields. A blank
+//! A key / value list (F4.10): query, headers, form fields. A blank
 //! row is always last, and typing in it adds the next; each row can be
 //! turned off or removed, the second click on its remove button removing it.
 //! Changes are reported 200 ms after the last one.
@@ -37,9 +37,6 @@ pub enum KvEvent {
 /// What kind of list it is.
 #[derive(Clone, Copy, Default)]
 pub struct KvOptions {
-    /// Basic auth's: the columns are user and password, the password shown
-    /// as dots.
-    pub masked: bool,
     /// Rows can take a file (multipart, F4.8), where files can be read.
     pub files: bool,
     /// Rows offered ready made, name and a start of the value: the
@@ -124,11 +121,7 @@ impl KvEditor {
 
     /// What the two columns are called.
     fn labels(&self) -> (String, String) {
-        if self.options.masked {
-            (t!("editor.user").to_string(), t!("editor.password").to_string())
-        } else {
-            (t!("editor.key").to_string(), t!("editor.value").to_string())
-        }
+        (t!("editor.key").to_string(), t!("editor.value").to_string())
     }
 
     fn push_row(&mut self, kv: &KvParam, window: &mut Window, cx: &mut Context<Self>) {
@@ -138,11 +131,9 @@ impl KvEditor {
                 .placeholder(key_label)
                 .default_value(kv.key.clone())
         });
-        let masked = self.options.masked;
         let value = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(value_label)
-                .masked(masked)
                 .default_value(kv.value.clone())
         });
         let watch_key = cx.subscribe_in(&key, window, |this, _, event: &InputEvent, window, cx| {
@@ -423,23 +414,20 @@ impl KvEditor {
 
 impl Render for KvEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // A password's list is not shown as text.
-        let toggle = (!self.options.masked).then(|| {
-            Button::new("kv-bulk")
-                .ghost()
-                .xsmall()
-                .icon(if self.bulk.is_some() {
-                    gpui_kit::assets::IconName::Table
-                } else {
-                    gpui_kit::assets::IconName::FileText
-                })
-                .tooltip(if self.bulk.is_some() {
-                    t!("editor.table_edit").to_string()
-                } else {
-                    t!("editor.bulk_edit").to_string()
-                })
-                .on_click(cx.listener(|this, _, window, cx| this.toggle_bulk(window, cx)))
-        });
+        let toggle = Button::new("kv-bulk")
+            .ghost()
+            .xsmall()
+            .icon(if self.bulk.is_some() {
+                gpui_kit::assets::IconName::Table
+            } else {
+                gpui_kit::assets::IconName::FileText
+            })
+            .tooltip(if self.bulk.is_some() {
+                t!("editor.table_edit").to_string()
+            } else {
+                t!("editor.bulk_edit").to_string()
+            })
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_bulk(window, cx)));
         if let Some(bulk) = &self.bulk {
             let theme = cx.theme();
             return v_flex()
@@ -456,7 +444,7 @@ impl Render for KvEditor {
                         .text_xs()
                         .text_color(theme.muted_foreground)
                         .child(div().flex_1().child(t!("editor.bulk_hint").to_string()))
-                        .children(toggle),
+                        .child(toggle),
                 )
                 .child(
                     div()
@@ -514,7 +502,7 @@ impl Render for KvEditor {
                     .child(cell().w_2_5().flex_none().px_2().child(key_label))
                     .child(cell().flex_1().min_w_0().px_2().child(value_label)),
             )
-            .child(actions().children(presets).children(toggle));
+            .child(actions().children(presets).child(toggle));
         let rows = self.rows.iter().enumerate().map(|(index, row)| {
             let blank = index == last;
             let remove = if removing == Some(index) {

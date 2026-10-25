@@ -1268,7 +1268,10 @@ impl WorkspaceState {
             Some(open) if open.read(cx).api() == id => open.read(cx).request().clone(),
             _ => stored.request.clone(),
         };
-        let items = vec![ImportItem::Api { name, request }];
+        let items = vec![ImportItem::Api {
+            name,
+            request: Box::new(request),
+        }];
         let parent = self.tree.get(id).and_then(|node| node.parent()).cloned();
         let before = self.tree.next_sibling(id).cloned();
         let call = self

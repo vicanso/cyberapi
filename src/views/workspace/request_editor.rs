@@ -3,6 +3,7 @@
 //! everything it edits goes to the API's `ApiState`.
 
 // The action, named apart from the `Send` trait.
+use super::auth_editor::AuthEditor;
 use super::{KEY_CONTEXT, Send as SendAction, method_color};
 use crate::json_view_local::JsonView;
 use crate::states::{ApiEvent, ApiState, AppStore, WorkspaceState};
@@ -79,7 +80,7 @@ pub struct RequestEditor {
     form: Entity<KvEditor>,
     query: Entity<KvEditor>,
     headers: Entity<KvEditor>,
-    auth: Entity<KvEditor>,
+    auth: Entity<AuthEditor>,
     /// Redraws the elapsed time while a request is out.
     ticker: Option<Task<()>>,
     /// Why the JSON body would not parse, worked out as it changes.
@@ -256,7 +257,7 @@ impl RequestEditor {
         let body = body_state(&request, &hints, window, cx);
         let graphql = graphql_fields(&request, &api, &hints, window, cx);
         let grpc_message = grpc_message_state(&request, &hints, window, cx);
-        // Values that are templates offer the hints; Basic auth's are not.
+        // Values that are templates offer the hints.
         let kv = |list, options, hints: Option<&HintSource>, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
                 let kv = KvEditor::new(list, options, window, cx);
@@ -288,16 +289,10 @@ impl RequestEditor {
             window,
             cx,
         );
-        let auth = kv(
-            &request.auth,
-            KvOptions {
-                masked: true,
-                ..Default::default()
-            },
-            None,
-            window,
-            cx,
-        );
+        let auth = {
+            let (api, hints) = (api.clone(), hints.clone());
+            cx.new(|cx| AuthEditor::new(api, hints, window, cx))
+        };
         let settings = {
             let api = api.clone();
             cx.new(|cx| super::request_settings::RequestSettingsView::new(api, window, cx))
@@ -382,9 +377,6 @@ impl RequestEditor {
             }),
             cx.subscribe(&headers, |this, _, KvEvent::Changed(list), cx| {
                 this.api.update(cx, |api, cx| api.set_headers(list.clone(), cx));
-            }),
-            cx.subscribe(&auth, |this, _, KvEvent::Changed(list), cx| {
-                this.api.update(cx, |api, cx| api.set_auth(list.clone(), cx));
             }),
             cx.subscribe(&form, |this, _, KvEvent::Changed(list), cx| {
                 this.api.update(cx, |api, cx| api.set_form(list.clone(), cx));
@@ -877,6 +869,10 @@ impl RequestEditor {
             let api = self.api.clone();
             cx.new(|cx| super::request_settings::RequestSettingsView::new(api, window, cx))
         };
+        self.auth = {
+            let (api, hints) = (self.api.clone(), self.hints.clone());
+            cx.new(|cx| AuthEditor::new(api, hints, window, cx))
+        };
         self.grpc_message = grpc_message_state(&request, &self.hints, window, cx);
         let watching = Self::watch_grpc(&self.grpc_message, window, cx);
         self._subscriptions.extend(watching);
@@ -885,7 +881,6 @@ impl RequestEditor {
         self.query.update(cx, |kv, cx| kv.set_list(&request.query, window, cx));
         self.headers
             .update(cx, |kv, cx| kv.set_list(&request.headers, window, cx));
-        self.auth.update(cx, |kv, cx| kv.set_list(&request.auth, window, cx));
         self.check_json(cx);
         self.sync_body_tree_if_shown(cx);
         cx.notify();
@@ -895,11 +890,7 @@ impl RequestEditor {
     /// what was typed just before sending goes with it.
     fn flush(&mut self, cx: &mut Context<Self>) {
         self.save_uri(cx);
-        let (query, headers, auth) = (
-            self.query.read(cx).list(cx),
-            self.headers.read(cx).list(cx),
-            self.auth.read(cx).list(cx),
-        );
+        let (query, headers) = (self.query.read(cx).list(cx), self.headers.read(cx).list(cx));
         let (method, content_type) = {
             let request = self.api.read(cx).request();
             (request.method, request.content_type)
@@ -915,7 +906,6 @@ impl RequestEditor {
         self.api.update(cx, |api, cx| {
             api.set_query(query, cx);
             api.set_headers(headers, cx);
-            api.set_auth(auth, cx);
             match (body, form) {
                 (Some(body), _) => api.set_body(body, cx),
                 (_, Some(form)) => api.set_form(form, cx),
@@ -1373,7 +1363,8 @@ impl RequestEditor {
                 ),
                 RequestTab::Query => (t!("editor.query"), count(&request.query)),
                 RequestTab::Headers => (t!("editor.headers"), count(&request.headers)),
-                RequestTab::Auth => (t!("editor.auth"), count(&request.auth)),
+                // #66: one when it signs in itself.
+                RequestTab::Auth => (t!("editor.auth"), usize::from(request.auth.signs())),
                 // #71: how many it sets of its own.
                 RequestTab::Settings => (t!("editor.settings"), overridden(&request.settings)),
             };
@@ -1715,20 +1706,7 @@ impl Render for RequestEditor {
                 .child(self.headers.clone())
                 .into_any_element(),
             RequestTab::Settings => self.settings.clone().into_any_element(),
-            RequestTab::Auth => v_flex()
-                .id("request-auth")
-                .size_full()
-                .overflow_y_scrollbar()
-                .p_2()
-                .gap_2()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t!("editor.auth_hint").to_string()),
-                )
-                .child(self.auth.clone())
-                .into_any_element(),
+            RequestTab::Auth => self.auth.clone().into_any_element(),
         };
         v_flex()
             .size_full()

@@ -28,8 +28,15 @@ use snafu::Snafu;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ImportItem {
-    Folder { name: String, children: Vec<ImportItem> },
-    Api { name: String, request: HttpRequest },
+    Folder {
+        name: String,
+        children: Vec<ImportItem>,
+    },
+    /// Boxed: a request is several times the size of a folder.
+    Api {
+        name: String,
+        request: Box<HttpRequest>,
+    },
 }
 
 /// What an import adds to a project.
@@ -61,7 +68,7 @@ pub fn assign_ids(items: &[ImportItem], new_id: &mut dyn FnMut() -> ItemId) -> A
         for item in items {
             let id = new_id();
             match item {
-                ImportItem::Api { name, request } => out.apis.push((id.clone(), name.clone(), request.clone())),
+                ImportItem::Api { name, request } => out.apis.push((id.clone(), name.clone(), (**request).clone())),
                 ImportItem::Folder { name, children } => {
                     let at = out.folders.len();
                     out.folders.push((id.clone(), name.clone(), Vec::new()));
@@ -201,7 +208,7 @@ pub fn request_from_curl(text: &str) -> Option<HttpRequest> {
     let ImportItem::Api { request, .. } = curl_command(text)?.items.into_iter().next()? else {
         return None;
     };
-    Some(request)
+    Some(*request)
 }
 
 /// A cURL command, as the API it imports, named after its path (F10.5):
@@ -403,7 +410,7 @@ paths:
                 children: vec![
                     ImportItem::Api {
                         name: "x".into(),
-                        request: HttpRequest::default(),
+                        request: Box::default(),
                     },
                     ImportItem::Folder {
                         name: "b".into(),
@@ -413,7 +420,7 @@ paths:
             },
             ImportItem::Api {
                 name: "y".into(),
-                request: HttpRequest::default(),
+                request: Box::default(),
             },
         ];
         let mut next = 0;

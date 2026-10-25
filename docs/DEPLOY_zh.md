@@ -233,7 +233,7 @@ claude mcp add --transport http cyberapi https://cyberapi.example.com/v1/mcp \
 
 **能做什么。** 令牌看到的就是它的账号能看到的，工具都是读取：`list_projects`、`list_apis`（项目的目录和接口，带路径和 id）、`get_api`（接口保存的请求）、`get_variables`（环境变量、自定义变量、全局请求头）和 `get_history`（接口最近的响应）。签发时勾选了**允许发送请求**的令牌还有 `send_api`：由 bridge 带着项目的变量发送一个已保存的接口（同样受[请求能发往哪里](#请求能发往哪里)和每个账号同时发送数量的限制），响应记入账号的历史；只能在账号至少是编辑者的项目里发送。工具不会修改任何项目。
 
-**会看到什么。** 看起来像密钥的值会显示为 `***`：`Authorization`、`Cookie` 之类的请求头，Basic 认证的密码，名字像 token、key、password、secret 的变量和表单 / JSON 字段；用模板写的值（`Bearer {{TOKEN}}`）按原样显示。响应体超过 8 KB 截断，整个结果超过 200 KB 截断，不是文本的响应体只给描述。每个账号每分钟最多调用 120 次，每次调用在 bridge 日志里记一行（`mcp call`，带账号、令牌名和工具名）。
+**会看到什么。** 看起来像密钥的值会显示为 `***`：`Authorization`、`Cookie` 之类的请求头，接口认证用的密码、令牌和 API Key，名字像 token、key、password、secret 的变量和表单 / JSON 字段；用模板写的值（`Bearer {{TOKEN}}`）按原样显示。响应体超过 8 KB 截断，整个结果超过 200 KB 截断，不是文本的响应体只给描述。每个账号每分钟最多调用 120 次，每次调用在 bridge 日志里记一行（`mcp call`，带账号、令牌名和工具名）。
 
 ## 升级
 

@@ -234,7 +234,13 @@ fn operation(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    (tag, ImportItem::Api { name, request })
+    (
+        tag,
+        ImportItem::Api {
+            name,
+            request: Box::new(request),
+        },
+    )
 }
 
 pub(super) fn parse(json: &Value) -> ImportBundle {

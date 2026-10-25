@@ -10,6 +10,7 @@ use crate::{
     VariableEdit,
 };
 use cyberapi_core::access::CollectionRole;
+use cyberapi_core::auth::{Auth, KeyPlace};
 use cyberapi_core::collection::SortOrder;
 use cyberapi_core::cookie::Cookie;
 use cyberapi_core::import::ImportItem;
@@ -392,7 +393,12 @@ async fn requests_are_saved(storage: &Storage) {
             value: "{{md5(a)}}".into(),
             enabled: false,
         }],
-        auth: vec![],
+        // How it signs in (#66).
+        auth: Auth::ApiKey {
+            name: "X-Key".into(),
+            value: "{{value(key)}}".into(),
+            place: KeyPlace::Query,
+        },
         // An API's own sending settings (#71).
         settings: RequestSettings {
             timeouts: Timeouts {
@@ -710,7 +716,7 @@ async fn shared_changes_move_the_revision(storage: &Storage) {
         None,
         vec![ImportItem::Api {
             name: "imported".into(),
-            request: HttpRequest::default(),
+            request: Box::default(),
         }],
     )
     .await
@@ -1134,28 +1140,28 @@ fn bundle() -> Vec<ImportItem> {
             children: vec![
                 ImportItem::Api {
                     name: "create".into(),
-                    request: HttpRequest {
+                    request: Box::new(HttpRequest {
                         method: HttpMethod::Post,
                         uri: "{{HOST}}/orders".into(),
                         body: "{\"a\": 1}".into(),
                         ..Default::default()
-                    },
+                    }),
                 },
                 ImportItem::Folder {
                     name: "admin".into(),
                     children: vec![ImportItem::Api {
                         name: "purge".into(),
-                        request: HttpRequest {
+                        request: Box::new(HttpRequest {
                             method: HttpMethod::Delete,
                             ..Default::default()
-                        },
+                        }),
                     }],
                 },
             ],
         },
         ImportItem::Api {
             name: "health".into(),
-            request: HttpRequest::default(),
+            request: Box::default(),
         },
     ]
 }
