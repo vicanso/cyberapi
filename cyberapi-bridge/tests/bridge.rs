@@ -9,9 +9,10 @@ use axum::http::{Request, StatusCode, header};
 use cyberapi_bridge::Bridge;
 use cyberapi_core::model::HttpMethod;
 use cyberapi_core::prefs::Timeouts;
+use cyberapi_core::version::MODEL;
 use cyberapi_http::{HttpEngine, NativeEngine, PreparedRequest, SendError, TargetPolicy};
-use cyberapi_store::{Refusal, StoreError, conformance};
-use cyberapi_store_bridge::{BridgeHttpEngine, BridgeStore, Response, STORE_PATH, Transport};
+use cyberapi_store::{NewCollection, Refusal, StoreError, conformance};
+use cyberapi_store_bridge::{BridgeHttpEngine, BridgeStore, Call, MODEL_HEADER, Response, STORE_PATH, Transport};
 use cyberapi_store_sql::SqlStore;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -272,10 +273,13 @@ async fn one_setup_slow_guesses_and_old_logins() {
     );
 }
 
-/// The page's transport, into the router instead of over a network.
+/// The page's transport, into the router instead of over a network. It
+/// says its model as the page's does; `None` is a client from before it
+/// said one.
 struct RouterTransport {
     router: Router,
     cookie: String,
+    model: Option<u32>,
 }
 
 impl Transport for RouterTransport {
@@ -284,13 +288,15 @@ impl Transport for RouterTransport {
         path: &'static str,
         body: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<Response, String>> + Send>> {
-        let (router, cookie) = (self.router.clone(), self.cookie.clone());
+        let (router, cookie, model) = (self.router.clone(), self.cookie.clone(), self.model);
         Box::pin(async move {
-            let request = Request::post(path)
+            let mut request = Request::post(path)
                 .header(header::CONTENT_TYPE, "application/json")
-                .header(header::COOKIE, cookie)
-                .body(Body::from(body))
-                .map_err(|e| e.to_string())?;
+                .header(header::COOKIE, cookie);
+            if let Some(model) = model {
+                request = request.header(MODEL_HEADER, model.to_string());
+            }
+            let request = request.body(Body::from(body)).map_err(|e| e.to_string())?;
             let response = router.oneshot(request).await.map_err(|e| e.to_string())?;
             let status = response.status().as_u16();
             let body = response
@@ -316,8 +322,78 @@ async fn bridge_store_conforms() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let cookie = cookie_pair(&set_cookie.expect("a cookie"));
 
-    let store = BridgeStore::new(Arc::new(RouterTransport { router, cookie }));
+    let store = BridgeStore::new(Arc::new(RouterTransport {
+        router,
+        cookie,
+        model: Some(MODEL),
+    }));
     conformance::run(&store.storage(), bridge.store()).await;
+}
+
+/// A client that keeps projects in an older shape than the bridge's — or
+/// does not say, as none did before batch 4 — reads them and keeps its own
+/// things, but changes no project (`docs/batch4-design.md` §2.1). The bridge
+/// says its own shape in every answer.
+#[tokio::test]
+async fn an_older_client_reads_but_changes_no_project() {
+    let Some(bridge) = fresh_bridge().await else { return };
+    let (router, cookie) = signed_in_router(&bridge).await;
+    let client = |model: Option<u32>| {
+        BridgeStore::new(Arc::new(RouterTransport {
+            router: router.clone(),
+            cookie: cookie.clone(),
+            model,
+        }))
+        .storage()
+    };
+    let (current, older, unsaid) = (client(Some(MODEL)), client(Some(MODEL - 1)), client(None));
+    let collection = current
+        .collections()
+        .create(NewCollection {
+            name: "shapes".into(),
+            description: String::new(),
+            owner: None,
+        })
+        .await
+        .expect("create a project");
+    let api = current
+        .tree()
+        .create_api(collection.id.clone(), None, "kept".into())
+        .await
+        .expect("the current client changes the project");
+
+    for client in [&older, &unsaid] {
+        let tree = client.tree().load(collection.id.clone()).await.expect("it reads");
+        assert_eq!(tree.apis.len(), 1);
+        let refused = client
+            .tree()
+            .save_request(collection.id.clone(), api.item.id.clone(), Default::default())
+            .await;
+        assert!(
+            matches!(
+                refused,
+                Err(StoreError::Refused {
+                    reason: Refusal::ClientTooOld
+                })
+            ),
+            "{refused:?}"
+        );
+        client.prefs().app().await.expect("its own things are its own");
+    }
+
+    let request = Request::post(STORE_PATH)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, cookie.clone())
+        .body(Body::from(serde_json::to_vec(&Call::CollectionsList).expect("a call")))
+        .expect("a request");
+    let response = router.clone().oneshot(request).await.expect("an answer");
+    assert_eq!(
+        response
+            .headers()
+            .get(MODEL_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some(MODEL.to_string().as_str())
+    );
 }
 
 /// A server on this machine that answers every request with `pong`.
@@ -365,6 +441,7 @@ async fn requests_are_sent_by_the_bridge() {
     let engine = BridgeHttpEngine::new(Arc::new(RouterTransport {
         router: router.clone(),
         cookie: cookie.clone(),
+        model: Some(MODEL),
     }));
     assert_eq!(
         engine.send(request.clone()).await,
@@ -376,6 +453,7 @@ async fn requests_are_sent_by_the_bridge() {
     let anonymous = BridgeHttpEngine::new(Arc::new(RouterTransport {
         router,
         cookie: String::new(),
+        model: Some(MODEL),
     }));
     assert_eq!(
         anonymous.send(request.clone()).await,
@@ -389,7 +467,11 @@ async fn requests_are_sent_by_the_bridge() {
         return;
     };
     let (router, cookie) = signed_in_router(&bridge).await;
-    let engine = BridgeHttpEngine::new(Arc::new(RouterTransport { router, cookie }));
+    let engine = BridgeHttpEngine::new(Arc::new(RouterTransport {
+        router,
+        cookie,
+        model: Some(MODEL),
+    }));
     let exchange = engine.send(request).await.expect("an exchange");
     assert_eq!(exchange.status, 200);
     assert_eq!(exchange.body, b"pong");
@@ -406,6 +488,7 @@ async fn the_directory_over_the_bridge() {
     let admin = BridgeStore::new(Arc::new(RouterTransport {
         router: router.clone(),
         cookie,
+        model: Some(MODEL),
     }))
     .directory();
     let me = admin.me().await.expect("me");
@@ -432,6 +515,7 @@ async fn the_directory_over_the_bridge() {
     let erin = BridgeStore::new(Arc::new(RouterTransport {
         router: router.clone(),
         cookie: cookie_pair(&set_cookie.expect("signed in")),
+        model: Some(MODEL),
     }))
     .directory();
     let me = erin.me().await.expect("me");

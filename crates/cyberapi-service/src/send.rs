@@ -61,6 +61,19 @@ pub struct Sender {
     pub sending: SendPrefs,
 }
 
+impl Sender {
+    /// The sender of `request`: its own sending settings in place of the
+    /// settings' where it has them (#71). Every way a request goes out
+    /// starts here.
+    pub fn for_request(&self, request: &HttpRequest) -> Self {
+        Self {
+            timeouts: request.settings.timeouts_over(self.timeouts),
+            sending: request.settings.sending_over(&self.sending),
+            ..self.clone()
+        }
+    }
+}
+
 /// A boundary no body will contain by chance: the time and a counter.
 fn boundary() -> String {
     static COUNT: AtomicU64 = AtomicU64::new(0);
@@ -98,6 +111,7 @@ pub async fn send_watched(
     picked_file: Option<String>,
     watch: Option<Watch>,
 ) -> Result<HttpResponse, SendFailure> {
+    let sender = sender.for_request(&request);
     let (mut prepared, globals) = prepare(&sender, &collection, &request, picked_file, None).await?;
     let grpc = (request.method == HttpMethod::Grpc).then(|| GrpcBody::read(&request.body));
     // The jar's cookies go to each hop's own address. A Cookie the request
@@ -227,6 +241,7 @@ pub async fn send_watched(
 /// that query in place of its body, as a POST. Nothing goes into the
 /// history; a redirect is not followed. `Err` says why there is none.
 pub async fn introspect(sender: Sender, collection: CollectionId, request: HttpRequest) -> Result<Schema, String> {
+    let sender = sender.for_request(&request);
     let asking = HttpRequest {
         method: HttpMethod::Post,
         content_type: ContentType::GraphQl,
@@ -262,6 +277,7 @@ pub async fn code(
     request: HttpRequest,
     target: CodeTarget,
 ) -> Result<String, SendFailure> {
+    let sender = sender.for_request(&request);
     let (mut prepared, _) = prepare(&sender, &collection, &request, None, None).await?;
     if prepared.header("cookie").is_none() {
         add_cookies(&sender, &mut prepared).await?;
@@ -286,6 +302,7 @@ enum Unreflected {
 /// server has only that. Nothing goes into the history. `Err` says why
 /// there are none.
 pub async fn reflect(sender: Sender, collection: CollectionId, request: HttpRequest) -> Result<Definitions, String> {
+    let sender = sender.for_request(&request);
     let mut absent = String::new();
     for path in reflection::PATHS {
         match reflect_at(&sender, &collection, &request, path).await {
@@ -1079,6 +1096,67 @@ mod tests {
             None,
         ))
         .expect("sent")
+    }
+
+    /// #71: an API's own settings stand in for the reader's.
+    #[test]
+    fn an_apis_own_settings_go_out_with_it() {
+        let setup = setup(Ok(Exchange {
+            status: 200,
+            body: b"me".to_vec(),
+            ..Default::default()
+        }));
+        route(&setup, "https://api.test/login", redirect("/me", None));
+        let api = new_api(&setup, "login");
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            uri: "https://api.test/login".into(),
+            settings: cyberapi_core::prefs::RequestSettings {
+                timeouts: Timeouts {
+                    connect: 3,
+                    ..Timeouts::default()
+                },
+                follow_redirects: Some(true),
+                accept_invalid_certs: Some(true),
+                http_version: Some(cyberapi_core::prefs::HttpVersion::Http1),
+            },
+            ..Default::default()
+        };
+        // The reader's settings follow no redirect and check certificates.
+        assert!(!setup.sender.sending.follow_redirects && !setup.sender.sending.accept_invalid_certs);
+        let answer = pollster::block_on(send(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            api,
+            request.clone(),
+            None,
+        ))
+        .expect("sent");
+        assert_eq!(answer.status, Some(200), "followed, as the API says");
+        let sent = setup.engine.sent.lock().expect("sent").clone();
+        assert!(sent.iter().all(|hop| hop.accept_invalid_certs));
+        assert!(
+            sent.iter()
+                .all(|hop| hop.http_version == cyberapi_core::prefs::HttpVersion::Http1)
+        );
+        assert_eq!(sent[0].timeouts.connect, 3);
+        assert_eq!(
+            sent[0].timeouts.read,
+            Timeouts::DEFAULT_READ,
+            "not set here: the reader's"
+        );
+        // Its code too: curl follows and takes any certificate.
+        let curl = pollster::block_on(code(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            request,
+            CodeTarget::Curl,
+        ))
+        .expect("code");
+        assert!(
+            curl.contains(" -L") && curl.contains(" -k") && curl.contains("--http1.1"),
+            "{curl}"
+        );
     }
 
     #[test]

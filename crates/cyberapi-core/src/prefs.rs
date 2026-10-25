@@ -159,6 +159,49 @@ pub struct SendPrefs {
     pub proxy: crate::proxy::ProxyPrefs,
 }
 
+/// What one API overrides of the settings' sending (#71): each it leaves
+/// unset — a timeout at `0`, the rest at `None` — follows the settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RequestSettings {
+    #[serde(skip_serializing_if = "Timeouts::is_unset")]
+    pub timeouts: Timeouts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_redirects: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accept_invalid_certs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_version: Option<HttpVersion>,
+}
+
+impl RequestSettings {
+    /// Nothing overridden.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The settings' `timeouts` with this API's in place of those it sets.
+    pub fn timeouts_over(&self, settings: Timeouts) -> Timeouts {
+        let pick = |own: u32, theirs: u32| if own > 0 { own } else { theirs };
+        Timeouts {
+            connect: pick(self.timeouts.connect, settings.connect),
+            write: pick(self.timeouts.write, settings.write),
+            read: pick(self.timeouts.read, settings.read),
+        }
+    }
+
+    /// The settings' `sending` with this API's choices in place of those it
+    /// makes.
+    pub fn sending_over(&self, sending: &SendPrefs) -> SendPrefs {
+        SendPrefs {
+            follow_redirects: self.follow_redirects.unwrap_or(sending.follow_redirects),
+            accept_invalid_certs: self.accept_invalid_certs.unwrap_or(sending.accept_invalid_certs),
+            http_version: self.http_version.unwrap_or(sending.http_version),
+            proxy: sending.proxy.clone(),
+        }
+    }
+}
+
 /// Which HTTP a request speaks (F14.10).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -367,6 +410,11 @@ impl Timeouts {
     pub const DEFAULT_WRITE: u32 = 120;
     pub const DEFAULT_READ: u32 = 300;
 
+    /// None set: every one the default, or, an API's, the settings'.
+    pub fn is_unset(&self) -> bool {
+        *self == Self::default()
+    }
+
     /// The timeouts to use: each setting above `0`, the default otherwise.
     pub fn effective(&self) -> Self {
         let pick = |value: u32, default: u32| if value > 0 { value } else { default };
@@ -404,6 +452,8 @@ pub enum RequestTab {
     Query,
     Headers,
     Auth,
+    /// The API's own sending settings (#71).
+    Settings,
 }
 
 impl RequestTab {
@@ -412,11 +462,11 @@ impl RequestTab {
     /// its message and metadata, and no query.
     pub fn for_request(request: &HttpRequest) -> &'static [Self] {
         if request.method == HttpMethod::Grpc {
-            &[Self::Body, Self::Headers, Self::Auth]
+            &[Self::Body, Self::Headers, Self::Auth, Self::Settings]
         } else if request.has_body_tab() {
-            &[Self::Body, Self::Query, Self::Headers, Self::Auth]
+            &[Self::Body, Self::Query, Self::Headers, Self::Auth, Self::Settings]
         } else {
-            &[Self::Query, Self::Headers, Self::Auth]
+            &[Self::Query, Self::Headers, Self::Auth, Self::Settings]
         }
     }
 
@@ -426,6 +476,7 @@ impl RequestTab {
             Self::Query => "query",
             Self::Headers => "header",
             Self::Auth => "auth",
+            Self::Settings => "settings",
         }
     }
 
@@ -435,6 +486,7 @@ impl RequestTab {
             "query" => Some(Self::Query),
             "header" => Some(Self::Headers),
             "auth" => Some(Self::Auth),
+            "settings" => Some(Self::Settings),
             _ => None,
         }
     }
@@ -485,6 +537,62 @@ impl WorkspacePrefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #71: an API's settings stand in for the settings' where it sets one.
+    #[test]
+    fn an_apis_settings_stand_in_for_the_settings_it_sets() {
+        let settings = Timeouts {
+            connect: 5,
+            write: 0,
+            read: 60,
+        };
+        let own = RequestSettings {
+            timeouts: Timeouts {
+                connect: 0,
+                write: 30,
+                read: 600,
+            },
+            follow_redirects: Some(true),
+            http_version: Some(HttpVersion::Http1),
+            ..Default::default()
+        };
+        assert_eq!(
+            own.timeouts_over(settings),
+            Timeouts {
+                connect: 5,
+                write: 30,
+                read: 600
+            }
+        );
+        let sending = SendPrefs {
+            follow_redirects: false,
+            accept_invalid_certs: true,
+            http_version: HttpVersion::Auto,
+            ..Default::default()
+        };
+        let over = own.sending_over(&sending);
+        assert!(over.follow_redirects);
+        assert!(over.accept_invalid_certs, "not set here: the settings'");
+        assert_eq!(over.http_version, HttpVersion::Http1);
+        assert_eq!(RequestSettings::default().sending_over(&sending), sending);
+        assert_eq!(RequestSettings::default().timeouts_over(settings), settings);
+    }
+
+    #[test]
+    fn an_api_without_settings_of_its_own_writes_none() {
+        let plain = crate::model::HttpRequest::default();
+        assert!(!plain.to_json().contains("settings"));
+        let own = crate::model::HttpRequest {
+            settings: RequestSettings {
+                accept_invalid_certs: Some(false),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let json = own.to_json();
+        assert!(json.contains(r#""settings":{"acceptInvalidCerts":false}"#), "{json}");
+        assert_eq!(crate::model::HttpRequest::from_json_lenient(&json), own);
+    }
 
     #[test]
     fn an_empty_document_is_the_defaults() {
@@ -537,8 +645,16 @@ mod tests {
         assert_eq!(prefs.tab(&api, &grpc), RequestTab::Body);
         assert_eq!(
             RequestTab::for_request(&grpc),
-            [RequestTab::Body, RequestTab::Headers, RequestTab::Auth]
+            [
+                RequestTab::Body,
+                RequestTab::Headers,
+                RequestTab::Auth,
+                RequestTab::Settings
+            ]
         );
+        // An API's own settings (#71) are kept as the tab it was on.
+        prefs.set_tab(&api, &post, RequestTab::Settings);
+        assert_eq!(prefs.tab(&api, &post), RequestTab::Settings);
     }
 
     /// A frame on a monitor, not zoomed.

@@ -8,6 +8,7 @@
 //! the bottom convert the columns that need it; each store maps the rest.
 
 use crate::access::CollectionRole;
+use crate::prefs::RequestSettings;
 use crate::{CollectionId, ItemId, TeamId, Timestamp, VariableId};
 use serde::{Deserialize, Serialize};
 
@@ -89,6 +90,9 @@ pub struct HttpRequest {
     pub headers: Vec<KvParam>,
     /// Only the first enabled entry is used, as Basic auth (F4.9).
     pub auth: Vec<KvParam>,
+    /// What this API overrides of the settings' sending (#71).
+    #[serde(skip_serializing_if = "RequestSettings::is_empty")]
+    pub settings: RequestSettings,
     /// What a newer version keeps in a request that this one does not
     /// read, written back as it came (`docs/batch4-design.md` §2.1): a
     /// request saved here keeps it.
@@ -478,17 +482,17 @@ mod tests {
     /// request goes back as it came; what this one reads is not kept twice.
     #[test]
     fn a_newer_versions_fields_are_kept() {
-        let text = r#"{"method":"PUT","uri":"/a","settings":{"followRedirects":true},"authentication":{"kind":"bearer","token":"t"}}"#;
+        let text = r#"{"method":"PUT","uri":"/a","later":{"followRedirects":true},"authentication":{"kind":"bearer","token":"t"}}"#;
         let request = HttpRequest::from_json_lenient(text);
         assert_eq!(request.method, HttpMethod::Put);
         assert_eq!(request.uri, "/a");
         assert_eq!(
             request.extra.keys().collect::<Vec<_>>(),
-            ["settings", "authentication"],
+            ["later", "authentication"],
             "only what this version does not read, in the order written"
         );
         let written: serde_json::Value = serde_json::from_str(&request.to_json()).expect("JSON");
-        assert_eq!(written["settings"], serde_json::json!({"followRedirects": true}));
+        assert_eq!(written["later"], serde_json::json!({"followRedirects": true}));
         assert_eq!(written["authentication"]["token"], "t");
         assert_eq!(HttpRequest::from_json_lenient(&request.to_json()), request);
         assert!(HttpRequest::default().extra.is_empty());

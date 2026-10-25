@@ -877,7 +877,9 @@ impl ResponsePanel {
         // on, a send ends past every redirect, so only an answer kept
         // before shows the first.
         let redirect = response.redirects_to().map(|to| {
-            let follows = AppStore::global(cx).state().read(cx).prefs().sending.follow_redirects;
+            // As this request went: its own setting, or the settings' (#71).
+            let settings = AppStore::global(cx).state().read(cx).prefs().sending.follow_redirects;
+            let follows = response.request.settings.follow_redirects.unwrap_or(settings);
             let text = if follows {
                 t!("response.redirect", url = to)
             } else {
@@ -889,7 +891,22 @@ impl ResponsePanel {
                 .icon(IconName::Copy)
                 .label(t!("response.copy_location").to_string())
                 .on_click(move |_, window, cx| copy(to.clone(), window, cx));
-            note(text.to_string(), vec![copy_to], cx)
+            let mut buttons = vec![copy_to];
+            if !follows {
+                let workspace = self.workspace.downgrade();
+                buttons.push(
+                    Button::new("response-open-settings")
+                        .ghost()
+                        .xsmall()
+                        .label(t!("response.open_api_settings").to_string())
+                        .on_click(move |_, _, cx| {
+                            let _ = workspace.update(cx, |workspace, cx| {
+                                workspace.set_tab(cyberapi_core::prefs::RequestTab::Settings, cx)
+                            });
+                        }),
+                );
+            }
+            note(text.to_string(), buttons, cx)
         });
         let cut = response.truncated.then(|| {
             let limit = format_size(RESPONSE_LIMIT as u64);

@@ -28,6 +28,7 @@ use cyberapi_core::code::CodeTarget;
 use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody, ReplyReader};
 use cyberapi_core::model::{ApiSetting, ContentType, HttpMethod, HttpRequest, KvParam};
+use cyberapi_core::prefs::RequestSettings;
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::send::PrepareError;
 use cyberapi_core::sse;
@@ -429,6 +430,14 @@ impl ApiState {
         let auth = kept(auth);
         if self.request.auth != auth {
             self.request.auth = auth;
+            self.save_later(cx);
+        }
+    }
+
+    /// #71: the API's own sending settings.
+    pub fn set_settings(&mut self, settings: RequestSettings, cx: &mut Context<Self>) {
+        if self.request.settings != settings {
+            self.request.settings = settings;
             self.save_later(cx);
         }
     }

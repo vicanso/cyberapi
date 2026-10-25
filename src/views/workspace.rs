@@ -8,6 +8,7 @@ mod move_dialog;
 mod pins;
 mod project_title;
 mod request_editor;
+mod request_settings;
 mod response_panel;
 mod schema_browser;
 mod tree_panel;

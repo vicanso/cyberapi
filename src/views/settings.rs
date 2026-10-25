@@ -156,9 +156,9 @@ enum Clearing {
 
 /// An entry of a list: its label, and its place in the list.
 #[derive(Clone)]
-struct Choice {
-    label: SharedString,
-    index: usize,
+pub(super) struct Choice {
+    pub(super) label: SharedString,
+    pub(super) index: usize,
 }
 
 impl SelectItem for Choice {

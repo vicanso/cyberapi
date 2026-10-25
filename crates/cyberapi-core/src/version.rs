@@ -19,7 +19,9 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 /// client that has an older one reads a server's projects but may not
 /// change them: it would drop what it cannot read. Clients that do not say
 /// which they have (0.2.1 and before) have the first.
-pub const MODEL: u32 = 1;
+///
+/// 2: an API's own sending settings (#71, `HttpRequest.settings`).
+pub const MODEL: u32 = 2;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

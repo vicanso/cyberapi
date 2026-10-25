@@ -16,7 +16,7 @@ use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, ContentType, Folder, HttpMethod, HttpRequest, KvParam, VariableCategory,
 };
-use cyberapi_core::prefs::{AppPrefs, ThemeMode, WorkspacePrefs};
+use cyberapi_core::prefs::{AppPrefs, HttpVersion, RequestSettings, ThemeMode, Timeouts, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse, HttpStats};
 use cyberapi_core::sync::ProjectConfig;
 use cyberapi_core::tree::{Placement, Tree, TreeData, TreeError};
@@ -393,6 +393,16 @@ async fn requests_are_saved(storage: &Storage) {
             enabled: false,
         }],
         auth: vec![],
+        // An API's own sending settings (#71).
+        settings: RequestSettings {
+            timeouts: Timeouts {
+                connect: 3,
+                ..Timeouts::default()
+            },
+            follow_redirects: Some(false),
+            accept_invalid_certs: None,
+            http_version: Some(HttpVersion::Http2),
+        },
         // What a newer version keeps in a request comes back as it went
         // (`docs/batch4-design.md` §2.1).
         extra: HttpRequest::from_json_lenient(r#"{"laterField": {"kept": [1, "two"]}}"#).extra,

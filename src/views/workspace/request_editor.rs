@@ -69,6 +69,8 @@ pub struct RequestEditor {
     /// A GraphQL body's query, variables and operation, edited apart and
     /// kept together (`cyberapi_core::graphql::GraphQlBody`).
     graphql: GraphQlFields,
+    /// #71: the API's own sending settings.
+    settings: Entity<super::request_settings::RequestSettingsView>,
     /// The response whose GraphQL errors the query marks, and the query it
     /// was sent with (#70).
     marked: Option<(String, String)>,
@@ -225,6 +227,19 @@ fn uri_placeholder(method: HttpMethod) -> String {
     .to_string()
 }
 
+/// How many of the settings an API sets of its own (#71).
+fn overridden(settings: &cyberapi_core::prefs::RequestSettings) -> usize {
+    let timeouts = [
+        settings.timeouts.connect,
+        settings.timeouts.write,
+        settings.timeouts.read,
+    ];
+    timeouts.iter().filter(|seconds| **seconds > 0).count()
+        + usize::from(settings.follow_redirects.is_some())
+        + usize::from(settings.accept_invalid_certs.is_some())
+        + usize::from(settings.http_version.is_some())
+}
+
 impl RequestEditor {
     pub fn new(
         workspace: Entity<WorkspaceState>,
@@ -284,6 +299,10 @@ impl RequestEditor {
             window,
             cx,
         );
+        let settings = {
+            let api = api.clone();
+            cx.new(|cx| super::request_settings::RequestSettingsView::new(api, window, cx))
+        };
         let mut subscriptions = vec![
             cx.observe(&api, |this, _, cx| {
                 this.follow_sending(cx);
@@ -402,6 +421,7 @@ impl RequestEditor {
             body,
             graphql,
             marked: None,
+            settings,
             grpc_message,
             form,
             query,
@@ -854,6 +874,10 @@ impl RequestEditor {
         self._subscriptions
             .extend(template_hints::watch(&self.body, window, cx));
         self.rebuild_graphql(window, cx);
+        self.settings = {
+            let api = self.api.clone();
+            cx.new(|cx| super::request_settings::RequestSettingsView::new(api, window, cx))
+        };
         self.grpc_message = grpc_message_state(&request, &self.hints, window, cx);
         let watching = Self::watch_grpc(&self.grpc_message, window, cx);
         self._subscriptions.extend(watching);
@@ -1351,6 +1375,8 @@ impl RequestEditor {
                 RequestTab::Query => (t!("editor.query"), count(&request.query)),
                 RequestTab::Headers => (t!("editor.headers"), count(&request.headers)),
                 RequestTab::Auth => (t!("editor.auth"), count(&request.auth)),
+                // #71: how many it sets of its own.
+                RequestTab::Settings => (t!("editor.settings"), overridden(&request.settings)),
             };
             if count > 0 {
                 format!("{name} ({count})")
@@ -1673,6 +1699,7 @@ impl Render for RequestEditor {
                 .p_2()
                 .child(self.headers.clone())
                 .into_any_element(),
+            RequestTab::Settings => self.settings.clone().into_any_element(),
             RequestTab::Auth => v_flex()
                 .id("request-auth")
                 .size_full()
