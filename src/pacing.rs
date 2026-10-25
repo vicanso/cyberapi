@@ -19,7 +19,9 @@ pub const REVISION_POLL: Option<Duration> = Some(Duration::from_secs(10));
 /// one — asks the server whether another reader changed it
 /// (`docs/server-sync.md` §3.1). The desktop's own projects never ask. It
 /// only shows others' changes sooner: a sync checks the server's revision
-/// itself. Teammates editing in their pages see each other's sooner.
+/// itself. Teammates editing in their pages see each other's sooner. The
+/// projects page asks the server for its list as often, while it shows: a
+/// project made or shared by others comes in without leaving it.
 #[cfg(not(target_family = "wasm"))]
 pub const SERVER_POLL: Option<Duration> = Some(Duration::from_secs(30));
 #[cfg(target_family = "wasm")]

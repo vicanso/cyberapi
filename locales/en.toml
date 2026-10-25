@@ -49,6 +49,7 @@ refused_client_too_old = "The server keeps projects in a newer way than this app
 refused_environment_name_taken = "The project has an environment of that name already."
 
 [dashboard]
+refresh = "Ask the server for its projects again"
 title = "Projects"
 search = "Search projects"
 new = "New project"

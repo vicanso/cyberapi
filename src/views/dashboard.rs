@@ -154,6 +154,12 @@ impl DashboardView {
                 InputEvent::PressEnter { .. } => this.open_first_found(cx),
                 _ => {}
             }),
+            // Back to the window: what changed on the server meanwhile.
+            cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.state.update(cx, |state, cx| state.refresh(cx));
+                }
+            }),
         ];
         let focus = cx.focus_handle();
         focus.focus(window, cx);
@@ -499,6 +505,17 @@ impl DashboardView {
                     }),
             )
             .child(div().flex_1())
+            // The server's list again, at once.
+            .when(self.state.read(cx).hears_server(), |this| {
+                this.child(
+                    Button::new("dashboard-refresh")
+                        .ghost()
+                        .small()
+                        .icon(Icons::RotateCw)
+                        .tooltip(t!("dashboard.refresh").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| this.state.update(cx, |state, cx| state.refresh(cx)))),
+                )
+            })
             .child(
                 Button::new("dashboard-import")
                     .outline()

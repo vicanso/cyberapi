@@ -283,6 +283,51 @@ fn shown(dashboard: &Entity<DashboardState>, cx: &mut TestAppContext) -> Vec<Str
     })
 }
 
+/// A project made on the server while the list shows comes in on the next
+/// beat, copied here, without leaving the page; at once when the reader
+/// asks. Out of reach, the list does not ask.
+#[gpui_kit::test]
+async fn the_list_hears_of_new_server_projects(cx: &mut TestAppContext) {
+    let machine = Machine::signed_in(cx);
+    machine.on_server("shop").await;
+    let dashboard = machine.dashboard(cx);
+    let names = |cx: &mut TestAppContext| {
+        let mut names: Vec<String> = dashboard.read_with(cx, |state, _| {
+            state.collections().iter().map(|found| found.name.clone()).collect()
+        });
+        names.sort();
+        names
+    };
+    assert_eq!(names(cx), ["shop"]);
+    assert!(dashboard.read_with(cx, |state, _| state.hears_server()));
+
+    let orders = machine.on_server("orders").await;
+    cx.run_until_parked();
+    assert_eq!(names(cx), ["shop"], "not before the beat");
+    let beat = crate::pacing::SERVER_POLL.expect("the desktop polls");
+    cx.executor().advance_clock(beat);
+    cx.run_until_parked();
+    assert_eq!(names(cx), ["orders", "shop"]);
+    assert!(machine.binding(&orders.id).is_some(), "copied here");
+
+    machine.on_server("users").await;
+    dashboard.update(cx, |state, cx| state.refresh(cx));
+    cx.run_until_parked();
+    assert_eq!(names(cx), ["orders", "shop", "users"]);
+
+    // Out of reach: no beat asks; the server state tries on its own.
+    machine.bridge.online.store(false, Ordering::SeqCst);
+    machine
+        .server
+        .update(cx, |server, cx| server.heard(Some("refused"), cx));
+    cx.run_until_parked();
+    let calls = machine.bridge.calls.load(Ordering::SeqCst);
+    dashboard.update(cx, |state, cx| state.refresh(cx));
+    cx.run_until_parked();
+    assert!(!dashboard.read_with(cx, |state, _| state.hears_server()));
+    assert_eq!(machine.bridge.calls.load(Ordering::SeqCst), calls, "not asked");
+}
+
 #[gpui_kit::test]
 async fn the_accounts_server_projects_are_copied_and_synced(cx: &mut TestAppContext) {
     let machine = Machine::signed_in(cx);

@@ -21,7 +21,7 @@ use cyberapi_core::model::Collection;
 use cyberapi_core::sync::{self, CopyBinding, Moment, ProjectConfig, Step};
 use cyberapi_core::{AccountId, CollectionId};
 use cyberapi_store::{CollectionEdit, NewCollection, ServerCopyStore, Storage, StoreError, StoreFuture, rules};
-use gpui_kit::{Context, Entity, EventEmitter, Subscription};
+use gpui_kit::{Context, Entity, EventEmitter, Subscription, Task};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tracing::warn;
@@ -91,7 +91,13 @@ pub struct DashboardState {
     on_server: Option<Vec<Collection>>,
     /// Changes on their way to the server.
     syncing: BTreeSet<CollectionId>,
+    /// Copies being made or refreshed: a beat while they are does not ask
+    /// for the same ones again.
+    pulling: bool,
     _server: Option<Subscription>,
+    /// The server asked again for the list while it shows: a project made,
+    /// shared or changed by others comes in without leaving the page.
+    _poll: Option<Task<()>>,
 }
 
 impl EventEmitter<DashboardEvent> for DashboardState {}
@@ -123,11 +129,49 @@ impl DashboardState {
             bound: Vec::new(),
             on_server: None,
             syncing: BTreeSet::new(),
+            pulling: false,
             _server: watch,
+            _poll: None,
         };
         state.read_server(cx);
         state.reload(cx);
+        state._poll = crate::pacing::SERVER_POLL.map(|every| Self::poll(every, cx));
         state
+    }
+
+    /// Asks again on each beat, while the list is a server's: the page's,
+    /// or the desktop's signed in and within reach. A page in a background
+    /// tab asks on one beat in `HIDDEN_EVERY`.
+    fn poll(every: std::time::Duration, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            let mut beats = 0u32;
+            loop {
+                cx.background_executor().timer(every).await;
+                beats = beats.wrapping_add(1);
+                if crate::pacing::page_hidden() && !beats.is_multiple_of(crate::pacing::HIDDEN_EVERY) {
+                    continue;
+                }
+                if this.update(cx, |this, cx| this.refresh(cx)).is_err() {
+                    return;
+                }
+            }
+        })
+    }
+
+    /// Whether the list has a server to hear from: the page's, or the
+    /// desktop's signed in and within reach.
+    pub fn hears_server(&self) -> bool {
+        self.scope.is_some() || (self.desktop.is_some() && self.reached)
+    }
+
+    /// The list asked for again, quietly — the cards stay while it is — when
+    /// it has a server to hear from: what others made, shared or changed
+    /// shows, a new server project copied here (`docs/server-sync.md` §6).
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !self.hears_server() || self.load == Load::Loading || self.pulling {
+            return;
+        }
+        self.reload_listed(true, cx);
     }
 
     /// The reader is known now, or another: their drafts show.
@@ -354,7 +398,7 @@ impl DashboardState {
                     let stale: Vec<Collection> =
                         projects.iter().filter(|project| this.stale(project)).cloned().collect();
                     this.on_server = Some(projects);
-                    if !stale.is_empty() {
+                    if !stale.is_empty() && !this.pulling {
                         this.pull(desktop, stale, None, cx);
                     }
                 }
@@ -387,7 +431,9 @@ impl DashboardState {
     /// first, made, with what to import into it.
     fn pull(&mut self, desktop: Desktop, projects: Vec<Collection>, then: Option<Made>, cx: &mut Context<Self>) {
         let local = self.storage.clone();
+        self.pulling = true;
         run_store(cx, pull_copies(desktop, local, projects), move |this, result, cx| {
+            this.pulling = false;
             match result {
                 Ok(bound) => {
                     this.note_bound(bound, cx);
@@ -772,6 +818,24 @@ mod tests {
         let mut listed = names(&state, cx);
         listed.sort();
         assert_eq!(listed, ["blank", "shop"]);
+    }
+
+    /// A page's list asks its server again on each beat: a project made
+    /// meanwhile shows without leaving the page.
+    #[gpui_kit::test]
+    async fn a_pages_list_hears_of_new_projects(cx: &mut TestAppContext) {
+        let server = MemoryStore::new().storage();
+        project(&server, "shop").await;
+        let state = cx.new(|cx| DashboardState::new(server.clone(), Some(READER.into()), None, cx));
+        cx.run_until_parked();
+        assert_eq!(names(&state, cx), ["shop"]);
+        project(&server, "orders").await;
+        let beat = crate::pacing::SERVER_POLL.expect("a page polls");
+        cx.executor().advance_clock(beat);
+        cx.run_until_parked();
+        let mut listed = names(&state, cx);
+        listed.sort();
+        assert_eq!(listed, ["orders", "shop"]);
     }
 
     /// Server-sync §2–4: a server project's name is part of what syncs.
