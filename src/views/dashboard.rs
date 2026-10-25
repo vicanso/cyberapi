@@ -470,7 +470,11 @@ impl DashboardView {
         let api_count = self.state.read(cx).api_count(&collection.id);
         let unsynced = self.state.read(cx).unsynced(&collection.id);
         let syncing = self.state.read(cx).syncing(&collection.id);
-        let sync = unsynced.map(|behind| sync_chip(collection.id.clone(), behind, syncing, &self.state));
+        // A copy's server out of reach: said where its sync button is.
+        let unreachable = self.state.read(cx).unreachable(&collection.id, cx).map(|reason| {
+            crate::views::unreachable_note(format!("collection-unreachable-{}", collection.id).into(), &reason, cx)
+        });
+        let sync = unsynced.map(|behind| sync_chip(collection.id.clone(), behind, syncing, unreachable, &self.state));
         let theme = cx.theme();
         let (ring, muted) = (theme.ring, theme.muted_foreground);
         let surface = card_surface(cx);
@@ -792,7 +796,13 @@ struct CardActions {
 /// A card's word that its changes are not on the server yet — and that the
 /// server moved on too, when it did — and the button that syncs them
 /// (`docs/server-sync.md` §3.2, §3.3).
-fn sync_chip(id: CollectionId, behind: bool, syncing: bool, state: &Entity<DashboardState>) -> impl IntoElement {
+fn sync_chip(
+    id: CollectionId,
+    behind: bool,
+    syncing: bool,
+    unreachable: Option<AnyElement>,
+    state: &Entity<DashboardState>,
+) -> impl IntoElement {
     let key = id.to_string();
     let (label, hint) = if behind {
         (t!("sync.unsynced_behind"), t!("sync.unsynced_behind_hint"))
@@ -814,15 +824,17 @@ fn sync_chip(id: CollectionId, behind: bool, syncing: bool, state: &Entity<Dashb
                 .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
                 .child(crate::views::unsynced_tag().child(label.to_string())),
         )
-        .child(
-            Button::new(SharedString::from(format!("collection-push-{key}")))
+        .child(match unreachable {
+            Some(note) => note,
+            None => Button::new(SharedString::from(format!("collection-push-{key}")))
                 .ghost()
                 .xsmall()
                 .icon(Icons::CloudUpload)
                 .tooltip(t!("sync.sync").to_string())
                 .loading(syncing)
-                .on_click(move |_, _, cx| state.update(cx, |state, cx| state.sync(&id, false, cx))),
-        )
+                .on_click(move |_, _, cx| state.update(cx, |state, cx| state.sync(&id, false, cx)))
+                .into_any_element(),
+        })
 }
 
 /// A card's menu: changing the project for its managers (F2.3, §9.2), its

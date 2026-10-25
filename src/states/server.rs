@@ -16,7 +16,7 @@ use cyberapi_store::{DirectoryStore, ServerCopyStore, Storage};
 use cyberapi_store_bridge::{
     BridgeStore, EngineTransport, LoginForm, SignInError, bridge_address, session_me, sign_in, sign_out,
 };
-use gpui_kit::{AppContext as _, Context, EventEmitter};
+use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 use std::sync::Arc;
 
 /// Where the session stands.
@@ -53,6 +53,9 @@ pub struct ServerState {
     /// bindings once read.
     copies: Option<Arc<dyn ServerCopyStore>>,
     bound: Option<Vec<CopyBinding>>,
+    /// The kept session asked about again: the bridge could not be
+    /// reached, and the network may come back.
+    _retry: Option<Task<()>>,
 }
 
 impl EventEmitter<ServerEvent> for ServerState {}
@@ -69,6 +72,7 @@ impl ServerState {
             signing_in: false,
             copies,
             bound: None,
+            _retry: None,
         };
         state.check(cx);
         state.reload_copies(cx);
@@ -216,7 +220,10 @@ impl ServerState {
             self.status = ServerStatus::SignedOut;
             return cx.notify();
         };
-        self.status = ServerStatus::Checking;
+        // Asked again while out of reach, it stays so until it answers.
+        if !matches!(self.status, ServerStatus::Unreachable(_)) {
+            self.status = ServerStatus::Checking;
+        }
         cx.notify();
         cx.spawn(async move |this, cx| {
             let answer = cx.background_spawn(async move { session_me(&transport).await }).await;
@@ -234,13 +241,50 @@ impl ServerState {
                         this.forget_token();
                         ServerStatus::SignedOut
                     }
-                    Err(reason) => ServerStatus::Unreachable(reason),
+                    Err(reason) => {
+                        this.retry_later(cx);
+                        ServerStatus::Unreachable(reason)
+                    }
                 };
                 this.tell_app(cx);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// What a call to the bridge made elsewhere — a server project's poll,
+    /// a sync — said of reaching it: out of reach, the status says so
+    /// and the session is asked about again until it answers; an answer
+    /// while out of reach asks at once.
+    pub fn heard(&mut self, unreachable: Option<&str>, cx: &mut Context<Self>) {
+        match (unreachable, &self.status) {
+            (Some(reason), ServerStatus::SignedIn(_)) => {
+                self.status = ServerStatus::Unreachable(reason.to_string());
+                self.retry_later(cx);
+                cx.notify();
+            }
+            (None, ServerStatus::Unreachable(_)) => self.check(cx),
+            _ => {}
+        }
+    }
+
+    /// The bridge out of reach is asked again a beat later, and on until it
+    /// answers: the network back, who is signed in and their projects are
+    /// known again without a restart.
+    fn retry_later(&mut self, cx: &mut Context<Self>) {
+        let Some(every) = crate::pacing::SERVER_POLL else {
+            return;
+        };
+        self._retry = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(every).await;
+            let _ = this.update(cx, |this, cx| {
+                // Signed in or out meanwhile: nothing to ask again.
+                if matches!(this.status, ServerStatus::Unreachable(_)) {
+                    this.check(cx);
+                }
+            });
+        }));
     }
 
     /// Reads who is signed in again, staying signed in meanwhile: their

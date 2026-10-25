@@ -4,7 +4,7 @@
 //! dashboard and workspace states between them.
 
 use super::copy::ServerCopy;
-use super::{DashboardState, ServerState, WorkspaceEvent, WorkspaceState};
+use super::{DashboardState, ServerState, ServerStatus, WorkspaceEvent, WorkspaceState};
 use crate::server_local::{self, ServerFile};
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::directory::{
@@ -376,6 +376,38 @@ async fn offline_the_copy_is_still_worked_on(cx: &mut TestAppContext) {
         dashboard.read_with(cx, |state, _| state.unsynced(&theirs.id)),
         Some(false)
     );
+}
+
+/// A bridge out of reach is said so where the sync button is — in the
+/// project, on its card — and asked again until it answers.
+#[gpui_kit::test]
+async fn an_unreachable_bridge_is_said_so_and_asked_again(cx: &mut TestAppContext) {
+    let machine = Machine::signed_in(cx);
+    let theirs = machine.on_server("orders").await;
+    machine.dashboard(cx);
+
+    machine.bridge.online.store(false, Ordering::SeqCst);
+    let (workspace, _) = machine.open(theirs.clone(), cx);
+    assert!(workspace.read_with(cx, |state, _| state.unreachable().is_some()));
+    // As at a start without the network.
+    machine.server.update(cx, |state, cx| state.check(cx));
+    cx.run_until_parked();
+    let dashboard = machine.dashboard(cx);
+    let on_card = |cx: &mut TestAppContext| dashboard.read_with(cx, |state, cx| state.unreachable(&theirs.id, cx));
+    assert!(on_card(cx).is_some());
+
+    // The network back: the next beat finds the server, and says nothing.
+    machine.bridge.online.store(true, Ordering::SeqCst);
+    let beat = crate::pacing::SERVER_POLL.expect("the desktop polls a copy's server");
+    cx.executor().advance_clock(beat);
+    cx.run_until_parked();
+    assert!(workspace.read_with(cx, |state, _| state.unreachable().is_none()));
+    assert!(
+        machine
+            .server
+            .read_with(cx, |state, _| matches!(state.status(), ServerStatus::SignedIn(_)))
+    );
+    assert!(on_card(cx).is_none());
 }
 
 #[gpui_kit::test]

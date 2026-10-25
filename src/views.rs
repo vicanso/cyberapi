@@ -57,7 +57,12 @@ pub use workspace::{WorkspaceView, bind_keys as bind_workspace_keys, bind_mac_pa
 use cyberapi_core::format::JSON_INDENT;
 use gpui_kit::component::input::TabSize;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ColorName, Sizable as _};
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme as _, ColorName, Icon, Sizable as _, h_flex};
+use gpui_kit::{
+    AnyElement, App, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _,
+};
 
 /// The Tab of an editor that holds JSON: as many spaces as the JSON written
 /// everywhere is indented by.
@@ -74,4 +79,26 @@ fn json_tab() -> TabSize {
 /// theme and dark on yellow in the dark one, hard to read in both.
 fn unsynced_tag() -> Tag {
     Tag::color(ColorName::Amber).small().rounded_full()
+}
+
+/// Where a server project's sync button is, while its server cannot be
+/// reached: that it cannot, why in the tooltip.
+fn unreachable_note(id: SharedString, reason: &str, cx: &App) -> AnyElement {
+    let hint = rust_i18n::t!("sync.unreachable_hint", reason = reason).to_string();
+    let muted = cx.theme().muted_foreground;
+    h_flex()
+        .id(id)
+        .flex_none()
+        .gap_1()
+        .items_center()
+        .text_xs()
+        .text_color(muted)
+        .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+        .child(
+            Icon::new(gpui_kit::assets::IconName::CloudOff)
+                .xsmall()
+                .text_color(muted),
+        )
+        .child(rust_i18n::t!("sync.unreachable").to_string())
+        .into_any_element()
 }

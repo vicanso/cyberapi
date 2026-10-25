@@ -86,6 +86,9 @@ struct CopyState {
     told_not_kept: bool,
     /// A pull, a push or giving changes up on its way.
     busy: bool,
+    /// Why the server could not be reached, the last it was asked: the
+    /// network or the bridge failed. Any answer from it clears this.
+    unreachable: Option<String>,
     /// A push waiting for the writes on their way: over the server's
     /// whatever it has, or only at the copy's base.
     push: Option<bool>,
@@ -182,6 +185,7 @@ impl WorkspaceState {
                 told: false,
                 told_not_kept: false,
                 busy: false,
+                unreachable: None,
                 push: None,
                 _news: news,
             }
@@ -241,6 +245,7 @@ impl WorkspaceState {
     /// again, behind any change of this reader's still on its way. Their own
     /// changes move it too, which costs one load.
     fn revision_read(&mut self, result: Result<Collection, StoreError>, cx: &mut Context<Self>) {
+        self.heard_from_server(result.as_ref().err(), cx);
         let collection = match result {
             Ok(collection) => collection,
             // Asked again next beat.
@@ -314,6 +319,7 @@ impl WorkspaceState {
         on_server: Result<(Collection, ConfigAt), StoreError>,
         cx: &mut Context<Self>,
     ) {
+        self.heard_from_server(on_server.as_ref().err(), cx);
         // The reader's place in it is the server's to say.
         if let Ok((found, _)) = &on_server {
             self.collection.role = found.role;
@@ -413,7 +419,10 @@ impl WorkspaceState {
             match result {
                 Ok(at) if !this.keeps_changes(cx) => this.take(at, false, cx),
                 Ok(_) => {}
-                Err(error) => warn!(%error, "the server's project could not be pulled"),
+                Err(error) => {
+                    this.heard_from_server(Some(&error), cx);
+                    warn!(%error, "the server's project could not be pulled");
+                }
             }
         });
     }
@@ -610,6 +619,7 @@ impl WorkspaceState {
     }
 
     fn pushed(&mut self, result: Result<(Pushed, u64, ProjectConfig), StoreError>, cx: &mut Context<Self>) {
+        self.heard_from_server(result.as_ref().err(), cx);
         let Some(copy) = self.copy.as_mut() else { return };
         copy.busy = false;
         match result {
@@ -658,6 +668,7 @@ impl WorkspaceState {
             if let Some(copy) = this.copy.as_mut() {
                 copy.busy = false;
             }
+            this.heard_from_server(result.as_ref().err(), cx);
             match result {
                 Ok(at) => this.take(at, true, cx),
                 Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
@@ -665,6 +676,33 @@ impl WorkspaceState {
             cx.notify();
         });
         cx.notify();
+    }
+
+    /// What a call to a server project's server says of reaching it: a
+    /// failure of the backend — the network, the bridge — is the server out
+    /// of reach; any answer, a refusal too, is it there.
+    fn heard_from_server(&mut self, error: Option<&StoreError>, cx: &mut Context<Self>) {
+        let Some(copy) = self.copy.as_mut() else { return };
+        let unreachable = match error {
+            Some(StoreError::Backend { message }) => Some(message.clone()),
+            _ => None,
+        };
+        // The desktop's server is told too: its projects' cards say it.
+        if let Some(server) = cx.try_global::<AppStore>().and_then(|store| store.server().cloned()) {
+            let reason = unreachable.clone();
+            server.update(cx, |server, cx| server.heard(reason.as_deref(), cx));
+        }
+        if copy.unreachable != unreachable {
+            copy.unreachable = unreachable;
+            cx.notify();
+        }
+    }
+
+    /// Why a server project's server could not be reached, the last it
+    /// was asked; `None` while it answers, and for a project of this
+    /// machine's.
+    pub fn unreachable(&self) -> Option<&str> {
+        self.copy.as_ref()?.unreachable.as_deref()
     }
 
     pub fn collection(&self) -> &Collection {

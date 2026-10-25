@@ -13,7 +13,7 @@
 //! signed out, are not listed; offline, the account's copies show as kept.
 
 use super::copy::{self, Pushed};
-use super::{Load, ServerState, run_store};
+use super::{Load, ServerState, ServerStatus, run_store};
 use crate::drafts_local::{self, Draft};
 use crate::{local_items, pins_local};
 use cyberapi_core::model::Collection;
@@ -77,6 +77,8 @@ pub struct DashboardState {
     server_state: Option<Entity<ServerState>>,
     /// Signed in there.
     desktop: Option<Desktop>,
+    /// The server answered who is signed in: its projects can be listed.
+    reached: bool,
     /// Every account's copies' bindings, as the server state has them.
     bound: Vec<CopyBinding>,
     /// The account's projects as its server lists them; `None` until read,
@@ -112,6 +114,7 @@ impl DashboardState {
             drafts: BTreeMap::new(),
             server_state: server,
             desktop: None,
+            reached: false,
             bound: Vec::new(),
             on_server: None,
             syncing: BTreeSet::new(),
@@ -131,13 +134,40 @@ impl DashboardState {
         }
     }
 
+    /// Why the server of `id`, a copy of a server project, cannot be
+    /// reached; `None` for one it reaches, and for a project of this
+    /// machine's.
+    pub fn unreachable(&self, id: &CollectionId, cx: &gpui_kit::App) -> Option<String> {
+        let server = self.server_state.as_ref()?.read(cx);
+        server.mine(id)?;
+        match server.status() {
+            ServerStatus::Unreachable(reason) => Some(reason.clone()),
+            _ => None,
+        }
+    }
+
+    /// What a sync said of reaching the desktop's server, for its status.
+    fn heard_from_server(&self, error: Option<&StoreError>, cx: &mut Context<Self>) {
+        let Some(server) = self.server_state.clone() else {
+            return;
+        };
+        let unreachable = match error {
+            Some(StoreError::Backend { message }) => Some(message.clone()),
+            _ => None,
+        };
+        server.update(cx, |server, cx| server.heard(unreachable.as_deref(), cx));
+    }
+
     /// The desktop's server changed: signed in or out, or its copies'
     /// bindings. Another account lists again.
     pub fn server_changed(&mut self, cx: &mut Context<Self>) {
         let before = self.desktop.as_ref().map(|desktop| desktop.account.clone());
+        let unreached = !self.reached;
         self.read_server(cx);
         let after = self.desktop.as_ref().map(|desktop| desktop.account.clone());
-        if before != after {
+        // Another account lists again, and so does one whose server came
+        // back within reach.
+        if before != after || (unreached && self.reached) {
             self.on_server = None;
             self.reload(cx);
         } else {
@@ -150,6 +180,7 @@ impl DashboardState {
         let Some(server) = &self.server_state else { return };
         let server = server.read(cx);
         self.bound = server.bound().to_vec();
+        self.reached = matches!(server.status(), ServerStatus::SignedIn(_));
         self.desktop = (|| {
             Some(Desktop {
                 server: server.storage()?,
@@ -567,6 +598,7 @@ impl DashboardState {
         let id = id.clone();
         run_store(cx, call, move |this, result, cx| {
             this.syncing.remove(&id);
+            this.heard_from_server(result.as_ref().err(), cx);
             match result {
                 Ok((Pushed::Written(_), level)) => {
                     this.note_bound(level.into_iter().collect(), cx);

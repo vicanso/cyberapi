@@ -4,7 +4,8 @@
 //! server has not, it says so, and that the server moved on too when it
 //! did, beside the button that syncs them. No sync for a project of this
 //! machine's, or for a viewer, who is told instead that changes are not
-//! kept.
+//! kept. While the server cannot be reached, that is said where the button
+//! is, whether or not there are changes to sync.
 
 use crate::states::WorkspaceState;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -35,6 +36,9 @@ impl ProjectTitle {
 impl Render for ProjectTitle {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
+        let unreachable = state
+            .unreachable()
+            .map(|reason| crate::views::unreachable_note("sync-unreachable".into(), reason, cx));
         let name = div()
             .flex_none()
             .max_w(px(240.))
@@ -61,11 +65,21 @@ impl Render for ProjectTitle {
                                 .child(t!("roles.viewer").to_string()),
                         ),
                 )
+                .children(unreachable.map(|note| div().ml_2().child(note)))
                 .into_any_element();
         }
         // A long name gives way to the pins beside it.
         if !state.unsynced() {
-            return name.into_any_element();
+            return match unreachable {
+                Some(note) => h_flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_2()
+                    .child(name)
+                    .child(note)
+                    .into_any_element(),
+                None => name.into_any_element(),
+            };
         }
         let (label, hint) = if state.server_moved() {
             (t!("sync.unsynced_behind"), t!("sync.unsynced_behind_hint"))
@@ -86,15 +100,18 @@ impl Render for ProjectTitle {
                     .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
                     .child(crate::views::unsynced_tag().child(label.to_string())),
             )
-            .child(
-                Button::new("sync-push")
+            // Out of reach, there is nothing to sync with.
+            .child(match unreachable {
+                Some(note) => div().ml_1().child(note).into_any_element(),
+                None => Button::new("sync-push")
                     .ghost()
                     .xsmall()
                     .icon(gpui_kit::assets::IconName::CloudUpload)
                     .label(t!("sync.sync").to_string())
                     .loading(syncing)
-                    .on_click(move |_, _, cx| state.update(cx, |state, cx| state.sync(false, cx))),
-            )
+                    .on_click(move |_, _, cx| state.update(cx, |state, cx| state.sync(false, cx)))
+                    .into_any_element(),
+            })
             .into_any_element()
     }
 }
