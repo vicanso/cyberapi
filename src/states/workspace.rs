@@ -49,8 +49,14 @@ use tracing::warn;
 pub enum WorkspaceEvent {
     /// A change the reader asked for did not happen.
     Failed(StoreError),
-    /// An import was written: how many APIs and folders.
-    Imported { apis: usize, folders: usize },
+    /// An import was written: how many APIs and folders. Imported again
+    /// (B3), also how many APIs the project had were updated, and how many
+    /// were left as they were.
+    Imported {
+        apis: usize,
+        folders: usize,
+        again: Option<(usize, usize)>,
+    },
     /// F3.9 / #69: an API as code, for the clipboard: what it is written
     /// as, and the code.
     Code(CodeTarget, String),
@@ -1028,6 +1034,11 @@ impl WorkspaceState {
         &self.tree
     }
 
+    /// The project's folders and APIs as kept.
+    pub fn tree_data(&self) -> &TreeData {
+        &self.data
+    }
+
     pub fn keyword(&self) -> &str {
         &self.keyword
     }
@@ -1443,11 +1454,105 @@ impl WorkspaceState {
                 }
                 this.save_prefs(cx);
                 this.add_environment(environment, cx);
-                cx.emit(WorkspaceEvent::Imported { apis, folders });
+                cx.emit(WorkspaceEvent::Imported {
+                    apis,
+                    folders,
+                    again: None,
+                });
                 cx.notify();
             }
             Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
         });
+    }
+
+    /// B3: `bundle` imported into `parent` again: an API the project has —
+    /// the same method to the same path — is updated (`update`) or left, not
+    /// added a second time; what is new goes into the folders of the same
+    /// name (`import::merge`); an environment variable it has is not added
+    /// twice.
+    pub fn import_again(&mut self, parent: Option<ItemId>, bundle: ImportBundle, update: bool, cx: &mut Context<Self>) {
+        // The open API as its editor holds it: an edit not saved yet is what
+        // updating starts from.
+        let open = self.api.as_ref().map(|api| {
+            let api = api.read(cx);
+            (api.api().clone(), api.request().clone())
+        });
+        let mut data = std::borrow::Cow::Borrowed(&self.data);
+        if let Some((id, request)) = &open
+            && data.apis.iter().any(|api| &api.id == id && &api.request != request)
+            && let Some(api) = data.to_mut().apis.iter_mut().find(|api| &api.id == id)
+        {
+            api.request = request.clone();
+        }
+        let merge = cyberapi_core::import::merge::merge(&data, parent.as_ref(), &bundle.items, update);
+        let (apis, folders) = merge.added();
+        let again = Some((merge.updates.len(), merge.matched - merge.updates.len()));
+        let known: Vec<&str> = self.environment.iter().map(|variable| variable.name.as_str()).collect();
+        let environment: Vec<(String, String)> = bundle
+            .environment
+            .into_iter()
+            .filter(|(name, value)| !name.trim().is_empty() || !value.trim().is_empty())
+            .filter(|(name, _)| !known.contains(&name.as_str()))
+            .collect();
+        self.add_environment(environment, cx);
+        let calls = merge.updates.len() + merge.additions.len();
+        if calls == 0 {
+            cx.emit(WorkspaceEvent::Imported { apis, folders, again });
+            return;
+        }
+        let tree = self.sender.storage.tree();
+        let collection = self.collection.id.clone();
+        // Said once, when the last call is answered: they are answered in
+        // the order they are made.
+        let mut left = calls;
+        let mut said = move || {
+            left -= 1;
+            left == 0
+        };
+        for (id, request) in merge.updates {
+            let done = said();
+            let call = tree.save_request(collection.clone(), id.clone(), request);
+            run_serial(cx, &self.gate, call, move |this, result, cx| {
+                match result {
+                    Ok(setting) => {
+                        this.api_saved(setting, cx);
+                        // Its editor starts again from what the import made.
+                        if this.api.as_ref().is_some_and(|api| api.read(cx).api() == &id)
+                            && let Some(api) = this.api.take()
+                        {
+                            api.update(cx, |api, _| api.forget_unsaved());
+                            this.sync_api(cx);
+                        }
+                    }
+                    Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+                }
+                if done {
+                    cx.emit(WorkspaceEvent::Imported { apis, folders, again });
+                }
+                cx.notify();
+            });
+        }
+        for (place, items) in merge.additions {
+            let done = said();
+            let call = tree.import(collection.clone(), place.clone(), items);
+            run_serial(cx, &self.gate, call, move |this, result, cx| {
+                match result {
+                    Ok(imported) => {
+                        this.data.folders.extend(imported.folders);
+                        this.data.apis.extend(imported.apis);
+                        this.data.apply(&imported.change);
+                        this.tree = Tree::build(&this.data);
+                        this.open_folder(place.as_ref());
+                        this.save_prefs(cx);
+                    }
+                    Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+                }
+                if done {
+                    cx.emit(WorkspaceEvent::Imported { apis, folders, again });
+                }
+                cx.notify();
+            });
+        }
     }
 
     fn add_environment(&mut self, variables: Vec<(String, String)>, cx: &mut Context<Self>) {
@@ -1942,6 +2047,83 @@ mod tests {
         state.update(cx, |state, cx| state.reload(cx));
         cx.run_until_parked();
         assert_eq!(row_names(&state, cx), ["orders"]);
+    }
+
+    /// B3: imported again, an API the project has is left or updated, not
+    /// added twice; what is new goes into the folder of the same name; an
+    /// environment variable it has is not added twice.
+    #[gpui_kit::test]
+    async fn an_import_again_adds_only_what_is_new(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        let parse = |text: &str| cyberapi_core::import::parse(text).expect("a collection");
+        let first = parse(
+            r#"{"info": {"name": "Shop"}, "variable": [{"key": "host", "value": "https://a.test"}],
+                "item": [{"name": "orders", "item": [
+                    {"name": "list", "request": {"method": "GET", "url": "{{host}}/orders"}}
+                ]}]}"#,
+        );
+        let second = parse(
+            r#"{"info": {"name": "Shop"}, "variable": [{"key": "host", "value": "https://a.test"}],
+                "item": [{"name": "orders", "item": [
+                    {"name": "list", "request": {"method": "GET", "url": "{{host}}/orders?page=1",
+                        "header": [{"key": "X-New", "value": "1"}]}},
+                    {"name": "make", "request": {"method": "POST", "url": "{{host}}/orders"}}
+                ]}]}"#,
+        );
+        state.update(cx, |state, cx| state.import(None, first, cx));
+        cx.run_until_parked();
+        let apis = |cx: &mut TestAppContext| -> Vec<(String, String)> {
+            state.read_with(cx, |state, _| {
+                let mut apis: Vec<(String, String)> = state
+                    .tree_data()
+                    .apis
+                    .iter()
+                    .map(|api| (api.name.clone(), api.request.uri.clone()))
+                    .collect();
+                apis.sort();
+                apis
+            })
+        };
+
+        state.update(cx, |state, cx| state.import_again(None, second.clone(), false, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            apis(cx),
+            [
+                ("list".to_string(), "{{host}}/orders".to_string()),
+                ("make".to_string(), "{{host}}/orders".to_string())
+            ],
+            "the one it had left as it was"
+        );
+        let orders = find(&state, "orders", cx);
+        let in_orders = state.read_with(cx, |state, _| {
+            state
+                .tree_data()
+                .folders
+                .iter()
+                .filter(|folder| folder.name == "orders")
+                .map(|folder| folder.children.len())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(in_orders, [2], "into the folder it had, not a second one");
+        let hosts = storage
+            .variables()
+            .list(collection.id.clone(), VariableCategory::Environment)
+            .await
+            .expect("variables");
+        assert_eq!(hosts.iter().filter(|variable| variable.name == "host").count(), 1);
+
+        state.update(cx, |state, cx| state.import_again(Some(orders), second, true, cx));
+        cx.run_until_parked();
+        assert_eq!(apis(cx).len(), 2, "nothing added");
+        // Updated, as written: the query the import splits off the address,
+        // its header.
+        let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        let list = kept.apis.iter().find(|api| api.name == "list").expect("list");
+        assert_eq!(list.request.query[0].key, "page");
+        assert_eq!(list.request.headers[0].key, "X-New");
     }
 
     /// Each change saves the whole state; the last one made is the one kept,

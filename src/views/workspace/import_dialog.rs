@@ -7,10 +7,11 @@ use crate::this_build;
 use crate::views::name_dialog::ok_button;
 use cyberapi_core::ItemId;
 use cyberapi_core::import::{self, Format, ImportBundle};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use cyberapi_core::tree::TreeData;
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent, Paste};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -18,6 +19,7 @@ use gpui_kit::{
 };
 use rust_i18n::t;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// A text longer than this is not put in the editor whole. The editor lays
 /// out and colours everything it holds at once, on the main thread: a few
@@ -93,22 +95,37 @@ fn format_name(format: Format) -> &'static str {
 /// What a text would import, said in a line; or why it would not.
 type Found = Result<String, String>;
 
+/// B3: the project an import goes into, as it was when the dialog opened,
+/// and where in it.
+struct MergeInto {
+    tree: TreeData,
+    parent: Option<ItemId>,
+}
+
 /// F10.2 before importing: what the text is and what it holds, or why it
-/// is nothing to import. `None` for no text.
-fn describe(text: &str) -> Option<Found> {
+/// is nothing to import (`None` for no text); and, going into a project,
+/// how many of its APIs the project has already (B3).
+fn describe(text: &str, into: Option<&MergeInto>) -> (Option<Found>, usize) {
     if text.trim().is_empty() {
-        return None;
+        return (None, 0);
     }
     let format = match import::detect(text) {
         Ok((format, _)) => format_name(format),
         Err(failure) => {
-            return Some(Err(
-                t!("import.unreadable", why = crate::i18n::import_error(&failure)).to_string()
-            ));
+            return (
+                Some(Err(
+                    t!("import.unreadable", why = crate::i18n::import_error(&failure)).to_string()
+                )),
+                0,
+            );
         }
     };
-    Some(match import::parse(text) {
+    let mut known = 0;
+    let found = match import::parse(text) {
         Ok(bundle) => {
+            if let Some(into) = into {
+                known = import::merge::merge(&into.tree, into.parent.as_ref(), &bundle.items, false).matched;
+            }
             let (apis, folders) = bundle.counts();
             let mut found = t!(
                 "import.found",
@@ -124,7 +141,8 @@ fn describe(text: &str) -> Option<Found> {
             Ok(found)
         }
         Err(failure) => Err(t!("import.unreadable", why = crate::i18n::import_error(&failure)).to_string()),
-    })
+    };
+    (Some(found), known)
 }
 
 pub fn open_import_dialog(
@@ -133,10 +151,20 @@ pub fn open_import_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let import = move |bundle, _: &mut Window, cx: &mut App| {
-        let _ = state.update(cx, |state, cx| state.import(parent.clone(), bundle, cx));
+    // B3: what the project has, to import again into.
+    let into = state.upgrade().map(|state| {
+        Arc::new(MergeInto {
+            tree: state.read(cx).tree_data().clone(),
+            parent: parent.clone(),
+        })
+    });
+    let import = move |bundle, again: Option<bool>, _: &mut Window, cx: &mut App| {
+        let _ = state.update(cx, |state, cx| match again {
+            Some(update) => state.import_again(parent.clone(), bundle, update, cx),
+            None => state.import(parent.clone(), bundle, cx),
+        });
     };
-    open(t!("import.dialog_title").to_string(), Rc::new(import), window, cx);
+    open(t!("import.dialog_title").to_string(), Rc::new(import), into, window, cx);
 }
 
 /// #65: what is imported becomes a new project; `import` names and makes it.
@@ -145,11 +173,20 @@ pub fn open_import_project_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
-    open(t!("import.project_title").to_string(), Rc::new(import), window, cx);
+    let import = move |bundle, _: Option<bool>, window: &mut Window, cx: &mut App| import(bundle, window, cx);
+    open(
+        t!("import.project_title").to_string(),
+        Rc::new(import),
+        None,
+        window,
+        cx,
+    );
 }
 
-/// What the dialog does with the bundle the text holds.
-type OnImport = Rc<dyn Fn(ImportBundle, &mut Window, &mut App)>;
+/// What the dialog does with the bundle the text holds, and whether it is
+/// imported again (B3): `Some` when the project has some of its APIs,
+/// `true` to update them.
+type OnImport = Rc<dyn Fn(ImportBundle, Option<bool>, &mut Window, &mut App)>;
 
 /// The dialog's text and what it would import.
 struct ImportView {
@@ -165,6 +202,11 @@ struct ImportView {
     error: Option<String>,
     /// B3: the text is an address, to fetch what to import from.
     address: Option<String>,
+    /// B3: the project imported into; how many of the text's APIs it has
+    /// already; whether those are updated.
+    into: Option<Arc<MergeInto>>,
+    known: usize,
+    update: bool,
     fetching: Option<Task<()>>,
     highlighted: &'static str,
     /// The latest `describe`; a newer one drops it.
@@ -173,7 +215,7 @@ struct ImportView {
 }
 
 impl ImportView {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(into: Option<Arc<MergeInto>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language("json")
@@ -195,6 +237,9 @@ impl ImportView {
             found: None,
             error: None,
             address: None,
+            into,
+            known: 0,
+            update: false,
             fetching: None,
             highlighted: "json",
             describing: Task::ready(()),
@@ -242,6 +287,7 @@ impl ImportView {
         }
         if text.trim().is_empty() {
             self.found = None;
+            self.known = 0;
             self.address = None;
             self.describing = Task::ready(());
             cx.notify();
@@ -251,15 +297,18 @@ impl ImportView {
         self.address = address(&text).map(str::to_string);
         if self.address.is_some() {
             self.found = Some(Ok(t!("import.fetch_hint").to_string()));
+            self.known = 0;
             self.describing = Task::ready(());
             cx.notify();
             return;
         }
-        let found = cx.background_spawn(async move { describe(&text) });
+        let into = self.into.clone();
+        let found = cx.background_spawn(async move { describe(&text, into.as_deref()) });
         self.describing = cx.spawn(async move |this, cx| {
-            let found = found.await;
+            let (found, known) = found.await;
             let _ = this.update(cx, |this, cx| {
                 this.found = found;
+                this.known = known;
                 cx.notify();
             });
         });
@@ -426,19 +475,65 @@ impl Render for ImportView {
                             }),
                     ),
             )
+            // B3: the APIs the project has already, left or updated.
+            .when(self.known > 0, |this| {
+                let update = self.update;
+                this.child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    div().text_sm().child(
+                                        t!("import.known", apis = crate::i18n::counted("workspace.api", self.known))
+                                            .to_string(),
+                                    ),
+                                )
+                                .child(
+                                    [t!("import.add_new"), t!("import.update_known")]
+                                        .into_iter()
+                                        .enumerate()
+                                        .fold(
+                                            ButtonGroup::new("import-again").compact().small().outline(),
+                                            |group, (index, label)| {
+                                                group.child(
+                                                    Button::new(("import-again", index))
+                                                        .label(label.to_string())
+                                                        .selected((index == 1) == update),
+                                                )
+                                            },
+                                        )
+                                        .on_click(cx.listener(|this, picks: &Vec<usize>, _, cx| {
+                                            this.update = picks.first() == Some(&1);
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .when(update, |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(t!("import.update_note").to_string()),
+                            )
+                        }),
+                )
+            })
             .when_some(self.error.clone(), |this, message| {
                 this.child(div().text_sm().text_color(danger).child(message))
             })
     }
 }
 
-fn open(title: String, import: OnImport, window: &mut Window, cx: &mut App) {
+fn open(title: String, import: OnImport, into: Option<Arc<MergeInto>>, window: &mut Window, cx: &mut App) {
     // F10.1: the clipboard, read because the reader asked to import, and
     // asked for now, while that click still counts as theirs: a page may
     // read it only then, through the browser, which may ask the reader
     // first. A page's synchronous read is always empty.
     let clipboard = cx.read_from_clipboard_async();
-    let view = cx.new(|cx| ImportView::new(window, cx));
+    let view = cx.new(|cx| ImportView::new(into, window, cx));
     let filling = view.downgrade();
     window
         .spawn(cx, async move |cx| {
@@ -460,10 +555,13 @@ fn open(title: String, import: OnImport, window: &mut Window, cx: &mut App) {
         let submit = {
             let (view, import) = (view.clone(), import.clone());
             move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                let text = view.read(cx).text(cx);
+                let (text, again) = {
+                    let view = view.read(cx);
+                    (view.text(cx), (view.known > 0).then_some(view.update))
+                };
                 match import::parse(&text) {
                     Ok(bundle) => {
-                        import(bundle, window, cx);
+                        import(bundle, again, window, cx);
                         true
                     }
                     // Why shows under the text already (`describe`).
@@ -528,7 +626,7 @@ mod tests {
         let mut view = None;
         let window: AnyWindowHandle = cx
             .open_window(size(px(720.), px(480.)), |window, cx| {
-                let import = cx.new(|cx| ImportView::new(window, cx));
+                let import = cx.new(|cx| ImportView::new(None, window, cx));
                 view = Some(import.clone());
                 Root::new(import, window, cx)
             })
@@ -545,6 +643,50 @@ mod tests {
         })
         .expect("the window is open");
         cx.run_until_parked();
+    }
+
+    /// B3: going into a project, the dialog counts the APIs it has already
+    /// — the same method to the same path — and they are left unless the
+    /// reader picks updating them.
+    #[gpui_kit::test]
+    async fn the_apis_a_project_has_are_counted(cx: &mut TestAppContext) {
+        let (window, _) = opened(cx);
+        let tree = TreeData {
+            apis: vec![cyberapi_core::model::ApiSetting {
+                id: "a-0".into(),
+                name: "api 0".into(),
+                request: cyberapi_core::model::HttpRequest {
+                    uri: "{{HOST}}/0/".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let into = Arc::new(MergeInto { tree, parent: None });
+        let mut view = None;
+        cx.update_window(window, |_, window, cx| {
+            view = Some(cx.new(|cx| ImportView::new(Some(into), window, cx)));
+        })
+        .expect("the window is open");
+        let view = view.expect("made");
+        // The collection's `api 0` goes to `https://a.test/0/x…`: another path.
+        let text = big_collection(1).replace("https://a.test/0/", "https://a.test/0");
+        cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| view.fill(text, window, cx))
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        let (known, update) = cx.read(|cx| (view.read(cx).known, view.read(cx).update));
+        assert_eq!((known, update), (0, false), "another path");
+        let text = big_collection(1).replace(&"x".repeat(80), "");
+        cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| view.fill(text, window, cx))
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        let (known, update) = cx.read(|cx| (view.read(cx).known, view.read(cx).update));
+        assert_eq!((known, update), (1, false), "the same path; left unless picked");
     }
 
     /// B3: an address says what Fetch does, and Fetch puts what it holds in
@@ -671,7 +813,7 @@ mod tests {
         let mut view = None;
         let window: AnyWindowHandle = cx
             .open_window(size(px(720.), px(480.)), |window, cx| {
-                let import = cx.new(|cx| ImportView::new(window, cx));
+                let import = cx.new(|cx| ImportView::new(None, window, cx));
                 view = Some(import.clone());
                 Root::new(import, window, cx)
             })

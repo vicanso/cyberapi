@@ -46,7 +46,7 @@ GraphQL 请求体分开编辑查询、变量和操作名，带语法高亮；POS
 
 ## cURL 和导入
 
-粘贴 cURL 命令即新建接口，任何请求都能复制为 cURL、HTTPie、JavaScript `fetch`、Python `requests` 或 Go `net/http` 代码；可把 Postman、Insomnia、Swagger 2 / OpenAPI 3（JSON 或 YAML）和 cURL 导入到项目里，或在首页直接导入为新项目，内容可以粘贴、选文件，也可以填地址取回（网页版经服务器取，受“请求能发往哪里”限制）；可按接口、目录或项目导出。
+粘贴 cURL 命令即新建接口，任何请求都能复制为 cURL、HTTPie、JavaScript `fetch`、Python `requests` 或 Go `net/http` 代码；可把 Postman、Insomnia、Swagger 2 / OpenAPI 3（JSON 或 YAML）和 cURL 导入到项目里，或在首页直接导入为新项目，内容可以粘贴、选文件，也可以填地址取回（网页版经服务器取，受“请求能发往哪里”限制）；重新导入时可以只添加新的接口（放进同名目录），也可以同时更新项目里已有的接口（方法和路径相同的），它们的认证、断言和设置保留；可按接口、目录或项目导出。
 
 ## 数据
 

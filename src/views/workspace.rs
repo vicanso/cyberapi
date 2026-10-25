@@ -413,18 +413,23 @@ impl WorkspaceView {
                 cx.notify();
             }),
             cx.subscribe_in(&state, window, |_, this_state, event, window, cx| match event {
-                WorkspaceEvent::Imported { apis, folders } => {
-                    window.push_notification(
-                        Notification::success(
-                            t!(
-                                "import.done",
-                                apis = i18n::counted("workspace.api", *apis),
-                                folders = i18n::counted("import.folder", *folders)
-                            )
-                            .to_string(),
-                        ),
-                        cx,
-                    );
+                WorkspaceEvent::Imported { apis, folders, again } => {
+                    let mut text = t!(
+                        "import.done",
+                        apis = i18n::counted("workspace.api", *apis),
+                        folders = i18n::counted("import.folder", *folders)
+                    )
+                    .to_string();
+                    // B3: what became of the APIs the project had.
+                    if let Some((updated, left)) = again {
+                        if *updated > 0 {
+                            text += &t!("import.done_updated", apis = i18n::counted("workspace.api", *updated));
+                        }
+                        if *left > 0 {
+                            text += &t!("import.done_left", apis = i18n::counted("workspace.api", *left));
+                        }
+                    }
+                    window.push_notification(Notification::success(text), cx);
                 }
                 WorkspaceEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);

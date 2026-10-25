@@ -46,7 +46,7 @@ Kept from every response and sent with the requests they match, across projects;
 
 ## cURL and imports
 
-Paste a cURL command to make an API, copy any request as cURL, HTTPie, JavaScript `fetch`, Python `requests` or Go `net/http`; import Postman, Insomnia, Swagger 2 / OpenAPI 3 (JSON or YAML) and cURL into a project, or as a new project from the projects page — pasted, from a file, or fetched from an address (the web version's through its server, where requests may go); export an API, a folder or a project.
+Paste a cURL command to make an API, copy any request as cURL, HTTPie, JavaScript `fetch`, Python `requests` or Go `net/http`; import Postman, Insomnia, Swagger 2 / OpenAPI 3 (JSON or YAML) and cURL into a project, or as a new project from the projects page — pasted, from a file, or fetched from an address (the web version's through its server, where requests may go); importing again adds only what is new — into the folders of the same name — or also updates the APIs the project has, the same method to the same path, keeping how they sign in, their assertions and settings; export an API, a folder or a project.
 
 ## Your data
 

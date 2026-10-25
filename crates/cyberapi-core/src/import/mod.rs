@@ -13,6 +13,7 @@
 
 mod curl;
 mod insomnia;
+pub mod merge;
 mod openapi;
 mod own;
 mod postman;
