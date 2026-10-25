@@ -680,9 +680,24 @@ impl CollectionStore for TursoStore {
 
     fn create(&self, input: NewCollection) -> StoreFuture<Collection> {
         self.run(move |inner, now| async move {
+            let name = required_name(&input.name)?;
+            let conn = inner.conn.lock().await;
+            // G1: an id given is kept, unless a project has it.
+            if let Some(id) = &input.id {
+                let taken = query_one(
+                    &conn,
+                    "SELECT id FROM api_collections WHERE id = ?1",
+                    (id.as_str(),),
+                    |row| rows::text(row, 0),
+                )
+                .await?;
+                if taken.is_some() {
+                    return Err(StoreError::IdTaken { id: id.to_string() });
+                }
+            }
             let collection = Collection {
-                id: CollectionId::new(new_id()),
-                name: required_name(&input.name)?,
+                id: input.id.unwrap_or_else(|| CollectionId::new(new_id())),
+                name,
                 description: input.description,
                 created_at: now,
                 updated_at: now,
@@ -690,7 +705,6 @@ impl CollectionStore for TursoStore {
                 owner: None,
                 role: Default::default(),
             };
-            let conn = inner.conn.lock().await;
             execute(
                 &conn,
                 "INSERT INTO api_collections (id, name, description, created_at, updated_at)

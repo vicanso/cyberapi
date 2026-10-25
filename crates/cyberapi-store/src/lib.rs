@@ -56,6 +56,12 @@ pub type StoreFuture<T> = Pin<Box<dyn Future<Output = Result<T, StoreError>> + S
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewCollection {
+    /// The id it is made with, rather than a new one: a desktop's own
+    /// project uploaded to a server keeps its id there (G1), and so its
+    /// history and the reader's state. One a project has already is
+    /// [`StoreError::IdTaken`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<CollectionId>,
     pub name: String,
     pub description: String,
     /// The team it belongs to in the browser build; `None` is the reader's

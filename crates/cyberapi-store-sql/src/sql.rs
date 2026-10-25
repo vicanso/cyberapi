@@ -104,6 +104,8 @@ pub const COLLECTION_GET: &str =
 /// Holds the project's row for the transaction: every change to a project's
 /// tree takes it first, so two cannot plan from the same lists (§7).
 pub const COLLECTION_LOCK: &str = "SELECT id FROM collections WHERE id = $1 FOR UPDATE";
+/// Whether a project has the id (G1), whoever may see it.
+pub const COLLECTION_EXISTS: &str = "SELECT id FROM collections WHERE id = $1";
 pub const COLLECTION_INSERT: &str = "INSERT INTO collections \
     (id, owner_team, name, description, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)";
 pub const COLLECTION_UPDATE: &str = "UPDATE collections \
@@ -377,6 +379,7 @@ mod tests {
 
     /// Every single-spelling statement, for the placeholder check.
     const ALL: &[&str] = &[
+        COLLECTION_EXISTS,
         INVITE_INSERT,
         INVITES_OPEN_OF,
         INVITE_REVOKE,

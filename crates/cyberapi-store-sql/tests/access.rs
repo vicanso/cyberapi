@@ -86,6 +86,7 @@ async fn rules(variable: &str) {
             name: "orders".into(),
             description: String::new(),
             owner: Some(backend.clone()),
+            id: None,
         })
         .await
         .expect("create in the team");
@@ -385,6 +386,7 @@ async fn rules(variable: &str) {
                 name: "intruder".into(),
                 description: String::new(),
                 owner: Some(backend.clone()),
+                id: None,
             })
             .await,
         Entity::Team,

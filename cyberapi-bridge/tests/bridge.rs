@@ -354,6 +354,7 @@ async fn an_older_client_reads_but_changes_no_project() {
             name: "shapes".into(),
             description: String::new(),
             owner: None,
+            id: None,
         })
         .await
         .expect("create a project");
@@ -757,6 +758,7 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
             name: "shop".into(),
             description: "orders".into(),
             owner: None,
+            id: None,
         })
         .await
         .expect("a project");

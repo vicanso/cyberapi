@@ -37,6 +37,7 @@ pub trait Probe: Send + Sync {
 pub async fn run(storage: &Storage, probe: &dyn Probe) {
     collections_round_trip(storage).await;
     collection_names_are_required(storage).await;
+    a_project_takes_the_id_it_is_given(storage).await;
     unknown_collections_are_not_found(storage).await;
     deleting_a_collection_takes_its_content(storage, probe).await;
     api_counts_are_per_project(storage).await;
@@ -74,6 +75,7 @@ async fn new_collection(storage: &Storage, name: &str) -> Collection {
             name: name.into(),
             description: format!("{name}, made by the conformance suite"),
             owner: None,
+            id: None,
         })
         .await
         .expect("create a collection")
@@ -178,6 +180,45 @@ async fn collection_names_are_required(storage: &Storage) {
     assert_eq!(
         storage.collections().get(collection.id).await.expect("get").name,
         "names"
+    );
+}
+
+/// G1: a project made with the id it is given; one a project has already
+/// is refused, and nothing is made.
+async fn a_project_takes_the_id_it_is_given(storage: &Storage) {
+    let other = new_collection(storage, "given-other").await;
+    let id = CollectionId::from(format!("{}-given", other.id).as_str());
+    let make = |id: &CollectionId, name: &str| {
+        storage.collections().create(NewCollection {
+            id: Some(id.clone()),
+            name: name.into(),
+            ..Default::default()
+        })
+    };
+    let made = make(&id, "given").await.expect("made with its id");
+    assert_eq!(made.id, id);
+    assert_eq!(storage.collections().get(id.clone()).await.expect("get").name, "given");
+    assert_eq!(
+        make(&id, "again").await,
+        Err(StoreError::IdTaken { id: id.to_string() })
+    );
+    assert_eq!(
+        make(&other.id, "taken").await,
+        Err(StoreError::IdTaken {
+            id: other.id.to_string()
+        })
+    );
+    let names: Vec<String> = storage
+        .collections()
+        .list()
+        .await
+        .expect("list")
+        .into_iter()
+        .map(|collection| collection.name)
+        .collect();
+    assert!(
+        !names.iter().any(|name| name == "again" || name == "taken"),
+        "{names:?}"
     );
 }
 

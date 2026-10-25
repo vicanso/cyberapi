@@ -294,6 +294,7 @@ impl DashboardView {
                                 name: name_value,
                                 description: description_value,
                                 owner: team.borrow().clone(),
+                                id: None,
                             },
                             import.clone(),
                             cx,

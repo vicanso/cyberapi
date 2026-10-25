@@ -360,9 +360,15 @@ impl CollectionStore for MemoryStore {
 
     fn create(&self, input: NewCollection) -> StoreFuture<Collection> {
         self.run(move |state, now| {
+            let name = required_name(&input.name)?;
+            if let Some(id) = &input.id
+                && state.collections.iter().any(|collection| &collection.id == id)
+            {
+                return Err(StoreError::IdTaken { id: id.to_string() });
+            }
             let collection = Collection {
-                id: CollectionId::new(new_id()),
-                name: required_name(&input.name)?,
+                id: input.id.unwrap_or_else(|| CollectionId::new(new_id())),
+                name,
                 description: input.description,
                 created_at: now,
                 updated_at: now,

@@ -550,9 +550,21 @@ impl CollectionStore for Scoped {
                 .transpose()?
                 .and_then(|role| TeamRole::parse(&role))
                 .ok_or_else(|| StoreError::not_found(Entity::Team, &team))?;
+            // G1: an id given is kept, unless a project has it — any
+            // project, seen by this account or not.
+            if let Some(id) = &input.id {
+                let taken = sqlx::query(this.dialect.sql(sql::COLLECTION_EXISTS))
+                    .bind(id.as_str().to_string())
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(db)?;
+                if taken.is_some() {
+                    return Err(StoreError::IdTaken { id: id.to_string() });
+                }
+            }
             let at = now();
             let collection = Collection {
-                id: CollectionId::new(new_id()),
+                id: input.id.unwrap_or_else(|| CollectionId::new(new_id())),
                 name,
                 description: input.description,
                 created_at: at,
