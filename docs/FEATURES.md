@@ -36,6 +36,10 @@ Environment variables, custom variables and global headers per project, shared b
 
 Time split into DNS, TCP, TLS, server and transfer; the request as it went out, every header said where it came from, secrets masked till shown, and the whole exchange as `curl -v` prints it; JSON raw as it came, indented or as a tree (NDJSON too); images shown in place, fitted or zoomed, with their format and size; a PDF in the system viewer, an HTML page in your browser (desktop); any other bytes as hex; a body without a content type told by its first bytes; copy a body or save it to a file, or narrow a JSON one with a JSONPath filter kept per API; a history per API, each entry with the method and path it was sent to, and picking one puts its request back. A large body stays quick: the panel shows its start, and a line too long to wrap scrolls sideways.
 
+## Assertions
+
+Check an answer without a script: in an API's Assert tab each row checks its status, a header, a value a JSONPath finds, the body, the time it took or its size — equals, contains, matches a pattern, exists, more or less than, is of a type. Each row is checked against the response shown as you edit it, with what was found when it fails, and the status line says how many held; a click there opens the tab.
+
 ## Cookies
 
 Kept from every response and sent with the requests they match, across projects; search, add, edit, delete or clear them.

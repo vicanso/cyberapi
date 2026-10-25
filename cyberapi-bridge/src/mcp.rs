@@ -236,7 +236,7 @@ fn tool_list(token: &McpToken) -> Vec<Json> {
         }),
         json!({
             "name": "get_api",
-            "description": "An API's saved request: method, URL, query, headers, the headers of the folders it is in, how it signs in (its own or inherited, and from where) and body. A URL or value may use the project's variables, written {{NAME}}.",
+            "description": "An API's saved request: method, URL, query, headers, the headers of the folders it is in, how it signs in (its own or inherited, and from where), body, and the assertions its answers are checked against (subject: status, header, json (a JSONPath), body, latency in ms or size in bytes; op; expected). A URL or value may use the project's variables, written {{NAME}}.",
             "inputSchema": { "type": "object", "properties": { "project": project, "api": api }, "required": ["project", "api"] },
             "annotations": read,
         }),
@@ -504,6 +504,8 @@ async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
         "authFrom": auth_from,
         "contentType": request.content_type.as_str(),
         "body": body,
+        // A1: what its answers are checked against.
+        "assertions": request.assertions,
     }))
 }
 

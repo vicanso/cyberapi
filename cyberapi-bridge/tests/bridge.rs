@@ -784,6 +784,11 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
                     username: "ann".into(),
                     password: "hunter2".into(),
                 },
+                // A1.
+                assertions: vec![cyberapi_core::assertions::Assertion {
+                    expected: "200".into(),
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         )
@@ -896,6 +901,10 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     .await;
     assert_eq!(got["headers"][0]["value"], json!("***"));
     assert_eq!(got["headers"][1]["value"], json!("{{TOKEN}}"));
+    assert_eq!(
+        got["assertions"],
+        json!([{"enabled": true, "subject": "status", "target": "", "op": "equals", "expected": "200"}])
+    );
     assert_eq!(
         got["auth"],
         json!({"type": "basic", "username": "ann", "password": "***"})
