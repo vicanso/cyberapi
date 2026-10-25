@@ -525,13 +525,13 @@ impl WorkspaceView {
         match api {
             Some(api) if self.selected.as_ref().map(|s| s.api) != Some(api.entity_id()) => {
                 let state = self.state.clone();
-                let editor = cx.new(|cx| RequestEditor::new(state, api.clone(), window, cx));
+                let editor = cx.new(|cx| RequestEditor::new(state.clone(), api.clone(), window, cx));
                 // An API just made: its address is what comes next.
                 let id = api.read(cx).api().clone();
                 if self.state.update(cx, |state, _| state.take_created(&id)) {
                     editor.update(cx, |editor, cx| editor.focus_uri(window, cx));
                 }
-                let response = cx.new(|cx| ResponsePanel::new(api.clone(), window, cx));
+                let response = cx.new(|cx| ResponsePanel::new(state.clone(), api.clone(), window, cx));
                 let editor_events = cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
                     RequestEditorEvent::EditorShare(share) => this.set_editor_share(*share, window, cx),
                 });

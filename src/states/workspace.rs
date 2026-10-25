@@ -143,6 +143,8 @@ pub struct WorkspaceState {
     /// machine's, whose changes are written at once.
     copy: Option<CopyState>,
     _poll: Option<Task<()>>,
+    /// A response filter's save, waiting for the typing to settle.
+    _filter_save: Option<Task<()>>,
     /// A server project's beat, its poll started once the opening heard
     /// from the server or failed to: a first ask after a failed opening
     /// waits as one after any failure.
@@ -224,6 +226,7 @@ impl WorkspaceState {
             grpc: HashMap::new(),
             copy,
             _poll: poll.filter(|_| !is_copy).map(|every| Self::poll(every, cx)),
+            _filter_save: None,
             poll_every: poll,
         };
         state.reload(cx);
@@ -892,6 +895,22 @@ impl WorkspaceState {
             self.save_prefs(cx);
             cx.notify();
         }
+    }
+
+    /// #63: the JSONPath `api`'s responses are narrowed by.
+    pub fn response_filter(&self, api: &ItemId) -> &str {
+        self.prefs.filter(api)
+    }
+
+    /// Keeps `filter` for `api`, saved once the typing settles.
+    pub fn set_response_filter(&mut self, api: &ItemId, filter: &str, cx: &mut Context<Self>) {
+        if !self.prefs.set_filter(api, filter) {
+            return;
+        }
+        self._filter_save = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(crate::states::api::SAVE_DELAY).await;
+            let _ = this.update(cx, |this, cx| this.save_prefs(cx));
+        }));
     }
 
     /// F4.12: a new method opens on its default tab — the kept one goes.

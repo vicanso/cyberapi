@@ -25,6 +25,7 @@ gpui_kit::assets::icon_assets!(
         FilePlus,
         FolderInput,
         FolderPlus,
+        Funnel,
         Heading,
         Import,
         Infinity,

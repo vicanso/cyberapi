@@ -5,7 +5,7 @@
 use super::event_stream::EventStream;
 use super::{KEY_CONTEXT, Send as SendAction};
 use crate::json_view_local::JsonView;
-use crate::states::{ApiState, AppStore};
+use crate::states::{ApiState, AppStore, WorkspaceState};
 use crate::this_build;
 use crate::views::json_tree::{JsonTree, response_view_switch};
 use cyberapi_core::graphql;
@@ -22,7 +22,7 @@ use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::empty::{
     Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
-use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -37,7 +37,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, Hsla, Image, ImageFormat, ImageSource,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription, Window, div, img, px, relative,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription, Task, Window, div, img, px, relative,
 };
 use rust_i18n::t;
 use std::sync::Arc;
@@ -83,8 +83,35 @@ fn tabs_of(response: &HttpResponse) -> &'static [ResponseTab] {
     }
 }
 
+/// What the response filter found (#63): in which response, for which
+/// path — the matches, or why there are none to show; `None` while it runs.
+struct Found {
+    response: String,
+    path: String,
+    outcome: Option<Result<Arc<serde_json::Value>, NotFiltered>>,
+}
+
+#[derive(Clone)]
+enum NotFiltered {
+    /// The path does not read: why.
+    Path(String),
+    /// The body is not one JSON document (NDJSON, say).
+    NotJson,
+    TooLarge(usize),
+}
+
 pub struct ResponsePanel {
     api: Entity<ApiState>,
+    /// Keeps each API's response filter.
+    workspace: Entity<WorkspaceState>,
+    /// #63: the JSONPath a JSON body is narrowed by, in Pretty and Tree.
+    filter: Entity<InputState>,
+    /// The filter's field shows: opened, or a filter kept for this API.
+    filtering: bool,
+    found: Option<Found>,
+    _finding: Option<Task<()>>,
+    /// The path whose matches the editor holds; `None` for the whole body.
+    shown_filter: Option<String>,
     /// The body as text, read only, for selecting and searching.
     body: Entity<EditorState>,
     /// Which response the body editor holds.
@@ -112,8 +139,9 @@ pub struct ResponsePanel {
     tab: ResponseTab,
     /// The body as a tree, when this response's JSON is shown that way.
     json_tree: Entity<JsonTree>,
-    /// The response the tree was last given.
-    tree_of: Option<String>,
+    /// The response the tree was last given, and the filter it was given
+    /// through.
+    tree_of: Option<(String, Option<String>)>,
     /// The view picked on the panel, bound to one response. Another response
     /// opens in the saved default.
     body_view: Option<(String, JsonView)>,
@@ -128,8 +156,20 @@ pub struct ResponsePanel {
 }
 
 impl ResponsePanel {
-    pub fn new(api: Entity<ApiState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        workspace: Entity<WorkspaceState>,
+        api: Entity<ApiState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let app = AppStore::global(cx).state().clone();
+        let kept = workspace.read(cx).response_filter(api.read(cx).api()).to_string();
+        let filter = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("response.filter_placeholder").to_string())
+                .clean_on_escape()
+                .default_value(kept.clone())
+        });
         let wrap = app.read(cx).prefs().text.wrap;
         let body = cx.new(|cx| {
             EditorState::new(window, cx)
@@ -141,6 +181,15 @@ impl ResponsePanel {
         });
         let subscriptions = vec![
             cx.observe_in(&api, window, |this, _, window, cx| this.sync(window, cx)),
+            cx.subscribe_in(&filter, window, |this, filter, event, window, cx| {
+                if let InputEvent::Change = event {
+                    let text = filter.read(cx).value().to_string();
+                    let api = this.api.read(cx).api().clone();
+                    this.workspace
+                        .update(cx, |workspace, cx| workspace.set_response_filter(&api, &text, cx));
+                    this.sync(window, cx);
+                }
+            }),
             cx.observe_in(&app, window, |this, app, window, cx| {
                 let wrap = app.read(cx).prefs().text.wrap;
                 if wrap != this.wrap {
@@ -161,6 +210,12 @@ impl ResponsePanel {
         };
         let mut panel = Self {
             api,
+            workspace,
+            filter,
+            filtering: !kept.is_empty(),
+            found: None,
+            _finding: None,
+            shown_filter: None,
             body,
             shown: None,
             shown_pretty: false,
@@ -205,13 +260,102 @@ impl ResponsePanel {
         })
     }
 
-    /// Gives the tree the shown response's whole body, not the part the
-    /// text views show (#57).
-    fn sync_response_tree(&mut self, cx: &mut Context<Self>) {
-        if !(self.shown_json(cx) && self.response_shows_tree(cx)) || self.tree_of == self.shown {
+    /// The filter that applies now: one typed, on a JSON body shown Pretty
+    /// or as a tree.
+    fn active_filter(&self, cx: &App) -> Option<String> {
+        let path = self.filter.read(cx).value().trim().to_string();
+        (self.filtering && !path.is_empty() && self.shown_json(cx) && self.response_view(cx) != JsonView::Raw)
+            .then_some(path)
+    }
+
+    /// What the active filter found in the shown response, once found.
+    fn found_now(&self, cx: &App) -> Option<&Found> {
+        let path = self.active_filter(cx)?;
+        self.found
+            .as_ref()
+            .filter(|found| Some(&found.response) == self.shown.as_ref() && found.path == path)
+    }
+
+    /// The matches of the active filter, when it found them.
+    fn matches(&self, cx: &App) -> Option<Arc<serde_json::Value>> {
+        self.found_now(cx)?.outcome.as_ref()?.as_ref().ok().cloned()
+    }
+
+    /// Runs the active filter over the shown body, away from the window,
+    /// unless it has run already; the body shows again once it has.
+    fn find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(path), Some(response)) = (self.active_filter(cx), self.api.read(cx).shown_response().cloned()) else {
+            return;
+        };
+        let running = self
+            .found
+            .as_ref()
+            .is_some_and(|found| found.response == response.id && found.path == path);
+        if running {
             return;
         }
-        self.tree_of = self.shown.clone();
+        self.found = Some(Found {
+            response: response.id.clone(),
+            path: path.clone(),
+            outcome: None,
+        });
+        let finding = cx.background_spawn({
+            let path = path.clone();
+            async move {
+                if response.body.len() > TREE_LIMIT {
+                    return Err(NotFiltered::TooLarge(response.body.len()));
+                }
+                let doc: serde_json::Value =
+                    serde_json::from_slice(&response.body).map_err(|_| NotFiltered::NotJson)?;
+                cyberapi_core::json_filter::filter(&doc, &path)
+                    .map(Arc::new)
+                    .map_err(NotFiltered::Path)
+            }
+        });
+        let response_id = self.shown.clone().unwrap_or_default();
+        self._finding = Some(cx.spawn_in(window, async move |this, cx| {
+            let outcome = finding.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.found = Some(Found {
+                    response: response_id,
+                    path,
+                    outcome: Some(outcome),
+                });
+                this.sync(window, cx);
+            });
+        }));
+    }
+
+    /// The editor's and the tree's filter: the active one's path once it
+    /// found what to show; the whole body when there is none, or it found
+    /// nothing to show; what they hold now while it runs.
+    fn wanted_filter(&self, cx: &App) -> Option<String> {
+        let path = self.active_filter(cx)?;
+        match self.found_now(cx).map(|found| &found.outcome) {
+            Some(Some(Ok(_))) => Some(path),
+            Some(None) => self.shown_filter.clone(),
+            _ => None,
+        }
+    }
+
+    /// Gives the tree the shown response's whole body, not the part the
+    /// text views show (#57) — or what the filter found in it (#63).
+    fn sync_response_tree(&mut self, cx: &mut Context<Self>) {
+        // A filter still running: the tree stays as it is till it is done.
+        let running = matches!(self.found_now(cx).map(|found| &found.outcome), Some(None));
+        if !(self.shown_json(cx) && self.response_shows_tree(cx)) || running {
+            return;
+        }
+        let wanted = self.shown.clone().map(|id| (id, self.wanted_filter(cx)));
+        if self.tree_of == wanted {
+            return;
+        }
+        self.tree_of = wanted;
+        if let Some(matches) = self.matches(cx).filter(|_| self.wanted_filter(cx).is_some()) {
+            let text = matches.to_string();
+            self.json_tree.update(cx, |tree, cx| tree.set_text(&text, cx));
+            return;
+        }
         let Some(response) = self.api.read(cx).shown_response() else {
             return;
         };
@@ -242,12 +386,16 @@ impl ResponsePanel {
         let id = shown.as_ref().map(|response| response.id.clone());
         let changed = id != self.shown;
         self.shown = id.clone();
+        self.find(window, cx);
         let pretty = self.shown_json(cx) && self.response_view(cx) == JsonView::Pretty;
-        if !changed && pretty == self.shown_pretty {
+        let filtered = self.wanted_filter(cx).filter(|_| pretty);
+        if !changed && pretty == self.shown_pretty && filtered == self.shown_filter {
+            self.sync_response_tree(cx);
             cx.notify();
             return;
         }
         self.shown_pretty = pretty;
+        self.shown_filter = filtered.clone();
         if changed {
             // Another response opens fitted, as a picture.
             self.zoom = None;
@@ -259,9 +407,15 @@ impl ResponsePanel {
                     .then(|| Arc::new(Image::from_bytes(format, response.body.clone())))
             });
         }
-        let (language, text, clipped, hex) = match &shown {
-            Some(response) => editor_text(response, pretty),
-            None => ("text", String::new(), None, false),
+        let matches = self.matches(cx).filter(|_| filtered.is_some());
+        let (language, text, clipped, hex) = match (&shown, matches) {
+            // #63: what the filter found, indented.
+            (Some(_), Some(matches)) => {
+                let (text, clipped) = clip_text(cyberapi_core::format::json(&*matches), DISPLAY_LIMIT);
+                ("json", text, clipped.then_some(DISPLAY_LIMIT), false)
+            }
+            (Some(response), None) => editor_text(response, pretty),
+            (None, _) => ("text", String::new(), None, false),
         };
         self.clipped = clipped;
         self.hex = hex;
@@ -470,6 +624,10 @@ impl ResponsePanel {
             }
             (None, None) => div().into_any_element(),
         };
+        let filterable = sending.is_none()
+            && response.is_some_and(|response| !shows_events(response))
+            && self.shown_json(cx)
+            && self.response_view(cx) != JsonView::Raw;
         h_flex()
             .gap_2()
             .px_3()
@@ -478,6 +636,19 @@ impl ResponsePanel {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(div().flex_1().min_w_0().child(status))
+            // #63: narrowing a JSON body, in Pretty and Tree. Here, not by
+            // the view switch: the tab bar has no room left.
+            .when(filterable, |this| {
+                this.child(
+                    Button::new("response-filter")
+                        .ghost()
+                        .small()
+                        .icon(gpui_kit::assets::IconName::Funnel)
+                        .selected(self.filtering)
+                        .tooltip(t!("response.filter").to_string())
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_filter(window, cx))),
+                )
+            })
             .child(
                 Button::new("response-curl")
                     .ghost()
@@ -620,6 +791,11 @@ impl ResponsePanel {
                                 // show only its start. Indented when it is
                                 // shown so, as it came otherwise.
                                 .on_click(cx.listener(|this, _, window, cx| {
+                                    // What the filter found, when it narrows the body (#63).
+                                    if let Some(matches) = this.matches(cx).filter(|_| this.wanted_filter(cx).is_some())
+                                    {
+                                        return copy(cyberapi_core::format::json(&*matches), window, cx);
+                                    }
                                     let pretty = this.response_view(cx) == JsonView::Pretty;
                                     let text = this.api.read(cx).shown_response().and_then(|response| {
                                         if pretty {
@@ -845,8 +1021,12 @@ impl ResponsePanel {
                     }
                     .to_string()
                 });
+                // #63: narrowed in Pretty and Tree.
+                let filters =
+                    self.filtering && response.body_kind() == BodyKind::Json && self.response_view(cx) != JsonView::Raw;
                 v_flex()
                     .size_full()
+                    .when(filters, |this| this.child(self.render_filter(cx)))
                     // The tree has the whole body.
                     .when_some(self.clipped.filter(|_| !tree), |this, shown| {
                         let text = t!("response.clipped", size = format_size(shown as u64)).to_string();
@@ -878,6 +1058,58 @@ impl ResponsePanel {
     }
 
     /// The editor, read only, filling what is left of the panel.
+    /// #63: the filter's field, and what it found.
+    fn render_filter(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (muted, danger) = (theme.muted_foreground, theme.danger);
+        let status = match self.found_now(cx).map(|found| &found.outcome) {
+            Some(Some(Ok(matches))) => Some((
+                crate::i18n::counted("response.filter_matches", matches.as_array().map_or(0, Vec::len)),
+                muted,
+            )),
+            Some(Some(Err(NotFiltered::Path(why)))) => {
+                Some((t!("response.filter_invalid", why = why).to_string(), danger))
+            }
+            Some(Some(Err(NotFiltered::NotJson))) => Some((t!("response.filter_not_json").to_string(), danger)),
+            Some(Some(Err(NotFiltered::TooLarge(size)))) => Some((
+                t!("response.filter_too_large", size = format_size(*size as u64)).to_string(),
+                danger,
+            )),
+            _ => None,
+        };
+        v_flex()
+            .px_3()
+            .py_1p5()
+            .gap_1()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                Input::new(&self.filter)
+                    .small()
+                    .cleanable(true)
+                    .prefix(Icon::new(gpui_kit::assets::IconName::Funnel).small().text_color(muted)),
+            )
+            .when_some(status, |this, (text, color)| {
+                this.child(div().text_xs().text_color(color).child(text))
+            })
+            .into_any_element()
+    }
+
+    /// The filter's field opens, to type in; closed, its filter goes.
+    fn toggle_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filtering = !self.filtering;
+        if self.filtering {
+            self.filter.update(cx, |input, cx| input.focus(window, cx));
+        } else {
+            self.filter.update(cx, |input, cx| input.set_value("", window, cx));
+            let api = self.api.read(cx).api().clone();
+            self.workspace
+                .update(cx, |workspace, cx| workspace.set_response_filter(&api, "", cx));
+        }
+        self.sync(window, cx);
+        cx.notify();
+    }
+
     fn render_editor(&self) -> AnyElement {
         Editor::new(&self.body)
             .w_full()

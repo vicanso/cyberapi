@@ -390,6 +390,8 @@ pub struct WorkspacePrefs {
     pub pinned: Vec<ItemId>,
     /// The request editor's tab per API when it is not the default (F4.12).
     pub tabs: BTreeMap<ItemId, String>,
+    /// The JSONPath each API's JSON responses are narrowed by (#63).
+    pub filters: BTreeMap<ItemId, String>,
 }
 
 /// The request editor's tabs (F4.12).
@@ -445,6 +447,26 @@ impl WorkspacePrefs {
             .and_then(|tab| RequestTab::parse(tab))
             .filter(|tab| tabs.contains(tab))
             .unwrap_or(tabs[0])
+    }
+
+    /// The response filter of `api`; empty for none.
+    pub fn filter(&self, api: &ItemId) -> &str {
+        self.filters.get(api).map(String::as_str).unwrap_or_default()
+    }
+
+    /// Keeps `filter` for `api`; a blank one is kept as nothing. Whether it
+    /// changed.
+    pub fn set_filter(&mut self, api: &ItemId, filter: &str) -> bool {
+        let filter = filter.trim();
+        if filter == self.filter(api) {
+            return false;
+        }
+        if filter.is_empty() {
+            self.filters.remove(api);
+        } else {
+            self.filters.insert(api.clone(), filter.to_string());
+        }
+        true
     }
 
     /// Keeps `tab` for `api`; the request's first is kept as nothing.

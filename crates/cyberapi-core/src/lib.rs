@@ -15,6 +15,7 @@ pub mod graphql_schema;
 pub mod grpc;
 mod id;
 pub mod import;
+pub mod json_filter;
 pub mod json_view;
 pub mod local_only;
 pub mod mcp;
