@@ -22,12 +22,13 @@ use crate::{local_items, pins_local};
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::local_only::{LocalItems, fingerprint, ids};
 use cyberapi_core::model::{
-    ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable, VariableCategory,
+    ApiSetting, Collection, Environment, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
+    VariableCategory,
 };
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::sync::{ConfigAt, CopyBinding, Moment, ProjectConfig, Step, step};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{AccountId, CollectionId, ItemId, Timestamp, VariableId};
+use cyberapi_core::{AccountId, CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
 use cyberapi_store::{
     Entity, HistoryStore, Imported, Inserted, MemoryStore, NewVariable, ServerCopyStore, Storage, StoreError,
     StoreFuture, TreeStore, VariableEdit, VariableStore,
@@ -647,6 +648,35 @@ impl VariableStore for CopyStore {
 
     fn delete(&self, collection: CollectionId, ids: Vec<VariableId>) -> StoreFuture<()> {
         self.write(self.0.variables().delete(collection, ids), false)
+    }
+
+    fn environments(&self, collection: CollectionId) -> StoreFuture<Vec<Environment>> {
+        self.0.variables().environments(collection)
+    }
+
+    fn create_environment(&self, collection: CollectionId, name: String) -> StoreFuture<Environment> {
+        self.write(self.0.variables().create_environment(collection, name), false)
+    }
+
+    fn rename_environment(
+        &self,
+        collection: CollectionId,
+        id: EnvironmentId,
+        name: String,
+    ) -> StoreFuture<Environment> {
+        self.write(self.0.variables().rename_environment(collection, id, name), false)
+    }
+
+    fn delete_environment(&self, collection: CollectionId, id: EnvironmentId) -> StoreFuture<()> {
+        self.write(self.0.variables().delete_environment(collection, id), false)
+    }
+
+    fn reorder_environments(
+        &self,
+        collection: CollectionId,
+        order: Vec<EnvironmentId>,
+    ) -> StoreFuture<Vec<Environment>> {
+        self.write(self.0.variables().reorder_environments(collection, order), false)
     }
 }
 

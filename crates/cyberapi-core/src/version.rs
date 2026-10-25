@@ -25,7 +25,9 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 ///    kept as `authentication`; the old Basic list is read, not written).
 /// 4: what folders and projects set for their APIs (#66, `Folder.settings`,
 ///    `ProjectConfig.settings`).
-pub const MODEL: u32 = 4;
+/// 5: named environments and the variables in them (#61,
+///    `ProjectConfig.environments`, `Variable.environment`).
+pub const MODEL: u32 = 5;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

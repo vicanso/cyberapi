@@ -17,23 +17,24 @@ use async_lock::Mutex;
 use chrono::Local;
 use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
+use cyberapi_core::environments::reordered;
 use cyberapi_core::import::{ImportItem, assign_ids};
 use cyberapi_core::model::{
-    ApiCategory, ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
+    ApiCategory, ApiSetting, Collection, Environment, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
     VariableCategory, legacy as columns,
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{CollectionId, ItemId, Timestamp, VariableId};
-use cyberapi_store::rules::{project_config, required_name};
+use cyberapi_core::{CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
+use cyberapi_store::rules::{environment_name, known_environment, project_config, required_name};
 use cyberapi_store::{
     BackupStore, CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection,
     NewVariable, PrefStore, ServerCopyStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
     sort_cookies,
 };
-use rows::{API_COLUMNS, COLLECTION_COLUMNS, FOLDER_COLUMNS, VARIABLE_COLUMNS};
+use rows::{API_COLUMNS, COLLECTION_COLUMNS, ENVIRONMENT_COLUMNS, FOLDER_COLUMNS, VARIABLE_COLUMNS};
 use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -296,6 +297,120 @@ async fn write_folder_settings(
     Ok(())
 }
 
+/// Which named environment each variable is in (#61), by variable id: one
+/// project's, or every one's.
+async fn variable_environments(
+    conn: &Connection,
+    collection: Option<&CollectionId>,
+) -> Result<HashMap<String, EnvironmentId>, StoreError> {
+    let read = |row: &Row| (rows::text(row, 0), EnvironmentId::new(rows::text(row, 1)));
+    let found = match collection {
+        Some(id) => {
+            query_all(
+                conn,
+                "SELECT variable, environment FROM variable_environments WHERE collection = ?1",
+                (id.as_str(),),
+                read,
+            )
+            .await?
+        }
+        None => {
+            query_all(
+                conn,
+                "SELECT variable, environment FROM variable_environments",
+                (),
+                read,
+            )
+            .await?
+        }
+    };
+    Ok(found.into_iter().collect())
+}
+
+/// Variables as read from their table, each with its environment.
+fn in_environments(variables: Vec<Option<Variable>>, environments: &HashMap<String, EnvironmentId>) -> Vec<Variable> {
+    variables
+        .into_iter()
+        .flatten()
+        .map(|variable| Variable {
+            environment: environments.get(variable.id.as_str()).cloned(),
+            ..variable
+        })
+        .collect()
+}
+
+/// Which environment a variable is in (#61): a row while it is in one.
+async fn write_variable_environment(
+    conn: &Connection,
+    collection: &CollectionId,
+    variable: &VariableId,
+    environment: Option<&EnvironmentId>,
+) -> Result<(), StoreError> {
+    execute(
+        conn,
+        "DELETE FROM variable_environments WHERE variable = ?1",
+        (variable.as_str(),),
+    )
+    .await?;
+    if let Some(environment) = environment {
+        execute(
+            conn,
+            "INSERT INTO variable_environments (variable, collection, environment) VALUES (?1, ?2, ?3)",
+            (variable.as_str(), collection.as_str(), environment.as_str()),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// A project's named environments, in its order.
+async fn environments_of(conn: &Connection, collection: &CollectionId) -> Result<Vec<Environment>, StoreError> {
+    query_all(
+        conn,
+        &format!("SELECT {ENVIRONMENT_COLUMNS} FROM environments WHERE collection = ?1 ORDER BY position, rowid"),
+        (collection.as_str(),),
+        rows::environment,
+    )
+    .await
+}
+
+/// Writes `environments` as `collection`'s, in their order.
+async fn insert_environments(
+    conn: &Connection,
+    collection: &CollectionId,
+    environments: &[Environment],
+) -> Result<(), StoreError> {
+    for (position, environment) in environments.iter().enumerate() {
+        execute(
+            conn,
+            "INSERT INTO environments (id, collection, name, position, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (
+                environment.id.as_str(),
+                collection.as_str(),
+                environment.name.as_str(),
+                i64::try_from(position).unwrap_or(i64::MAX),
+                environment.created_at.to_rfc3339(),
+                environment.updated_at.to_rfc3339(),
+            ),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// `id`, if any, is one of `collection`'s environments.
+async fn require_environment(
+    conn: &Connection,
+    collection: &CollectionId,
+    id: Option<&EnvironmentId>,
+) -> Result<(), StoreError> {
+    match id {
+        Some(id) => known_environment(&environments_of(conn, collection).await?, id),
+        None => Ok(()),
+    }
+}
+
 /// What a project sets (#66), as [`write_folder_settings`].
 async fn write_project_settings(
     conn: &Connection,
@@ -410,6 +525,20 @@ async fn replace_project(
             }
         }
     }
+    for environment in &config.environments {
+        let owner = query_one(
+            conn,
+            "SELECT collection FROM environments WHERE id = ?1",
+            (environment.id.as_str(),),
+            |row| rows::text(row, 0),
+        )
+        .await?;
+        if owner.is_some_and(|owner| owner != collection.as_str()) {
+            return Err(StoreError::IdTaken {
+                id: environment.id.to_string(),
+            });
+        }
+    }
     let staying: Vec<&str> = config.apis.iter().map(|api| api.id.as_str()).collect();
     let kept_apis = query_all(
         conn,
@@ -431,9 +560,12 @@ async fn replace_project(
         "DELETE FROM folder_settings WHERE collection = ?1",
         "DELETE FROM api_settings WHERE collection = ?1",
         "DELETE FROM variables WHERE collection = ?1",
+        "DELETE FROM variable_environments WHERE collection = ?1",
+        "DELETE FROM environments WHERE collection = ?1",
     ] {
         execute(conn, sql, (collection.as_str(),)).await?;
     }
+    insert_environments(conn, collection, &config.environments).await?;
     for folder in &config.folders {
         execute(
             conn,
@@ -485,6 +617,7 @@ async fn replace_project(
             ),
         )
         .await?;
+        write_variable_environment(conn, collection, &variable.id, variable.environment.as_ref()).await?;
     }
     write_change(
         conn,
@@ -604,6 +737,8 @@ impl CollectionStore for TursoStore {
                 "DELETE FROM api_folders WHERE collection = ?1",
                 "DELETE FROM folder_settings WHERE collection = ?1",
                 "DELETE FROM project_settings WHERE collection = ?1",
+                "DELETE FROM variable_environments WHERE collection = ?1",
+                "DELETE FROM environments WHERE collection = ?1",
                 "DELETE FROM api_settings WHERE collection = ?1",
                 "DELETE FROM variables WHERE collection = ?1",
                 "DELETE FROM top_orders WHERE collection = ?1",
@@ -945,6 +1080,8 @@ impl TreeStore for TursoStore {
                 rows::variable,
             )
             .await?;
+            let variables = in_environments(variables, &variable_environments(&conn, Some(&collection)).await?);
+            let environments = environments_of(&conn, &collection).await?;
             Ok(ConfigAt {
                 revision: found.revision,
                 config: ProjectConfig {
@@ -953,8 +1090,9 @@ impl TreeStore for TursoStore {
                     folders: tree.folders,
                     apis: tree.apis,
                     top_order: tree.top_order,
-                    variables: variables.into_iter().flatten().collect(),
+                    variables,
                     settings: tree.settings,
+                    environments,
                 },
             })
         })
@@ -989,7 +1127,10 @@ impl VariableStore for TursoStore {
                 rows::variable,
             )
             .await?;
-            Ok(found.into_iter().flatten().collect())
+            Ok(in_environments(
+                found,
+                &variable_environments(&conn, Some(&collection)).await?,
+            ))
         })
     }
 
@@ -998,6 +1139,7 @@ impl VariableStore for TursoStore {
             let mut conn = inner.conn.lock().await;
             let tx = conn.transaction().await.map_err(backend)?;
             require_collection(&tx, &input.collection).await?;
+            require_environment(&tx, &input.collection, input.environment.as_ref()).await?;
             let variable = Variable {
                 id: VariableId::new(new_id()),
                 collection: input.collection,
@@ -1005,6 +1147,7 @@ impl VariableStore for TursoStore {
                 name: input.name,
                 value: input.value,
                 enabled: input.enabled,
+                environment: input.environment,
                 created_at: now,
                 updated_at: now,
             };
@@ -1024,6 +1167,7 @@ impl VariableStore for TursoStore {
                 ),
             )
             .await?;
+            write_variable_environment(&tx, &variable.collection, &variable.id, variable.environment.as_ref()).await?;
             touch(&tx, &variable.collection, now).await?;
             tx.commit().await.map_err(backend)?;
             Ok(variable)
@@ -1035,6 +1179,7 @@ impl VariableStore for TursoStore {
             let mut conn = inner.conn.lock().await;
             let tx = conn.transaction().await.map_err(backend)?;
             require_collection(&tx, &collection).await?;
+            require_environment(&tx, &collection, edit.environment.as_ref()).await?;
             let updated = execute(
                 &tx,
                 "UPDATE variables SET name = ?1, value = ?2, enabled = ?3, updated_at = ?4
@@ -1061,9 +1206,13 @@ impl VariableStore for TursoStore {
             .await?
             .flatten()
             .ok_or_else(|| StoreError::not_found(Entity::Variable, &id))?;
+            write_variable_environment(&tx, &collection, &id, edit.environment.as_ref()).await?;
             touch(&tx, &collection, now).await?;
             tx.commit().await.map_err(backend)?;
-            Ok(variable)
+            Ok(Variable {
+                environment: edit.environment,
+                ..variable
+            })
         })
     }
 
@@ -1073,15 +1222,135 @@ impl VariableStore for TursoStore {
             let tx = conn.transaction().await.map_err(backend)?;
             require_collection(&tx, &collection).await?;
             for id in &ids {
+                for sql in [
+                    "DELETE FROM variables WHERE id = ?1 AND collection = ?2",
+                    "DELETE FROM variable_environments WHERE variable = ?1 AND collection = ?2",
+                ] {
+                    execute(&tx, sql, (id.as_str(), collection.as_str())).await?;
+                }
+            }
+            touch(&tx, &collection, now).await?;
+            tx.commit().await.map_err(backend)
+        })
+    }
+
+    fn environments(&self, collection: CollectionId) -> StoreFuture<Vec<Environment>> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            require_collection(&conn, &collection).await?;
+            environments_of(&conn, &collection).await
+        })
+    }
+
+    fn create_environment(&self, collection: CollectionId, name: String) -> StoreFuture<Environment> {
+        self.run(move |inner, now| async move {
+            let mut conn = inner.conn.lock().await;
+            let tx = conn.transaction().await.map_err(backend)?;
+            require_collection(&tx, &collection).await?;
+            let existing = environments_of(&tx, &collection).await?;
+            let environment = Environment {
+                id: EnvironmentId::new(new_id()),
+                collection: collection.clone(),
+                name: environment_name(&existing, &name, None)?,
+                created_at: now,
+                updated_at: now,
+            };
+            execute(
+                &tx,
+                "INSERT INTO environments (id, collection, name, position, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (
+                    environment.id.as_str(),
+                    collection.as_str(),
+                    environment.name.as_str(),
+                    i64::try_from(existing.len()).unwrap_or(i64::MAX),
+                    now.to_rfc3339(),
+                    now.to_rfc3339(),
+                ),
+            )
+            .await?;
+            touch(&tx, &collection, now).await?;
+            tx.commit().await.map_err(backend)?;
+            Ok(environment)
+        })
+    }
+
+    fn rename_environment(
+        &self,
+        collection: CollectionId,
+        id: EnvironmentId,
+        name: String,
+    ) -> StoreFuture<Environment> {
+        self.run(move |inner, now| async move {
+            let mut conn = inner.conn.lock().await;
+            let tx = conn.transaction().await.map_err(backend)?;
+            require_collection(&tx, &collection).await?;
+            let existing = environments_of(&tx, &collection).await?;
+            let name = environment_name(&existing, &name, Some(&id))?;
+            let found = existing
+                .into_iter()
+                .find(|environment| environment.id == id)
+                .ok_or_else(|| StoreError::not_found(Entity::Environment, &id))?;
+            execute(
+                &tx,
+                "UPDATE environments SET name = ?1, updated_at = ?2 WHERE id = ?3 AND collection = ?4",
+                (name.as_str(), now.to_rfc3339(), id.as_str(), collection.as_str()),
+            )
+            .await?;
+            touch(&tx, &collection, now).await?;
+            tx.commit().await.map_err(backend)?;
+            Ok(Environment {
+                name,
+                updated_at: now,
+                ..found
+            })
+        })
+    }
+
+    fn delete_environment(&self, collection: CollectionId, id: EnvironmentId) -> StoreFuture<()> {
+        self.run(move |inner, now| async move {
+            let mut conn = inner.conn.lock().await;
+            let tx = conn.transaction().await.map_err(backend)?;
+            require_collection(&tx, &collection).await?;
+            require_environment(&tx, &collection, Some(&id)).await?;
+            for sql in [
+                "DELETE FROM variables WHERE collection = ?1 AND id IN
+                 (SELECT variable FROM variable_environments WHERE environment = ?2)",
+                "DELETE FROM variable_environments WHERE collection = ?1 AND environment = ?2",
+                "DELETE FROM environments WHERE collection = ?1 AND id = ?2",
+            ] {
+                execute(&tx, sql, (collection.as_str(), id.as_str())).await?;
+            }
+            touch(&tx, &collection, now).await?;
+            tx.commit().await.map_err(backend)
+        })
+    }
+
+    fn reorder_environments(
+        &self,
+        collection: CollectionId,
+        order: Vec<EnvironmentId>,
+    ) -> StoreFuture<Vec<Environment>> {
+        self.run(move |inner, now| async move {
+            let mut conn = inner.conn.lock().await;
+            let tx = conn.transaction().await.map_err(backend)?;
+            require_collection(&tx, &collection).await?;
+            let placed = reordered(&environments_of(&tx, &collection).await?, &order);
+            for (position, environment) in placed.iter().enumerate() {
                 execute(
                     &tx,
-                    "DELETE FROM variables WHERE id = ?1 AND collection = ?2",
-                    (id.as_str(), collection.as_str()),
+                    "UPDATE environments SET position = ?1 WHERE id = ?2 AND collection = ?3",
+                    (
+                        i64::try_from(position).unwrap_or(i64::MAX),
+                        environment.id.as_str(),
+                        collection.as_str(),
+                    ),
                 )
                 .await?;
             }
             touch(&tx, &collection, now).await?;
-            tx.commit().await.map_err(backend)
+            tx.commit().await.map_err(backend)?;
+            Ok(placed)
         })
     }
 }
@@ -1368,10 +1637,15 @@ impl BackupStore for TursoStore {
                 (),
                 rows::variable,
             )
-            .await?
-            .into_iter()
-            .flatten()
-            .collect();
+            .await?;
+            let variables = in_environments(variables, &variable_environments(&conn, None).await?);
+            let environments = query_all(
+                &conn,
+                &format!("SELECT {ENVIRONMENT_COLUMNS} FROM environments ORDER BY collection, position, rowid"),
+                (),
+                rows::environment,
+            )
+            .await?;
             let top_orders = query_all(
                 &conn,
                 "SELECT collection, items FROM top_orders ORDER BY rowid",
@@ -1391,6 +1665,7 @@ impl BackupStore for TursoStore {
                 variables,
                 top_orders,
                 project_settings,
+                environments,
             })
         })
     }
@@ -1404,6 +1679,8 @@ impl BackupStore for TursoStore {
                 "api_folders",
                 "folder_settings",
                 "project_settings",
+                "environments",
+                "variable_environments",
                 "api_settings",
                 "variables",
                 "top_orders",
@@ -1480,6 +1757,17 @@ impl BackupStore for TursoStore {
                     ),
                 )
                 .await?;
+                write_variable_environment(&tx, &v.collection, &v.id, v.environment.as_ref()).await?;
+            }
+            let mut by_project: BTreeMap<&CollectionId, Vec<Environment>> = BTreeMap::new();
+            for environment in &backup.environments {
+                by_project
+                    .entry(&environment.collection)
+                    .or_default()
+                    .push(environment.clone());
+            }
+            for (collection, environments) in by_project {
+                insert_environments(&tx, collection, &environments).await?;
             }
             for (collection, items) in &backup.top_orders {
                 execute(
@@ -1577,6 +1865,14 @@ impl cyberapi_store::conformance::Probe for TursoStore {
                 ),
                 (
                     "SELECT count(*) FROM project_settings WHERE collection = ?1",
+                    id.to_string(),
+                ),
+                (
+                    "SELECT count(*) FROM environments WHERE collection = ?1",
+                    id.to_string(),
+                ),
+                (
+                    "SELECT count(*) FROM variable_environments WHERE collection = ?1",
                     id.to_string(),
                 ),
                 ("SELECT count(*) FROM responses WHERE collection = ?1", id.to_string()),

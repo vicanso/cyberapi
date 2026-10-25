@@ -10,7 +10,7 @@
 use crate::access::CollectionRole;
 use crate::auth::Auth;
 use crate::prefs::RequestSettings;
-use crate::{CollectionId, ItemId, TeamId, Timestamp, VariableId};
+use crate::{CollectionId, EnvironmentId, ItemId, TeamId, Timestamp, VariableId};
 use serde::{Deserialize, Serialize};
 
 /// A project: the top-level container. Variables are scoped to it too.
@@ -443,6 +443,23 @@ pub struct Variable {
     pub name: String,
     pub value: String,
     pub enabled: bool,
+    /// The named environment it belongs to (#61); `None` is every
+    /// environment's, the layer one without an environment reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentId>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+/// A project's named environment (#61): a layer of variables over the ones
+/// every environment shares. Which one is used is each reader's own
+/// (`WorkspacePrefs::environment`); what they are is the project's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Environment {
+    pub id: EnvironmentId,
+    pub collection: CollectionId,
+    pub name: String,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }

@@ -18,11 +18,12 @@
 use cyberapi_core::Timestamp;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::cookie::{cookie_header, parse_set_cookie};
+use cyberapi_core::environments;
 use cyberapi_core::graphql::GraphQlBody;
 use cyberapi_core::graphql_schema::{INTROSPECTION_QUERY, Schema};
 use cyberapi_core::grpc::{Definitions, GrpcBody, GrpcStatus, reflection};
 use cyberapi_core::inherit::Inherited;
-use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, Variable, VariableCategory};
+use cyberapi_core::model::{ContentType, Environment, HttpMethod, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{SendPrefs, Timeouts};
 use cyberapi_core::redirect::{self, MAX_REDIRECTS};
 use cyberapi_core::response::{Exchange, HttpResponse};
@@ -65,6 +66,10 @@ pub struct Sender {
     /// reading the tree here for every send would cost the page a trip to
     /// the bridge.
     pub inherited: Inherited,
+    /// The named environment it is sent in (#61), the reader's: its
+    /// variables stand in for the shared ones of the same name. The caller
+    /// fills it, as `inherited`.
+    pub environment: Option<Environment>,
 }
 
 impl Sender {
@@ -470,6 +475,8 @@ async fn prepare(
         );
     }
 
+    // #61: the shared variables, and the environment's in their place.
+    let variables = environments::effective(&variables, sender.environment.as_ref().map(|found| &found.id));
     let needs = send::needs(request, &variables, &sender.inherited);
     let responses = if needs.responses.is_empty() {
         Vec::new()
@@ -513,6 +520,7 @@ async fn prepare(
         proxy: &sender.sending.proxy,
         boundary: &boundary,
         inherited: &sender.inherited,
+        environment: sender.environment.as_ref().map(|found| found.name.as_str()),
     };
     let prepared = match grpc_call {
         Some((path, body)) => send::grpc_call(request, &cx, path, body),
@@ -602,6 +610,7 @@ mod tests {
             timeouts: Timeouts::default(),
             sending: SendPrefs::default(),
             inherited: Inherited::default(),
+            environment: None,
         };
         Setup {
             storage,
@@ -618,6 +627,7 @@ mod tests {
             name: name.into(),
             value: value.into(),
             enabled: true,
+            environment: None,
         }))
         .expect("create a variable");
     }
@@ -1222,6 +1232,69 @@ mod tests {
         ))
         .expect("code");
         assert!(curl.contains("X-Team: users") && curl.contains("Bearer t0"), "{curl}");
+    }
+
+    /// #61: in a named environment, its variables stand in for the shared
+    /// ones; a prefix neither has says which environment it was sent in.
+    #[test]
+    fn an_api_is_sent_in_the_readers_environment() {
+        let mut setup = setup(Ok(Exchange {
+            status: 200,
+            ..Default::default()
+        }));
+        variable(&setup, VariableCategory::Environment, "HOST", "https://shared.test");
+        let prod = pollster::block_on(
+            setup
+                .storage
+                .variables()
+                .create_environment(setup.collection.clone(), "prod".into()),
+        )
+        .expect("an environment");
+        pollster::block_on(setup.storage.variables().create(NewVariable {
+            collection: setup.collection.clone(),
+            category: VariableCategory::Environment,
+            name: "HOST".into(),
+            value: "https://prod.test".into(),
+            enabled: true,
+            environment: Some(prod.id.clone()),
+        }))
+        .expect("prod's HOST");
+        let api = new_api(&setup, "me");
+        let request = HttpRequest {
+            uri: "{{HOST}}/me".into(),
+            ..Default::default()
+        };
+        let send_in = |setup: &Setup, request: &HttpRequest| {
+            pollster::block_on(send(
+                setup.sender.clone(),
+                setup.collection.clone(),
+                api.clone(),
+                request.clone(),
+                None,
+            ))
+        };
+        send_in(&setup, &request).expect("sent");
+        setup.sender.environment = Some(prod.clone());
+        send_in(&setup, &request).expect("sent");
+        let urls: Vec<String> = setup
+            .engine
+            .sent
+            .lock()
+            .expect("sent")
+            .iter()
+            .map(|sent| sent.url.clone())
+            .collect();
+        assert_eq!(urls, ["https://shared.test/me", "https://prod.test/me"]);
+        let missing = HttpRequest {
+            uri: "{{API}}/me".into(),
+            ..Default::default()
+        };
+        match send_in(&setup, &missing) {
+            Err(SendFailure::Prepare {
+                source: send::PrepareError::Environment { name, within },
+            }) => assert_eq!((name.as_str(), within.as_deref()), ("API", Some("prod"))),
+            other => panic!("expected the prefix missing in prod, got {other:?}"),
+        }
     }
 
     #[test]

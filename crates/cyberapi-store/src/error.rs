@@ -77,6 +77,8 @@ pub enum Entity {
     /// A folder or an API.
     Item,
     Variable,
+    /// A project's named environment (#61).
+    Environment,
     /// A team the reader is not in (the browser build's).
     Team,
     Account,
@@ -121,4 +123,6 @@ pub enum Refusal {
     /// (`cyberapi_core::version::MODEL`): what it wrote would drop what it
     /// cannot read. It may still read.
     ClientTooOld,
+    /// The project has an environment of that name already (#61).
+    EnvironmentNameTaken,
 }

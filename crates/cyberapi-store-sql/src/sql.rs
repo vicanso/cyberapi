@@ -291,6 +291,26 @@ pub const VARIABLE_UPDATE: &str = "UPDATE variables \
     SET name = $1, value = $2, enabled = $3, updated_at = $4 WHERE id = $5 AND collection = $6";
 pub const VARIABLE_DELETE: &str = "DELETE FROM variables WHERE id = $1 AND collection = $2";
 
+// Named environments (#61), in each project's order, and which one a
+// variable is in; a variable's row goes with it (ON DELETE CASCADE).
+pub const ENVIRONMENTS_OF: &str = "SELECT id, collection, name, created_at, updated_at \
+    FROM environments WHERE collection = $1 ORDER BY place, id";
+pub const ENVIRONMENT_INSERT: &str = "INSERT INTO environments \
+    (id, collection, name, place, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)";
+pub const ENVIRONMENT_RENAME: &str =
+    "UPDATE environments SET name = $1, updated_at = $2 WHERE id = $3 AND collection = $4";
+pub const ENVIRONMENT_PLACE: &str = "UPDATE environments SET place = $1 WHERE id = $2 AND collection = $3";
+pub const ENVIRONMENT_DELETE: &str = "DELETE FROM environments WHERE id = $1 AND collection = $2";
+pub const ENVIRONMENT_OWNER: &str = "SELECT collection FROM environments WHERE id = $1";
+pub const ENVIRONMENTS_DELETE_OF: &str = "DELETE FROM environments WHERE collection = $1";
+pub const ENVIRONMENT_VARIABLES: &str =
+    "SELECT variable FROM variable_environments WHERE environment = $1 AND collection = $2";
+pub const VARIABLE_ENVIRONMENTS_OF: &str =
+    "SELECT variable, environment FROM variable_environments WHERE collection = $1";
+pub const VARIABLE_ENVIRONMENT_DELETE: &str = "DELETE FROM variable_environments WHERE variable = $1";
+pub const VARIABLE_ENVIRONMENT_INSERT: &str =
+    "INSERT INTO variable_environments (variable, collection, environment) VALUES ($1, $2, $3)";
+
 // ---- what each account keeps ---------------------------------------------------
 
 pub const PREF_GET: &str = "SELECT doc FROM prefs WHERE account = $1 AND scope = $2";
@@ -335,7 +355,7 @@ pub const COOKIES_CLEAR: &str = "DELETE FROM cookies WHERE account = $1";
 // ---- the conformance probe -------------------------------------------------------
 
 #[cfg(any(test, feature = "conformance"))]
-pub const PROBE_COUNTS: [&str; 10] = [
+pub const PROBE_COUNTS: [&str; 12] = [
     "SELECT COUNT(*) FROM collections WHERE id = $1",
     "SELECT COUNT(*) FROM folders WHERE collection = $1",
     "SELECT COUNT(*) FROM apis WHERE collection = $1",
@@ -345,6 +365,8 @@ pub const PROBE_COUNTS: [&str; 10] = [
     "SELECT COUNT(*) FROM responses WHERE collection = $1",
     "SELECT COUNT(*) FROM folder_settings WHERE collection = $1",
     "SELECT COUNT(*) FROM project_settings WHERE collection = $1",
+    "SELECT COUNT(*) FROM environments WHERE collection = $1",
+    "SELECT COUNT(*) FROM variable_environments WHERE collection = $1",
     // Last: bound to the workspace scope, not the id.
     "SELECT COUNT(*) FROM prefs WHERE scope = $1",
 ];
@@ -437,6 +459,17 @@ mod tests {
         VARIABLE_INSERT,
         VARIABLE_UPDATE,
         VARIABLE_DELETE,
+        ENVIRONMENTS_OF,
+        ENVIRONMENT_INSERT,
+        ENVIRONMENT_RENAME,
+        ENVIRONMENT_PLACE,
+        ENVIRONMENT_DELETE,
+        ENVIRONMENT_OWNER,
+        ENVIRONMENTS_DELETE_OF,
+        ENVIRONMENT_VARIABLES,
+        VARIABLE_ENVIRONMENTS_OF,
+        VARIABLE_ENVIRONMENT_DELETE,
+        VARIABLE_ENVIRONMENT_INSERT,
         PREF_GET,
         PREFS_DELETE_SCOPE,
         PREFS_CLEAR_WORKSPACES,

@@ -304,6 +304,12 @@ struct Content<'a> {
     folder_settings: Vec<(&'a ItemId, &'a FolderSettings)>,
     #[serde(skip_serializing_if = "ProjectSettings::is_empty")]
     settings: &'a ProjectSettings,
+    /// The named environments, in order, and the variables in one (#61),
+    /// left out when there are none, likewise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    environments: Vec<(&'a str, &'a str)>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    variable_environments: Vec<(&'a str, &'a str)>,
 }
 
 /// A stable digest of `config`'s content, in any order its parts were read.
@@ -334,6 +340,12 @@ pub fn fingerprint(config: &ProjectConfig) -> u64 {
         })
         .collect();
     variables.sort_by(|a, b| a.0.cmp(b.0));
+    let mut variable_environments: Vec<_> = config
+        .variables
+        .iter()
+        .filter_map(|variable| Some((variable.id.as_str(), variable.environment.as_ref()?.as_str())))
+        .collect();
+    variable_environments.sort();
     let mut folder_settings: Vec<_> = config
         .folders
         .iter()
@@ -350,6 +362,12 @@ pub fn fingerprint(config: &ProjectConfig) -> u64 {
         variables,
         folder_settings,
         settings: &config.settings,
+        environments: config
+            .environments
+            .iter()
+            .map(|environment| (environment.id.as_str(), environment.name.as_str()))
+            .collect(),
+        variable_environments,
     };
     let bytes = serde_json::to_vec(&content).unwrap_or_default();
     // FNV-1a: the same digest in every build and every version of Rust.
@@ -522,6 +540,38 @@ mod tests {
         );
         local.moving(&config.folders, &"note".into(), None);
         assert!(!local.roots.contains(&"note".into()), "a synced one stays synced");
+    }
+
+    /// #61: environments, and which a variable is in, are changes too.
+    #[test]
+    fn environments_are_part_of_the_digest() {
+        let config = copy();
+        let plain = fingerprint(&config);
+        let mut named = config.clone();
+        named.environments.push(crate::model::Environment {
+            id: "e".into(),
+            name: "dev".into(),
+            ..Default::default()
+        });
+        assert_ne!(fingerprint(&named), plain);
+        let shared = crate::model::Variable {
+            id: "v".into(),
+            collection: "c".into(),
+            category: crate::model::VariableCategory::Custom,
+            name: "token".into(),
+            value: "t".into(),
+            enabled: true,
+            environment: None,
+            created_at: Default::default(),
+            updated_at: Default::default(),
+        };
+        named.variables.push(shared.clone());
+        let mut moved = named.clone();
+        moved.variables[0].environment = Some("e".into());
+        assert_ne!(fingerprint(&moved), fingerprint(&named));
+        named.variables.clear();
+        named.environments.clear();
+        assert_eq!(fingerprint(&named), plain, "none again is as it was");
     }
 
     /// #66: a change to a folder's or the project's settings is a change.

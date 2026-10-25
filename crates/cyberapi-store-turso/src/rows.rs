@@ -3,10 +3,10 @@
 //! default, never an error that hides a whole project.
 
 use cyberapi_core::model::{
-    ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory, legacy,
+    ApiCategory, ApiSetting, Collection, Environment, Folder, HttpRequest, Variable, VariableCategory, legacy,
 };
 use cyberapi_core::sync::CopyBinding;
-use cyberapi_core::{AccountId, CollectionId, ItemId, Timestamp, VariableId};
+use cyberapi_core::{AccountId, CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
 use turso::{Row, Value};
 
 /// A column as text: `NULL` is empty, numbers are spelled out.
@@ -110,7 +110,21 @@ pub fn variable(row: &Row) -> Option<Variable> {
         name: text(row, 3),
         value: text(row, 4),
         enabled: legacy::parse_enabled(&text(row, 5)),
+        // Kept apart (#61): `variable_environments` says.
+        environment: None,
         created_at: time(row, 6),
         updated_at: time(row, 7),
     })
+}
+
+pub const ENVIRONMENT_COLUMNS: &str = "id, collection, name, created_at, updated_at";
+
+pub fn environment(row: &Row) -> Environment {
+    Environment {
+        id: EnvironmentId::new(text(row, 0)),
+        collection: CollectionId::new(text(row, 1)),
+        name: text(row, 2),
+        created_at: time(row, 3),
+        updated_at: time(row, 4),
+    }
 }

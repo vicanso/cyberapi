@@ -126,6 +126,26 @@ const MIGRATIONS: &[&[&str]] = &[
             settings TEXT NOT NULL
         )",
     ],
+    // 7: named environments (#61, `docs/batch4-design.md` §2.2), in each
+    // project's order, and which one a variable is in; a variable with no
+    // row is every environment's.
+    &[
+        "CREATE TABLE IF NOT EXISTS environments (
+            id TEXT PRIMARY KEY NOT NULL,
+            collection TEXT NOT NULL,
+            name TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        "CREATE INDEX IF NOT EXISTS environments_collection ON environments (collection)",
+        "CREATE TABLE IF NOT EXISTS variable_environments (
+            variable TEXT PRIMARY KEY NOT NULL,
+            collection TEXT NOT NULL,
+            environment TEXT NOT NULL
+        )",
+        "CREATE INDEX IF NOT EXISTS variable_environments_collection ON variable_environments (collection)",
+    ],
 ];
 
 /// The schema version this build writes.

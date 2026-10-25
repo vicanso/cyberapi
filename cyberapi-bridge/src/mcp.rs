@@ -21,6 +21,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use cyberapi_core::EnvironmentId;
 use cyberapi_core::access::CollectionRole;
 use cyberapi_core::auth::{Auth, KeyPlace};
 use cyberapi_core::directory::McpToken;
@@ -30,7 +31,7 @@ use cyberapi_core::inherit::{AuthSource, Inherited, inherited};
 use cyberapi_core::mcp::{
     MAX_RESULT_BYTES, MAX_TEXT_CHARS, cut, find_api, listing, masked, masked_body, masked_params,
 };
-use cyberapi_core::model::{ApiSetting, Collection, ContentType, HttpMethod, KvParam, VariableCategory};
+use cyberapi_core::model::{ApiSetting, Collection, ContentType, Environment, HttpMethod, KvParam, VariableCategory};
 use cyberapi_core::response::{BodyKind, HttpResponse};
 use cyberapi_core::template::NoFiles;
 use cyberapi_core::version;
@@ -235,13 +236,13 @@ fn tool_list(token: &McpToken) -> Vec<Json> {
         }),
         json!({
             "name": "get_api",
-            "description": "An API's saved request: method, URL, query, headers, Basic auth and body. A URL or value may use the project's variables, written {{NAME}}.",
+            "description": "An API's saved request: method, URL, query, headers, the headers of the folders it is in, how it signs in (its own or inherited, and from where) and body. A URL or value may use the project's variables, written {{NAME}}.",
             "inputSchema": { "type": "object", "properties": { "project": project, "api": api }, "required": ["project", "api"] },
             "annotations": read,
         }),
         json!({
             "name": "get_variables",
-            "description": "A project's environment variables ({{NAME}} in a URL), custom variables (value(name)) and global request headers, with whether each is enabled.",
+            "description": "A project's environment variables ({{NAME}} in a URL), custom variables (value(name)) and global request headers, with whether each is enabled and the named environment it is in (none: every environment's); the project's named environments, and the one this account sends in.",
             "inputSchema": { "type": "object", "properties": { "project": project }, "required": ["project"] },
             "annotations": read,
         }),
@@ -264,7 +265,15 @@ fn tool_list(token: &McpToken) -> Vec<Json> {
         tools.push(json!({
             "name": "send_api",
             "description": "Sends an API's saved request from the bridge, with the project's variables and global headers, and answers its response, which also goes into this account's history. The request really reaches its server: a POST or DELETE does what it says. Needs an editor's role in the project.",
-            "inputSchema": { "type": "object", "properties": { "project": project, "api": api }, "required": ["project", "api"] },
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": project,
+                    "api": api,
+                    "environment": { "type": "string", "description": "The named environment to send in, as get_variables lists them; an empty string for none. When not given, the one this account last chose in the project." },
+                },
+                "required": ["project", "api"],
+            },
             "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true },
         }));
     }
@@ -498,8 +507,58 @@ async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
     }))
 }
 
+/// The named environment a send is in (#61): the one `arguments` name (an
+/// empty name is none), or else the one the account last chose in the
+/// project.
+async fn chosen_environment(
+    storage: &Storage,
+    collection: &Collection,
+    arguments: &Json,
+) -> Result<Option<Environment>, String> {
+    let environments = storage
+        .variables()
+        .environments(collection.id.clone())
+        .await
+        .map_err(failed)?;
+    match arguments.get("environment").and_then(Json::as_str).map(str::trim) {
+        Some("") => Ok(None),
+        Some(name) => environments
+            .iter()
+            .find(|environment| environment.name.eq_ignore_ascii_case(name))
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                let names: Vec<&str> = environments
+                    .iter()
+                    .map(|environment| environment.name.as_str())
+                    .collect();
+                format!("{name:?} is none of the project's environments ({})", names.join(", "))
+            }),
+        None => {
+            let prefs = storage
+                .prefs()
+                .workspace(collection.id.clone())
+                .await
+                .unwrap_or_default();
+            Ok(prefs
+                .environment
+                .and_then(|id| environments.into_iter().find(|environment| environment.id == id)))
+        }
+    }
+}
+
 async fn get_variables(storage: &Storage, arguments: &Json) -> Result<Json, String> {
     let collection = project(storage, arguments).await?;
+    let environments = storage
+        .variables()
+        .environments(collection.id.clone())
+        .await
+        .map_err(failed)?;
+    let named = |id: &Option<EnvironmentId>| {
+        id.as_ref()
+            .and_then(|id| environments.iter().find(|environment| &environment.id == id))
+            .map(|environment| environment.name.clone())
+    };
     let mut answer = serde_json::Map::new();
     for (key, category) in [
         ("environments", VariableCategory::Environment),
@@ -518,11 +577,23 @@ async fn get_variables(storage: &Storage, arguments: &Json) -> Result<Json, Stri
                     "name": variable.name,
                     "value": masked(&variable.name, &variable.value),
                     "enabled": variable.enabled,
+                    "environment": named(&variable.environment),
                 })
             })
             .collect();
         answer.insert(key.into(), Json::Array(listed));
     }
+    answer.insert(
+        "namedEnvironments".into(),
+        json!(
+            environments
+                .iter()
+                .map(|environment| environment.name.clone())
+                .collect::<Vec<_>>()
+        ),
+    );
+    let selected = chosen_environment(storage, &collection, &json!({})).await?;
+    answer.insert("selected".into(), json!(selected.map(|environment| environment.name)));
     Ok(Json::Object(answer))
 }
 
@@ -572,6 +643,7 @@ async fn get_history(storage: &Storage, arguments: &Json) -> Result<Json, String
 
 async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, arguments: &Json) -> Result<Json, String> {
     let (collection, api, _, inherited) = api(storage, arguments).await?;
+    let environment = chosen_environment(storage, &collection, arguments).await?;
     if collection.role < CollectionRole::Editor {
         return Err(format!(
             "sending needs an editor's role in {:?}; this account views it",
@@ -593,6 +665,7 @@ async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, argumen
         timeouts: prefs.timeouts,
         sending: prefs.sending,
         inherited,
+        environment,
     };
     let response = cyberapi_service::send(sender, collection.id, api.id, api.request, None)
         .await

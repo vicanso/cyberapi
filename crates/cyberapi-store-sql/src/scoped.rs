@@ -10,17 +10,18 @@ use crate::sql::{self, Dialect};
 use crate::{SqlStore, db, new_id, now, rows};
 use cyberapi_core::access::{CollectionRole, TeamRole, effective_role};
 use cyberapi_core::cookie::Cookie;
+use cyberapi_core::environments::reordered;
 use cyberapi_core::import::{ImportItem, assign_ids};
 use cyberapi_core::model::{
-    ApiCategory, ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
+    ApiCategory, ApiSetting, Collection, Environment, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
     VariableCategory,
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{AccountId, CollectionId, ItemId, TeamId, VariableId};
-use cyberapi_store::rules::{project_config, required_name};
+use cyberapi_core::{AccountId, CollectionId, EnvironmentId, ItemId, TeamId, VariableId};
+use cyberapi_store::rules::{environment_name, known_environment, project_config, required_name};
 use cyberapi_store::{
     CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection, NewVariable,
     PrefStore, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
@@ -31,6 +32,18 @@ use sqlx::any::AnyRow;
 use sqlx::{AnyConnection, AnyPool, Row as _};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
+
+/// Variables as read from their table, each with its environment (#61).
+fn in_environments(variables: Vec<Option<Variable>>, environments: &HashMap<String, EnvironmentId>) -> Vec<Variable> {
+    variables
+        .into_iter()
+        .flatten()
+        .map(|variable| Variable {
+            environment: environments.get(variable.id.as_str()).cloned(),
+            ..variable
+        })
+        .collect()
+}
 
 /// A `settings` column (#66); one that cannot be read is none, as an
 /// unreadable request is an empty one.
@@ -220,6 +233,98 @@ impl Scoped {
             top_order,
             settings: project,
         })
+    }
+
+    /// A project's named environments (#61), in its order.
+    async fn environments_of(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+    ) -> Result<Vec<Environment>, StoreError> {
+        sqlx::query(self.dialect.sql(sql::ENVIRONMENTS_OF))
+            .bind(collection.as_str().to_string())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(db)?
+            .iter()
+            .map(rows::environment)
+            .collect()
+    }
+
+    /// `id`, if any, is one of `collection`'s environments.
+    async fn require_environment(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+        id: Option<&EnvironmentId>,
+    ) -> Result<(), StoreError> {
+        match id {
+            Some(id) => known_environment(&self.environments_of(conn, collection).await?, id),
+            None => Ok(()),
+        }
+    }
+
+    /// Which environment each of a project's variables is in, by id.
+    async fn variable_environments(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+    ) -> Result<HashMap<String, EnvironmentId>, StoreError> {
+        sqlx::query(self.dialect.sql(sql::VARIABLE_ENVIRONMENTS_OF))
+            .bind(collection.as_str().to_string())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(db)?
+            .iter()
+            .map(|row| Ok((rows::text(row, 0)?, EnvironmentId::new(rows::text(row, 1)?))))
+            .collect()
+    }
+
+    /// Which environment a variable is in (#61): a row while it is in one.
+    async fn write_variable_environment(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+        variable: &VariableId,
+        environment: Option<&EnvironmentId>,
+    ) -> Result<(), StoreError> {
+        sqlx::query(self.dialect.sql(sql::VARIABLE_ENVIRONMENT_DELETE))
+            .bind(variable.as_str().to_string())
+            .execute(&mut *conn)
+            .await
+            .map_err(db)?;
+        if let Some(environment) = environment {
+            sqlx::query(self.dialect.sql(sql::VARIABLE_ENVIRONMENT_INSERT))
+                .bind(variable.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .bind(environment.as_str().to_string())
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+        }
+        Ok(())
+    }
+
+    /// Writes `environments` as `collection`'s, in their order.
+    async fn insert_environments(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+        environments: &[Environment],
+    ) -> Result<(), StoreError> {
+        for (place, environment) in environments.iter().enumerate() {
+            sqlx::query(self.dialect.sql(sql::ENVIRONMENT_INSERT))
+                .bind(environment.id.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .bind(environment.name.clone())
+                .bind(i64::try_from(place).unwrap_or(i64::MAX))
+                .bind(environment.created_at.to_rfc3339())
+                .bind(environment.updated_at.to_rfc3339())
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+        }
+        Ok(())
     }
 
     /// What a folder sets (#66): a row while it sets something, none after.
@@ -812,10 +917,9 @@ impl TreeStore for Scoped {
                 .map_err(db)?
                 .iter()
                 .map(rows::variable)
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
+            let variables = in_environments(variables, &this.variable_environments(&mut conn, &collection).await?);
+            let environments = this.environments_of(&mut conn, &collection).await?;
             Ok(ConfigAt {
                 revision: found.revision,
                 config: ProjectConfig {
@@ -826,6 +930,7 @@ impl TreeStore for Scoped {
                     top_order: tree.top_order,
                     variables,
                     settings: tree.settings,
+                    environments,
                 },
             })
         })
@@ -862,6 +967,12 @@ impl TreeStore for Scoped {
                         .variables
                         .iter()
                         .map(|variable| (variable.id.as_str(), [sql::VARIABLE_OWNER].as_slice())),
+                )
+                .chain(
+                    config
+                        .environments
+                        .iter()
+                        .map(|environment| (environment.id.as_str(), [sql::ENVIRONMENT_OWNER].as_slice())),
                 );
             for (item, statements) in owned {
                 for statement in statements {
@@ -895,7 +1006,12 @@ impl TreeStore for Scoped {
                     .await
                     .map_err(db)?;
             }
-            for statement in [sql::FOLDERS_DELETE_OF, sql::VARIABLES_DELETE_OF] {
+            // A variable's environment row goes with it (ON DELETE CASCADE).
+            for statement in [
+                sql::FOLDERS_DELETE_OF,
+                sql::VARIABLES_DELETE_OF,
+                sql::ENVIRONMENTS_DELETE_OF,
+            ] {
                 sqlx::query(this.dialect.sql(statement))
                     .bind(id.clone())
                     .execute(&mut *tx)
@@ -946,6 +1062,8 @@ impl TreeStore for Scoped {
                         .map_err(db)?;
                 }
             }
+            this.insert_environments(&mut tx, &collection, &config.environments)
+                .await?;
             for variable in &config.variables {
                 sqlx::query(this.dialect.sql(sql::VARIABLE_INSERT))
                     .bind(variable.id.as_str().to_string())
@@ -959,6 +1077,8 @@ impl TreeStore for Scoped {
                     .execute(&mut *tx)
                     .await
                     .map_err(db)?;
+                this.write_variable_environment(&mut tx, &collection, &variable.id, variable.environment.as_ref())
+                    .await?;
             }
             let top = TreeChange {
                 top_order: Some(config.top_order.clone()),
@@ -992,13 +1112,8 @@ impl VariableStore for Scoped {
                 .fetch_all(&mut *conn)
                 .await
                 .map_err(db)?;
-            let mut variables: Vec<Variable> = found
-                .iter()
-                .map(rows::variable)
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect();
+            let found = found.iter().map(rows::variable).collect::<Result<Vec<_>, _>>()?;
+            let mut variables = in_environments(found, &this.variable_environments(&mut conn, &collection).await?);
             variables.sort_by(|a, b| a.name.cmp(&b.name));
             Ok(variables)
         })
@@ -1008,6 +1123,8 @@ impl VariableStore for Scoped {
         self.run(|this| async move {
             let mut tx = this.pool.begin().await.map_err(db)?;
             this.require(&mut tx, &input.collection, CollectionRole::Editor).await?;
+            this.require_environment(&mut tx, &input.collection, input.environment.as_ref())
+                .await?;
             let at = now();
             let variable = Variable {
                 id: VariableId::new(new_id()),
@@ -1016,6 +1133,7 @@ impl VariableStore for Scoped {
                 name: input.name,
                 value: input.value,
                 enabled: input.enabled,
+                environment: input.environment,
                 created_at: at,
                 updated_at: at,
             };
@@ -1031,6 +1149,13 @@ impl VariableStore for Scoped {
                 .execute(&mut *tx)
                 .await
                 .map_err(db)?;
+            this.write_variable_environment(
+                &mut tx,
+                &variable.collection,
+                &variable.id,
+                variable.environment.as_ref(),
+            )
+            .await?;
             this.touch(&mut tx, &variable.collection).await?;
             tx.commit().await.map_err(db)?;
             Ok(variable)
@@ -1041,6 +1166,8 @@ impl VariableStore for Scoped {
         self.run(|this| async move {
             let mut tx = this.pool.begin().await.map_err(db)?;
             this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            this.require_environment(&mut tx, &collection, edit.environment.as_ref())
+                .await?;
             let updated = sqlx::query(this.dialect.sql(sql::VARIABLE_UPDATE))
                 .bind(edit.name)
                 .bind(edit.value)
@@ -1061,9 +1188,14 @@ impl VariableStore for Scoped {
                 .await
                 .map_err(db)?;
             let variable = rows::variable(&row)?.ok_or_else(|| StoreError::not_found(Entity::Variable, &id))?;
+            this.write_variable_environment(&mut tx, &collection, &id, edit.environment.as_ref())
+                .await?;
             this.touch(&mut tx, &collection).await?;
             tx.commit().await.map_err(db)?;
-            Ok(variable)
+            Ok(Variable {
+                environment: edit.environment,
+                ..variable
+            })
         })
     }
 
@@ -1081,6 +1213,138 @@ impl VariableStore for Scoped {
             }
             this.touch(&mut tx, &collection).await?;
             tx.commit().await.map_err(db)
+        })
+    }
+
+    fn environments(&self, collection: CollectionId) -> StoreFuture<Vec<Environment>> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            this.environments_of(&mut conn, &collection).await
+        })
+    }
+
+    fn create_environment(&self, collection: CollectionId, name: String) -> StoreFuture<Environment> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            this.lock(&mut tx, &collection).await?;
+            let existing = this.environments_of(&mut tx, &collection).await?;
+            let at = now();
+            let environment = Environment {
+                id: EnvironmentId::new(new_id()),
+                collection: collection.clone(),
+                name: environment_name(&existing, &name, None)?,
+                created_at: at,
+                updated_at: at,
+            };
+            sqlx::query(this.dialect.sql(sql::ENVIRONMENT_INSERT))
+                .bind(environment.id.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .bind(environment.name.clone())
+                .bind(i64::try_from(existing.len()).unwrap_or(i64::MAX))
+                .bind(at.to_rfc3339())
+                .bind(at.to_rfc3339())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)?;
+            Ok(environment)
+        })
+    }
+
+    fn rename_environment(
+        &self,
+        collection: CollectionId,
+        id: EnvironmentId,
+        name: String,
+    ) -> StoreFuture<Environment> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            this.lock(&mut tx, &collection).await?;
+            let existing = this.environments_of(&mut tx, &collection).await?;
+            let name = environment_name(&existing, &name, Some(&id))?;
+            let found = existing
+                .into_iter()
+                .find(|environment| environment.id == id)
+                .ok_or_else(|| StoreError::not_found(Entity::Environment, &id))?;
+            let at = now();
+            sqlx::query(this.dialect.sql(sql::ENVIRONMENT_RENAME))
+                .bind(name.clone())
+                .bind(at.to_rfc3339())
+                .bind(id.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)?;
+            Ok(Environment {
+                name,
+                updated_at: at,
+                ..found
+            })
+        })
+    }
+
+    fn delete_environment(&self, collection: CollectionId, id: EnvironmentId) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            this.require_environment(&mut tx, &collection, Some(&id)).await?;
+            // Its variables first, by id: their rows go with them.
+            let inside: Vec<String> = sqlx::query(this.dialect.sql(sql::ENVIRONMENT_VARIABLES))
+                .bind(id.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(db)?
+                .iter()
+                .map(|row| rows::text(row, 0))
+                .collect::<Result<_, _>>()?;
+            for variable in inside {
+                sqlx::query(this.dialect.sql(sql::VARIABLE_DELETE))
+                    .bind(variable)
+                    .bind(collection.as_str().to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+            sqlx::query(this.dialect.sql(sql::ENVIRONMENT_DELETE))
+                .bind(id.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)
+        })
+    }
+
+    fn reorder_environments(
+        &self,
+        collection: CollectionId,
+        order: Vec<EnvironmentId>,
+    ) -> StoreFuture<Vec<Environment>> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            this.lock(&mut tx, &collection).await?;
+            let placed = reordered(&this.environments_of(&mut tx, &collection).await?, &order);
+            for (place, environment) in placed.iter().enumerate() {
+                sqlx::query(this.dialect.sql(sql::ENVIRONMENT_PLACE))
+                    .bind(i64::try_from(place).unwrap_or(i64::MAX))
+                    .bind(environment.id.as_str().to_string())
+                    .bind(collection.as_str().to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)?;
+            Ok(placed)
         })
     }
 }

@@ -1,6 +1,6 @@
 # 第 4 批设计：接口级设置、认证类型与继承、命名环境
 
-> 状态：第 7 节按建议定了（2026-10-25），第 6 节第 1–4 步已完成。网页版还没有实际在用，所以从第 2 步起不再为已发布的客户端额外做兼容（见 2.1 末尾）。对应 [vicanso/cyberapi](https://github.com/vicanso/cyberapi/issues) #71、#66、#61，见 [issue-plan.md](./issue-plan.md) 第 4 批。第 7 节是当时要决定的问题，都按建议定了。
+> 状态：第 7 节按建议定了（2026-10-25），第 6 节第 1–5 步已完成。网页版还没有实际在用，所以从第 2 步起不再为已发布的客户端额外做兼容（见 2.1 末尾）。对应 [vicanso/cyberapi](https://github.com/vicanso/cyberapi/issues) #71、#66、#61，见 [issue-plan.md](./issue-plan.md) 第 4 批。第 7 节是当时要决定的问题，都按建议定了。
 
 三个 issue 都要改项目的数据：#71 和 #66 改接口保存的请求，#66 还要让目录和项目带设置，#61 给变量加上“属于哪个环境”。它们共用一套兼容和存储的做法，所以放在一起设计。
 
@@ -242,7 +242,7 @@ Insomnia 的 base / sub 环境、Postman 的环境文件，导入时映射到命
    - 先做存储：conformance → `MemoryStore` → Turso → SQL → bridge 的 `Call`。
    - 再做生效规则、两个弹窗、同步的指纹、备份和导出。
    - （已完成。做的时候定下的：目录和项目的“认证”沿用接口的 `Auth`，`Inherit` 就是“继承”，不再用 `Option<Auth>`；`TreeStore` 是两个方法 `set_folder_settings` / `set_project_settings`；目录请求头排在全局请求头之后、认证之前，认证盖过目录里写的同名头；服务不读树，继承来的由调用方放进 `Sender.inherited`；两个弹窗点“保存”才写入；指纹只在有设置时才把它们算进去，没有设置的项目指纹不变；项目认证不随导出走，和变量一样。）
-5. **#61a 环境的存储与规则：** 存储（同上的顺序）、生效规则、`Sender.environment`、MCP。
+5. **#61a 环境的存储与规则：** 存储（同上的顺序）、生效规则、`Sender.environment`、MCP。（已完成。做的时候定下的：`Environment` 不带 `position` 字段，列表的顺序就是顺序，存储里另存一列；环境名在项目里唯一、不分大小写，重名是 `Refusal::EnvironmentNameTaken`；规则写成 `environments::effective`，先把变量按当前环境筛好，后面的取值规则不用改；`Sender.environment` 是整个 `Environment`，找不到 URI 前缀变量的报错带上环境名；MCP 的 `send_api` 用参数 `environment`（按名字，空字符串表示不用环境），没给时用该账号的 prefs，`get_variables` 给出每个变量所在的环境、环境列表和该账号选的环境；数据模型编号加到 5。）
 6. **#61b 环境的界面：** 切换器、变量弹窗；可选的手动整理工具。
 
 ## 7. 需要你决定的问题

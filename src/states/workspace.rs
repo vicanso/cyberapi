@@ -20,18 +20,20 @@ use super::copy::{self, Kept, Pushed, ServerCopy};
 use super::{ApiState, AppStore, GrpcDefinitions, Load, ServerStatus, run_serial, run_store};
 use crate::pacing;
 use async_lock::Mutex;
-use cyberapi_core::ItemId;
 use cyberapi_core::code::CodeTarget;
+use cyberapi_core::environments;
 use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::import::{ImportBundle, ImportItem};
 use cyberapi_core::inherit::{self, Inherited};
 use cyberapi_core::model::{
-    ApiSetting, Collection, Folder, FolderSettings, HttpMethod, ProjectSettings, Variable, VariableCategory,
+    ApiSetting, Collection, Environment, Folder, FolderSettings, HttpMethod, ProjectSettings, Variable,
+    VariableCategory,
 };
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
 use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, Step};
 use cyberapi_core::template_hints;
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
+use cyberapi_core::{EnvironmentId, ItemId};
 use cyberapi_service::Sender;
 use cyberapi_store::{Storage, StoreError, StoreFuture};
 use futures::StreamExt as _;
@@ -134,6 +136,10 @@ pub struct WorkspaceState {
     global_headers: Vec<Variable>,
     /// The project's custom variables, for what `{{value(` offers (M6).
     custom: Vec<Variable>,
+    /// The project's named environments (#61), in order; the reader's is
+    /// `prefs.environment`. The variables above are every layer's, read
+    /// through it (`environments::effective`).
+    named: Vec<Environment>,
     /// The JSON of APIs' last answers, read for the fields a `get` path
     /// offers (M6): `None` for one with no JSON answer. Kept until the API
     /// answers again.
@@ -226,6 +232,7 @@ impl WorkspaceState {
             environment: Vec::new(),
             global_headers: Vec::new(),
             custom: Vec::new(),
+            named: Vec::new(),
             answers: HashMap::new(),
             schemas: HashMap::new(),
             grpc: HashMap::new(),
@@ -767,14 +774,58 @@ impl WorkspaceState {
         self.api.as_ref()
     }
 
-    /// F4.4: the enabled environment variables, by name.
-    pub fn environments(&self) -> impl Iterator<Item = &Variable> {
-        self.environment.iter().filter(|variable| variable.enabled)
+    /// F4.4: the enabled environment variables, by name, as the reader's
+    /// environment reads them (#61).
+    pub fn environments(&self) -> Vec<Variable> {
+        self.in_environment(&self.environment)
+            .into_iter()
+            .filter(|variable| variable.enabled)
+            .collect()
     }
 
-    /// The global request headers, enabled or not.
-    pub fn global_headers(&self) -> &[Variable] {
-        &self.global_headers
+    /// The global request headers, enabled or not, as the reader's
+    /// environment reads them (#61).
+    pub fn global_headers(&self) -> Vec<Variable> {
+        self.in_environment(&self.global_headers)
+    }
+
+    /// `variables` as a send in the reader's environment reads them.
+    fn in_environment(&self, variables: &[Variable]) -> Vec<Variable> {
+        environments::effective(variables, self.current_environment().map(|found| &found.id))
+    }
+
+    /// #61: the project's named environments, in order.
+    pub fn named_environments(&self) -> &[Environment] {
+        &self.named
+    }
+
+    /// #61: the named environment the reader sends in, while it is one of
+    /// the project's.
+    pub fn current_environment(&self) -> Option<&Environment> {
+        let id = self.prefs.environment.as_ref()?;
+        self.named.iter().find(|environment| &environment.id == id)
+    }
+
+    /// #61: the reader's environment, their own (kept with their state of
+    /// the project, not the project's).
+    pub fn set_environment(&mut self, environment: Option<EnvironmentId>, cx: &mut Context<Self>) {
+        if self.prefs.environment != environment {
+            self.prefs.environment = environment;
+            self.save_prefs(cx);
+            cx.notify();
+        }
+    }
+
+    /// #61: reads the project's environments again: they changed.
+    pub fn refresh_environments(&mut self, cx: &mut Context<Self>) {
+        let call = self.sender.storage.variables().environments(self.collection.id.clone());
+        run_store(cx, call, |this, result, cx| match result {
+            Ok(named) => {
+                this.named = named;
+                cx.notify();
+            }
+            Err(error) => warn!(%error, "environments could not be read"),
+        });
     }
 
     /// #66: what an API or a folder takes from the folders above it and the
@@ -799,7 +850,7 @@ impl WorkspaceState {
     pub fn hint_sources(&self, files: bool) -> template_hints::Sources {
         template_hints::Sources {
             custom: self
-                .custom
+                .in_environment(&self.custom)
                 .iter()
                 .filter(|variable| variable.enabled)
                 .map(|variable| (variable.name.clone(), variable.value.clone()))
@@ -873,6 +924,7 @@ impl WorkspaceState {
 
     /// Reads the variables kept here again: the project changed.
     fn refresh_kept_variables(&mut self, cx: &mut Context<Self>) {
+        self.refresh_environments(cx);
         self.refresh_variables(VariableCategory::Environment, cx);
         self.refresh_variables(VariableCategory::GlobalRequestHeader, cx);
         self.refresh_variables(VariableCategory::Custom, cx);
@@ -1411,6 +1463,7 @@ impl WorkspaceState {
                     name,
                     value,
                     enabled: true,
+                    environment: None,
                 });
                 if let Err(error) = cx.background_spawn(call).await {
                     let _ = this.update(cx, |_, cx| cx.emit(WorkspaceEvent::Failed(error)));
@@ -1446,6 +1499,7 @@ impl WorkspaceState {
         };
         let sender = Sender {
             inherited: self.inherited(id),
+            environment: self.current_environment().cloned(),
             ..self.sender.clone()
         };
         let call = cyberapi_service::code(sender, self.collection.id.clone(), api.request.clone(), target);
@@ -1575,6 +1629,7 @@ mod tests {
             timeouts: Timeouts::default(),
             sending: SendPrefs::default(),
             inherited: Default::default(),
+            environment: None,
         }
     }
 
@@ -1635,6 +1690,7 @@ mod tests {
             name: name.into(),
             value: value.into(),
             enabled: true,
+            environment: None,
         };
         for new in [
             variable(VariableCategory::Environment, "dev", "http://dev"),
@@ -1646,13 +1702,13 @@ mod tests {
         let names = |state: &Entity<WorkspaceState>, cx: &mut TestAppContext| {
             state.read_with(cx, |state, _| {
                 let names = |list: &[Variable]| list.iter().map(|v| v.name.clone()).collect::<Vec<_>>();
-                let environment: Vec<Variable> = state.environments().cloned().collect();
-                (names(&environment), names(state.global_headers()))
+                let environment: Vec<Variable> = state.environments();
+                (names(&environment), names(&state.global_headers()))
             })
         };
         assert_eq!(names(&state, cx), (vec!["dev".into()], vec!["X-Sign".into()]));
         let needs = state.read_with(cx, |state, _| {
-            cyberapi_core::send::needs(&HttpRequest::default(), state.global_headers(), &Default::default())
+            cyberapi_core::send::needs(&HttpRequest::default(), &state.global_headers(), &Default::default())
         });
         assert!(needs.picks_file);
 
@@ -1663,6 +1719,41 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(names(&state, cx).1, ["X-Sign", "X-Trace"]);
+
+        // #61: in a named environment its variables stand in for the shared
+        // ones; the choice is the reader's, kept with their state.
+        let staging = storage
+            .variables()
+            .create_environment(collection.id.clone(), "staging".into())
+            .await
+            .expect("an environment");
+        let mut theirs = variable(VariableCategory::GlobalRequestHeader, "X-Trace", "staging");
+        theirs.environment = Some(staging.id.clone());
+        storage.variables().create(theirs).await.expect("create");
+        state.update(cx, |state, cx| {
+            state.refresh_variables(VariableCategory::GlobalRequestHeader, cx)
+        });
+        state.update(cx, |state, cx| state.refresh_environments(cx));
+        cx.run_until_parked();
+        let values = |state: &Entity<WorkspaceState>, cx: &mut TestAppContext| {
+            state.read_with(cx, |state, _| {
+                state
+                    .global_headers()
+                    .into_iter()
+                    .map(|header| header.value)
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            values(&state, cx),
+            ["{{openFile()}}", "1"],
+            "none chosen: the shared ones"
+        );
+        state.update(cx, |state, cx| state.set_environment(Some(staging.id.clone()), cx));
+        cx.run_until_parked();
+        assert_eq!(values(&state, cx), ["{{openFile()}}", "staging"]);
+        let kept = storage.prefs().workspace(collection.id.clone()).await.expect("prefs");
+        assert_eq!(kept.environment, Some(staging.id));
     }
 
     /// M6: what `{{` offers, the custom variables kept up to date.
@@ -1676,6 +1767,7 @@ mod tests {
             name: name.into(),
             value: format!("{name}-value"),
             enabled,
+            environment: None,
         };
         storage
             .variables()
@@ -2278,7 +2370,7 @@ mod tests {
         let into = heard.clone();
         cx.update(|cx| {
             cx.subscribe(&api, move |_, event, _| match event {
-                ApiEvent::NoEnvironment(name) => into.borrow_mut().push(format!("no {name}")),
+                ApiEvent::NoEnvironment { name, .. } => into.borrow_mut().push(format!("no {name}")),
                 ApiEvent::NotSent(message) => into.borrow_mut().push(message.clone()),
                 _ => {}
             })

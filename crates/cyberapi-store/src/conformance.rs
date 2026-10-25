@@ -6,7 +6,7 @@
 //! already holds data. A failure names the check through its file and line.
 
 use crate::{
-    CollectionEdit, Entity, Imported, Inserted, NewCollection, NewVariable, Storage, StoreError, StoreFuture,
+    CollectionEdit, Entity, Imported, Inserted, NewCollection, NewVariable, Refusal, Storage, StoreError, StoreFuture,
     VariableEdit,
 };
 use cyberapi_core::access::CollectionRole;
@@ -22,7 +22,7 @@ use cyberapi_core::prefs::{AppPrefs, HttpVersion, RequestSettings, ThemeMode, Ti
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse, HttpStats};
 use cyberapi_core::sync::ProjectConfig;
 use cyberapi_core::tree::{Placement, Tree, TreeData, TreeError};
-use cyberapi_core::{CollectionId, ItemId, VariableId};
+use cyberapi_core::{CollectionId, EnvironmentId, ItemId, VariableId};
 
 /// What a backend shows the suite beyond the traits. Some rules cannot be
 /// seen through them: once a project is deleted every method answers "not
@@ -52,6 +52,7 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     content_changes_touch_the_collection(storage).await;
     shared_changes_move_the_revision(storage).await;
     variables_round_trip(storage).await;
+    environments_round_trip(storage, probe).await;
     app_prefs_round_trip(storage).await;
     workspace_prefs_are_per_collection(storage).await;
     history_keeps_the_newest(storage, probe).await;
@@ -223,6 +224,7 @@ async fn deleting_a_collection_takes_its_content(storage: &Storage, probe: &dyn 
             name: "HOST".into(),
             value: "http://localhost".into(),
             enabled: true,
+            environment: None,
         })
         .await
         .expect("create a variable");
@@ -253,6 +255,23 @@ async fn deleting_a_collection_takes_its_content(storage: &Storage, probe: &dyn 
     tree.set_project_settings(doomed.id.clone(), ProjectSettings { auth: Auth::None })
         .await
         .expect("the project's settings");
+    let dev = storage
+        .variables()
+        .create_environment(doomed.id.clone(), "dev".into())
+        .await
+        .expect("an environment");
+    storage
+        .variables()
+        .create(NewVariable {
+            collection: doomed.id.clone(),
+            category: VariableCategory::Custom,
+            name: "token".into(),
+            value: "dev".into(),
+            enabled: true,
+            environment: Some(dev.id),
+        })
+        .await
+        .expect("a variable in it");
     let kept_rows = probe.rows_of(kept.id.clone()).await.expect("probe");
     // The project row, the folder, the API, the variable, the workspace
     // state, the response, the project's settings — and the top-level order
@@ -671,6 +690,7 @@ async fn projects_do_not_see_each_other(storage: &Storage) {
             name: "token".into(),
             value: "secret".into(),
             enabled: true,
+            environment: None,
         })
         .await
         .expect("create a variable");
@@ -798,6 +818,7 @@ async fn shared_changes_move_the_revision(storage: &Storage) {
             name: "host".into(),
             value: "a".into(),
             enabled: true,
+            environment: None,
         })
         .await
         .expect("create a variable");
@@ -810,6 +831,7 @@ async fn shared_changes_move_the_revision(storage: &Storage) {
                 name: "host".into(),
                 value: "b".into(),
                 enabled: true,
+                environment: None,
             },
         )
         .await
@@ -862,6 +884,26 @@ async fn shared_changes_move_the_revision(storage: &Storage) {
         .await
         .expect("the project's settings");
     last = moved(storage, id, last, "the project's settings").await;
+    let environment = variables
+        .create_environment(id.clone(), "dev".into())
+        .await
+        .expect("an environment");
+    last = moved(storage, id, last, "a new environment").await;
+    variables
+        .rename_environment(id.clone(), environment.id.clone(), "qa".into())
+        .await
+        .expect("renamed");
+    last = moved(storage, id, last, "a renamed environment").await;
+    variables
+        .reorder_environments(id.clone(), vec![environment.id.clone()])
+        .await
+        .expect("reordered");
+    last = moved(storage, id, last, "environments reordered").await;
+    variables
+        .delete_environment(id.clone(), environment.id)
+        .await
+        .expect("deleted");
+    last = moved(storage, id, last, "a deleted environment").await;
     tree.delete(id.clone(), users.item.id).await.expect("delete");
     last = moved(storage, id, last, "a deletion").await;
 
@@ -887,6 +929,7 @@ async fn variables_round_trip(storage: &Storage) {
         name: name.into(),
         value: value.into(),
         enabled: true,
+        environment: None,
     };
     let b = variables
         .create(create(VariableCategory::Environment, "b", "2"))
@@ -937,6 +980,7 @@ async fn variables_round_trip(storage: &Storage) {
                 name: "b2".into(),
                 value: "two".into(),
                 enabled: false,
+                environment: None,
             },
         )
         .await
@@ -970,6 +1014,201 @@ async fn variables_round_trip(storage: &Storage) {
     assert_eq!(env, vec![updated]);
 }
 
+/// #61: a project's named environments — named once each, in an order of
+/// the readers' making — and the variables in them, which go with them.
+async fn environments_round_trip(storage: &Storage, probe: &dyn Probe) {
+    let collection = new_collection(storage, "environments").await;
+    let id = collection.id.clone();
+    let variables = storage.variables();
+    assert!(variables.environments(id.clone()).await.expect("none yet").is_empty());
+    let dev = variables
+        .create_environment(id.clone(), " dev ".into())
+        .await
+        .expect("dev");
+    assert_eq!((dev.name.as_str(), &dev.collection), ("dev", &id));
+    let prod = variables
+        .create_environment(id.clone(), "prod".into())
+        .await
+        .expect("prod");
+    assert_eq!(
+        variables.environments(id.clone()).await.expect("list"),
+        vec![dev.clone(), prod.clone()],
+        "in the order made"
+    );
+    assert_eq!(
+        variables.create_environment(id.clone(), "  ".into()).await,
+        Err(StoreError::NameRequired)
+    );
+    let taken = Err(StoreError::Refused {
+        reason: Refusal::EnvironmentNameTaken,
+    });
+    assert_eq!(variables.create_environment(id.clone(), "DEV".into()).await, taken);
+
+    let staging = variables
+        .rename_environment(id.clone(), prod.id.clone(), "staging".into())
+        .await
+        .expect("rename");
+    assert_eq!(
+        (staging.name.as_str(), &staging.created_at),
+        ("staging", &prod.created_at)
+    );
+    assert_eq!(
+        variables
+            .rename_environment(id.clone(), prod.id.clone(), "Dev".into())
+            .await,
+        taken
+    );
+    variables
+        .rename_environment(id.clone(), prod.id.clone(), "Staging".into())
+        .await
+        .expect("its own name, cased otherwise");
+    let reordered = variables
+        .reorder_environments(id.clone(), vec![prod.id.clone(), EnvironmentId::from(MISSING)])
+        .await
+        .expect("reorder");
+    assert_eq!(
+        reordered.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        ["Staging", "dev"]
+    );
+    assert_eq!(variables.environments(id.clone()).await.expect("list"), reordered);
+
+    // Variables in one, and shared.
+    let new = |name: &str, environment: Option<&EnvironmentId>| NewVariable {
+        collection: id.clone(),
+        category: VariableCategory::Environment,
+        name: name.into(),
+        value: format!("{name} value"),
+        enabled: true,
+        environment: environment.cloned(),
+    };
+    let shared = variables.create(new("HOST", None)).await.expect("shared");
+    let mine = variables.create(new("HOST", Some(&dev.id))).await.expect("dev's");
+    assert_eq!(mine.environment.as_ref(), Some(&dev.id));
+    not_found(
+        variables.create(new("HOST", Some(&EnvironmentId::from(MISSING)))).await,
+        Entity::Environment,
+    );
+    let listed = variables
+        .list(id.clone(), VariableCategory::Environment)
+        .await
+        .expect("list");
+    assert_eq!(listed.len(), 2);
+    assert!(
+        listed.contains(&mine) && listed.contains(&shared),
+        "each with its environment"
+    );
+    // One moves into the other environment, and back to shared.
+    let moved = variables
+        .update(
+            id.clone(),
+            mine.id.clone(),
+            VariableEdit {
+                name: mine.name.clone(),
+                value: mine.value.clone(),
+                enabled: true,
+                environment: Some(prod.id.clone()),
+            },
+        )
+        .await
+        .expect("move");
+    assert_eq!(moved.environment.as_ref(), Some(&prod.id));
+    let back = variables
+        .update(
+            id.clone(),
+            mine.id.clone(),
+            VariableEdit {
+                name: mine.name.clone(),
+                value: mine.value.clone(),
+                enabled: true,
+                environment: None,
+            },
+        )
+        .await
+        .expect("shared again");
+    assert_eq!(back.environment, None);
+    not_found(
+        variables
+            .update(
+                id.clone(),
+                mine.id.clone(),
+                VariableEdit {
+                    environment: Some(EnvironmentId::from(MISSING)),
+                    ..VariableEdit::default()
+                },
+            )
+            .await,
+        Entity::Environment,
+    );
+    // The configuration has them.
+    let read = storage.tree().config(id.clone()).await.expect("config");
+    assert_eq!(read.config.environments, reordered);
+
+    // A variable deleted leaves nothing of where it was.
+    let before = probe.rows_of(id.clone()).await.expect("probe");
+    let gone = variables.create(new("TOKEN", Some(&dev.id))).await.expect("dev's");
+    variables.delete(id.clone(), vec![gone.id]).await.expect("delete");
+    assert_eq!(probe.rows_of(id.clone()).await.expect("probe"), before);
+
+    // An environment deleted takes its variables; the shared ones stay.
+    variables
+        .update(
+            id.clone(),
+            mine.id.clone(),
+            VariableEdit {
+                name: mine.name.clone(),
+                value: mine.value.clone(),
+                enabled: true,
+                environment: Some(dev.id.clone()),
+            },
+        )
+        .await
+        .expect("into dev again");
+    let before = probe.rows_of(id.clone()).await.expect("probe");
+    variables
+        .delete_environment(id.clone(), dev.id.clone())
+        .await
+        .expect("delete dev");
+    let left = variables
+        .list(id.clone(), VariableCategory::Environment)
+        .await
+        .expect("list");
+    assert_eq!(left, vec![shared], "dev's went with it");
+    assert!(
+        probe.rows_of(id.clone()).await.expect("probe") < before - 1,
+        "the environment's row and its variable's are gone"
+    );
+    assert_eq!(
+        variables
+            .environments(id.clone())
+            .await
+            .expect("list")
+            .into_iter()
+            .map(|environment| environment.id)
+            .collect::<Vec<_>>(),
+        vec![prod.id.clone()]
+    );
+
+    for missing in [
+        variables
+            .rename_environment(id.clone(), dev.id.clone(), "again".into())
+            .await
+            .map(|_| ()),
+        variables.delete_environment(id.clone(), dev.id.clone()).await,
+    ] {
+        not_found(missing, Entity::Environment);
+    }
+    let nowhere = CollectionId::new(MISSING);
+    not_found(variables.environments(nowhere.clone()).await, Entity::Collection);
+    not_found(
+        variables.create_environment(nowhere.clone(), "x".into()).await,
+        Entity::Collection,
+    );
+    not_found(
+        variables.reorder_environments(nowhere, vec![]).await,
+        Entity::Collection,
+    );
+}
+
 async fn app_prefs_round_trip(storage: &Storage) {
     let mut prefs = AppPrefs {
         theme: ThemeMode::Dark,
@@ -1000,6 +1239,8 @@ async fn workspace_prefs_are_per_collection(storage: &Storage) {
             .into_iter()
             .collect(),
         tabs: [(login.item.id, "headers".to_string())].into_iter().collect(),
+        // The reader's environment (#61).
+        environment: Some(EnvironmentId::from("e1")),
     };
     storage
         .prefs()
@@ -1484,6 +1725,7 @@ pub async fn backup(storage: &Storage, backups: &dyn crate::BackupStore) {
             name: "HOST".into(),
             value: "https://a.test".into(),
             enabled: true,
+            environment: None,
         })
         .await
         .expect("a variable");
@@ -1510,6 +1752,24 @@ pub async fn backup(storage: &Storage, backups: &dyn crate::BackupStore) {
         .set_project_settings(kept.id.clone(), ProjectSettings { auth: Auth::None })
         .await
         .expect("the project's settings");
+    // So are its environments and the variables in them (#61).
+    let dev = storage
+        .variables()
+        .create_environment(kept.id.clone(), "dev".into())
+        .await
+        .expect("an environment");
+    storage
+        .variables()
+        .create(NewVariable {
+            collection: kept.id.clone(),
+            category: VariableCategory::Environment,
+            name: "HOST".into(),
+            value: "https://dev.test".into(),
+            enabled: true,
+            environment: Some(dev.id.clone()),
+        })
+        .await
+        .expect("a variable in it");
     let snapshot = backups.snapshot().await.expect("snapshot");
     let before_list = storage.collections().list().await.expect("list");
     let before_tree = load(storage, &kept).await;
@@ -1531,6 +1791,16 @@ pub async fn backup(storage: &Storage, backups: &dyn crate::BackupStore) {
     assert!(
         !before_tree.settings.is_empty() && before_tree.folders.iter().all(|folder| !folder.settings.is_empty()),
         "the settings came back"
+    );
+    assert_eq!(
+        storage.variables().environments(kept.id.clone()).await.expect("list"),
+        vec![dev.clone()]
+    );
+    assert!(
+        before_variables
+            .iter()
+            .any(|variable| variable.environment.as_ref() == Some(&dev.id)),
+        "the variable in it came back in it"
     );
     assert_eq!(
         storage
@@ -1587,6 +1857,7 @@ async fn configs_are_read_whole(storage: &Storage) {
                 name: format!("{category:?}"),
                 value: "v".into(),
                 enabled: true,
+                environment: None,
             })
             .await
             .expect("create a variable");
@@ -1624,6 +1895,7 @@ async fn configs_replace_at_their_base(storage: &Storage) {
             name: "HOST".into(),
             value: "https://a.test".into(),
             enabled: true,
+            environment: None,
         })
         .await
         .expect("create a variable");
@@ -1665,11 +1937,21 @@ async fn configs_replace_at_their_base(storage: &Storage) {
     // What the folder and the project set (#66) comes as given too.
     wanted.folders[0].settings.auth = Auth::Bearer { token: "t".into() };
     wanted.settings.auth = Auth::None;
+    // Named environments (#61), and a variable in one, likewise.
+    let environment = cyberapi_core::model::Environment {
+        id: EnvironmentId::new(format!("{}-environment", collection.id)),
+        collection: collection.id.clone(),
+        name: "dev".into(),
+        created_at: at,
+        updated_at: at,
+    };
+    wanted.environments = vec![environment.clone()];
     wanted.top_order = vec![users.item.id.clone()];
     wanted.variables[0].value = "https://b.test".into();
     let mut second = wanted.variables[0].clone();
     second.id = VariableId::new(format!("{}-variable", collection.id));
     second.name = "TOKEN".into();
+    second.environment = Some(environment.id.clone());
     wanted.variables.push(second);
 
     // Stale: nothing written.
@@ -1727,6 +2009,8 @@ async fn configs_replace_at_their_base(storage: &Storage) {
     mine.folders[0].children = vec![made.clone()];
     mine.folders[0].settings = FolderSettings::default();
     mine.settings = ProjectSettings::default();
+    mine.environments.clear();
+    mine.variables.retain(|variable| variable.environment.is_none());
     let forced = storage
         .tree()
         .replace(collection.id.clone(), mine.clone(), None)
@@ -1772,6 +2056,7 @@ async fn configs_keep_their_ids_to_themselves(storage: &Storage) {
             name: "theirs".into(),
             value: String::new(),
             enabled: true,
+            environment: None,
         })
         .await
         .expect("create a variable");
@@ -1830,6 +2115,7 @@ pub async fn copies(storage: &Storage, copies: &dyn crate::ServerCopyStore) {
             name: "HOST".into(),
             value: "https://a.test".into(),
             enabled: true,
+            environment: None,
         })
         .await
         .expect("a variable");
@@ -1847,6 +2133,14 @@ pub async fn copies(storage: &Storage, copies: &dyn crate::ServerCopyStore) {
         enabled: true,
     }];
     config.settings.auth = Auth::Bearer { token: "t".into() };
+    config.environments.push(cyberapi_core::model::Environment {
+        id: EnvironmentId::new(format!("{}-dev", server.id)),
+        collection: server.id.clone(),
+        name: "dev".into(),
+        created_at: config.variables[0].created_at,
+        updated_at: config.variables[0].created_at,
+    });
+    config.variables[0].environment = Some(config.environments[0].id.clone());
     config.description = "theirs".into();
     let copy = Collection {
         name: config.name.clone(),

@@ -3,12 +3,14 @@
 //! columns — so either app restores the other's. The top-level orders ride
 //! along in a file the old app does not know (and ignores), and a folder's
 //! or a project's settings (#66) in a `settings` column of its row, which
-//! the old app ignores too.
+//! the old app ignores too; so do the named environments (#61), a file of
+//! their own, and a variable's in an `environment` column.
 
 use crate::model::{
-    ApiCategory, ApiSetting, Collection, Folder, HttpRequest, ProjectSettings, Variable, VariableCategory, legacy,
+    ApiCategory, ApiSetting, Collection, Environment, Folder, HttpRequest, ProjectSettings, Variable, VariableCategory,
+    legacy,
 };
-use crate::{CollectionId, ItemId, Timestamp, VariableId};
+use crate::{CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
 use serde_json::{Value, json};
 use snafu::Snafu;
 
@@ -17,6 +19,7 @@ pub const FOLDERS_FILE: &str = "api_folders.json";
 pub const APIS_FILE: &str = "api_settings.json";
 pub const VARIABLES_FILE: &str = "variables.json";
 pub const TOP_ORDERS_FILE: &str = "top_orders.json";
+pub const ENVIRONMENTS_FILE: &str = "environments.json";
 
 /// Everything a restore replaces.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -28,6 +31,9 @@ pub struct Backup {
     pub top_orders: Vec<(CollectionId, Vec<ItemId>)>,
     /// The projects that set something for their APIs (#66).
     pub project_settings: Vec<(CollectionId, ProjectSettings)>,
+    /// Every project's named environments, each project's in its order
+    /// (#61).
+    pub environments: Vec<Environment>,
 }
 
 #[derive(Debug, Snafu, PartialEq, Eq)]
@@ -123,10 +129,24 @@ impl Backup {
             .variables
             .iter()
             .map(|v| {
-                json!({
+                let mut row = json!({
                     "id": v.id, "category": v.category.as_str(), "collection": v.collection,
                     "name": v.name, "value": v.value, "enabled": if v.enabled { "1" } else { "0" },
                     "created_at": v.created_at.to_rfc3339(), "updated_at": v.updated_at.to_rfc3339(),
+                });
+                if let (Some(environment), Value::Object(fields)) = (&v.environment, &mut row) {
+                    fields.insert("environment".into(), json!(environment));
+                }
+                row
+            })
+            .collect();
+        let environments: Vec<Value> = self
+            .environments
+            .iter()
+            .map(|e| {
+                json!({
+                    "id": e.id, "collection": e.collection, "name": e.name,
+                    "created_at": e.created_at.to_rfc3339(), "updated_at": e.updated_at.to_rfc3339(),
                 })
             })
             .collect();
@@ -141,6 +161,7 @@ impl Backup {
             (APIS_FILE, apis),
             (VARIABLES_FILE, variables),
             (TOP_ORDERS_FILE, top_orders),
+            (ENVIRONMENTS_FILE, environments),
         ]
         .into_iter()
         .map(|(name, rows)| (name, serde_json::to_vec(&rows).unwrap_or_default()))
@@ -201,6 +222,9 @@ impl Backup {
                     name: text(row, "name"),
                     value: text(row, "value"),
                     enabled: text(row, "enabled") == "1",
+                    environment: Some(text(row, "environment"))
+                        .filter(|id| !id.is_empty())
+                        .map(EnvironmentId::new),
                     created_at: time(row, "created_at"),
                     updated_at: time(row, "updated_at"),
                 })
@@ -218,6 +242,20 @@ impl Backup {
                 .collect(),
             None => Vec::new(),
         };
+        // An older backup has none.
+        let environments = match read(ENVIRONMENTS_FILE) {
+            Some(bytes) => rows(ENVIRONMENTS_FILE, Some(bytes))?
+                .iter()
+                .map(|row| Environment {
+                    id: EnvironmentId::new(text(row, "id")),
+                    collection: CollectionId::new(text(row, "collection")),
+                    name: text(row, "name"),
+                    created_at: time(row, "created_at"),
+                    updated_at: time(row, "updated_at"),
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         Ok(Self {
             collections,
             folders,
@@ -225,6 +263,7 @@ impl Backup {
             variables,
             top_orders,
             project_settings,
+            environments,
         })
     }
 }
@@ -283,10 +322,18 @@ mod tests {
                 name: "X".into(),
                 value: "1".into(),
                 enabled: false,
+                environment: Some("e".into()),
                 created_at: at(),
                 updated_at: at(),
             }],
             top_orders: vec![("c".into(), vec!["f".into()])],
+            environments: vec![Environment {
+                id: "e".into(),
+                collection: "c".into(),
+                name: "dev".into(),
+                created_at: at(),
+                updated_at: at(),
+            }],
             project_settings: vec![(
                 "c".into(),
                 ProjectSettings {

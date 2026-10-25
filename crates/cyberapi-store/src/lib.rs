@@ -34,13 +34,14 @@ use cyberapi_core::directory::{
 };
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{
-    ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable, VariableCategory,
+    ApiSetting, Collection, Environment, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
+    VariableCategory,
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{AccountId, CollectionId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
+use cyberapi_core::{AccountId, CollectionId, EnvironmentId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -98,15 +99,21 @@ pub struct NewVariable {
     pub name: String,
     pub value: String,
     pub enabled: bool,
+    /// The named environment it is in (#61); `None` is every one's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentId>,
 }
 
 /// The fields of a variable that change; its project and category do not.
+/// Its environment may (#61): a variable moves between layers.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VariableEdit {
     pub name: String,
     pub value: String,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentId>,
 }
 
 /// Projects (M2).
@@ -210,6 +217,24 @@ pub trait VariableStore: Send + Sync {
     fn update(&self, collection: CollectionId, id: VariableId, edit: VariableEdit) -> StoreFuture<Variable>;
     /// Ids that are not the project's are ignored.
     fn delete(&self, collection: CollectionId, ids: Vec<VariableId>) -> StoreFuture<()>;
+    /// The project's named environments (#61), in order. A variable's
+    /// `environment` must be one of them.
+    fn environments(&self, collection: CollectionId) -> StoreFuture<Vec<Environment>>;
+    /// A new environment, last. A blank name is refused, and one the project
+    /// has already ([`Refusal::EnvironmentNameTaken`]).
+    fn create_environment(&self, collection: CollectionId, name: String) -> StoreFuture<Environment>;
+    /// Renames an environment, by the same rules.
+    fn rename_environment(&self, collection: CollectionId, id: EnvironmentId, name: String)
+    -> StoreFuture<Environment>;
+    /// Deletes an environment and the variables in it.
+    fn delete_environment(&self, collection: CollectionId, id: EnvironmentId) -> StoreFuture<()>;
+    /// Puts the environments in `order` (`environments::reordered`), and
+    /// answers them so.
+    fn reorder_environments(
+        &self,
+        collection: CollectionId,
+        order: Vec<EnvironmentId>,
+    ) -> StoreFuture<Vec<Environment>>;
 }
 
 /// What the reader keeps for themselves (4.6 / 4.7). A document never

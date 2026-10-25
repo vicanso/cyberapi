@@ -2,7 +2,7 @@
 //! the part of a project that travels whole between a reader's copy and the
 //! server, and what a copy does when the two have moved apart.
 
-use crate::model::{ApiSetting, Folder, ProjectSettings, Variable};
+use crate::model::{ApiSetting, Environment, Folder, ProjectSettings, Variable};
 use crate::tree::TreeData;
 use crate::{AccountId, CollectionId, ItemId};
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,10 @@ pub struct ProjectConfig {
     /// What the project sets for its APIs (#66).
     #[serde(skip_serializing_if = "ProjectSettings::is_empty")]
     pub settings: ProjectSettings,
+    /// Its named environments, in order (#61); the variables say which is
+    /// theirs.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub environments: Vec<Environment>,
 }
 
 impl ProjectConfig {

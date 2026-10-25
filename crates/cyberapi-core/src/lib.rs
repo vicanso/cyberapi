@@ -11,6 +11,7 @@ pub mod collection;
 pub mod cookie;
 pub mod curl;
 pub mod directory;
+pub mod environments;
 pub mod format;
 pub mod graphql;
 pub mod graphql_format;
@@ -40,5 +41,5 @@ pub mod tree;
 pub mod update;
 pub mod version;
 
-pub use id::{AccountId, CollectionId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
+pub use id::{AccountId, CollectionId, EnvironmentId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
 pub use time::Timestamp;

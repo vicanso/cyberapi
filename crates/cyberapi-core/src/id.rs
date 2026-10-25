@@ -65,6 +65,10 @@ string_id!(
     VariableId
 );
 string_id!(
+    /// A project's named environment (#61): dev, staging, prod.
+    EnvironmentId
+);
+string_id!(
     /// A team of the browser build's accounts (`docs/architecture.md` §9).
     /// Every project there belongs to one; the desktop has none.
     TeamId

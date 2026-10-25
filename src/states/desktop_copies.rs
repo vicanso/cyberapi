@@ -204,6 +204,7 @@ impl Machine {
             timeouts: Timeouts::default(),
             sending: SendPrefs::default(),
             inherited: Default::default(),
+            environment: None,
         }
     }
 

@@ -23,7 +23,7 @@ This guide follows `main`. What a release does not have yet is marked with the v
 ## What you need
 
 - **A database**: PostgreSQL or MySQL (CI tests PostgreSQL 18 and MySQL 8.4). Give the bridge an empty database and a user that can create tables in it: it creates the schema on its first start and brings it up to date on every start after.
-- **The program**: the image [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web) for linux/amd64 and linux/arm64 (tags: each version such as `0.2.1`, `latest`, and `nightly` from `main`), or `cyberapi-web-<version>-x86_64-unknown-linux-gnu.tar.gz` from [Releases](https://github.com/vicanso/cyberapi/releases) (glibc 2.39 or newer: Ubuntu 24.04, Debian 13).
+- **The program**: the image [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web) for linux/amd64 and linux/arm64 (tags: each version such as `0.2.2`, `latest`, and `nightly` from `main`), or `cyberapi-web-<version>-x86_64-unknown-linux-gnu.tar.gz` from [Releases](https://github.com/vicanso/cyberapi/releases) (glibc 2.39 or newer: Ubuntu 24.04, Debian 13).
 - **HTTPS** in front of it for anything beyond a try on your own machine: the login cookie is `Secure`, which browsers send over HTTPS only.
 
 ## Try it
@@ -60,7 +60,7 @@ services:
     restart: unless-stopped
 
   cyberapi:
-    image: vicanso/cyberapi-web:0.2.1
+    image: vicanso/cyberapi-web:0.2.2
     environment:
       CYBERAPI_BRIDGE_STORE: postgres://cyberapi:change-me@db:5432/cyberapi
     ports:
@@ -86,8 +86,8 @@ The image runs as a non-root user on a distroless base (no shell), listens on `0
 ## The binary, with systemd
 
 ```bash
-tar -xzf cyberapi-web-0.2.1-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 755 cyberapi-web-0.2.1-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
+tar -xzf cyberapi-web-0.2.2-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 755 cyberapi-web-0.2.2-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
 ```
 
 The database address goes in a file only root can read, not on the command line, where anyone who can list processes would see it:
@@ -231,7 +231,7 @@ claude mcp add --transport http cyberapi https://cyberapi.example.com/v1/mcp \
   --header "Authorization: Bearer ${CYBERAPI_MCP_TOKEN}"
 ```
 
-**What it can do.** The token sees what its account sees, and its tools read: `list_projects`, `list_apis` (a project's folders and APIs, each with its path and id), `get_api` (an API's saved request), `get_variables` (environments, custom variables, global headers) and `get_history` (an API's latest responses). A token issued with **May send requests** also has `send_api`, which sends a saved API from the bridge with the project's variables — subject to [where requests may go](#where-requests-may-go) and to the account's requests at a time — and keeps the response in the account's history; it sends only in projects where the account is at least an editor. Nothing a tool does changes a project.
+**What it can do.** The token sees what its account sees, and its tools read: `list_projects`, `list_apis` (a project's folders and APIs, each with its path and id), `get_api` (an API's saved request), `get_variables` (environments, custom variables, global headers) and `get_history` (an API's latest responses). A token issued with **May send requests** also has `send_api`, which sends a saved API from the bridge with the project's variables — in the named environment it is given, or else the one the account last chose in the project (*0.2.2*), subject to [where requests may go](#where-requests-may-go) and to the account's requests at a time — and keeps the response in the account's history; it sends only in projects where the account is at least an editor. Nothing a tool does changes a project.
 
 **What it is shown.** Values that look like secrets — headers such as `Authorization` and `Cookie`, the passwords, tokens and API keys an API signs in with, variables and form or JSON fields named like a token, a key, a password or a secret — come back as `***`; a value written with a template (`Bearer {{TOKEN}}`) is shown as written. Bodies are cut at 8 KB, a whole answer at 200 KB, and a body that is not text is described, not shown. An account makes at most 120 calls a minute, and every call is a line of the bridge's log (`mcp call`, with the account, the token's name and the tool).
 

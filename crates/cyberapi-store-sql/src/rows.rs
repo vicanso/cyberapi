@@ -1,8 +1,10 @@
 //! Rows to records.
 
 use crate::db;
-use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
-use cyberapi_core::{CollectionId, ItemId, TeamId, Timestamp, VariableId};
+use cyberapi_core::model::{
+    ApiCategory, ApiSetting, Collection, Environment, Folder, HttpRequest, Variable, VariableCategory,
+};
+use cyberapi_core::{CollectionId, EnvironmentId, ItemId, TeamId, Timestamp, VariableId};
 use cyberapi_store::StoreError;
 use sqlx::Row;
 use sqlx::any::AnyRow;
@@ -68,7 +70,19 @@ pub fn variable(row: &AnyRow) -> Result<Option<Variable>, StoreError> {
         name: text(row, 3)?,
         value: text(row, 4)?,
         enabled: row.try_get::<i32, _>(5).map_err(db)? != 0,
+        // Kept apart (#61): the store reads which.
+        environment: None,
         created_at: time(row, 6)?,
         updated_at: time(row, 7)?,
     }))
+}
+
+pub fn environment(row: &AnyRow) -> Result<Environment, StoreError> {
+    Ok(Environment {
+        id: EnvironmentId::new(text(row, 0)?),
+        collection: CollectionId::new(text(row, 1)?),
+        name: text(row, 2)?,
+        created_at: time(row, 3)?,
+        updated_at: time(row, 4)?,
+    })
 }

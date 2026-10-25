@@ -56,6 +56,7 @@ impl VariablesState {
                             name: variable.name.clone(),
                             value: variable.value.clone(),
                             enabled: variable.enabled,
+                            environment: variable.environment.clone(),
                         },
                     )
                 })
@@ -130,6 +131,7 @@ impl VariablesState {
             name: String::new(),
             value: String::new(),
             enabled: true,
+            environment: None,
         });
         run_store(cx, call, |this, result, cx| match result {
             Ok(variable) => {
@@ -190,6 +192,8 @@ impl VariablesState {
                 name: variable.name.clone(),
                 value: variable.value.clone(),
                 enabled: variable.enabled,
+                // An edit leaves it in its environment (#61).
+                environment: variable.environment.clone(),
             },
         );
         run_store(cx, call, |this, result, cx| match result {

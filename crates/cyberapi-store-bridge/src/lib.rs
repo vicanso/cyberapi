@@ -30,14 +30,15 @@ use cyberapi_core::directory::{
 };
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{
-    ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable, VariableCategory,
+    ApiSetting, Collection, Environment, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
+    VariableCategory,
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::response::{StreamEnd, StreamInfo};
 use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{AccountId, CollectionId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
+use cyberapi_core::{AccountId, CollectionId, EnvironmentId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
 use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, Progress, SendError, SendFuture, Watch};
 use cyberapi_store::{
     AccountEdit, CollectionEdit, CollectionStore, CookieStore, DirectoryStore, HistoryStore, Imported, Inserted,
@@ -204,6 +205,26 @@ pub enum Call {
         collection: CollectionId,
         ids: Vec<VariableId>,
     },
+    EnvironmentsList {
+        collection: CollectionId,
+    },
+    EnvironmentsCreate {
+        collection: CollectionId,
+        name: String,
+    },
+    EnvironmentsRename {
+        collection: CollectionId,
+        id: EnvironmentId,
+        name: String,
+    },
+    EnvironmentsDelete {
+        collection: CollectionId,
+        id: EnvironmentId,
+    },
+    EnvironmentsReorder {
+        collection: CollectionId,
+        order: Vec<EnvironmentId>,
+    },
     PrefsApp,
     PrefsSetApp {
         prefs: AppPrefs,
@@ -322,7 +343,12 @@ impl Call {
             | Self::TreeReplace { .. }
             | Self::VariablesCreate { .. }
             | Self::VariablesUpdate { .. }
-            | Self::VariablesDelete { .. } => true,
+            | Self::VariablesDelete { .. }
+            | Self::EnvironmentsCreate { .. }
+            | Self::EnvironmentsRename { .. }
+            | Self::EnvironmentsDelete { .. }
+            | Self::EnvironmentsReorder { .. } => true,
+            Self::EnvironmentsList { .. } => false,
             Self::CollectionsList
             | Self::CollectionsGet { .. }
             | Self::CollectionsCreate { .. }
@@ -443,6 +469,15 @@ pub async fn dispatch(storage: &Storage, directory: &dyn DirectoryStore, call: C
         Call::VariablesCreate { input } => reply(variables.create(input).await),
         Call::VariablesUpdate { collection, id, edit } => reply(variables.update(collection, id, edit).await),
         Call::VariablesDelete { collection, ids } => reply(variables.delete(collection, ids).await),
+        Call::EnvironmentsList { collection } => reply(variables.environments(collection).await),
+        Call::EnvironmentsCreate { collection, name } => reply(variables.create_environment(collection, name).await),
+        Call::EnvironmentsRename { collection, id, name } => {
+            reply(variables.rename_environment(collection, id, name).await)
+        }
+        Call::EnvironmentsDelete { collection, id } => reply(variables.delete_environment(collection, id).await),
+        Call::EnvironmentsReorder { collection, order } => {
+            reply(variables.reorder_environments(collection, order).await)
+        }
         Call::PrefsApp => reply(prefs.app().await),
         Call::PrefsSetApp { prefs: value } => reply(prefs.set_app(value).await),
         Call::PrefsWorkspace { collection } => reply(prefs.workspace(collection).await),
@@ -768,6 +803,30 @@ impl VariableStore for BridgeStore {
     }
     fn delete(&self, collection: CollectionId, ids: Vec<VariableId>) -> StoreFuture<()> {
         self.call(Call::VariablesDelete { collection, ids })
+    }
+    fn environments(&self, collection: CollectionId) -> StoreFuture<Vec<Environment>> {
+        self.call(Call::EnvironmentsList { collection })
+    }
+    fn create_environment(&self, collection: CollectionId, name: String) -> StoreFuture<Environment> {
+        self.call(Call::EnvironmentsCreate { collection, name })
+    }
+    fn rename_environment(
+        &self,
+        collection: CollectionId,
+        id: EnvironmentId,
+        name: String,
+    ) -> StoreFuture<Environment> {
+        self.call(Call::EnvironmentsRename { collection, id, name })
+    }
+    fn delete_environment(&self, collection: CollectionId, id: EnvironmentId) -> StoreFuture<()> {
+        self.call(Call::EnvironmentsDelete { collection, id })
+    }
+    fn reorder_environments(
+        &self,
+        collection: CollectionId,
+        order: Vec<EnvironmentId>,
+    ) -> StoreFuture<Vec<Environment>> {
+        self.call(Call::EnvironmentsReorder { collection, order })
     }
 }
 

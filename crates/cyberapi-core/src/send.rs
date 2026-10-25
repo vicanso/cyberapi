@@ -73,9 +73,10 @@ pub enum PrepareError {
     #[snafu(display("{uri} is not a URL: {message}"))]
     Url { uri: String, message: String },
     /// The URI starts with `{{NAME}}` and no enabled environment variable
-    /// has that name (#50): said as that, not as the URL it leaves behind.
-    #[snafu(display("there is no enabled environment variable {name}"))]
-    Environment { name: String },
+    /// has that name (#50): said as that, not as the URL it leaves behind;
+    /// `within`, the named environment it was sent in (#61).
+    #[snafu(display("there is no enabled environment variable {name}{}", within.as_ref().map(|within| format!(" in {within}")).unwrap_or_default()))]
+    Environment { name: String, within: Option<String> },
     /// A GraphQL body's variables, once their templates ran, are not a
     /// JSON object.
     #[snafu(display("the GraphQL variables cannot be read: {message}"))]
@@ -104,6 +105,9 @@ pub struct Context<'a> {
     pub boundary: &'a str,
     /// What the API takes from its folders and project (#66).
     pub inherited: &'a Inherited,
+    /// The named environment it is sent in (#61), for what an error says:
+    /// `variables` are already the ones it reads (`environments::effective`).
+    pub environment: Option<&'a str>,
 }
 
 fn enabled(variables: &[Variable], category: VariableCategory) -> impl Iterator<Item = &Variable> {
@@ -455,7 +459,10 @@ fn check_environment(request: &HttpRequest, cx: &Context<'_>) -> Result<(), Prep
         (Some(name), _)
             if !enabled(cx.variables, VariableCategory::Environment).any(|variable| variable.name == name) =>
         {
-            Err(PrepareError::Environment { name: name.to_string() })
+            Err(PrepareError::Environment {
+                name: name.to_string(),
+                within: cx.environment.map(str::to_string),
+            })
         }
         _ => Ok(()),
     }
@@ -732,6 +739,7 @@ mod tests {
             name: name.into(),
             value: value.into(),
             enabled,
+            environment: None,
             created_at: Default::default(),
             updated_at: Default::default(),
         }
@@ -781,6 +789,7 @@ mod tests {
                 proxy: &ProxyPrefs::default(),
                 boundary: "XYZ",
                 inherited,
+                environment: None,
             },
         )
     }
@@ -833,7 +842,10 @@ mod tests {
         };
         assert_eq!(
             prepare_with(&unknown, &variables),
-            Err(PrepareError::Environment { name: "NOPE".into() })
+            Err(PrepareError::Environment {
+                name: "NOPE".into(),
+                within: None
+            })
         );
         let disabled = [variable(VariableCategory::Environment, "HOST", "http://off", false)];
         let only_off = HttpRequest {
@@ -842,7 +854,10 @@ mod tests {
         };
         assert_eq!(
             prepare_with(&only_off, &disabled),
-            Err(PrepareError::Environment { name: "HOST".into() }),
+            Err(PrepareError::Environment {
+                name: "HOST".into(),
+                within: None
+            }),
             "a disabled one is none"
         );
         let broken = HttpRequest {
@@ -1281,6 +1296,7 @@ mod tests {
                     proxy: &ProxyPrefs::default(),
                     boundary: "B",
                     inherited: &Inherited::default(),
+                    environment: None,
                 }
             ),
             Err(PrepareError::Template {

@@ -249,6 +249,7 @@ fn reads_what_the_tauri_app_wrote() {
                     name: "HOST".into(),
                     value: "http://localhost".into(),
                     enabled: false,
+                    environment: None,
                 },
             )
             .await

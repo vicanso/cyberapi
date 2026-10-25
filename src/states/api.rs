@@ -56,8 +56,8 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(200);
 fn not_sent(failure: SendFailure) -> ApiEvent {
     match failure {
         SendFailure::Prepare {
-            source: PrepareError::Environment { name },
-        } => ApiEvent::NoEnvironment(name),
+            source: PrepareError::Environment { name, within },
+        } => ApiEvent::NoEnvironment { name, within },
         SendFailure::Prepare {
             source: PrepareError::GraphQlVariables { message },
         } => ApiEvent::GraphQlVariables(message),
@@ -72,8 +72,9 @@ pub enum ApiEvent {
     /// Nothing was sent: the request could not be prepared (F5.7).
     NotSent(String),
     /// Nothing was sent: the URI starts with an environment variable no
-    /// enabled one is named as (#50). Its name, for the view to say.
-    NoEnvironment(String),
+    /// enabled one is named as (#50). Its name, and the named environment
+    /// it was sent in (#61), for the view to say.
+    NoEnvironment { name: String, within: Option<String> },
     /// Nothing was sent: a GraphQL body's variables are not a JSON object
     /// once their templates ran. Why, for the view to say.
     GraphQlVariables(String),
@@ -663,9 +664,12 @@ impl ApiState {
             self.sender.timeouts = prefs.timeouts;
             self.sender.sending = prefs.sending.clone();
         }
-        // #66: what the API takes from its folders and project now.
+        // #66, #61: what the API takes from its folders and project now,
+        // and the reader's environment.
         if let Some(workspace) = self.workspace.upgrade() {
-            self.sender.inherited = workspace.read(cx).inherited(&self.api);
+            let workspace = workspace.read(cx);
+            self.sender.inherited = workspace.inherited(&self.api);
+            self.sender.environment = workspace.current_environment().cloned();
         }
         self.sender.clone()
     }

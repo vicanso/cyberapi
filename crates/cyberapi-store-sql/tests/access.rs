@@ -168,6 +168,19 @@ async fn rules(variable: &str) {
         carol.tree().create_api(id.clone(), None, "x".into()).await,
         CollectionRole::Editor,
     );
+    // Nor its environments (#61).
+    forbidden(
+        carol.variables().create_environment(id.clone(), "dev".into()).await,
+        CollectionRole::Editor,
+    );
+    assert!(
+        carol
+            .variables()
+            .environments(id.clone())
+            .await
+            .expect("she reads them")
+            .is_empty()
+    );
     // Nor what the project sets for its APIs (#66).
     forbidden(
         carol
@@ -185,6 +198,7 @@ async fn rules(variable: &str) {
                 name: "HOST".into(),
                 value: "x".into(),
                 enabled: true,
+                environment: None,
             })
             .await,
         CollectionRole::Editor,

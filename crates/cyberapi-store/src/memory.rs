@@ -2,7 +2,7 @@
 //! conformance suite is checked against, and the store tests of the layers
 //! above use.
 
-use crate::rules::{project_config, required_name};
+use crate::rules::{environment_name, known_environment, project_config, required_name};
 use crate::{
     BackupStore, CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection,
     NewVariable, PrefStore, ServerCopyStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
@@ -11,16 +11,17 @@ use crate::{
 use chrono::Utc;
 use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
+use cyberapi_core::environments::reordered;
 use cyberapi_core::import::{ImportItem, assign_ids};
 use cyberapi_core::model::{
-    ApiCategory, ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
+    ApiCategory, ApiSetting, Collection, Environment, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
     VariableCategory,
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{CollectionId, ItemId, Timestamp, VariableId};
+use cyberapi_core::{CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use ulid::Ulid;
@@ -46,6 +47,9 @@ struct State {
     /// What each project sets for its APIs (#66); none is no entry.
     project_settings: HashMap<CollectionId, ProjectSettings>,
     variables: Vec<Variable>,
+    /// Every project's named environments (#61), each project's in its
+    /// order.
+    environments: Vec<Environment>,
     app: AppPrefs,
     workspaces: HashMap<CollectionId, WorkspacePrefs>,
     /// Oldest first.
@@ -93,6 +97,7 @@ impl MemoryStore {
         state.folders.retain(|folder| !owned(&folder.collection));
         state.apis.retain(|api| !owned(&api.collection));
         state.variables.retain(|variable| !owned(&variable.collection));
+        state.environments.retain(|environment| !owned(&environment.collection));
         state.responses.retain(|response| !owned(&response.collection));
         state.folders.extend(config.folders.into_iter().map(|folder| Folder {
             collection: id.clone(),
@@ -109,7 +114,13 @@ impl MemoryStore {
                 ..variable
             }));
         state.top_orders.insert(id.clone(), config.top_order);
-        state.project_settings.insert(id, config.settings);
+        state.project_settings.insert(id.clone(), config.settings);
+        state
+            .environments
+            .extend(config.environments.into_iter().map(|environment| Environment {
+                collection: id.clone(),
+                ..environment
+            }));
         state.collections.push(Collection {
             name: config.name,
             description: config.description,
@@ -187,6 +198,7 @@ impl State {
                 apis: tree.apis,
                 top_order: tree.top_order,
                 settings: tree.settings,
+                environments: self.environments_of(collection),
                 variables: self
                     .variables
                     .iter()
@@ -228,6 +240,15 @@ impl State {
         {
             return Err(StoreError::IdTaken { id: id.to_string() });
         }
+        if let Some(environment) = config.environments.iter().find(|environment| {
+            self.environments
+                .iter()
+                .any(|found| found.id == environment.id && found.collection != collection)
+        }) {
+            return Err(StoreError::IdTaken {
+                id: environment.id.to_string(),
+            });
+        }
         if let Some(variable) = config.variables.iter().find(|variable| {
             self.variables
                 .iter()
@@ -247,6 +268,9 @@ impl State {
         self.apis.extend(config.apis);
         self.variables.retain(|variable| variable.collection != collection);
         self.variables.extend(config.variables);
+        self.environments
+            .retain(|environment| environment.collection != collection);
+        self.environments.extend(config.environments);
         self.top_orders.insert(collection.clone(), config.top_order);
         self.project_settings.insert(collection.clone(), config.settings);
         let found = self.collection_mut(&collection)?;
@@ -268,6 +292,23 @@ impl State {
             apis: self.apis.iter().filter(|api| &api.collection == id).cloned().collect(),
             top_order: self.top_orders.get(id).cloned().unwrap_or_default(),
             settings: self.project_settings.get(id).cloned().unwrap_or_default(),
+        }
+    }
+
+    /// A project's named environments, in its order.
+    fn environments_of(&self, collection: &CollectionId) -> Vec<Environment> {
+        self.environments
+            .iter()
+            .filter(|environment| &environment.collection == collection)
+            .cloned()
+            .collect()
+    }
+
+    /// `id` is one of `collection`'s environments.
+    fn known_environment(&self, collection: &CollectionId, id: Option<&EnvironmentId>) -> Result<(), StoreError> {
+        match id {
+            Some(id) => known_environment(&self.environments_of(collection), id),
+            None => Ok(()),
         }
     }
 
@@ -354,6 +395,7 @@ impl CollectionStore for MemoryStore {
             state.folders.retain(|folder| folder.collection != id);
             state.apis.retain(|api| api.collection != id);
             state.variables.retain(|variable| variable.collection != id);
+            state.environments.retain(|environment| environment.collection != id);
             state.top_orders.remove(&id);
             state.project_settings.remove(&id);
             state.workspaces.remove(&id);
@@ -596,6 +638,7 @@ impl VariableStore for MemoryStore {
     fn create(&self, input: NewVariable) -> StoreFuture<Variable> {
         self.run(move |state, now| {
             state.collection(&input.collection)?;
+            state.known_environment(&input.collection, input.environment.as_ref())?;
             let variable = Variable {
                 id: VariableId::new(new_id()),
                 collection: input.collection.clone(),
@@ -603,6 +646,7 @@ impl VariableStore for MemoryStore {
                 name: input.name,
                 value: input.value,
                 enabled: input.enabled,
+                environment: input.environment,
                 created_at: now,
                 updated_at: now,
             };
@@ -615,6 +659,7 @@ impl VariableStore for MemoryStore {
     fn update(&self, collection: CollectionId, id: VariableId, edit: VariableEdit) -> StoreFuture<Variable> {
         self.run(move |state, now| {
             state.collection(&collection)?;
+            state.known_environment(&collection, edit.environment.as_ref())?;
             let variable = state
                 .variables
                 .iter_mut()
@@ -623,6 +668,7 @@ impl VariableStore for MemoryStore {
             variable.name = edit.name;
             variable.value = edit.value;
             variable.enabled = edit.enabled;
+            variable.environment = edit.environment;
             variable.updated_at = now;
             let updated = variable.clone();
             state.touch(&collection, now)?;
@@ -637,6 +683,83 @@ impl VariableStore for MemoryStore {
                 .variables
                 .retain(|variable| variable.collection != collection || !ids.contains(&variable.id));
             state.touch(&collection, now)
+        })
+    }
+
+    fn environments(&self, collection: CollectionId) -> StoreFuture<Vec<Environment>> {
+        self.run(move |state, _| {
+            state.collection(&collection)?;
+            Ok(state.environments_of(&collection))
+        })
+    }
+
+    fn create_environment(&self, collection: CollectionId, name: String) -> StoreFuture<Environment> {
+        self.run(move |state, now| {
+            state.collection(&collection)?;
+            let name = environment_name(&state.environments_of(&collection), &name, None)?;
+            let environment = Environment {
+                id: EnvironmentId::new(new_id()),
+                collection: collection.clone(),
+                name,
+                created_at: now,
+                updated_at: now,
+            };
+            state.environments.push(environment.clone());
+            state.touch(&collection, now)?;
+            Ok(environment)
+        })
+    }
+
+    fn rename_environment(
+        &self,
+        collection: CollectionId,
+        id: EnvironmentId,
+        name: String,
+    ) -> StoreFuture<Environment> {
+        self.run(move |state, now| {
+            state.collection(&collection)?;
+            let name = environment_name(&state.environments_of(&collection), &name, Some(&id))?;
+            let found = state
+                .environments
+                .iter_mut()
+                .find(|environment| environment.collection == collection && environment.id == id)
+                .ok_or_else(|| StoreError::not_found(Entity::Environment, &id))?;
+            found.name = name;
+            found.updated_at = now;
+            let renamed = found.clone();
+            state.touch(&collection, now)?;
+            Ok(renamed)
+        })
+    }
+
+    fn delete_environment(&self, collection: CollectionId, id: EnvironmentId) -> StoreFuture<()> {
+        self.run(move |state, now| {
+            state.collection(&collection)?;
+            state.known_environment(&collection, Some(&id))?;
+            state
+                .environments
+                .retain(|environment| environment.collection != collection || environment.id != id);
+            state
+                .variables
+                .retain(|variable| variable.collection != collection || variable.environment.as_ref() != Some(&id));
+            state.touch(&collection, now)
+        })
+    }
+
+    fn reorder_environments(
+        &self,
+        collection: CollectionId,
+        order: Vec<EnvironmentId>,
+    ) -> StoreFuture<Vec<Environment>> {
+        self.run(move |state, now| {
+            state.collection(&collection)?;
+            let placed = reordered(&state.environments_of(&collection), &order);
+            state
+                .environments
+                .retain(|environment| environment.collection != collection);
+            state.environments.extend(placed.clone());
+            state.touch(&collection, now)?;
+            Ok(placed)
         })
     }
 }
@@ -804,6 +927,7 @@ impl BackupStore for MemoryStore {
                 folders: state.folders.clone(),
                 apis: state.apis.clone(),
                 variables: state.variables.clone(),
+                environments: state.environments.clone(),
                 top_orders: state
                     .collections
                     .iter()
@@ -835,6 +959,7 @@ impl BackupStore for MemoryStore {
             state.folders = backup.folders;
             state.apis = backup.apis;
             state.variables = backup.variables;
+            state.environments = backup.environments;
             state.top_orders = backup.top_orders.into_iter().collect();
             state.project_settings = backup.project_settings.into_iter().collect();
             state.responses.clear();
@@ -900,6 +1025,11 @@ impl crate::conformance::Probe for MemoryStore {
                         .count()
                     + usize::from(state.top_orders.contains_key(&collection))
                     + usize::from(state.project_settings.contains_key(&collection))
+                    + state
+                        .environments
+                        .iter()
+                        .filter(|environment| environment.collection == collection)
+                        .count()
                     + usize::from(state.workspaces.contains_key(&collection))
                     + state
                         .responses

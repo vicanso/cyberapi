@@ -23,7 +23,7 @@
 ## 需要什么
 
 - **数据库**：PostgreSQL 或 MySQL（CI 测试的是 PostgreSQL 18 和 MySQL 8.4）。给 bridge 一个空库和一个能在里面建表的用户：首次启动时它会建好表，之后每次启动都会把表结构升级到当前版本。
-- **程序**：镜像 [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web)，有 linux/amd64 和 linux/arm64（tag：各个版本号如 `0.2.1`、`latest`，以及 `main` 的 `nightly`）；或者 [Releases](https://github.com/vicanso/cyberapi/releases) 里的 `cyberapi-web-<版本>-x86_64-unknown-linux-gnu.tar.gz`（需要 glibc 2.39 或更新：Ubuntu 24.04、Debian 13）。
+- **程序**：镜像 [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web)，有 linux/amd64 和 linux/arm64（tag：各个版本号如 `0.2.2`、`latest`，以及 `main` 的 `nightly`）；或者 [Releases](https://github.com/vicanso/cyberapi/releases) 里的 `cyberapi-web-<版本>-x86_64-unknown-linux-gnu.tar.gz`（需要 glibc 2.39 或更新：Ubuntu 24.04、Debian 13）。
 - **HTTPS**：除了在自己机器上试用，前面都要有 HTTPS。登录 Cookie 带 `Secure`，浏览器只在 HTTPS 下发送它。
 
 ## 先试一下
@@ -60,7 +60,7 @@ services:
     restart: unless-stopped
 
   cyberapi:
-    image: vicanso/cyberapi-web:0.2.1
+    image: vicanso/cyberapi-web:0.2.2
     environment:
       CYBERAPI_BRIDGE_STORE: postgres://cyberapi:change-me@db:5432/cyberapi
     ports:
@@ -86,8 +86,8 @@ docker compose logs cyberapi | grep setup_token
 ## 二进制加 systemd
 
 ```bash
-tar -xzf cyberapi-web-0.2.1-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 755 cyberapi-web-0.2.1-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
+tar -xzf cyberapi-web-0.2.2-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 755 cyberapi-web-0.2.2-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
 ```
 
 数据库地址放在只有 root 能读的文件里，不要写在命令行上：能列出进程的人都能看到命令行。
@@ -231,7 +231,7 @@ claude mcp add --transport http cyberapi https://cyberapi.example.com/v1/mcp \
   --header "Authorization: Bearer ${CYBERAPI_MCP_TOKEN}"
 ```
 
-**能做什么。** 令牌看到的就是它的账号能看到的，工具都是读取：`list_projects`、`list_apis`（项目的目录和接口，带路径和 id）、`get_api`（接口保存的请求）、`get_variables`（环境变量、自定义变量、全局请求头）和 `get_history`（接口最近的响应）。签发时勾选了**允许发送请求**的令牌还有 `send_api`：由 bridge 带着项目的变量发送一个已保存的接口（同样受[请求能发往哪里](#请求能发往哪里)和每个账号同时发送数量的限制），响应记入账号的历史；只能在账号至少是编辑者的项目里发送。工具不会修改任何项目。
+**能做什么。** 令牌看到的就是它的账号能看到的，工具都是读取：`list_projects`、`list_apis`（项目的目录和接口，带路径和 id）、`get_api`（接口保存的请求）、`get_variables`（环境变量、自定义变量、全局请求头）和 `get_history`（接口最近的响应）。签发时勾选了**允许发送请求**的令牌还有 `send_api`：由 bridge 带着项目的变量发送一个已保存的接口（用参数指定的命名环境，没指定时用该账号在这个项目里最后选的环境，*0.2.2*；同样受[请求能发往哪里](#请求能发往哪里)和每个账号同时发送数量的限制），响应记入账号的历史；只能在账号至少是编辑者的项目里发送。工具不会修改任何项目。
 
 **会看到什么。** 看起来像密钥的值会显示为 `***`：`Authorization`、`Cookie` 之类的请求头，接口认证用的密码、令牌和 API Key，名字像 token、key、password、secret 的变量和表单 / JSON 字段；用模板写的值（`Bearer {{TOKEN}}`）按原样显示。响应体超过 8 KB 截断，整个结果超过 200 KB 截断，不是文本的响应体只给描述。每个账号每分钟最多调用 120 次，每次调用在 bridge 日志里记一行（`mcp call`，带账号、令牌名和工具名）。
 

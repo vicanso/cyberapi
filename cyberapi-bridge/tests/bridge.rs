@@ -16,7 +16,7 @@ use cyberapi_store::{NewCollection, Refusal, StoreError, conformance};
 use cyberapi_store_bridge::{BridgeHttpEngine, BridgeStore, Call, MODEL_HEADER, Response, STORE_PATH, Transport};
 use cyberapi_store_sql::SqlStore;
 use http_body_util::BodyExt;
-use serde_json::{Value, json};
+use serde_json::{Value, Value as Json, json};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -798,10 +798,29 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
                 name: name.into(),
                 value,
                 enabled: true,
+                environment: None,
             })
             .await
             .expect("a variable");
     }
+    // #61: a named environment, and a variable in it.
+    let staging = storage
+        .variables()
+        .create_environment(project.id.clone(), "staging".into())
+        .await
+        .expect("an environment");
+    storage
+        .variables()
+        .create(NewVariable {
+            collection: project.id.clone(),
+            category: VariableCategory::Custom,
+            name: "user".into(),
+            value: "stage-user".into(),
+            enabled: true,
+            environment: Some(staging.id),
+        })
+        .await
+        .expect("a variable in it");
     let issue = |who, name: &str, can_send| {
         let directory = store.directory(who);
         let input = NewMcpToken {
@@ -889,6 +908,10 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     let (variables, _) = tool(&router, &reader.secret, "get_variables", json!({"project": "shop"})).await;
     assert_eq!(variables["environments"][0]["value"], json!(format!("http://{target}")));
     assert_eq!(variables["environments"][1]["value"], json!("***"));
+    assert_eq!(variables["namedEnvironments"], json!(["staging"]));
+    assert_eq!(variables["custom"][0]["environment"], json!("staging"));
+    assert_eq!(variables["environments"][0]["environment"], Json::Null);
+    assert_eq!(variables["selected"], Json::Null);
     let (missing, failed) = tool(
         &router,
         &reader.secret,
@@ -928,6 +951,26 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     )
     .await;
     assert_eq!(history.as_array().map(Vec::len), Some(1));
+    // In a named environment, or one the project does not have.
+    let (staged, failed) = tool(
+        &router,
+        &sender.secret,
+        "send_api",
+        json!({"project": "shop", "api": "ping", "environment": "Staging"}),
+    )
+    .await;
+    assert!(!failed, "{staged}");
+    let (nowhere, failed) = tool(
+        &router,
+        &sender.secret,
+        "send_api",
+        json!({"project": "shop", "api": "ping", "environment": "prod"}),
+    )
+    .await;
+    assert!(
+        failed && nowhere.as_str().is_some_and(|why| why.contains("staging")),
+        "{nowhere}"
+    );
 
     // Where its account only views, a sending token does not send.
     store

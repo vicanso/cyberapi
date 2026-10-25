@@ -309,8 +309,12 @@ impl RequestEditor {
                 ApiEvent::NotSent(message) => {
                     window.push_notification(Notification::error(message.clone()), cx);
                 }
-                ApiEvent::NoEnvironment(name) => {
-                    let message = t!("editor.environment_missing", name = name).to_string();
+                ApiEvent::NoEnvironment { name, within } => {
+                    let message = match within {
+                        Some(within) => t!("editor.environment_missing_in", name = name, within = within),
+                        None => t!("editor.environment_missing", name = name),
+                    }
+                    .to_string();
                     window.push_notification(Notification::error(message), cx);
                 }
                 ApiEvent::GraphQlVariables(reason) => {
@@ -1061,7 +1065,7 @@ impl RequestEditor {
         let inherited = workspace.inherited(api.api());
         let picks_file = api.sending_since().is_none()
             && this_build::reads_files()
-            && send::needs(api.request(), workspace.global_headers(), &inherited).picks_file;
+            && send::needs(api.request(), &workspace.global_headers(), &inherited).picks_file;
         if !picks_file {
             self.api.update(cx, |api, cx| api.send_or_cancel(None, cx));
             return;
@@ -1112,7 +1116,8 @@ impl RequestEditor {
             .workspace
             .read(cx)
             .environments()
-            .map(|variable| (variable.name.clone(), variable.value.clone()))
+            .into_iter()
+            .map(|variable| (variable.name, variable.value))
             .collect();
         // What the prefix stands for: the address the request goes to.
         // A prefix nothing enabled stands for is sent as it is written.

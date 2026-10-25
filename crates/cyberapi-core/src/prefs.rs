@@ -443,6 +443,10 @@ pub struct WorkspacePrefs {
     pub tabs: BTreeMap<ItemId, String>,
     /// The JSONPath each API's JSON responses are narrowed by (#63).
     pub filters: BTreeMap<ItemId, String>,
+    /// The named environment the reader sends in (#61); none is the
+    /// variables every environment shares, alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<crate::EnvironmentId>,
 }
 
 /// The request editor's tabs (F4.12).
