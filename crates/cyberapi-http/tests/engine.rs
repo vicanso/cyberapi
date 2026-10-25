@@ -319,7 +319,8 @@ impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for SlowStart<S> {
 
 /// An HTTP/2-only server, over TLS (agreeing to `h2` alone) or plain (h2c).
 /// Over TLS its first write waits 200 ms, as a far server's would arrive.
-/// `/slow` answers after 300 ms; anything else answers with the request's
+/// `/slow` answers after 300 ms, `/trailers` with a body and trailers after
+/// it, as a gRPC server does; anything else answers with the request's
 /// method, authority and headers.
 async fn serve_h2(tls: bool) -> SocketAddr {
     let acceptor = tls.then(|| self_signed(&[b"h2"]));
@@ -336,6 +337,15 @@ async fn serve_h2(tls: bool) -> SocketAddr {
                     if request.uri().path() == "/slow" {
                         tokio::time::sleep(Duration::from_millis(300)).await;
                     }
+                    if request.uri().path() == "/trailers" {
+                        let mut trailers = hyper::HeaderMap::new();
+                        trailers.insert("grpc-status", hyper::header::HeaderValue::from_static("5"));
+                        trailers.insert("Grpc-Message", hyper::header::HeaderValue::from_static("not%20here"));
+                        let body = Full::new(Bytes::from_static(b"reply"))
+                            .with_trailers(std::future::ready(Some(Ok(trailers))))
+                            .boxed();
+                        return hyper::Response::builder().body(body);
+                    }
                     let mut lines = vec![format!(
                         "{} {}",
                         request.method(),
@@ -344,7 +354,7 @@ async fn serve_h2(tls: bool) -> SocketAddr {
                     for (name, value) in request.headers() {
                         lines.push(format!("{name}: {}", value.to_str().unwrap_or("?")));
                     }
-                    hyper::Response::builder().body(Full::new(Bytes::from(lines.join("\n"))))
+                    hyper::Response::builder().body(Full::new(Bytes::from(lines.join("\n"))).boxed())
                 });
                 let builder = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new());
                 let _ = match acceptor {
@@ -459,6 +469,25 @@ async fn plain_http_speaks_http2_when_asked() {
     assert_eq!(exchange.stats.version, "HTTP/2");
     let echoed = String::from_utf8_lossy(&exchange.body).into_owned();
     assert!(echoed.starts_with("GET api.test"), "{echoed}");
+}
+
+/// The trailers after a body are kept: a gRPC call's status is there.
+#[tokio::test]
+async fn the_trailers_after_a_body_are_kept() {
+    let address = serve_h2(false).await;
+    let exchange = engine()
+        .send(to(format!("http://{address}/trailers"), HttpVersion::Http2))
+        .await
+        .expect("an exchange");
+    assert_eq!(exchange.body, b"reply");
+    assert_eq!(
+        exchange.trailers,
+        [
+            ("grpc-status".to_string(), "5".to_string()),
+            ("grpc-message".to_string(), "not%20here".to_string())
+        ]
+    );
+    assert!(!exchange.headers.iter().any(|(name, _)| name == "grpc-status"));
 }
 
 /// At most the limit of a body is read, as it comes and decompressed.

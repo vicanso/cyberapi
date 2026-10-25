@@ -365,10 +365,10 @@ where
                 )
             })
             .collect();
-        let (raw, truncated) = read_body(response.into_body(), body_limit).await.map_err(http_error)?;
-        Ok::<_, SendError>((version, status, headers, raw, truncated))
+        let (raw, truncated, trailers) = read_body(response.into_body(), body_limit).await.map_err(http_error)?;
+        Ok::<_, SendError>((version, status, headers, raw, truncated, trailers))
     };
-    let (version, status, headers, raw, truncated) = timeout(limit, answer)
+    let (version, status, headers, raw, truncated, trailers) = timeout(limit, answer)
         .await
         .map_err(|_| timed_out("response", timeouts.write + timeouts.read))??;
     let ended = Instant::now();
@@ -415,23 +415,38 @@ where
         body_size,
         stats,
         truncated,
+        trailers,
     })
 }
 
-/// The body, up to `limit` bytes, and whether there was more.
-async fn read_body(mut body: Incoming, limit: usize) -> Result<(Vec<u8>, bool), hyper::Error> {
+/// The body, up to `limit` bytes, whether there was more, and the trailers
+/// after it.
+async fn read_body(mut body: Incoming, limit: usize) -> Result<(Vec<u8>, bool, Vec<(String, String)>), hyper::Error> {
     let mut raw = Vec::new();
+    let mut trailers = Vec::new();
     while let Some(frame) = body.frame().await {
-        if let Ok(data) = frame?.into_data() {
-            let room = limit - raw.len();
-            if data.len() > room {
-                raw.extend_from_slice(&data[..room]);
-                return Ok((raw, true));
+        let frame = match frame?.into_data() {
+            Ok(data) => {
+                let room = limit - raw.len();
+                if data.len() > room {
+                    raw.extend_from_slice(&data[..room]);
+                    return Ok((raw, true, trailers));
+                }
+                raw.extend_from_slice(&data);
+                continue;
             }
-            raw.extend_from_slice(&data);
+            Err(frame) => frame,
+        };
+        if let Ok(fields) = frame.into_trailers() {
+            trailers.extend(fields.iter().map(|(name, value)| {
+                (
+                    name.as_str().to_ascii_lowercase(),
+                    String::from_utf8_lossy(value.as_bytes()).into_owned(),
+                )
+            }));
         }
     }
-    Ok((raw, false))
+    Ok((raw, false, trailers))
 }
 
 /// What HTTP/2 forbids: a connection's own headers. `Host` is its

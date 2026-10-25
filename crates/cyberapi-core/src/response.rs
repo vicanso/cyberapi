@@ -76,6 +76,10 @@ pub struct Exchange {
     /// The body was longer than [`RESPONSE_LIMIT`]: this is its start.
     #[serde(default)]
     pub truncated: bool,
+    /// The trailers after the body (a gRPC call's status), names in lower
+    /// case.
+    #[serde(default)]
+    pub trailers: Vec<(String, String)>,
 }
 
 /// One entry of an API's history (F7.9): an exchange, or why there was none.
