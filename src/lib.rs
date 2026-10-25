@@ -356,9 +356,14 @@ fn install_mac_menus(cx: &mut App) {
     // the application menu's title; its items say the same.
     const BUNDLE_NAME: &str = "CyberAPI";
 
-    fn on_window(cx: &mut App, act: impl FnOnce(&mut Window)) {
+    // After the dispatch: a menu's action comes while the window is being
+    // updated, when it cannot be updated again (#44: Zoom and Minimize did
+    // nothing).
+    fn on_window(cx: &mut App, act: impl FnOnce(&mut Window) + 'static) {
         if let Some(window) = cx.active_window() {
-            let _ = window.update(cx, |_, window, _| act(window));
+            cx.defer(move |cx| {
+                let _ = window.update(cx, |_, window, _| act(window));
+            });
         }
     }
 
