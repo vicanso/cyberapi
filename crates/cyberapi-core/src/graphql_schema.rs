@@ -195,6 +195,31 @@ impl Schema {
         self.types.keys().filter(|name| !name.starts_with("__")).count()
     }
 
+    /// The types a browser lists (#70): the operation types first — query,
+    /// mutation, subscription — then the rest by name, without GraphQL's
+    /// own; those whose name holds `filter`, in any case.
+    pub fn browsed_types(&self, filter: &str) -> Vec<&str> {
+        let filter = filter.trim().to_lowercase();
+        let roots: Vec<&str> = [&self.query, &self.mutation, &self.subscription]
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .filter(|name| self.types.contains_key(*name))
+            .collect();
+        let mut rest: Vec<&str> = self
+            .types
+            .keys()
+            .map(String::as_str)
+            .filter(|name| !name.starts_with("__") && !roots.contains(name))
+            .collect();
+        rest.sort_by_key(|name| name.to_lowercase());
+        roots
+            .into_iter()
+            .chain(rest)
+            .filter(|name| filter.is_empty() || name.to_lowercase().contains(&filter))
+            .collect()
+    }
+
     fn field(&self, of: &str, name: &str) -> Option<&FieldDef> {
         self.types.get(of)?.fields.iter().find(|field| field.name == name)
     }
@@ -567,6 +592,14 @@ mod tests {
             ]
         }}});
         Schema::from_introspection(answer.to_string().as_bytes()).expect("a schema")
+    }
+
+    #[test]
+    fn a_browser_lists_the_operation_types_first() {
+        let schema = schema();
+        assert_eq!(schema.browsed_types(""), ["Query", "Mutation", "Node", "Role", "User"]);
+        assert_eq!(schema.browsed_types(" u "), ["Query", "Mutation", "User"]);
+        assert!(schema.browsed_types("__").is_empty(), "GraphQL's own are not listed");
     }
 
     fn labels(text: &str) -> Vec<String> {

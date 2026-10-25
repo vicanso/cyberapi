@@ -9,6 +9,7 @@ mod pins;
 mod project_title;
 mod request_editor;
 mod response_panel;
+mod schema_browser;
 mod tree_panel;
 
 use crate::APP_NAME;

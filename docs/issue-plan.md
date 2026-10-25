@@ -79,7 +79,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 
 ## 第 3 批：GraphQL 和网络
 
-### #70 GraphQL：格式化、浏览 Schema、错误位置
+### #70 GraphQL：格式化、浏览 Schema、错误位置（已完成）
 
 - 格式化查询：能完整解析时才格式化（写到一半的查询不动），缩进同 `format::JSON_INDENT`。
 - 浏览 Schema：点“Schema：N 个类型”打开面板，列类型、字段、参数和说明（`graphql_schema` 已经取了 `description`），点击插入到光标处。数据来自 `WorkspaceState` 按 URI 缓存的 Schema。

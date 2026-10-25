@@ -1435,6 +1435,13 @@ impl RequestEditor {
             .into_any_element()
     }
 
+    /// Asks the endpoint for its schema, once there is an address to ask.
+    fn fetch_schema(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ready_to_ask(window, cx) {
+            self.api.update(cx, |api, cx| api.ask_schema(cx));
+        }
+    }
+
     /// The GraphQL query indented (#70), and its variables, as the JSON
     /// body's Format does. A query not complete stays as it is, and says
     /// why.
@@ -1586,11 +1593,22 @@ impl RequestEditor {
                     .icon(gpui_kit::assets::IconName::ListTree)
                     .label(label)
                     .loading(asking)
-                    .tooltip(t!("editor.graphql_schema_about").to_string())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.ready_to_ask(window, cx) {
-                            this.api.update(cx, |api, cx| api.ask_schema(cx));
+                    .tooltip(match schema {
+                        Some(_) => t!("editor.graphql_schema_browse").to_string(),
+                        None => t!("editor.graphql_schema_about").to_string(),
+                    })
+                    // #70: a schema here is browsed, and fetched again from
+                    // there; none yet is asked for.
+                    .on_click(cx.listener(|this, _, window, cx| match this.api.read(cx).schema(cx) {
+                        Some(schema) => {
+                            let editor = cx.entity().downgrade();
+                            let fetch = move |window: &mut Window, cx: &mut App| {
+                                let _ = editor.update(cx, |this, cx| this.fetch_schema(window, cx));
+                            };
+                            let query = this.graphql.query.clone();
+                            super::schema_browser::open_schema_browser(schema, query, fetch, window, cx);
                         }
+                        None => this.fetch_schema(window, cx),
                     })),
             )
         });
