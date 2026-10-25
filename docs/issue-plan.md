@@ -1,6 +1,6 @@
 # Issue #55 起的处理计划
 
-> 状态：A、B 两组已完成（2026-10-25），C 组分四批待做，按批次顺序进行。每个 issue 单独提交，提交信息带 issue 编号。
+> 状态：A、B 两组和 C 组第 1 批已完成（2026-10-25），第 2–4 批待做，按批次顺序进行。每个 issue 单独提交，提交信息带 issue 编号。
 
 2026-10-25 把 [vicanso/cyberapi](https://github.com/vicanso/cyberapi/issues) #55 起的 issue 分了组：A 是 bug，B 是改动小、马上能做的优化，C 是要单独规划的功能。
 
@@ -16,6 +16,9 @@
 | #73 | gRPC 地址栏提示 `host:port`；gRPC 响应没有 Cookies 标签，Headers 叫元数据 | b486805 |
 | #68 | 历史记录每条显示方法和路径；菜单说明选中会恢复请求（恢复本来就有，F7.10） | 46b885b |
 | #64 | ⌘/Ctrl+F 搜索接口、⌘/Ctrl+L 跳到地址栏；树里 Delete（Mac ⌘⌫）删除、⌘/Ctrl+D 复制 | 65dd6dd |
+| #67 | 模板函数 `uuid`、`random`、`randomString`、`now`、`hmacSha256`、`urlEncode` | d1b3849 |
+| #65 | 首页（含空状态）“导入…”：导入的内容新建为项目，名称取集合自己的名字，项目打开、树加载完后导入 | aeed208 |
+| #59 | YAML 写的 Swagger / OpenAPI 照 JSON 导入；剪贴板里的这种 YAML 也会预填（从 URL 导入推后） | 9192d62 |
 
 ## 搁置：#63 的可见搜索按钮
 
