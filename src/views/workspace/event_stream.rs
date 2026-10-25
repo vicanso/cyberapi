@@ -1,7 +1,8 @@
 //! An event stream's events (`cyberapi_core::sse`), or a gRPC call's
-//! streamed replies, a row each: when it came, its type, the start of its
-//! data. The row picked shows its data
-//! whole below the list, indented when it is JSON. While the stream comes
+//! streamed replies, a row each: when it came, its type, its id when the
+//! stream gives ids (#72), the start of its data. The row picked shows its
+//! data whole below the list, indented when it is JSON, under its id and
+//! the reconnection time it asked for, if any. While the stream comes
 //! the rows are the API state's live ones, and the list follows the newest
 //! — unless the reader has scrolled back from it.
 
@@ -22,6 +23,7 @@ use rust_i18n::t;
 use std::sync::Arc;
 
 const ROW_HEIGHT: f32 = 26.;
+const ID_WIDTH: f32 = 72.;
 /// The most of an event's data a row shows: a long line is shaped whole,
 /// though only its start fits.
 const ROW_DATA: usize = 240;
@@ -33,8 +35,15 @@ pub struct EventStream {
     kept: Option<(String, Arc<Vec<Event>>)>,
     scroll: UniformListScrollHandle,
     /// The event picked, and its data in an editor.
-    picked: Option<(usize, Entity<EditorState>)>,
+    picked: Option<Picked>,
     _subscriptions: Vec<Subscription>,
+}
+
+struct Picked {
+    index: usize,
+    data: Entity<EditorState>,
+    /// Its id and reconnection time, where it gave them.
+    fields: Option<String>,
 }
 
 impl EventStream {
@@ -87,7 +96,7 @@ impl EventStream {
     }
 
     fn pick(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picked.as_ref().is_some_and(|(picked, _)| *picked == index) {
+        if self.picked.as_ref().is_some_and(|picked| picked.index == index) {
             self.picked = None;
             cx.notify();
             return;
@@ -99,6 +108,17 @@ impl EventStream {
             Ok(json) => ("json", format::json(&json)),
             Err(_) => ("text", event.data.clone()),
         };
+        let fields = [
+            event
+                .id
+                .as_ref()
+                .map(|id| t!("response.event_id_is", id = id).to_string()),
+            event.retry.map(|ms| t!("response.event_retry_is", ms = ms).to_string()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        let fields = (!fields.is_empty()).then(|| fields.join(" · "));
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(language)
@@ -107,13 +127,17 @@ impl EventStream {
                 .soft_wrap(true)
                 .default_value(text)
         });
-        self.picked = Some((index, editor));
+        self.picked = Some(Picked {
+            index,
+            data: editor,
+            fields,
+        });
         cx.notify();
     }
 
-    fn row(&self, index: usize, event: &Event, cx: &mut Context<Self>) -> impl IntoElement {
+    fn row(&self, index: usize, event: &Event, ids: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let picked = self.picked.as_ref().is_some_and(|(picked, _)| *picked == index);
+        let picked = self.picked.as_ref().is_some_and(|picked| picked.index == index);
         let mut data: String = event.data.chars().take(ROW_DATA).collect();
         data = data.replace(['\n', '\r'], " ");
         h_flex()
@@ -142,6 +166,17 @@ impl EventStream {
                     .text_color(theme.info)
                     .child(event.kind().to_string()),
             )
+            .when(ids, |this| {
+                this.child(
+                    div()
+                        .w(px(ID_WIDTH))
+                        .flex_none()
+                        .truncate()
+                        .text_color(theme.muted_foreground)
+                        .font_family(theme.mono_font_family.clone())
+                        .child(event.id.clone().unwrap_or_default()),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -165,6 +200,8 @@ fn at(at: Option<u64>) -> String {
 impl Render for EventStream {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.events(cx).len();
+        // The id column, for a stream that gives ids.
+        let ids = self.events(cx).iter().any(|event| event.id.is_some());
         let live = self.kept.is_none();
         // Following the newest while the reader is at it.
         if live && self.scroll.is_scrolled_to_end() != Some(false) {
@@ -189,7 +226,7 @@ impl Render for EventStream {
         let list = uniform_list(
             "sse-events",
             count,
-            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+            cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                 let events: Vec<(usize, Event)> = this
                     .events(cx)
                     .iter()
@@ -200,7 +237,7 @@ impl Render for EventStream {
                     .collect();
                 events
                     .iter()
-                    .map(|(index, event)| this.row(*index, event, cx).into_any_element())
+                    .map(|(index, event)| this.row(*index, event, ids, cx).into_any_element())
                     .collect::<Vec<_>>()
             }),
         )
@@ -227,6 +264,14 @@ impl Render for EventStream {
                     .flex_none()
                     .child(t!("response.event_type").to_string()),
             )
+            .when(ids, |this| {
+                this.child(
+                    div()
+                        .w(px(ID_WIDTH))
+                        .flex_none()
+                        .child(t!("response.event_id").to_string()),
+                )
+            })
             .child(div().flex_1().child(t!("response.event_data").to_string()));
         v_flex()
             .size_full()
@@ -239,14 +284,34 @@ impl Render for EventStream {
                         .child(Scrollbar::new(&self.scroll).axis(ScrollbarAxis::Vertical)),
                 ),
             )
-            .when_some(self.picked.as_ref(), |this, (_, editor)| {
+            .when_some(self.picked.as_ref(), |this, picked| {
                 this.child(
-                    div()
+                    v_flex()
                         .h(relative(0.4))
                         .flex_none()
                         .border_t_1()
                         .border_color(border)
-                        .child(Editor::new(editor).w_full().h_full().readonly(true).bordered(false)),
+                        .when_some(picked.fields.clone(), |this, fields| {
+                            this.child(
+                                div()
+                                    .px_3()
+                                    .py_1()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .border_b_1()
+                                    .border_color(border)
+                                    .child(fields),
+                            )
+                        })
+                        .child(
+                            div().flex_1().min_h_0().child(
+                                Editor::new(&picked.data)
+                                    .w_full()
+                                    .h_full()
+                                    .readonly(true)
+                                    .bordered(false),
+                            ),
+                        ),
                 )
             })
             .into_any_element()
