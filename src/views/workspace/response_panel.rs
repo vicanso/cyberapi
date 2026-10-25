@@ -51,6 +51,18 @@ enum ResponseTab {
     Info,
 }
 
+/// A history entry as the menu lists it.
+#[derive(Clone)]
+struct HistoryRow {
+    id: String,
+    color: Hsla,
+    status: String,
+    measures: String,
+    when: String,
+    method: HttpMethod,
+    path: String,
+}
+
 /// The scales an image steps through, of its own size (F7.4).
 const ZOOMS: [f32; 10] = [0.1, 0.25, 0.5, 0.75, 1., 1.5, 2., 3., 4., 8.];
 
@@ -297,7 +309,7 @@ impl ResponsePanel {
         let today = chrono::Local::now().date_naive();
         // Each answer as a line of the history: its status in its colour,
         // how long it took, how big it was, when.
-        let entries: Vec<(String, Hsla, String, String, String)> = api
+        let entries: Vec<HistoryRow> = api
             .responses()
             .iter()
             .map(|response| {
@@ -317,7 +329,15 @@ impl ResponsePanel {
                     Some(_) => format!("{} · {}", format_duration(response.latency), body_size(response)),
                     None => format_duration(response.latency),
                 };
-                (response.id.clone(), color, status, measures, when.to_string())
+                HistoryRow {
+                    id: response.id.clone(),
+                    color,
+                    status,
+                    measures,
+                    when: when.to_string(),
+                    method: response.request.method,
+                    path: response.sent_path(),
+                }
             })
             .collect();
         let sending = api.sending_since();
@@ -329,18 +349,53 @@ impl ResponsePanel {
         let shown_id = response.map(|r| r.id.clone());
         let this = cx.entity().downgrade();
         let history_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
-            let menu = entries.iter().fold(menu, |menu, (id, color, status, measures, when)| {
-                let (this, id) = (this.clone(), id.clone());
-                let (color, status, measures, when) = (*color, status.clone(), measures.clone(), when.clone());
+            // F7.10: picking one also puts its request back (#68).
+            let menu = menu.label(t!("response.history_restores").to_string());
+            let menu = entries.iter().fold(menu, |menu, row| {
+                let (this, id) = (this.clone(), row.id.clone());
+                let row = row.clone();
                 menu.item(
                     PopupMenuItem::element(move |_, cx| {
-                        h_flex()
-                            .w(px(260.))
-                            .gap_3()
-                            .items_center()
-                            .child(div().w(px(36.)).font_semibold().text_color(color).child(status.clone()))
-                            .child(div().flex_1().child(measures.clone()))
-                            .child(div().text_color(cx.theme().muted_foreground).child(when.clone()))
+                        let muted = cx.theme().muted_foreground;
+                        v_flex()
+                            .w(px(300.))
+                            .child(
+                                h_flex()
+                                    .gap_3()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .w(px(36.))
+                                            .font_semibold()
+                                            .text_color(row.color)
+                                            .child(row.status.clone()),
+                                    )
+                                    .child(div().flex_1().child(row.measures.clone()))
+                                    .child(div().text_color(muted).child(row.when.clone())),
+                            )
+                            // What it sent: the method, and where.
+                            .child(
+                                h_flex()
+                                    .gap_3()
+                                    .items_center()
+                                    .text_xs()
+                                    .child(
+                                        div()
+                                            .w(px(36.))
+                                            .flex_none()
+                                            .font_semibold()
+                                            .text_color(super::method_color(row.method, cx))
+                                            .child(super::method_label(row.method)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_color(muted)
+                                            .child(row.path.clone()),
+                                    ),
+                            )
                     })
                     .checked(shown_id.as_deref() == Some(id.as_str()))
                     .on_click(move |_, _, cx| {

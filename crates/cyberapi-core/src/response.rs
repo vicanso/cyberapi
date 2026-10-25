@@ -226,6 +226,24 @@ impl HttpResponse {
         }
     }
 
+    /// Where the request went, for a history list (#68): the path and
+    /// query it was sent to, decoded to read, or its address as written
+    /// when it went nowhere.
+    pub fn sent_path(&self) -> String {
+        let decoded = |text: &str| {
+            percent_encoding::percent_decode_str(text)
+                .decode_utf8_lossy()
+                .into_owned()
+        };
+        match url::Url::parse(&self.url) {
+            Ok(url) if url.has_host() => match url.query() {
+                Some(query) => format!("{}?{}", decoded(url.path()), decoded(&query.replace('+', " "))),
+                None => decoded(url.path()),
+            },
+            _ => self.request.uri.clone(),
+        }
+    }
+
     /// How a gRPC call ended: from its trailers, which the headers end
     /// with. `None` for an HTTP request, or a call the server gave no
     /// status.
@@ -700,6 +718,23 @@ mod tests {
             body: body.to_vec(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_history_entry_names_the_path_it_went_to() {
+        let mut sent = HttpResponse {
+            url: "http://api.test:8080/v1/users?page=2".into(),
+            ..Default::default()
+        };
+        assert_eq!(sent.sent_path(), "/v1/users?page=2");
+        sent.url = "http://api.test/%E7%94%A8%E6%88%B7?q=%7B+a+%7D".into();
+        assert_eq!(sent.sent_path(), "/用户?q={ a }");
+        sent.url = "https://api.test".into();
+        assert_eq!(sent.sent_path(), "/");
+        // A request that could not be sent has only its address.
+        sent.url = String::new();
+        sent.request.uri = "{{HOST}}/v1/users".into();
+        assert_eq!(sent.sent_path(), "{{HOST}}/v1/users");
     }
 
     #[test]
