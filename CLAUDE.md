@@ -2,7 +2,7 @@
 
 CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / Insomnia），同一份代码构建**桌面版**和**浏览器版**。功能范围与分层设计见 `docs/gpui-refactor-feature-analysis.md`（功能编号 `F<模块>.<序号>`，代码注释里引用这些编号）。工程结构参照 `~/github/zedis`。GitHub issue #55 起的处理分组、已完成的提交和待做的四批见 `docs/issue-plan.md`，按批次顺序做，做完一项就更新它。
 
-面向用户的文档有中英两份，内容逐节对应：`README.md` / `README_zh.md`（功能、安装、网页版概要、开发），`docs/DEPLOY.md` / `docs/DEPLOY_zh.md`（网页版部署：Compose、systemd、反向代理与子路径、选项、可发往的地址、账号与邀请、桌面登录、升级、备份）。改动 bridge 的选项、默认值、限制，或安装包的种类时，两种语言都要改。部署说明跟随 `main`：正式版还没有的选项和行为标注它从哪个版本开始（*x.y.z*，在那之前只在 nightly 里），示例里的版本号由 `scripts/bump-version.sh` 随升版本一起改（#54）。
+面向用户的文档有中英两份，内容逐节对应：`README.md` / `README_zh.md`（几条功能亮点、安装、网页版概要、开发；首页要短，细节不往这里加），`docs/FEATURES.md` / `docs/FEATURES_zh.md`（完整的功能说明，新增或改变用户看得到的功能时改这里），`docs/DEPLOY.md` / `docs/DEPLOY_zh.md`（网页版部署：Compose、systemd、反向代理与子路径、选项、可发往的地址、账号与邀请、桌面登录、升级、备份）。改动 bridge 的选项、默认值、限制，或安装包的种类时，两种语言都要改。部署说明跟随 `main`：正式版还没有的选项和行为标注它从哪个版本开始（*x.y.z*，在那之前只在 nightly 里），示例里的版本号由 `scripts/bump-version.sh` 随升版本一起改（#54）。
 
 ## Commands
 
