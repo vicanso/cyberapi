@@ -531,6 +531,19 @@ impl RequestEditor {
         }
     }
 
+    /// Before asking the server something for the request (its schema, its
+    /// reflection): what the fields hold is the request's — the address
+    /// still being typed too (#56) — and there is an address to ask.
+    fn ready_to_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.flush(cx);
+        if self.api.read(cx).request().uri.trim().is_empty() {
+            window.push_notification(Notification::error(t!("editor.address_first").to_string()), cx);
+            self.uri.update(cx, |input, cx| input.focus(window, cx));
+            return false;
+        }
+        true
+    }
+
     /// The `.proto` files the reader picks, compiled for the definitions.
     fn import_protos(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
@@ -660,8 +673,10 @@ impl RequestEditor {
                     .label(t!("editor.grpc_reflect").to_string())
                     .loading(loading)
                     .tooltip(t!("editor.grpc_reflect_about").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.api.update(cx, |api, cx| api.load_grpc_reflection(cx));
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.ready_to_ask(window, cx) {
+                            this.api.update(cx, |api, cx| api.load_grpc_reflection(cx));
+                        }
                     })),
             )
             .when(this_build::reads_files(), |this| {
@@ -1461,7 +1476,11 @@ impl RequestEditor {
                     .label(label)
                     .loading(asking)
                     .tooltip(t!("editor.graphql_schema_about").to_string())
-                    .on_click(cx.listener(|this, _, _, cx| this.api.update(cx, |api, cx| api.ask_schema(cx)))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.ready_to_ask(window, cx) {
+                            this.api.update(cx, |api, cx| api.ask_schema(cx));
+                        }
+                    })),
             )
         });
         let content: AnyElement = if request.content_type == ContentType::GraphQl {
