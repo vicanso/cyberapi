@@ -700,10 +700,12 @@ impl DashboardView {
                                     // server cannot be reached.
                                     .when(self.state.read(cx).from_server(&collection.id), |this| {
                                         let unreached = self.state.read(cx).unreachable(&collection.id, cx).is_some();
-                                        let (icon, tip) = if unreached {
-                                            (Icons::CloudOff, t!("dashboard.on_server_unreached"))
+                                        // In colour, to be told from the menu's
+                                        // dots at a glance.
+                                        let (icon, tip, color) = if unreached {
+                                            (Icons::CloudOff, t!("dashboard.on_server_unreached"), cx.theme().warning)
                                         } else {
-                                            (Icons::Cloud, t!("dashboard.on_server"))
+                                            (Icons::Cloud, t!("dashboard.on_server"), cx.theme().blue)
                                         };
                                         let tip = tip.to_string();
                                         this.child(
@@ -711,7 +713,7 @@ impl DashboardView {
                                                 .id(SharedString::from(format!("collection-cloud-{key}")))
                                                 .flex_none()
                                                 .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                                                .child(Icon::new(icon).small().text_color(muted)),
+                                                .child(Icon::new(icon).small().text_color(color)),
                                         )
                                     })
                                     .child(
