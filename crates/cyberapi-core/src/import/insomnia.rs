@@ -5,6 +5,7 @@
 //! variable as `{{ _.name }}`; it comes in as this app's `{{name}}`.
 
 use super::{ImportBundle, ImportItem, api, content_type_of, guess_content_type, kv};
+use crate::graphql::GraphQlBody;
 use crate::model::{ContentType, KvParam};
 use serde_json::Value;
 
@@ -79,6 +80,10 @@ fn request(resource: &Value) -> ImportItem {
         match built.content_type {
             ContentType::Form | ContentType::Multipart => {
                 built.body = serde_json::to_string(&pairs(body.get("params"))).unwrap_or_default();
+            }
+            // `{"query": …, "variables": {…}}` as text.
+            ContentType::GraphQl => {
+                built.body = GraphQlBody::read(&variables(text(body, "text"))).to_body();
             }
             _ => {
                 built.body = variables(text(body, "text"));
@@ -167,6 +172,8 @@ mod tests {
                  "authentication": {"type": "basic", "username": "u", "password": "p"}},
                 {"_id": "fld_1", "_type": "request_group", "parentId": "wrk_1", "name": "users"},
                 {"_id": "req_1", "_type": "request", "parentId": "wrk_1", "name": "health", "method": "GET", "url": "https://a.test/h"},
+                {"_id": "req_3", "_type": "request", "parentId": "wrk_1", "name": "me", "method": "POST", "url": "{{ _.host }}/graphql",
+                 "body": {"mimeType": "application/graphql", "text": "{\"query\": \"{ me(id: $id) { id } }\", \"variables\": {\"id\": \"{{ _.user }}\"}}"}},
                 {"_id": "env_1", "_type": "environment", "parentId": "wrk_1", "data": {"host": "https://a.test", "port": 8080}},
                 {"_id": "wrk_1", "_type": "workspace", "name": "Shop"}
             ]}"#,
@@ -195,5 +202,15 @@ mod tests {
         assert_eq!(request.headers, [kv("X-A", "a", false)]);
         assert_eq!(request.auth, [kv("u", "p", true)]);
         assert!(matches!(&bundle.items[1], ImportItem::Api { name, .. } if name == "health"));
+        let ImportItem::Api { request, .. } = &bundle.items[2] else {
+            panic!("an API");
+        };
+        assert_eq!(request.content_type, ContentType::GraphQl);
+        let graphql = GraphQlBody::read(&request.body);
+        assert_eq!(graphql.query, "{ me(id: $id) { id } }");
+        assert_eq!(
+            graphql.variables, "{\n    \"id\": \"{{user}}\"\n}",
+            "its templates as this app writes them"
+        );
     }
 }

@@ -6,6 +6,7 @@
 //! `{{name}}` is this app's prefix syntax already.
 
 use super::{ImportBundle, ImportItem, api, content_type_of, guess_content_type, kv};
+use crate::graphql::GraphQlBody;
 use crate::model::{ContentType, KvParam};
 use serde_json::Value;
 
@@ -85,6 +86,17 @@ fn item(value: &Value) -> Option<ImportItem> {
                     "text" => ContentType::Plain,
                     _ => guess_content_type(&built.body),
                 };
+            }
+            // Its own mode: the query and the variables as text.
+            "graphql" => {
+                let graphql = body.get("graphql").unwrap_or(&Value::Null);
+                built.content_type = ContentType::GraphQl;
+                built.body = GraphQlBody {
+                    query: text(graphql, "query").to_string(),
+                    variables: text(graphql, "variables").to_string(),
+                    operation_name: String::new(),
+                }
+                .to_body();
             }
             "urlencoded" => {
                 built.content_type = ContentType::Form;
@@ -177,6 +189,8 @@ mod tests {
                 ]},
                 {"name": "form", "request": {"method": "PUT", "url": "https://a.test/f",
                     "body": {"mode": "urlencoded", "urlencoded": [{"key": "k", "value": "v"}]}}},
+                {"name": "me", "request": {"method": "POST", "url": "{{host}}/graphql",
+                    "body": {"mode": "graphql", "graphql": {"query": "query { me { id } }", "variables": "{\"a\": 1}"}}}},
                 {"name": "bare", "request": "https://a.test/bare"}
             ],
             "variable": [{"key": "host", "value": "https://shop.test"}]
@@ -213,6 +227,15 @@ mod tests {
         assert_eq!(request.content_type, ContentType::Form);
         assert_eq!(request.body, r#"[{"key":"k","value":"v","enabled":true}]"#);
         let ImportItem::Api { request, .. } = &bundle.items[2] else {
+            panic!("an API");
+        };
+        assert_eq!(request.content_type, ContentType::GraphQl);
+        let graphql = GraphQlBody::read(&request.body);
+        assert_eq!(
+            (graphql.query.as_str(), graphql.variables.as_str()),
+            ("query { me { id } }", "{\"a\": 1}")
+        );
+        let ImportItem::Api { request, .. } = &bundle.items[3] else {
             panic!("an API");
         };
         assert_eq!(

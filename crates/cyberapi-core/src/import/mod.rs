@@ -216,6 +216,7 @@ fn content_type_of(value: &str) -> Option<ContentType> {
         "multipart/form-data" => Some(ContentType::Multipart),
         "application/xml" | "text/xml" => Some(ContentType::Xml),
         "text/plain" => Some(ContentType::Plain),
+        "application/graphql" => Some(ContentType::GraphQl),
         _ => None,
     }
 }
