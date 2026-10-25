@@ -25,7 +25,7 @@
 use super::{Load, WorkspaceState, run_store};
 use crate::this_build;
 use cyberapi_core::graphql_schema::Schema;
-use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody};
+use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody, ReplyReader};
 use cyberapi_core::model::{ApiSetting, ContentType, HttpMethod, HttpRequest, KvParam};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::send::PrepareError;
@@ -107,15 +107,23 @@ struct Sending {
     _follow: Task<()>,
     /// Ends an event stream: what came is the answer.
     stop: Option<oneshot::Sender<()>>,
+    /// Reads a gRPC call's streamed reply, when it makes one.
+    replies: Option<ReplyReader>,
 }
 
-/// An event stream's answer as it comes.
+/// How a live stream's pieces become events.
+enum Reader {
+    Events(sse::Parser),
+    Replies(ReplyReader),
+}
+
+/// An event stream's answer, or a gRPC call's streamed reply, as it comes.
 pub struct LiveStream {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub events: Vec<sse::Event>,
-    parser: sse::Parser,
+    reader: Reader,
     /// When the head came: an event's time is after it.
     head: Instant,
     /// The reader asked it to end; the answer is on its way.
@@ -123,13 +131,18 @@ pub struct LiveStream {
 }
 
 impl LiveStream {
-    fn new(status: u16, headers: Vec<(String, String)>) -> Self {
+    fn new(status: u16, headers: Vec<(String, String)>, replies: Option<ReplyReader>) -> Self {
+        // An event stream says so; any other stream is the call's replies.
+        let reader = match replies {
+            Some(replies) if !sse::is_event_stream(&headers) => Reader::Replies(replies),
+            _ => Reader::Events(sse::Parser::new()),
+        };
         Self {
             status,
             headers,
             body: Vec::new(),
             events: Vec::new(),
-            parser: sse::Parser::new(),
+            reader,
             head: Instant::now(),
             stopping: false,
         }
@@ -137,8 +150,11 @@ impl LiveStream {
 
     fn take(&mut self, piece: &[u8]) {
         self.body.extend_from_slice(piece);
-        let at = self.head.elapsed().as_millis() as u64;
-        let events = self.parser.feed(piece, Some(at));
+        let at = Some(self.head.elapsed().as_millis() as u64);
+        let events = match &mut self.reader {
+            Reader::Events(parser) => parser.feed(piece, at),
+            Reader::Replies(replies) => replies.feed(piece, at),
+        };
         self.events.extend(events);
     }
 }
@@ -486,6 +502,9 @@ impl ApiState {
             }),
             stop: stopped,
         };
+        let replies = (self.request.method == HttpMethod::Grpc)
+            .then(|| GrpcBody::read(&self.request.body).reply_reader())
+            .flatten();
         let call = cyberapi_service::send_watched(
             self.sender(cx),
             self.collection.clone(),
@@ -516,6 +535,7 @@ impl ApiState {
             _task: task,
             _follow: follow,
             stop: Some(stop),
+            replies,
         });
         cx.notify();
     }
@@ -532,7 +552,10 @@ impl ApiState {
         }
         for progress in told {
             match progress {
-                Progress::Head { status, headers } => self.live = Some(LiveStream::new(status, headers)),
+                Progress::Head { status, headers } => {
+                    let replies = self.sending.as_mut().and_then(|sending| sending.replies.take());
+                    self.live = Some(LiveStream::new(status, headers, replies));
+                }
                 Progress::Body(piece) => {
                     if let Some(live) = self.live.as_mut() {
                         live.take(&piece);
@@ -746,11 +769,13 @@ impl ApiState {
                     workspace.keep_grpc_definitions(uri, known.clone(), cx)
                 });
                 let methods = known.definitions.methods();
-                // A call with no method yet takes the first it can make.
+                // A call with no method yet takes the first unary one, else
+                // the first it can make.
                 let example = if GrpcBody::read(&self.request.body).service.is_empty() {
                     methods
                         .iter()
-                        .find(|method| !method.streaming)
+                        .find(|method| !method.client_streaming && !method.server_streaming)
+                        .or_else(|| methods.iter().find(|method| !method.client_streaming))
                         .and_then(|method| self.choose_grpc_method_in(&known, &method.service, &method.method, cx))
                 } else {
                     None

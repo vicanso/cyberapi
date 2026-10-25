@@ -97,6 +97,7 @@ impl Transport for EngineTransport {
             // certificate is checked whatever the reader's requests take.
             accept_invalid_certs: false,
             http_version: HttpVersion::Auto,
+            streams: false,
         };
         let call = self.engine.send(request);
         Box::pin(async move {

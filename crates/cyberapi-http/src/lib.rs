@@ -10,7 +10,8 @@
 //! Dropping the future cancels the request (#2: the old app's "abort" only
 //! dropped the answer while the request went on).
 //!
-//! An event stream (`text/event-stream`) can be watched instead
+//! An event stream (`text/event-stream`), or an answer the request says is
+//! a stream (`PreparedRequest::streams`, a gRPC call's), can be watched instead
 //! ([`HttpEngine::send_watched`]): its head and each piece of its body are
 //! told as they come, and it is read until the server ends it, it goes
 //! quiet for the read timeout, it reaches the body limit or the reader

@@ -16,7 +16,6 @@ use cyberapi_core::response::{
     BodyKind, DISPLAY_LIMIT, HttpResponse, RESPONSE_LIMIT, StatusLevel, StreamEnd, clip_text, format_duration,
     format_size, status_level, status_text, unwrappable_line,
 };
-use cyberapi_core::sse;
 use cyberapi_http::SendError;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
@@ -448,8 +447,9 @@ impl ResponsePanel {
             .children(TABS.iter().map(|tab| Tab::new().label(label(tab))))
             .when(copies, |bar| {
                 let page = this_build::opens_html() && response.content_type().to_ascii_lowercase().contains("html");
-                let json = response.body_kind() == BodyKind::Json;
                 let stream = shows_events(response);
+                // A stream's own switch stands in for the JSON one.
+                let json = response.body_kind() == BodyKind::Json && !stream;
                 let raw = self.stream_raw.as_ref() == Some(&response.id);
                 bar.suffix(
                     h_flex()
@@ -1263,9 +1263,9 @@ fn pill(text: String, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
-/// Whether a response's body shows as events: an event stream's, whole.
+/// Whether a response's body shows as events: a stream's, whole.
 fn shows_events(response: &HttpResponse) -> bool {
-    response.error.is_none() && response.body_omitted.is_none() && sse::is_event_stream(&response.headers)
+    response.error.is_none() && response.body_omitted.is_none() && response.notice.is_none() && response.is_stream()
 }
 
 fn note(text: String, buttons: Vec<Button>, cx: &mut Context<ResponsePanel>) -> AnyElement {

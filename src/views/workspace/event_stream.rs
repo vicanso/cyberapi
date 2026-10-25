@@ -1,5 +1,6 @@
-//! An event stream's events (`cyberapi_core::sse`), a row each: when it
-//! came, its type, the start of its data. The row picked shows its data
+//! An event stream's events (`cyberapi_core::sse`), or a gRPC call's
+//! streamed replies, a row each: when it came, its type, the start of its
+//! data. The row picked shows its data
 //! whole below the list, indented when it is JSON. While the stream comes
 //! the rows are the API state's live ones, and the list follows the newest
 //! — unless the reader has scrolled back from it.
@@ -7,7 +8,7 @@
 use crate::states::ApiState;
 use cyberapi_core::format;
 use cyberapi_core::response::HttpResponse;
-use cyberapi_core::sse::{self, Event};
+use cyberapi_core::sse::Event;
 use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarAxis};
 use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
@@ -55,7 +56,7 @@ impl EventStream {
         if self.kept.as_ref().is_some_and(|(id, _)| *id == response.id) {
             return;
         }
-        let events = sse::events(&response.body, response.stream.as_ref());
+        let events = response.stream_events();
         self.kept = Some((response.id.clone(), Arc::new(events)));
         self.reset(cx);
     }

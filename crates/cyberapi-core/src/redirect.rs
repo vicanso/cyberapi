@@ -98,6 +98,7 @@ mod tests {
             timeouts: Timeouts::default().effective(),
             accept_invalid_certs: true,
             http_version: HttpVersion::Http2,
+            streams: false,
         }
     }
 

@@ -204,6 +204,24 @@ impl HttpResponse {
         self.header_values("content-type").collect::<Vec<_>>().join(" ")
     }
 
+    /// Whether it is a stream read as it came, shown as events: an event
+    /// stream, or a gRPC call's streamed reply.
+    pub fn is_stream(&self) -> bool {
+        crate::sse::is_event_stream(&self.headers) || (self.request.method == HttpMethod::Grpc && self.stream.is_some())
+    }
+
+    /// Its events, when it is a stream.
+    pub fn stream_events(&self) -> Vec<crate::sse::Event> {
+        if crate::sse::is_event_stream(&self.headers) {
+            crate::sse::events(&self.body, self.stream.as_ref())
+        } else {
+            let kind = crate::grpc::GrpcBody::read(&self.request.body)
+                .reply_type()
+                .unwrap_or_else(|| "message".into());
+            crate::sse::line_events(&self.body, self.stream.as_ref(), &kind)
+        }
+    }
+
     /// How a gRPC call ended: from its trailers, which the headers end
     /// with. `None` for an HTTP request, or a call the server gave no
     /// status.

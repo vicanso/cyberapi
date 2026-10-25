@@ -161,6 +161,25 @@ pub fn events(body: &[u8], stream: Option<&StreamInfo>) -> Vec<Event> {
     events
 }
 
+/// The events of a stream kept one message a line (a gRPC call's), of type
+/// `kind`, each with the time of the piece that ended it.
+pub fn line_events(body: &[u8], stream: Option<&StreamInfo>, kind: &str) -> Vec<Event> {
+    let arrivals = stream.map(|stream| stream.arrivals.as_slice()).unwrap_or_default();
+    let mut end = 0u64;
+    body.split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            end += line.len() as u64 + 1;
+            Event {
+                event: kind.to_string(),
+                data: String::from_utf8_lossy(line).into_owned(),
+                at: arrivals.iter().find(|(arrived, _)| *arrived >= end).map(|(_, at)| *at),
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +231,20 @@ mod tests {
             [("one", Some(20)), ("tw", Some(35))]
         );
         assert!(events(b": only a comment\n", None).is_empty());
+    }
+
+    #[test]
+    fn a_stream_kept_a_message_a_line_reads_back_with_its_times() {
+        let stream = StreamInfo {
+            arrivals: vec![(8, 5), (16, 40)],
+            ended: StreamEnd::Closed,
+        };
+        let read = line_events(b"{\"a\":1}\n{\"b\":2}\n", Some(&stream), "Item");
+        assert_eq!(read[0].kind(), "Item");
+        assert_eq!(
+            read.iter().map(|e| (e.data.as_str(), e.at)).collect::<Vec<_>>(),
+            [("{\"a\":1}", Some(5)), ("{\"b\":2}", Some(40))]
+        );
     }
 
     #[test]

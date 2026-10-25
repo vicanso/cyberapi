@@ -144,13 +144,20 @@ pub async fn send_watched(
         Ok(exchange) => {
             let mut headers = exchange.headers;
             headers.extend(exchange.trailers);
-            // A gRPC reply is read with the definitions it was asked with.
-            let (body, notice) = match &grpc {
+            // A gRPC reply is read with the definitions it was asked with: a
+            // streamed one a message a line, with when each came.
+            let (body, notice, stream) = match &grpc {
+                Some(call) if call.server_streams() => {
+                    match call.stream_reply(&exchange.body, exchange.stream.as_ref()) {
+                        Ok((body, stream)) => (body, None, stream),
+                        Err(why) => (exchange.body, Some(why), exchange.stream),
+                    }
+                }
                 Some(call) => match call.reply(&exchange.body) {
-                    Ok(json) => (json.map(String::into_bytes).unwrap_or_default(), None),
-                    Err(why) => (exchange.body, Some(why)),
+                    Ok(json) => (json.map(String::into_bytes).unwrap_or_default(), None, exchange.stream),
+                    Err(why) => (exchange.body, Some(why), exchange.stream),
                 },
-                None => (exchange.body, None),
+                None => (exchange.body, None, exchange.stream),
             };
             HttpResponse {
                 api: api.clone(),
@@ -167,7 +174,7 @@ pub async fn send_watched(
                 latency: floor(earlier + exchange.stats.total),
                 stats: exchange.stats,
                 truncated: exchange.truncated,
-                stream: exchange.stream,
+                stream,
                 ..Default::default()
             }
         }
@@ -475,6 +482,7 @@ mod tests {
     use cyberapi_core::grpc;
     use cyberapi_core::model::{ContentType, HttpMethod, KvParam};
     use cyberapi_core::response::HttpStats;
+    use cyberapi_core::response::{StreamEnd, StreamInfo};
     use cyberapi_core::template::{BaseDir, TemplateError};
     use cyberapi_http::SendFuture;
     use cyberapi_store::{MemoryStore, NewCollection, NewVariable};
@@ -635,7 +643,8 @@ mod tests {
     }
 
     /// `package shop; message Ask { string id = 1; }
-    /// service Store { rpc Get(Ask) returns (Ask); }`, encoded.
+    /// service Store { rpc Get(Ask) returns (Ask); rpc Watch(Ask) returns (stream Ask); }`,
+    /// encoded.
     fn shop_proto() -> Vec<u8> {
         use prost::Message as _;
         use prost_types::field_descriptor_proto::{Label, Type};
@@ -657,12 +666,21 @@ mod tests {
             }],
             service: vec![prost_types::ServiceDescriptorProto {
                 name: Some("Store".into()),
-                method: vec![prost_types::MethodDescriptorProto {
-                    name: Some("Get".into()),
-                    input_type: Some(".shop.Ask".into()),
-                    output_type: Some(".shop.Ask".into()),
-                    ..Default::default()
-                }],
+                method: vec![
+                    prost_types::MethodDescriptorProto {
+                        name: Some("Get".into()),
+                        input_type: Some(".shop.Ask".into()),
+                        output_type: Some(".shop.Ask".into()),
+                        ..Default::default()
+                    },
+                    prost_types::MethodDescriptorProto {
+                        name: Some("Watch".into()),
+                        input_type: Some(".shop.Ask".into()),
+                        output_type: Some(".shop.Ask".into()),
+                        server_streaming: Some(true),
+                        ..Default::default()
+                    },
+                ],
                 ..Default::default()
             }],
             ..Default::default()
@@ -723,7 +741,7 @@ mod tests {
                 .iter()
                 .map(|m| m.method.as_str())
                 .collect::<Vec<_>>(),
-            ["Get"]
+            ["Get", "Watch"]
         );
         let asked: Vec<_> = setup.engine.sent.lock().expect("sent").drain(..).collect();
         assert_eq!(
@@ -795,12 +813,57 @@ mod tests {
         let unread = send_it(&call);
         assert_eq!(unread.body, grpc::frame(&[0xff]));
         assert!(unread.notice.is_some_and(|why| why.contains("not a shop.Ask")));
+
+        // A streamed reply: the call says so, and the replies are kept a
+        // line each with when each came.
+        let watch = HttpRequest {
+            body: GrpcBody {
+                method: "Watch".into(),
+                ..GrpcBody::read(&call.body)
+            }
+            .to_body(),
+            ..call
+        };
+        let replies = [grpc::frame(&field(1, b"1")), grpc::frame(&field(1, b"2"))].concat();
+        let streamed = Exchange {
+            stream: Some(StreamInfo {
+                arrivals: vec![(8, 3), (16, 900)],
+                ended: StreamEnd::Stopped,
+            }),
+            ..grpc_answer(replies, "0", "")
+        };
+        setup
+            .engine
+            .routes
+            .lock()
+            .expect("routes")
+            .insert("http://shop.test:50051/shop.Store/Watch".into(), streamed);
+        let response = send_it(&watch);
+        assert!(
+            setup
+                .engine
+                .sent
+                .lock()
+                .expect("sent")
+                .pop()
+                .is_some_and(|sent| sent.streams)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&response.body),
+            "{\"id\":\"1\"}\n{\"id\":\"2\"}\n"
+        );
+        let stream = response.stream.clone().expect("a stream");
+        assert_eq!(
+            (stream.arrivals, stream.ended),
+            (vec![(11, 3), (22, 900)], StreamEnd::Stopped)
+        );
+        assert!(response.is_stream());
+        assert_eq!(response.stream_events()[1].kind(), "Ask");
     }
 
     /// An event stream's arrivals and end are kept with its answer.
     #[test]
     fn a_streams_arrivals_and_end_are_kept() {
-        use cyberapi_core::response::{StreamEnd, StreamInfo};
         let stream = StreamInfo {
             arrivals: vec![(9, 4), (18, 60)],
             ended: StreamEnd::Stopped,

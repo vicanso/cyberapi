@@ -84,7 +84,8 @@ async fn serve() -> SocketAddr {
 
 /// An event stream server: `/events` sends three events 50 ms apart and
 /// ends, saying its encoding is `none` as GraphQL Yoga does; `/open` sends
-/// one and stays open, quiet.
+/// one and stays open, quiet; `/grpc` sends the three as a gRPC server's
+/// stream would, typed `application/grpc`.
 async fn serve_events() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let address = listener.local_addr().expect("address");
@@ -96,6 +97,7 @@ async fn serve_events() -> SocketAddr {
             tokio::spawn(async move {
                 let service = service_fn(|request: hyper::Request<hyper::body::Incoming>| async move {
                     let open = request.uri().path() == "/open";
+                    let grpc = request.uri().path() == "/grpc";
                     let count = if open { 1 } else { 3 };
                     let pieces = futures::stream::unfold(0, move |n| async move {
                         if n == count {
@@ -110,8 +112,9 @@ async fn serve_events() -> SocketAddr {
                         let piece = hyper::body::Frame::data(Bytes::from(format!("data: {n}\n\n")));
                         Some((Ok::<_, std::convert::Infallible>(piece), n + 1))
                     });
-                    let response = hyper::Response::builder().header("content-type", "text/event-stream");
-                    let response = if open {
+                    let kind = if grpc { "application/grpc" } else { "text/event-stream" };
+                    let response = hyper::Response::builder().header("content-type", kind);
+                    let response = if open || grpc {
                         response
                     } else {
                         response.header("content-encoding", "none")
@@ -207,6 +210,22 @@ async fn a_watched_event_stream_is_read_as_it_comes() {
 
     let unwatched = engine().send(get(address, "/events")).await.expect("an exchange");
     assert_eq!((unwatched.body.len(), unwatched.stream), (27, None));
+
+    // Any answer the request says streams.
+    let (watch, told) = watching(None);
+    let streamed = PreparedRequest {
+        streams: true,
+        ..get(address, "/grpc")
+    };
+    let exchange = engine().send_watched(streamed, watch).await.expect("an exchange");
+    assert_eq!(exchange.stream.map(|s| s.arrivals.len()), Some(3));
+    assert_eq!(told.lock().expect("told").len(), 4);
+    let (watch, _) = watching(None);
+    let plain = engine()
+        .send_watched(get(address, "/grpc"), watch)
+        .await
+        .expect("an exchange");
+    assert_eq!((plain.body.len(), plain.stream), (27, None), "not said to stream");
 }
 
 fn engine() -> NativeEngine {

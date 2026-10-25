@@ -601,8 +601,10 @@ impl RequestEditor {
                     service = &method.service;
                     menu = menu.item(PopupMenuItem::label(service.to_string()));
                 }
-                let label = if method.streaming {
-                    format!("{} · {}", method.method, t!("editor.grpc_streaming"))
+                let label = if method.client_streaming {
+                    format!("{} · {}", method.method, t!("editor.grpc_client_streaming"))
+                } else if method.server_streaming {
+                    format!("{} · {}", method.method, t!("editor.grpc_server_streaming"))
                 } else {
                     method.method.clone()
                 };
@@ -611,7 +613,7 @@ impl RequestEditor {
                 menu = menu.item(
                     PopupMenuItem::new(label)
                         .checked(checked)
-                        .disabled(method.streaming)
+                        .disabled(method.client_streaming)
                         .on_click(move |_, window, cx| {
                             let _ =
                                 this.update(cx, |this, cx| this.choose_grpc_method(&picked.0, &picked.1, window, cx));

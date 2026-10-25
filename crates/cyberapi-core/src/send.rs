@@ -44,6 +44,10 @@ pub struct PreparedRequest {
     /// F14.10.
     #[serde(default)]
     pub http_version: HttpVersion,
+    /// The answer is a stream whatever its type says (a gRPC call's that
+    /// streams from the server): a watched send reads it as it comes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub streams: bool,
 }
 
 impl PreparedRequest {
@@ -374,6 +378,7 @@ pub fn grpc_call(
         timeouts: cx.timeouts.effective(),
         accept_invalid_certs: cx.accept_invalid_certs,
         http_version: HttpVersion::Http2,
+        streams: false,
     })
 }
 
@@ -386,7 +391,9 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         let body = grpc
             .request(&render(&grpc.message)?)
             .map_err(|message| PrepareError::Grpc { message })?;
-        return grpc_call(request, cx, &grpc.path(), body);
+        let mut call = grpc_call(request, cx, &grpc.path(), body)?;
+        call.streams = grpc.server_streams();
+        return Ok(call);
     }
     check_environment(request, cx)?;
     // The URL, then the enabled query appended to what it already has.
@@ -472,6 +479,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         timeouts: cx.timeouts.effective(),
         accept_invalid_certs: cx.accept_invalid_certs,
         http_version: cx.http_version,
+        streams: false,
     })
 }
 

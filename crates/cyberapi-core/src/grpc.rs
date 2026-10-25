@@ -5,13 +5,19 @@
 //! its length, the call's status in the `grpc-status` and `grpc-message`
 //! trailers (in the headers, when the server answers with no body).
 //!
+//! A server-streaming method's reply is many messages: read as they come
+//! ([`ReplyReader`]), and kept one a line ([`GrpcBody::stream_reply`]),
+//! each with when it came. A client-streaming method is not called.
+//!
 //! The definitions are a `FileDescriptorSet`, from a server's reflection
 //! ([`reflection`]) or compiled from `.proto` files. An API keeps the files
 //! its service needs, so it is sent — on the desktop, in a page, by a
 //! teammate — without asking the server for them again.
 
 use crate::model::HttpMethod;
+use crate::response::StreamInfo;
 use crate::send::{PreparedRequest, strip_json_comments};
+use crate::sse::Event;
 use base64::Engine as _;
 use prost::Message as _;
 use prost_reflect::{
@@ -87,10 +93,78 @@ impl GrpcBody {
         let method = definitions
             .find(self.service.trim(), self.method.trim())
             .ok_or_else(|| format!("{} is not in the API's definitions", self.path()))?;
-        if method.is_client_streaming() || method.is_server_streaming() {
-            return Err(format!("{} streams; only unary calls are made", self.path()));
+        if method.is_client_streaming() {
+            return Err(format!(
+                "{} streams from the client; only unary and server-streaming calls are made",
+                self.path()
+            ));
         }
         Ok(method)
+    }
+
+    /// Whether the method it calls answers with a stream of messages.
+    pub fn server_streams(&self) -> bool {
+        self.definitions()
+            .and_then(Result::ok)
+            .and_then(|definitions| self.method_in(&definitions).ok())
+            .is_some_and(|method| method.is_server_streaming())
+    }
+
+    /// The type of the messages the method it calls answers with, by its
+    /// own name.
+    pub fn reply_type(&self) -> Option<String> {
+        let definitions = self.definitions()?.ok()?;
+        let method = self.method_in(&definitions).ok()?;
+        Some(method.output().name().to_string())
+    }
+
+    /// A reader of the replies of the server-streaming method it calls.
+    pub fn reply_reader(&self) -> Option<ReplyReader> {
+        let definitions = self.definitions()?.ok()?;
+        let method = self.method_in(&definitions).ok()?;
+        method.is_server_streaming().then(|| ReplyReader {
+            output: method.output(),
+            pending: Vec::new(),
+        })
+    }
+
+    /// A server-streaming reply as the history keeps it: its messages read
+    /// as JSON, one a line, and — when its pieces' arrivals were kept — when
+    /// each came. A message cut short by the stream's end is left out.
+    /// `Err` says why a message cannot be read.
+    pub fn stream_reply(
+        &self,
+        body: &[u8],
+        stream: Option<&StreamInfo>,
+    ) -> Result<(Vec<u8>, Option<StreamInfo>), String> {
+        let mut reader = self
+            .reply_reader()
+            .ok_or("the method does not stream, or the API has no definitions for it")?;
+        let mut messages: Vec<Event> = Vec::new();
+        let mut from = 0;
+        for &(end, at) in stream.map(|stream| stream.arrivals.as_slice()).unwrap_or_default() {
+            let end = (end as usize).min(body.len());
+            if end > from {
+                messages.extend(reader.feed(&body[from..end], Some(at)));
+                from = end;
+            }
+        }
+        messages.extend(reader.feed(&body[from..], None));
+        let mut kept = Vec::new();
+        let mut arrivals = Vec::new();
+        for message in messages {
+            if message.event == UNREADABLE {
+                return Err(message.data);
+            }
+            kept.extend_from_slice(message.data.as_bytes());
+            kept.push(b'\n');
+            arrivals.push((kept.len() as u64, message.at.unwrap_or_default()));
+        }
+        let stream = stream.map(|stream| StreamInfo {
+            arrivals,
+            ended: stream.ended.clone(),
+        });
+        Ok((kept, stream))
     }
 
     /// The request as it goes out: the message, its templates already run
@@ -151,6 +225,68 @@ pub fn switched_body(body: &str, from: HttpMethod, to: HttpMethod) -> String {
         .to_body(),
         (true, false) => GrpcBody::read(body).message,
         _ => body.to_string(),
+    }
+}
+
+/// The type of the event a message that cannot be read becomes, its data
+/// why.
+pub const UNREADABLE: &str = "unreadable";
+
+/// Reads a server-streaming reply as it comes: each message, once all of
+/// it is in, as an event of its type whose data is the message as one
+/// line of JSON.
+pub struct ReplyReader {
+    output: MessageDescriptor,
+    /// The bytes of a message not all in yet.
+    pending: Vec<u8>,
+}
+
+impl ReplyReader {
+    /// The messages `piece` completes; `at` is when it came.
+    pub fn feed(&mut self, piece: &[u8], at: Option<u64>) -> Vec<Event> {
+        self.pending.extend_from_slice(piece);
+        let mut events = Vec::new();
+        while let Some(head) = self.pending.get(..5) {
+            let length = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
+            if head[0] != 0 {
+                self.pending.clear();
+                events.push(unreadable("the server sent a compressed message".into(), at));
+                break;
+            }
+            if self.pending.len() < 5 + length {
+                break;
+            }
+            let message: Vec<u8> = self.pending.drain(..5 + length).skip(5).collect();
+            let output = &self.output;
+            let read = DynamicMessage::decode(output.clone(), message.as_slice())
+                .map_err(|error| format!("the reply is not a {}: {error}", output.full_name()))
+                .and_then(|message| {
+                    let options = SerializeOptions::new().skip_default_fields(false);
+                    message
+                        .serialize_with_options(serde_json::value::Serializer, &options)
+                        .map(|value| value.to_string())
+                        .map_err(|error| error.to_string())
+                });
+            events.push(match read {
+                Ok(data) => Event {
+                    event: output.name().to_string(),
+                    data,
+                    at,
+                    ..Default::default()
+                },
+                Err(why) => unreadable(why, at),
+            });
+        }
+        events
+    }
+}
+
+fn unreadable(why: String, at: Option<u64>) -> Event {
+    Event {
+        event: UNREADABLE.into(),
+        data: why,
+        at,
+        ..Default::default()
     }
 }
 
@@ -278,9 +414,10 @@ pub struct MethodInfo {
     pub method: String,
     pub input: String,
     pub output: String,
-    /// A client- or server-streaming method, which a unary call cannot
-    /// make.
-    pub streaming: bool,
+    /// It takes a stream of messages: it is not called.
+    pub client_streaming: bool,
+    /// It answers with a stream of messages.
+    pub server_streaming: bool,
 }
 
 /// The services and messages of `.proto` files, compiled.
@@ -324,7 +461,8 @@ impl Definitions {
                     method: method.name().to_string(),
                     input: method.input().full_name().to_string(),
                     output: method.output().full_name().to_string(),
-                    streaming: method.is_client_streaming() || method.is_server_streaming(),
+                    client_streaming: method.is_client_streaming(),
+                    server_streaming: method.is_server_streaming(),
                 })
             })
             .collect()
@@ -626,7 +764,8 @@ pub(crate) mod tests {
     /// `message Item { string name = 1; int64 count = 2; Kind kind = 3; repeated string tags = 4; Item parent = 5; }`,
     /// `enum Kind { BOOK = 0; FOOD = 1; }`,
     /// `message Ask { string id = 1; }`,
-    /// `service Store { rpc Get(Ask) returns (Item); rpc Watch(Ask) returns (stream Item); }`.
+    /// `service Store { rpc Get(Ask) returns (Item); rpc Watch(Ask) returns (stream Item);`
+    /// `rpc Upload(stream Ask) returns (Item); }`.
     fn file() -> FileDescriptorProto {
         let optional = Label::Optional;
         FileDescriptorProto {
@@ -683,6 +822,13 @@ pub(crate) mod tests {
                         server_streaming: Some(true),
                         ..Default::default()
                     },
+                    MethodDescriptorProto {
+                        name: Some("Upload".into()),
+                        input_type: Some(".shop.Ask".into()),
+                        output_type: Some(".shop.Item".into()),
+                        client_streaming: Some(true),
+                        ..Default::default()
+                    },
                 ],
                 ..Default::default()
             }],
@@ -724,9 +870,9 @@ pub(crate) mod tests {
         assert_eq!(
             methods
                 .iter()
-                .map(|m| (m.method.as_str(), m.streaming))
+                .map(|m| (m.method.as_str(), m.client_streaming, m.server_streaming))
                 .collect::<Vec<_>>(),
-            [("Get", false), ("Watch", true)]
+            [("Get", false, false), ("Watch", false, true), ("Upload", true, false)]
         );
         assert_eq!(
             (methods[0].input.as_str(), methods[0].output.as_str()),
@@ -766,7 +912,7 @@ pub(crate) mod tests {
         let wrong = |call: &GrpcBody, message: &str| call.request(message).expect_err("refused");
         assert!(wrong(&body("Get"), r#"{"nope": 1}"#).contains("is not a shop.Ask"));
         assert!(wrong(&body("Get"), "{").contains("is not a shop.Ask"));
-        assert!(wrong(&body("Watch"), "{}").contains("streams"));
+        assert!(wrong(&body("Upload"), "{}").contains("streams from the client"));
         assert!(wrong(&body(""), "{}").contains("choose"));
         assert!(wrong(&body("Gone"), "{}").contains("/shop.Store/Gone is not"));
         let bare = GrpcBody {
@@ -775,6 +921,44 @@ pub(crate) mod tests {
             ..Default::default()
         };
         assert!(wrong(&bare, "{}").contains("no gRPC definitions"));
+    }
+
+    /// A server-streaming reply is read a message at a time, whatever the
+    /// pieces it comes in, and kept one a line with when each came.
+    #[test]
+    fn a_streamed_reply_is_read_as_it_comes() {
+        let watch = body("Watch");
+        assert!(watch.server_streams() && !body("Get").server_streams());
+        assert!(body("Get").reply_reader().is_none());
+        let item = |name: &[u8]| frame(&[&[0x0a, name.len() as u8][..], name].concat());
+        let wire = [item(b"a"), item(b"bc")].concat();
+        let mut reader = watch.reply_reader().expect("a reader");
+        let (first, rest) = wire.split_at(4);
+        assert!(reader.feed(first, Some(1)).is_empty(), "not all of it yet");
+        let read = reader.feed(rest, Some(9));
+        assert_eq!(
+            read.iter().map(|e| (e.event.as_str(), e.at)).collect::<Vec<_>>(),
+            [("Item", Some(9)), ("Item", Some(9))]
+        );
+        let first: Value = serde_json::from_str(&read[0].data).expect("JSON");
+        assert_eq!(first["name"], "a");
+        assert!(!read[0].data.contains('\n'), "one line");
+
+        let stream = StreamInfo {
+            arrivals: vec![(8, 10), (wire.len() as u64, 30)],
+            ended: crate::response::StreamEnd::Stopped,
+        };
+        let cut = [&wire[..], &item(b"zz")[..3]].concat();
+        let (kept, kept_stream) = watch.stream_reply(&cut, Some(&stream)).expect("read");
+        let lines: Vec<&str> = std::str::from_utf8(&kept).expect("text").lines().collect();
+        assert_eq!(lines.len(), 2, "the message cut short is left out");
+        let kept_stream = kept_stream.expect("a stream");
+        assert_eq!(
+            kept_stream.arrivals.iter().map(|(_, at)| *at).collect::<Vec<_>>(),
+            [10, 30]
+        );
+        assert_eq!(kept_stream.arrivals[1].0, kept.len() as u64);
+        assert!(watch.stream_reply(&frame(&[0xff]), None).is_err());
     }
 
     #[test]
@@ -895,7 +1079,7 @@ pub(crate) mod tests {
         collected.add(&files[0]).expect("once");
         assert!(collected.missing().is_empty());
         let definitions = collected.definitions().expect("definitions");
-        assert_eq!(definitions.methods().len(), 2);
+        assert_eq!(definitions.methods().len(), 3);
         assert_eq!(
             reflection::wanted(vec!["grpc.reflection.v1.ServerReflection".into(), "shop.Store".into()]),
             ["shop.Store"]

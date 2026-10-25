@@ -397,7 +397,7 @@ where
         limit: body_limit,
         watch,
     } = reading;
-    let watched = watch.filter(|_| sse::is_event_stream(&headers) && !encoded);
+    let watched = watch.filter(|_| (sse::is_event_stream(&headers) || request.streams) && !encoded);
     let (raw, truncated, trailers, stream) = match watched {
         Some(watch) => {
             (watch.progress)(Progress::Head {
