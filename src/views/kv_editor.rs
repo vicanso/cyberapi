@@ -42,6 +42,9 @@ pub struct KvOptions {
     /// Rows offered ready made, name and a start of the value: the
     /// headers one types most.
     pub presets: &'static [(&'static str, &'static str)],
+    /// A line of the list as text, shown while the text is empty (#43):
+    /// `name: value` when not given.
+    pub example: &'static str,
 }
 
 struct Row {
@@ -357,11 +360,15 @@ impl KvEditor {
         }
         let text = kv_text(&self.list(cx));
         let hints = self.hints.clone();
+        let example = match self.options.example {
+            "" => "name: value",
+            example => example,
+        };
         let text = cx.new(|cx| {
             let mut text = EditorState::new(window, cx)
                 .language("text")
                 .soft_wrap(true)
-                .placeholder(t!("editor.bulk_placeholder").to_string())
+                .placeholder(example)
                 .default_value(text);
             if let Some(source) = &hints {
                 template_hints::complete_in(&mut text, source);

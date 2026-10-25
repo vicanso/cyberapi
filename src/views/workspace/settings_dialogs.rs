@@ -3,7 +3,7 @@
 //! Save is clicked; a viewer reads them and closes.
 
 use super::auth_editor::{AuthEditor, AuthFor};
-use super::request_editor::COMMON_HEADERS;
+use super::request_editor::{COMMON_HEADERS, HEADER_EXAMPLE};
 use crate::states::WorkspaceState;
 use crate::views::kv_editor::{KvEditor, KvOptions};
 use crate::views::name_dialog::ok_button;
@@ -89,6 +89,7 @@ pub fn open_folder_settings(workspace: &Entity<WorkspaceState>, id: ItemId, wind
     let headers = cx.new(|cx| {
         let options = KvOptions {
             presets: &COMMON_HEADERS,
+            example: HEADER_EXAMPLE,
             ..Default::default()
         };
         KvEditor::new(&folder.settings.headers, options, window, cx).hints(hints)

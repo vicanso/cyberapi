@@ -50,6 +50,9 @@ pub(super) const COMMON_HEADERS: [(&str, &str); 7] = [
     ("X-Requested-With", "XMLHttpRequest"),
 ];
 
+/// A header list's line as text, for its bulk editor (#43).
+pub(super) const HEADER_EXAMPLE: &str = "Accept: application/json";
+
 /// The editor column's share of what the tree leaves, as the presets set
 /// it (F4.14).
 pub const EDITOR_SHARES: [f32; 3] = [0.3, 0.5, 0.7];
@@ -278,11 +281,21 @@ impl RequestEditor {
             window,
             cx,
         );
-        let query = kv(&request.query, KvOptions::default(), Some(&hints), window, cx);
+        let query = kv(
+            &request.query,
+            KvOptions {
+                example: "page: 1",
+                ..Default::default()
+            },
+            Some(&hints),
+            window,
+            cx,
+        );
         let headers = kv(
             &request.headers,
             KvOptions {
                 presets: &COMMON_HEADERS,
+                example: HEADER_EXAMPLE,
                 ..Default::default()
             },
             Some(&hints),
