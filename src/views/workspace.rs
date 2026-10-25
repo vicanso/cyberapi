@@ -2,6 +2,7 @@
 //! its response side by side in resizable columns (F14.5), and the pins and
 //! the selected request the title bar shows.
 
+mod assertions_editor;
 mod auth_editor;
 mod event_stream;
 mod import_dialog;

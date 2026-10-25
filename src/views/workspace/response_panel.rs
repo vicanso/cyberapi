@@ -525,6 +525,8 @@ impl ResponsePanel {
             })
             .collect();
         let sending = api.sending_since();
+        // A1: how many of the API's assertions this answer holds up to.
+        let tally = api.checks().map(|outcomes| cyberapi_core::assertions::tally(&outcomes));
         // An event stream coming: its status, how much of it, whether it
         // is being stopped.
         let live = api
@@ -643,6 +645,27 @@ impl ResponsePanel {
                     ),
                     None => body_size(response),
                 });
+                // A1: green when every one held; the assertions on a click.
+                let checked = tally.map(|(passed, total)| {
+                    let color = if passed == total {
+                        cx.theme().green
+                    } else {
+                        cx.theme().danger
+                    };
+                    let workspace = self.workspace.downgrade();
+                    div()
+                        .id("response-assertions")
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| {
+                            let _ = workspace.update(cx, |workspace, cx| {
+                                workspace.set_tab(cyberapi_core::prefs::RequestTab::Assertions, cx)
+                            });
+                        })
+                        .child(pill(
+                            t!("assertions.passed", passed = passed, total = total).to_string(),
+                            color,
+                        ))
+                });
                 h_flex()
                     .gap_3()
                     .items_center()
@@ -650,6 +673,7 @@ impl ResponsePanel {
                     .child(status)
                     .child(div().text_color(muted).child(format_duration(response.latency)))
                     .children(size.map(|size| div().text_color(muted).child(size)))
+                    .children(checked)
                     .into_any_element()
             }
             (None, None) => div().into_any_element(),

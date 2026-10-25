@@ -24,6 +24,7 @@
 
 use super::{Load, WorkspaceState, run_store};
 use crate::this_build;
+use cyberapi_core::assertions::{self, Assertion, Outcomes};
 use cyberapi_core::auth::Auth;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::graphql_schema::Schema;
@@ -42,6 +43,7 @@ use futures::channel::{mpsc, oneshot};
 use gpui_kit::{App, AppContext as _, Context, EventEmitter, Task, WeakEntity};
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
@@ -197,7 +199,16 @@ pub struct ApiState {
     /// The gRPC definitions the body keeps, read once for the descriptors
     /// it keeps: what the view draws asks for them every frame.
     own_grpc: RefCell<Option<(String, Option<Arc<GrpcDefinitions>>)>>,
+    /// A1: the shown response's body read as JSON, once for each response:
+    /// every keystroke in an assertion checks it again.
+    checked_json: RefCell<Option<(String, Option<Arc<serde_json::Value>>)>>,
+    /// A1: the last outcomes; the editor and the panel ask for them every
+    /// frame.
+    checks: RefCell<Option<Checks>>,
 }
+
+/// A1: outcomes, with the response and the assertions they came of.
+type Checks = (String, Vec<Assertion>, Rc<Outcomes>);
 
 impl EventEmitter<ApiEvent> for ApiState {}
 
@@ -244,6 +255,8 @@ impl ApiState {
             asking_schema: None,
             loading_grpc: None,
             own_grpc: RefCell::new(None),
+            checked_json: RefCell::new(None),
+            checks: RefCell::new(None),
         };
         state.load_history(cx);
         state
@@ -434,6 +447,53 @@ impl ApiState {
             self.request.auth = auth;
             self.save_later(cx);
         }
+    }
+
+    /// A1: what the API's answers are checked against.
+    pub fn set_assertions(&mut self, assertions: Vec<Assertion>, cx: &mut Context<Self>) {
+        if self.request.assertions != assertions {
+            self.request.assertions = assertions;
+            self.save_later(cx);
+        }
+    }
+
+    /// A1: how the shown response holds up to the API's assertions as they
+    /// are now. `None` with no response, while one streams in, or with no
+    /// assertion on.
+    pub fn checks(&self) -> Option<Rc<Outcomes>> {
+        if self.live.is_some() {
+            return None;
+        }
+        let response = self.shown_response()?;
+        let assertions = &self.request.assertions;
+        if !assertions.iter().any(|assertion| assertion.enabled) {
+            return None;
+        }
+        if let Some((id, of, outcomes)) = &*self.checks.borrow()
+            && id == &response.id
+            && of == assertions
+        {
+            return Some(outcomes.clone());
+        }
+        let json = if assertions::reads_json(assertions) {
+            self.json_of(response)
+        } else {
+            None
+        };
+        let outcomes = Rc::new(assertions::check_all(assertions, response, json.as_deref()));
+        *self.checks.borrow_mut() = Some((response.id.clone(), assertions.clone(), outcomes.clone()));
+        Some(outcomes)
+    }
+
+    fn json_of(&self, response: &HttpResponse) -> Option<Arc<serde_json::Value>> {
+        if let Some((id, json)) = &*self.checked_json.borrow()
+            && id == &response.id
+        {
+            return json.clone();
+        }
+        let json = response.body_json().map(Arc::new);
+        *self.checked_json.borrow_mut() = Some((response.id.clone(), json.clone()));
+        json
     }
 
     /// #71: the API's own sending settings.

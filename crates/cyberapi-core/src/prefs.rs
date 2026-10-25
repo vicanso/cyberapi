@@ -456,6 +456,8 @@ pub enum RequestTab {
     Query,
     Headers,
     Auth,
+    /// What its answers are checked against (A1).
+    Assertions,
     /// The API's own sending settings (#71).
     Settings,
 }
@@ -466,11 +468,18 @@ impl RequestTab {
     /// its message and metadata, and no query.
     pub fn for_request(request: &HttpRequest) -> &'static [Self] {
         if request.method == HttpMethod::Grpc {
-            &[Self::Body, Self::Headers, Self::Auth, Self::Settings]
+            &[Self::Body, Self::Headers, Self::Auth, Self::Assertions, Self::Settings]
         } else if request.has_body_tab() {
-            &[Self::Body, Self::Query, Self::Headers, Self::Auth, Self::Settings]
+            &[
+                Self::Body,
+                Self::Query,
+                Self::Headers,
+                Self::Auth,
+                Self::Assertions,
+                Self::Settings,
+            ]
         } else {
-            &[Self::Query, Self::Headers, Self::Auth, Self::Settings]
+            &[Self::Query, Self::Headers, Self::Auth, Self::Assertions, Self::Settings]
         }
     }
 
@@ -480,6 +489,7 @@ impl RequestTab {
             Self::Query => "query",
             Self::Headers => "header",
             Self::Auth => "auth",
+            Self::Assertions => "assertions",
             Self::Settings => "settings",
         }
     }
@@ -490,6 +500,7 @@ impl RequestTab {
             "query" => Some(Self::Query),
             "header" => Some(Self::Headers),
             "auth" => Some(Self::Auth),
+            "assertions" => Some(Self::Assertions),
             "settings" => Some(Self::Settings),
             _ => None,
         }
@@ -653,12 +664,17 @@ mod tests {
                 RequestTab::Body,
                 RequestTab::Headers,
                 RequestTab::Auth,
+                RequestTab::Assertions,
                 RequestTab::Settings
             ]
         );
-        // An API's own settings (#71) are kept as the tab it was on.
+        // An API's own settings (#71) are kept as the tab it was on, and its
+        // assertions (A1).
         prefs.set_tab(&api, &post, RequestTab::Settings);
         assert_eq!(prefs.tab(&api, &post), RequestTab::Settings);
+        prefs.set_tab(&api, &get, RequestTab::Assertions);
+        assert_eq!(prefs.tabs.get(&api).map(String::as_str), Some("assertions"));
+        assert_eq!(prefs.tab(&api, &get), RequestTab::Assertions);
     }
 
     /// A frame on a monitor, not zoomed.

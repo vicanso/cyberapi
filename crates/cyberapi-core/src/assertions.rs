@@ -148,21 +148,34 @@ pub enum Problem {
     NoTarget,
 }
 
+/// The longest found value a check says it saw, in characters.
+const SHOWN: usize = 200;
+
 /// The value found, in the forms the comparisons need.
-enum Found {
-    Text(String),
+enum Found<'a> {
+    Text(std::borrow::Cow<'a, str>),
     Number(f64),
     Json(Value),
 }
 
-impl Found {
-    /// As shown: a JSON string without its quotes, anything else as JSON.
-    fn shown(&self) -> String {
+impl Found<'_> {
+    /// As compared: a JSON string without its quotes, anything else as
+    /// JSON.
+    fn text(&self) -> std::borrow::Cow<'_, str> {
         match self {
-            Self::Text(text) => text.clone(),
-            Self::Number(number) => number_text(*number),
-            Self::Json(Value::String(text)) => text.clone(),
-            Self::Json(value) => value.to_string(),
+            Self::Text(text) => std::borrow::Cow::Borrowed(text),
+            Self::Number(number) => number_text(*number).into(),
+            Self::Json(Value::String(text)) => std::borrow::Cow::Borrowed(text),
+            Self::Json(value) => value.to_string().into(),
+        }
+    }
+
+    /// As said: its start, when long.
+    fn shown(&self) -> String {
+        let text = self.text();
+        match text.char_indices().nth(SHOWN) {
+            Some((end, _)) => format!("{}…", &text[..end]),
+            None => text.into_owned(),
         }
     }
 
@@ -170,7 +183,8 @@ impl Found {
         match self {
             Self::Number(number) => Some(*number),
             Self::Json(Value::Number(number)) => number.as_f64(),
-            Self::Json(Value::String(text)) | Self::Text(text) => text.trim().parse().ok(),
+            Self::Json(Value::String(text)) => text.trim().parse().ok(),
+            Self::Text(text) => text.trim().parse().ok(),
             Self::Json(_) => None,
         }
     }
@@ -185,8 +199,9 @@ fn number_text(number: f64) -> String {
     }
 }
 
-/// Checks `assertion` against `response`.
-pub fn check(assertion: &Assertion, response: &HttpResponse) -> Result<Checked, Problem> {
+/// Checks `assertion` against `response`, whose body read as JSON is `json`
+/// (`None` when it is no JSON): read once for every check of it.
+pub fn check(assertion: &Assertion, response: &HttpResponse, json: Option<&Value>) -> Result<Checked, Problem> {
     let Some(status) = response.status else {
         return Err(Problem::NoResponse);
     };
@@ -200,10 +215,7 @@ pub fn check(assertion: &Assertion, response: &HttpResponse) -> Result<Checked, 
         }
         Subject::Latency => Some(Found::Number(response.latency.as_millis() as f64)),
         Subject::Size => Some(Found::Number(response.size() as f64)),
-        Subject::Body => {
-            let body = String::from_utf8_lossy(&response.body).into_owned();
-            (!body.is_empty()).then_some(Found::Text(body))
-        }
+        Subject::Body => (!response.body.is_empty()).then(|| Found::Text(String::from_utf8_lossy(&response.body))),
         Subject::Header => {
             let name = assertion.target.trim();
             let values: Vec<&str> = response
@@ -212,11 +224,11 @@ pub fn check(assertion: &Assertion, response: &HttpResponse) -> Result<Checked, 
                 .filter(|(header, _)| header.eq_ignore_ascii_case(name))
                 .map(|(_, value)| value.as_str())
                 .collect();
-            (!values.is_empty()).then(|| Found::Text(values.join(", ")))
+            (!values.is_empty()).then(|| Found::Text(values.join(", ").into()))
         }
         Subject::Json => {
-            let doc = response.body_json().ok_or(Problem::NotJson)?;
-            let matches = crate::json_filter::filter(&doc, &assertion.target).map_err(Problem::Path)?;
+            let doc = json.ok_or(Problem::NotJson)?;
+            let matches = crate::json_filter::filter(doc, &assertion.target).map_err(Problem::Path)?;
             match matches {
                 Value::Array(mut found) if found.len() == 1 => found.pop().map(Found::Json),
                 Value::Array(found) if found.is_empty() => None,
@@ -244,7 +256,7 @@ fn compare(op: Op, found: Option<&Found>, expected: &str) -> Result<bool, Proble
         Op::NotContains => !contains(found, expected),
         Op::Matches => regex::Regex::new(expected)
             .map_err(|error| Problem::Pattern(error.to_string().lines().last().unwrap_or_default().into()))?
-            .is_match(&found.shown()),
+            .is_match(&found.text()),
         Op::Less | Op::Greater => {
             let wanted: f64 = expected.parse().map_err(|_| Problem::NotANumber)?;
             match found.number() {
@@ -295,7 +307,7 @@ fn contains(found: &Found, expected: &str) -> bool {
     match found {
         Found::Json(Value::Array(items)) => items.iter().any(|item| equals(&Found::Json(item.clone()), expected)),
         Found::Json(Value::Object(fields)) => fields.contains_key(expected),
-        found => found.shown().contains(expected),
+        found => found.text().contains(expected),
     }
 }
 
@@ -314,18 +326,30 @@ fn json_type(found: &Found) -> &'static str {
     }
 }
 
-/// Every enabled assertion's outcome, with its place in the list.
-pub fn check_all(assertions: &[Assertion], response: &HttpResponse) -> Vec<(usize, Result<Checked, Problem>)> {
+/// What [`check_all`] answers: each enabled assertion's place in the list
+/// and its outcome.
+pub type Outcomes = Vec<(usize, Result<Checked, Problem>)>;
+
+/// Whether any enabled assertion looks in the body's JSON: only then is
+/// the body read so.
+pub fn reads_json(assertions: &[Assertion]) -> bool {
+    assertions
+        .iter()
+        .any(|assertion| assertion.enabled && assertion.subject == Subject::Json)
+}
+
+/// Every enabled assertion's outcome, `json` as for [`check`].
+pub fn check_all(assertions: &[Assertion], response: &HttpResponse, json: Option<&Value>) -> Outcomes {
     assertions
         .iter()
         .enumerate()
         .filter(|(_, assertion)| assertion.enabled)
-        .map(|(index, assertion)| (index, check(assertion, response)))
+        .map(|(index, assertion)| (index, check(assertion, response, json)))
         .collect()
 }
 
 /// How many of `outcomes` held, of how many.
-pub fn tally(outcomes: &[(usize, Result<Checked, Problem>)]) -> (usize, usize) {
+pub fn tally(outcomes: &Outcomes) -> (usize, usize) {
     let passed = outcomes
         .iter()
         .filter(|(_, outcome)| matches!(outcome, Ok(Checked { passed: true, .. })))
@@ -361,7 +385,8 @@ mod tests {
             expected: expected.into(),
             ..Default::default()
         };
-        check(&assertion, &response())
+        let response = response();
+        check(&assertion, &response, response.body_json().as_ref())
     }
 
     fn passes(subject: Subject, target: &str, op: Op, expected: &str) -> bool {
@@ -449,15 +474,23 @@ mod tests {
             op: Op::Exists,
             ..Default::default()
         };
-        assert_eq!(check(&path, &text), Err(Problem::NotJson));
+        assert_eq!(check(&path, &text, text.body_json().as_ref()), Err(Problem::NotJson));
         let body = Assertion {
             subject: Subject::Body,
             op: Op::Contains,
             expected: "lai".into(),
             ..Default::default()
         };
-        assert!(check(&body, &text).expect("checked").passed);
-        assert_eq!(check(&body, &HttpResponse::default()), Err(Problem::NoResponse));
+        assert!(check(&body, &text, None).expect("checked").passed);
+        assert_eq!(check(&body, &HttpResponse::default(), None), Err(Problem::NoResponse));
+        // A long value is said by its start.
+        let long = HttpResponse {
+            status: Some(200),
+            body: "x".repeat(500).into_bytes(),
+            ..Default::default()
+        };
+        let checked = check(&body, &long, None).expect("checked");
+        assert_eq!(checked.actual.map(|actual| actual.chars().count()), Some(SHOWN + 1));
     }
 
     #[test]
@@ -477,9 +510,10 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let outcomes = check_all(&assertions, &response());
+        let outcomes = check_all(&assertions, &response(), None);
         assert_eq!(outcomes.iter().map(|(index, _)| *index).collect::<Vec<_>>(), [0, 2]);
         assert_eq!(tally(&outcomes), (1, 2));
+        assert!(!reads_json(&assertions));
     }
 
     /// Kept in the request; a request with none writes nothing of them, as

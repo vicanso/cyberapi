@@ -74,6 +74,8 @@ pub struct RequestEditor {
     graphql: GraphQlFields,
     /// #71: the API's own sending settings.
     settings: Entity<super::request_settings::RequestSettingsView>,
+    /// A1: what its answers are checked against.
+    assertions: Entity<super::assertions_editor::AssertionsEditor>,
     /// The response whose GraphQL errors the query marks, and the query it
     /// was sent with (#70).
     marked: Option<(String, String)>,
@@ -310,6 +312,10 @@ impl RequestEditor {
             let api = api.clone();
             cx.new(|cx| super::request_settings::RequestSettingsView::new(api, window, cx))
         };
+        let assertions = {
+            let api = api.clone();
+            cx.new(|cx| super::assertions_editor::AssertionsEditor::new(api, window, cx))
+        };
         let mut subscriptions = vec![
             cx.observe(&api, |this, _, cx| {
                 this.follow_sending(cx);
@@ -437,6 +443,7 @@ impl RequestEditor {
             query,
             headers,
             auth,
+            assertions,
             ticker: None,
             json_problem: None,
             json_tree,
@@ -887,6 +894,10 @@ impl RequestEditor {
         self.settings = {
             let api = self.api.clone();
             cx.new(|cx| super::request_settings::RequestSettingsView::new(api, window, cx))
+        };
+        self.assertions = {
+            let api = self.api.clone();
+            cx.new(|cx| super::assertions_editor::AssertionsEditor::new(api, window, cx))
         };
         self.auth = {
             let (api, workspace) = (self.api.clone(), self.workspace.clone());
@@ -1404,6 +1415,11 @@ impl RequestEditor {
                 RequestTab::Headers => (t!("editor.headers"), count(&request.headers)),
                 // #66: one when it signs in itself.
                 RequestTab::Auth => (t!("editor.auth"), usize::from(request.auth.signs())),
+                // A1: how many are on.
+                RequestTab::Assertions => (
+                    t!("editor.assertions"),
+                    request.assertions.iter().filter(|assertion| assertion.enabled).count(),
+                ),
                 // #71: how many it sets of its own.
                 RequestTab::Settings => (t!("editor.settings"), overridden(&request.settings)),
             };
@@ -1745,6 +1761,7 @@ impl Render for RequestEditor {
                 .child(self.headers.clone())
                 .into_any_element(),
             RequestTab::Settings => self.settings.clone().into_any_element(),
+            RequestTab::Assertions => self.assertions.clone().into_any_element(),
             RequestTab::Auth => div()
                 .id("request-auth")
                 .size_full()
