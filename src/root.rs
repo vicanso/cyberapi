@@ -5,7 +5,8 @@ use crate::i18n;
 use crate::states::{AppEvent, AppStore, Route, WorkspaceState};
 use crate::views::{
     DashboardView, WorkspaceView, follow_update, open_accounts_dialog, open_cookies_dialog, open_mcp_dialog,
-    open_password_dialog, open_settings, open_shortcuts_dialog, open_teams_dialog, open_variables_dialog, update_chip,
+    open_password_dialog, open_project_auth, open_settings, open_shortcuts_dialog, open_teams_dialog,
+    open_variables_dialog, update_chip,
 };
 use cyberapi_core::model::VariableCategory;
 #[cfg(not(target_family = "wasm"))]
@@ -444,6 +445,18 @@ impl CyberApi {
                                     }
                                 },
                             ))
+                        })
+                        // #66: beside the global headers, the other thing
+                        // every API of the project takes.
+                        .item({
+                            let workspace = workspace.clone();
+                            PopupMenuItem::new(t!("project_auth.menu").to_string())
+                                .icon(Icons::KeyRound)
+                                .on_click(move |_, window, cx| {
+                                    if let Some(workspace) = workspace.upgrade() {
+                                        open_project_auth(&workspace, window, cx);
+                                    }
+                                })
                         }),
                         workspace,
                         cx,

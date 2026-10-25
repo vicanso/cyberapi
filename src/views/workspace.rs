@@ -12,6 +12,7 @@ mod request_editor;
 mod request_settings;
 mod response_panel;
 mod schema_browser;
+mod settings_dialogs;
 mod tree_panel;
 
 use crate::APP_NAME;
@@ -201,6 +202,7 @@ fn new_item(
 }
 
 pub use import_dialog::{open_import_dialog, open_import_project_dialog};
+pub use settings_dialogs::open_project_auth;
 
 /// F10.5: the cURL command on the clipboard as a new API in `parent`, opened.
 /// The clipboard is read here, when the reader pastes or picks the menu

@@ -3,7 +3,7 @@
 //! everything it edits goes to the API's `ApiState`.
 
 // The action, named apart from the `Send` trait.
-use super::auth_editor::AuthEditor;
+use super::auth_editor::{AuthEditor, AuthFor};
 use super::{KEY_CONTEXT, Send as SendAction, method_color};
 use crate::json_view_local::JsonView;
 use crate::states::{ApiEvent, ApiState, AppStore, WorkspaceState};
@@ -40,7 +40,7 @@ use std::time::Duration;
 
 /// The headers one types most, offered in the header list's menu: the
 /// name, and the value's usual start.
-const COMMON_HEADERS: [(&str, &str); 7] = [
+pub(super) const COMMON_HEADERS: [(&str, &str); 7] = [
     ("Content-Type", "application/json"),
     ("Accept", "application/json"),
     ("Authorization", "Bearer "),
@@ -290,8 +290,8 @@ impl RequestEditor {
             cx,
         );
         let auth = {
-            let (api, hints) = (api.clone(), hints.clone());
-            cx.new(|cx| AuthEditor::new(api, hints, window, cx))
+            let (api, workspace) = (api.clone(), workspace.clone());
+            cx.new(|cx| AuthEditor::new(AuthFor::Api(api), workspace, window, cx))
         };
         let settings = {
             let api = api.clone();
@@ -870,8 +870,8 @@ impl RequestEditor {
             cx.new(|cx| super::request_settings::RequestSettingsView::new(api, window, cx))
         };
         self.auth = {
-            let (api, hints) = (self.api.clone(), self.hints.clone());
-            cx.new(|cx| AuthEditor::new(api, hints, window, cx))
+            let (api, workspace) = (self.api.clone(), self.workspace.clone());
+            cx.new(|cx| AuthEditor::new(AuthFor::Api(api), workspace, window, cx))
         };
         self.grpc_message = grpc_message_state(&request, &self.hints, window, cx);
         let watching = Self::watch_grpc(&self.grpc_message, window, cx);
@@ -1707,7 +1707,14 @@ impl Render for RequestEditor {
                 .child(self.headers.clone())
                 .into_any_element(),
             RequestTab::Settings => self.settings.clone().into_any_element(),
-            RequestTab::Auth => self.auth.clone().into_any_element(),
+            RequestTab::Auth => div()
+                .id("request-auth")
+                .size_full()
+                .overflow_y_scrollbar()
+                .px_3()
+                .py_2()
+                .child(self.auth.clone())
+                .into_any_element(),
         };
         v_flex()
             .size_full()

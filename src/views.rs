@@ -56,7 +56,7 @@ pub use startup::StartupError;
 pub use teams_dialog::open_teams_dialog;
 pub use update_dialog::{follow_update, update_chip};
 pub use variables_dialog::open_variables_dialog;
-pub use workspace::{WorkspaceView, bind_keys as bind_workspace_keys, bind_mac_page_keys};
+pub use workspace::{WorkspaceView, bind_keys as bind_workspace_keys, bind_mac_page_keys, open_project_auth};
 
 use cyberapi_core::format::JSON_INDENT;
 use gpui_kit::component::input::TabSize;

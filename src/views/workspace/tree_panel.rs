@@ -4,6 +4,7 @@
 //! input into intent.
 
 use super::move_dialog::open_move_dialog;
+use super::settings_dialogs::open_folder_settings;
 use super::{
     NewApi, NewFolder, PasteCurl, confirm_delete, export, method_color, method_label, new_item, open_import_dialog,
     paste_curl,
@@ -1064,6 +1065,22 @@ fn item_menu(
                     }),
             )
         }
+    };
+    // #66: what a folder sets for its APIs; a viewer reads it.
+    let menu = match kind {
+        ItemKind::Folder => {
+            let (settings_state, settings_id) = (state.clone(), id.clone());
+            menu.item(
+                PopupMenuItem::new(t!("folder_settings.menu").to_string())
+                    .icon(Icons::KeyRound)
+                    .on_click(move |_, window, cx| {
+                        if let Some(workspace) = settings_state.upgrade() {
+                            open_folder_settings(&workspace, settings_id.clone(), window, cx);
+                        }
+                    }),
+            )
+        }
+        ItemKind::Api => menu,
     };
     if !editable {
         return menu;
