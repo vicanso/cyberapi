@@ -15,12 +15,15 @@
 //! with the holder of the one presented. Header values that are not UTF-8
 //! are read lossily instead of failing the request (#11). The connect
 //! timeout bounds resolving, connecting and TLS; the write and read timeouts
-//! together bound the exchange after that.
+//! together bound the exchange after that — but for an event stream someone
+//! watches (`HttpEngine::send_watched`), which is read for as long as it
+//! goes on, and ends when nothing came for the read timeout.
 
-use crate::{Exchange, HttpEngine, PreparedRequest, SendError, SendFuture, TargetPolicy};
+use crate::{Exchange, HttpEngine, PreparedRequest, Progress, SendError, SendFuture, TargetPolicy, Watch};
 use bytes::Bytes;
 use cyberapi_core::prefs::HttpVersion;
-use cyberapi_core::response::{HttpStats, RESPONSE_LIMIT};
+use cyberapi_core::response::{HttpStats, RESPONSE_LIMIT, StreamEnd, StreamInfo};
+use cyberapi_core::sse;
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -69,9 +72,24 @@ impl NativeEngine {
 
 impl HttpEngine for NativeEngine {
     fn send(&self, request: PreparedRequest) -> SendFuture {
-        let task = self
-            .runtime
-            .spawn(exchange(request, self.policy.clone(), self.body_limit));
+        self.spawned(request, None)
+    }
+
+    fn send_watched(&self, request: PreparedRequest, watch: Watch) -> SendFuture {
+        self.spawned(request, Some(watch))
+    }
+}
+
+impl NativeEngine {
+    fn spawned(&self, request: PreparedRequest, watch: Option<Watch>) -> SendFuture {
+        let task = self.runtime.spawn(exchange(
+            request,
+            self.policy.clone(),
+            Reading {
+                limit: self.body_limit,
+                watch,
+            },
+        ));
         let guard = AbortOnDrop(task.abort_handle());
         Box::pin(async move {
             let _guard = guard;
@@ -184,7 +202,14 @@ fn timed_out(phase: &str, seconds: u32) -> SendError {
     }
 }
 
-async fn exchange(request: PreparedRequest, policy: TargetPolicy, body_limit: usize) -> Result<Exchange, SendError> {
+/// How an answer's body is read: at most `limit` bytes of it, and an event
+/// stream as it comes when someone watches.
+struct Reading {
+    limit: usize,
+    watch: Option<Watch>,
+}
+
+async fn exchange(request: PreparedRequest, policy: TargetPolicy, reading: Reading) -> Result<Exchange, SendError> {
     let started = Instant::now();
     let timeouts = request.timeouts;
     let invalid = |message: String| SendError::Invalid { message };
@@ -290,10 +315,10 @@ async fn exchange(request: PreparedRequest, policy: TargetPolicy, body_limit: us
                 message: "the server did not agree to HTTP/2".to_string(),
             });
         }
-        over(tls, &request, &url, stats, started, h2, body_limit).await
+        over(tls, &request, &url, stats, started, h2, reading).await
     } else {
         let h2 = request.http_version == HttpVersion::Http2;
-        over(stream, &request, &url, stats, started, h2, body_limit).await
+        over(stream, &request, &url, stats, started, h2, reading).await
     }
 }
 
@@ -305,7 +330,7 @@ async fn over<S>(
     mut stats: HttpStats,
     started: Instant,
     h2: bool,
-    body_limit: usize,
+    reading: Reading,
 ) -> Result<Exchange, SendError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -324,6 +349,7 @@ where
         inner,
         timeline: timeline.clone(),
     });
+    let begun = Instant::now();
     let answer = async {
         // The connection runs on a task of its own, and both it and the
         // sender stay until the body is read.
@@ -355,22 +381,40 @@ where
             other => format!("{other:?}"),
         };
         let status = response.status().as_u16();
-        let headers: Vec<(String, String)> = response
-            .headers()
-            .iter()
-            .map(|(name, value)| {
-                (
-                    name.as_str().to_ascii_lowercase(),
-                    String::from_utf8_lossy(value.as_bytes()).into_owned(),
-                )
-            })
-            .collect();
-        let (raw, truncated, trailers) = read_body(response.into_body(), body_limit).await.map_err(http_error)?;
-        Ok::<_, SendError>((version, status, headers, raw, truncated, trailers))
+        let headers = pairs(response.headers());
+        Ok::<_, SendError>((response, _kept, version, status, headers))
     };
-    let (version, status, headers, raw, truncated, trailers) = timeout(limit, answer)
-        .await
-        .map_err(|_| timed_out("response", timeouts.write + timeouts.read))??;
+    let late = || timed_out("response", timeouts.write + timeouts.read);
+    let (response, _kept, version, status, headers) = timeout(limit, answer).await.map_err(|_| late())??;
+    // An event stream someone watches is read as it comes, for as long as
+    // it goes on (a compressed one could not be shown as it comes); any
+    // other body within what is left of the time.
+    let encoded = headers
+        .iter()
+        .any(|(name, value)| name == "content-encoding" && !value.trim().eq_ignore_ascii_case("identity"));
+    let Reading {
+        limit: body_limit,
+        watch,
+    } = reading;
+    let watched = watch.filter(|_| sse::is_event_stream(&headers) && !encoded);
+    let (raw, truncated, trailers, stream) = match watched {
+        Some(watch) => {
+            (watch.progress)(Progress::Head {
+                status,
+                headers: headers.clone(),
+            });
+            let (raw, trailers, stream) = read_stream(response.into_body(), body_limit, &watch, timeouts.read).await;
+            (raw, stream.ended == StreamEnd::Cut, trailers, Some(stream))
+        }
+        None => {
+            let left = limit.saturating_sub(begun.elapsed());
+            let (raw, truncated, trailers) = timeout(left, read_body(response.into_body(), body_limit))
+                .await
+                .map_err(|_| late())?
+                .map_err(http_error)?;
+            (raw, truncated, trailers, None)
+        }
+    };
     let ended = Instant::now();
 
     let line = timeline.lock().map(|line| line.clone()).unwrap_or_default();
@@ -416,7 +460,73 @@ where
         stats,
         truncated,
         trailers,
+        stream,
     })
+}
+
+/// Header names in lower case with their values, in the order they came;
+/// a value that is not UTF-8 read lossily (#11).
+fn pairs(map: &http::HeaderMap) -> Vec<(String, String)> {
+    map.iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_ascii_lowercase(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect()
+}
+
+/// An event stream, read as it comes: each piece told to `watch`, until
+/// the server ends it, nothing comes for `quiet` seconds, the body reaches
+/// `limit` or the reader stops it. What came, the trailers, and when and
+/// how.
+async fn read_stream(
+    mut body: Incoming,
+    limit: usize,
+    watch: &Watch,
+    quiet: u32,
+) -> (Vec<u8>, Vec<(String, String)>, StreamInfo) {
+    let head = Instant::now();
+    let mut raw = Vec::new();
+    let mut trailers = Vec::new();
+    let mut arrivals = Vec::new();
+    let mut stop = watch.stop.clone();
+    let ended = loop {
+        let frame = tokio::select! {
+            _ = &mut stop => break StreamEnd::Stopped,
+            frame = timeout(seconds(quiet), body.frame()) => frame,
+        };
+        let frame = match frame {
+            Err(_) => break StreamEnd::Quiet { seconds: quiet },
+            Ok(None) => break StreamEnd::Closed,
+            Ok(Some(Err(error))) => {
+                break StreamEnd::Failed {
+                    message: error.to_string(),
+                };
+            }
+            Ok(Some(Ok(frame))) => frame,
+        };
+        match frame.into_data() {
+            Ok(data) if !data.is_empty() => {
+                let room = limit - raw.len();
+                let piece = &data[..data.len().min(room)];
+                raw.extend_from_slice(piece);
+                arrivals.push((raw.len() as u64, head.elapsed().as_millis() as u64));
+                (watch.progress)(Progress::Body(piece.to_vec()));
+                if data.len() > room {
+                    break StreamEnd::Cut;
+                }
+            }
+            Ok(_) => {}
+            Err(frame) => {
+                if let Ok(fields) = frame.into_trailers() {
+                    trailers.extend(pairs(&fields));
+                }
+            }
+        }
+    };
+    (raw, trailers, StreamInfo { arrivals, ended })
 }
 
 /// The body, up to `limit` bytes, whether there was more, and the trailers
@@ -438,12 +548,7 @@ async fn read_body(mut body: Incoming, limit: usize) -> Result<(Vec<u8>, bool, V
             Err(frame) => frame,
         };
         if let Ok(fields) = frame.into_trailers() {
-            trailers.extend(fields.iter().map(|(name, value)| {
-                (
-                    name.as_str().to_ascii_lowercase(),
-                    String::from_utf8_lossy(value.as_bytes()).into_owned(),
-                )
-            }));
+            trailers.extend(pairs(&fields));
         }
     }
     Ok((raw, false, trailers))

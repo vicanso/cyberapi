@@ -15,8 +15,11 @@ publish = false
 cyberapi-core = { workspace = true }
 cyberapi-http = { workspace = true }
 cyberapi-store = { workspace = true }
+# An event stream's answer, read as the bridge streams it.
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+web-time = "1.1.0"
 
 [lints.clippy]
 unwrap_used = "deny"

@@ -13,6 +13,10 @@
 //! (#2) — rather than left to finish unseen. A second click within 200 ms of
 //! the first is taken as a double click and ignored.
 //!
+//! An answer that is an event stream (`cyberapi_core::sse`) shows as it
+//! comes ([`LiveStream`]); sending again then stops it, and what came is
+//! the answer, kept like any other.
+//!
 //! A gRPC call (`cyberapi_core::grpc`) is encoded with definitions: from the
 //! server's reflection, or `.proto` files on the desktop. The project keeps
 //! the ones loaded for an address, for every API sent there; the API keeps
@@ -25,9 +29,13 @@ use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody};
 use cyberapi_core::model::{ApiSetting, ContentType, HttpMethod, HttpRequest, KvParam};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::send::PrepareError;
+use cyberapi_core::sse;
 use cyberapi_core::{CollectionId, ItemId};
+use cyberapi_http::{Progress, Watch, stop_signal};
 use cyberapi_service::{SendFailure, Sender};
 use cyberapi_store::StoreError;
+use futures::StreamExt as _;
+use futures::channel::{mpsc, oneshot};
 use gpui_kit::{App, AppContext as _, Context, EventEmitter, Task, WeakEntity};
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -95,7 +103,49 @@ pub struct GrpcDefinitions {
 struct Sending {
     started: Instant,
     _task: Task<()>,
+    /// What an event stream tells as it comes, taken in.
+    _follow: Task<()>,
+    /// Ends an event stream: what came is the answer.
+    stop: Option<oneshot::Sender<()>>,
 }
+
+/// An event stream's answer as it comes.
+pub struct LiveStream {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    pub events: Vec<sse::Event>,
+    parser: sse::Parser,
+    /// When the head came: an event's time is after it.
+    head: Instant,
+    /// The reader asked it to end; the answer is on its way.
+    pub stopping: bool,
+}
+
+impl LiveStream {
+    fn new(status: u16, headers: Vec<(String, String)>) -> Self {
+        Self {
+            status,
+            headers,
+            body: Vec::new(),
+            events: Vec::new(),
+            parser: sse::Parser::new(),
+            head: Instant::now(),
+            stopping: false,
+        }
+    }
+
+    fn take(&mut self, piece: &[u8]) {
+        self.body.extend_from_slice(piece);
+        let at = self.head.elapsed().as_millis() as u64;
+        let events = self.parser.feed(piece, Some(at));
+        self.events.extend(events);
+    }
+}
+
+/// How long the live stream waits between redraws: pieces that come
+/// faster are taken in together.
+const LIVE_FRAME: Duration = Duration::from_millis(50);
 
 pub struct ApiState {
     sender: Sender,
@@ -110,6 +160,8 @@ pub struct ApiState {
     saved: Option<HttpRequest>,
     save_task: Option<Task<()>>,
     sending: Option<Sending>,
+    /// The event stream being answered, while it comes.
+    live: Option<LiveStream>,
     last_send: Option<Instant>,
     /// Newest first (F7.9). Shared, so the panel takes one for each frame
     /// without copying its body.
@@ -163,6 +215,7 @@ impl ApiState {
             saved: Some(api.request.clone()),
             save_task: None,
             sending: None,
+            live: None,
             last_send: None,
             responses: Vec::new(),
             history: Load::Loading,
@@ -409,31 +462,90 @@ impl ApiState {
             return;
         }
         self.last_send = Some(Instant::now());
-        if self.sending.take().is_some() {
+        if let Some(sending) = self.sending.as_mut() {
+            // An event stream that has begun ends, and is kept; any other
+            // request is dropped.
+            match self.live.as_mut() {
+                Some(live) => {
+                    if let Some(stop) = sending.stop.take() {
+                        let _ = stop.send(());
+                        live.stopping = true;
+                    }
+                }
+                None => self.sending = None,
+            }
             cx.notify();
             return;
         }
         self.save_now(cx);
-        let call = cyberapi_service::send(
+        let (told, mut telling) = mpsc::unbounded::<Progress>();
+        let (stop, stopped) = stop_signal();
+        let watch = Watch {
+            progress: Arc::new(move |progress| {
+                let _ = told.unbounded_send(progress);
+            }),
+            stop: stopped,
+        };
+        let call = cyberapi_service::send_watched(
             self.sender(cx),
             self.collection.clone(),
             self.api.clone(),
             self.request.clone(),
             picked_file,
+            Some(watch),
         );
         let task = cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(call).await;
             let _ = this.update(cx, |this, cx| this.answered(result, cx));
         });
+        // What comes in a frame's time is taken in together.
+        let follow = cx.spawn(async move |this, cx| {
+            while let Some(first) = telling.next().await {
+                let mut told = vec![first];
+                while let Ok(more) = telling.try_recv() {
+                    told.push(more);
+                }
+                if this.update(cx, |this, cx| this.told(told, cx)).is_err() {
+                    return;
+                }
+                cx.background_executor().timer(LIVE_FRAME).await;
+            }
+        });
         self.sending = Some(Sending {
             started: Instant::now(),
             _task: task,
+            _follow: follow,
+            stop: Some(stop),
         });
+        cx.notify();
+    }
+
+    /// The event stream being answered, while it comes.
+    pub fn live(&self) -> Option<&LiveStream> {
+        self.live.as_ref()
+    }
+
+    fn told(&mut self, told: Vec<Progress>, cx: &mut Context<Self>) {
+        // Told after the answer came: it is shown already.
+        if self.sending.is_none() {
+            return;
+        }
+        for progress in told {
+            match progress {
+                Progress::Head { status, headers } => self.live = Some(LiveStream::new(status, headers)),
+                Progress::Body(piece) => {
+                    if let Some(live) = self.live.as_mut() {
+                        live.take(&piece);
+                    }
+                }
+            }
+        }
         cx.notify();
     }
 
     fn answered(&mut self, result: Result<HttpResponse, SendFailure>, cx: &mut Context<Self>) {
         self.sending = None;
+        self.live = None;
         match result {
             Ok(response) => {
                 // F7.5: an answer that names its file is saved as it

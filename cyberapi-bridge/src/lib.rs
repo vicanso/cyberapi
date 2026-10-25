@@ -13,6 +13,7 @@
 //! | `GET /v1/session` | who is signed in, or 401 |
 //! | `POST /v1/store` | one store call (`cyberapi_store_bridge::Call`) |
 //! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5), a few of an account's at a time ([`in_flight`]) |
+//! | `POST /v1/send/stream` | the same, an event stream's answer told as it comes (NDJSON of `StreamReply`); the page leaving stops it |
 //! | `POST /v1/mcp` | an AI assistant's tools, signed in with an account's MCP token ([`mcp`]) |
 //! | anything else | the page's files ([`static_files`]) |
 //!
@@ -42,10 +43,13 @@ use axum::http::{Extensions, HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use cyberapi_core::directory::{valid_account_name, valid_password};
-use cyberapi_http::{HttpEngine, PreparedRequest, SendError};
+use cyberapi_http::{HttpEngine, PreparedRequest, SendError, Watch, stop_signal};
 use cyberapi_store::{Refusal, StoreError};
-use cyberapi_store_bridge::{BearerSession, Call, LoginForm, SEND_PATH, STORE_PATH, SendReply, dispatch};
+use cyberapi_store_bridge::{
+    BearerSession, Call, LoginForm, SEND_PATH, SEND_STREAM_PATH, STORE_PATH, SendReply, StreamReply, dispatch,
+};
 use cyberapi_store_sql::{Acceptance, Account, NewAccount, SqlStore};
+use futures::StreamExt as _;
 use in_flight::InFlight;
 use serde::{Deserialize, Serialize};
 use static_files::Mounted;
@@ -152,6 +156,7 @@ impl Bridge {
             .route(&at("/v1/session"), get(session))
             .route(&at(STORE_PATH), post(store_call))
             .route(&at(SEND_PATH), post(send_request))
+            .route(&at(SEND_STREAM_PATH), post(send_watched))
             .route(
                 &at("/v1/mcp"),
                 post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed),
@@ -496,6 +501,82 @@ async fn store_call(State(bridge): State<Bridge>, headers: HeaderMap, Json(call)
     let storage = bridge.inner.store.scoped(account.id.clone());
     let directory = bridge.inner.store.directory(account.id);
     Json(dispatch(&storage, directory.as_ref(), call).await).into_response()
+}
+
+/// Sends as [`send_request`] does, an event stream's answer told to the page
+/// as it comes: one `StreamReply` a line, the stream's head and pieces,
+/// then the exchange, its body left out when it came in pieces. The page
+/// leaving drops the answer, and with it the request.
+async fn send_watched(
+    State(bridge): State<Bridge>,
+    headers: HeaderMap,
+    Json(request): Json<PreparedRequest>,
+) -> Response {
+    let account = match signed_in(&bridge.inner.store, &headers).await {
+        Ok(account) => account,
+        Err(status) => return status.into_response(),
+    };
+    let Some(sending) = bridge.inner.in_flight.start(&account.id) else {
+        let busy = SendError::Busy {
+            limit: in_flight::PER_ACCOUNT,
+        };
+        return ndjson(axum::body::Body::from(StreamReply::Done(SendReply::Err(busy)).line()));
+    };
+    let (lines, answer) = futures::channel::mpsc::unbounded::<Vec<u8>>();
+    let told = lines.clone();
+    // The page stops a stream by leaving, never by this.
+    let (keep_going, stop) = stop_signal();
+    let watch = Watch {
+        progress: Arc::new(move |progress| {
+            let _ = told.unbounded_send(StreamReply::Progress(progress).line());
+        }),
+        stop,
+    };
+    let engine = bridge.inner.engine.clone();
+    let task = tokio::spawn(async move {
+        let _sending = sending;
+        let _keep_going = keep_going;
+        let reply = match engine.send_watched(request, watch).await {
+            Ok(mut exchange) => {
+                if exchange.stream.is_some() {
+                    exchange.body.clear();
+                }
+                SendReply::Ok(Box::new(exchange))
+            }
+            Err(error) => SendReply::Err(error),
+        };
+        let _ = lines.unbounded_send(StreamReply::Done(reply).line());
+    });
+    // Goes with the answer: a page that leaves ends the request.
+    let request = AbortOnDrop(task.abort_handle());
+    let body = answer.map(move |line| {
+        let _ = &request;
+        Ok::<_, std::convert::Infallible>(line)
+    });
+    ndjson(axum::body::Body::from_stream(body))
+}
+
+/// An NDJSON answer that goes as it comes: a proxy that buffers answers
+/// (nginx) passes this one on so too.
+fn ndjson(body: axum::body::Body) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/x-ndjson"),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::HeaderName::from_static("x-accel-buffering"), "no"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Ends a spawned task when its owner goes.
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Sends for a signed-in account, a few of its requests at a time. A

@@ -2,6 +2,7 @@
 //! headers and cookies, where the time went, and the history.
 
 // The action, named apart from the `Send` trait.
+use super::event_stream::EventStream;
 use super::{KEY_CONTEXT, Send as SendAction};
 use crate::json_view_local::JsonView;
 use crate::states::{ApiState, AppStore};
@@ -12,9 +13,10 @@ use cyberapi_core::grpc::GrpcStatus;
 use cyberapi_core::media::{self, HEX_LIMIT, ImageType};
 use cyberapi_core::model::{ContentType, HttpMethod};
 use cyberapi_core::response::{
-    BodyKind, DISPLAY_LIMIT, HttpResponse, RESPONSE_LIMIT, StatusLevel, clip_text, format_duration, format_size,
-    status_level, status_text, unwrappable_line,
+    BodyKind, DISPLAY_LIMIT, HttpResponse, RESPONSE_LIMIT, StatusLevel, StreamEnd, clip_text, format_duration,
+    format_size, status_level, status_text, unwrappable_line,
 };
+use cyberapi_core::sse;
 use cyberapi_http::SendError;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
@@ -94,6 +96,11 @@ pub struct ResponsePanel {
     body_view: Option<(String, JsonView)>,
     /// Whether the body wraps long lines (F14.7).
     wrap: bool,
+    /// An event stream's events: the shown response's, or the live one's.
+    events: Entity<EventStream>,
+    /// The event stream shown as it came rather than as events, bound to
+    /// one response.
+    stream_raw: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -125,6 +132,10 @@ impl ResponsePanel {
             }),
         ];
         let json_tree = cx.new(JsonTree::new);
+        let events = {
+            let api = api.clone();
+            cx.new(|cx| EventStream::new(api, cx))
+        };
         let mut panel = Self {
             api,
             body,
@@ -141,6 +152,8 @@ impl ResponsePanel {
             json_tree,
             body_view: None,
             wrap,
+            events,
+            stream_raw: None,
             _subscriptions: subscriptions,
         };
         panel.sync(window, cx);
@@ -180,7 +193,16 @@ impl ResponsePanel {
     /// its view wants it in, changes: indented for the pretty view, as it
     /// came for the raw one (#51) and the tree, which reads the same JSON.
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An event stream's events: the one coming now, or the shown one's.
+        let live = self.api.read(cx).live().is_some();
         let shown = self.api.read(cx).shown_response().cloned();
+        match &shown {
+            _ if live => self.events.update(cx, |events, cx| events.show_live(cx)),
+            Some(response) if shows_events(response) => {
+                self.events.update(cx, |events, cx| events.show(response, cx));
+            }
+            _ => {}
+        }
         let id = shown.as_ref().map(|response| response.id.clone());
         let changed = id != self.shown;
         self.shown = id.clone();
@@ -275,6 +297,11 @@ impl ResponsePanel {
             })
             .collect();
         let sending = api.sending_since();
+        // An event stream coming: its status, how much of it, whether it
+        // is being stopped.
+        let live = api
+            .live()
+            .map(|live| (live.status, live.events.len(), live.body.len(), live.stopping));
         let shown_id = response.map(|r| r.id.clone());
         let this = cx.entity().downgrade();
         let history_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
@@ -308,16 +335,30 @@ impl ResponsePanel {
                 )
         };
         let status: AnyElement = match (sending, response) {
-            (Some(started), _) => h_flex()
-                .gap_2()
-                .items_center()
-                .child(Spinner::new().small())
-                .child(div().text_sm().text_color(muted).child(format!(
-                    "{} {:.1}s",
-                    t!("response.sending"),
-                    started.elapsed().as_secs_f32()
-                )))
-                .into_any_element(),
+            (Some(started), _) => {
+                let waited = started.elapsed().as_secs_f32();
+                let text = match live {
+                    Some((.., true)) => t!("response.stream_stopping").to_string(),
+                    Some((_, events, size, false)) => format!(
+                        "{} · {} · {waited:.1}s",
+                        crate::i18n::counted("response.events_count", events),
+                        format_size(size as u64)
+                    ),
+                    None => format!("{} {waited:.1}s", t!("response.sending")),
+                };
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .when_some(live, |this, (status, ..)| {
+                        this.child(pill(
+                            format!("{status} {}", status_text(status)),
+                            self.status_color(status, cx),
+                        ))
+                    })
+                    .child(Spinner::new().small())
+                    .child(div().text_sm().text_color(muted).child(text))
+                    .into_any_element()
+            }
             (None, Some(response)) => {
                 // A gRPC call's own status, where it gave one.
                 let shown = match (response.grpc_status(), response.status) {
@@ -325,30 +366,9 @@ impl ResponsePanel {
                     (None, Some(code)) => Some((format!("{code} {}", status_text(code)), self.status_color(code, cx))),
                     (None, None) => None,
                 };
-                let status: AnyElement = match shown {
-                    Some((text, color)) => h_flex()
-                        .h(px(22.))
-                        .px_2()
-                        .items_center()
-                        .rounded_full()
-                        .bg(color.opacity(0.16))
-                        .font_semibold()
-                        .text_color(color)
-                        .child(text)
-                        .into_any_element(),
-                    None => {
-                        let color = cx.theme().danger;
-                        h_flex()
-                            .h(px(22.))
-                            .px_2()
-                            .items_center()
-                            .rounded_full()
-                            .bg(color.opacity(0.16))
-                            .font_semibold()
-                            .text_color(color)
-                            .child(t!("response.failed").to_string())
-                            .into_any_element()
-                    }
+                let status = match shown {
+                    Some((text, color)) => pill(text, color),
+                    None => pill(t!("response.failed").to_string(), cx.theme().danger),
                 };
                 // F7.2: the size, and how much smaller it came. A request
                 // that failed has no answer to measure.
@@ -429,10 +449,37 @@ impl ResponsePanel {
             .when(copies, |bar| {
                 let page = this_build::opens_html() && response.content_type().to_ascii_lowercase().contains("html");
                 let json = response.body_kind() == BodyKind::Json;
+                let stream = shows_events(response);
+                let raw = self.stream_raw.as_ref() == Some(&response.id);
                 bar.suffix(
                     h_flex()
                         .gap_0p5()
                         .items_center()
+                        // An event stream as events, or as it came.
+                        .when(stream, |this| {
+                            this.child(
+                                [t!("response.events"), t!("editor.json_view_raw")]
+                                    .into_iter()
+                                    .enumerate()
+                                    .fold(
+                                        ButtonGroup::new("response-stream-view").compact().small().outline(),
+                                        |group, (index, label)| {
+                                            group.child(
+                                                Button::new(("response-stream-view", index))
+                                                    .label(label.to_string())
+                                                    .selected((index == 1) == raw),
+                                            )
+                                        },
+                                    )
+                                    .on_click(cx.listener(|this, picks: &Vec<usize>, _, cx| {
+                                        this.stream_raw = match picks.first() {
+                                            Some(1) => this.shown.clone(),
+                                            _ => None,
+                                        };
+                                        cx.notify();
+                                    })),
+                            )
+                        })
                         .when(json, |this| {
                             this.child(response_view_switch(
                                 "response-json-view",
@@ -613,23 +660,25 @@ impl ResponsePanel {
             .notice
             .as_ref()
             .map(|why| note(t!("response.grpc_unread", reason = why).to_string(), Vec::new(), cx));
-        if redirect.is_none()
-            && cut.is_none()
-            && unkept.is_none()
-            && graphql.is_none()
-            && grpc.is_none()
-            && unread.is_none()
-        {
+        // How an event stream ended, when its server did not end it (one cut
+        // at the limit is said by `cut`).
+        let stream_end = response.stream.as_ref().and_then(|stream| match &stream.ended {
+            StreamEnd::Stopped => Some(t!("response.stream_stopped").to_string()),
+            StreamEnd::Quiet { seconds } => Some(t!("response.stream_quiet", seconds = seconds).to_string()),
+            StreamEnd::Failed { message } => Some(t!("response.stream_failed", reason = message).to_string()),
+            StreamEnd::Closed | StreamEnd::Cut => None,
+        });
+        let stream_end = stream_end.map(|text| note(text, Vec::new(), cx));
+        let notes: Vec<AnyElement> = [unkept, graphql, grpc, unread, stream_end, redirect, cut]
+            .into_iter()
+            .flatten()
+            .collect();
+        if notes.is_empty() {
             return body;
         }
         v_flex()
             .size_full()
-            .children(unkept)
-            .children(graphql)
-            .children(grpc)
-            .children(unread)
-            .children(redirect)
-            .children(cut)
+            .children(notes)
             .child(div().flex_1().min_h_0().child(body))
             .into_any_element()
     }
@@ -674,6 +723,9 @@ impl ResponsePanel {
         // 204, a HEAD: nothing to show, said rather than an empty editor.
         if response.body.is_empty() {
             return note(t!("response.no_body").to_string(), Vec::new(), cx);
+        }
+        if shows_events(response) && self.stream_raw.as_ref() != Some(&response.id) {
+            return self.events.clone().into_any_element();
         }
         match response.body_kind() {
             BodyKind::Json | BodyKind::Text => {
@@ -1197,6 +1249,25 @@ fn save_button(cx: &mut Context<ResponsePanel>) -> Button {
 }
 
 /// A line about the body, and what can be done with it.
+/// A status in its colour.
+fn pill(text: String, color: Hsla) -> AnyElement {
+    h_flex()
+        .h(px(22.))
+        .px_2()
+        .items_center()
+        .rounded_full()
+        .bg(color.opacity(0.16))
+        .font_semibold()
+        .text_color(color)
+        .child(text)
+        .into_any_element()
+}
+
+/// Whether a response's body shows as events: an event stream's, whole.
+fn shows_events(response: &HttpResponse) -> bool {
+    response.error.is_none() && response.body_omitted.is_none() && sse::is_event_stream(&response.headers)
+}
+
 fn note(text: String, buttons: Vec<Button>, cx: &mut Context<ResponsePanel>) -> AnyElement {
     h_flex()
         .p_3()
@@ -1214,7 +1285,10 @@ impl Render for ResponsePanel {
         let response = self.api.read(cx).shown_response().cloned();
         let sending = self.api.read(cx).sending_since().is_some();
         let summary = self.render_summary(response.as_deref(), cx);
+        let live = self.api.read(cx).live().is_some();
         let content: AnyElement = match &response {
+            // An event stream as it comes.
+            _ if live => self.events.clone().into_any_element(),
             Some(response) => {
                 let content = match self.tab {
                     ResponseTab::Body => self.render_cut_body(response, cx),

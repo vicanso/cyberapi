@@ -27,7 +27,7 @@ use cyberapi_core::response::{Exchange, HttpResponse};
 use cyberapi_core::send::{self, PrepareError, PreparedRequest};
 use cyberapi_core::template::{FileReader, Inputs};
 use cyberapi_core::{CollectionId, ItemId};
-use cyberapi_http::{HttpEngine, SendError};
+use cyberapi_http::{HttpEngine, SendError, Watch};
 use cyberapi_store::{Storage, StoreError};
 use snafu::Snafu;
 use std::sync::Arc;
@@ -83,6 +83,20 @@ pub async fn send(
     request: HttpRequest,
     picked_file: Option<String>,
 ) -> Result<HttpResponse, SendFailure> {
+    send_watched(sender, collection, api, request, picked_file, None).await
+}
+
+/// As [`send`]; an answer that is an event stream is told to `watch` as it
+/// comes (`HttpEngine::send_watched`), and kept with how it came once it
+/// ends or is stopped.
+pub async fn send_watched(
+    sender: Sender,
+    collection: CollectionId,
+    api: ItemId,
+    request: HttpRequest,
+    picked_file: Option<String>,
+    watch: Option<Watch>,
+) -> Result<HttpResponse, SendFailure> {
     let mut prepared = prepare(&sender, &collection, &request, picked_file, None).await?;
     let grpc = (request.method == HttpMethod::Grpc).then(|| GrpcBody::read(&request.body));
     // The jar's cookies go to each hop's own address. A Cookie the request
@@ -97,7 +111,10 @@ pub async fn send(
     let mut hops = 0;
     let (sent_to, answered) = loop {
         let sent_to = prepared.url.clone();
-        let answered = sender.engine.send(prepared.clone()).await;
+        let answered = match &watch {
+            Some(watch) => sender.engine.send_watched(prepared.clone(), watch.clone()).await,
+            None => sender.engine.send(prepared.clone()).await,
+        };
         let Ok(exchange) = &answered else {
             break (sent_to, answered);
         };
@@ -150,6 +167,7 @@ pub async fn send(
                 latency: floor(earlier + exchange.stats.total),
                 stats: exchange.stats,
                 truncated: exchange.truncated,
+                stream: exchange.stream,
                 ..Default::default()
             }
         }
@@ -777,6 +795,45 @@ mod tests {
         let unread = send_it(&call);
         assert_eq!(unread.body, grpc::frame(&[0xff]));
         assert!(unread.notice.is_some_and(|why| why.contains("not a shop.Ask")));
+    }
+
+    /// An event stream's arrivals and end are kept with its answer.
+    #[test]
+    fn a_streams_arrivals_and_end_are_kept() {
+        use cyberapi_core::response::{StreamEnd, StreamInfo};
+        let stream = StreamInfo {
+            arrivals: vec![(9, 4), (18, 60)],
+            ended: StreamEnd::Stopped,
+        };
+        let setup = setup(Ok(Exchange {
+            status: 200,
+            headers: vec![("content-type".into(), "text/event-stream".into())],
+            body: b"data: 0\n\ndata: 1\n\n".to_vec(),
+            stream: Some(stream.clone()),
+            ..Default::default()
+        }));
+        let api = new_api(&setup, "events");
+        let (_stop, stopped) = cyberapi_http::stop_signal();
+        let watch = Watch {
+            progress: Arc::new(|_| {}),
+            stop: stopped,
+        };
+        let request = HttpRequest {
+            uri: "https://api.test/events".into(),
+            ..Default::default()
+        };
+        let response = pollster::block_on(send_watched(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            api.clone(),
+            request,
+            None,
+            Some(watch),
+        ))
+        .expect("sent");
+        assert_eq!(response.stream.as_ref(), Some(&stream));
+        let kept = pollster::block_on(setup.storage.history().list(setup.collection.clone(), api)).expect("list");
+        assert_eq!(kept[0].stream.as_ref(), Some(&stream));
     }
 
     fn setup_refusing() -> Setup {

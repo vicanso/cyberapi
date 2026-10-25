@@ -1780,6 +1780,7 @@ dependencies = [
  "cyberapi-store",
  "cyberapi-store-bridge",
  "cyberapi-store-sql",
+ "futures",
  "getrandom 0.4.3",
  "hex",
  "http-body-util",
@@ -1865,6 +1866,7 @@ dependencies = [
  "bytes",
  "cyberapi-core",
  "flate2",
+ "futures",
  "http",
  "http-body-util",
  "hyper",
@@ -1924,8 +1926,10 @@ dependencies = [
  "cyberapi-core",
  "cyberapi-http",
  "cyberapi-store",
+ "futures",
  "serde",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]

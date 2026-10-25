@@ -21,6 +21,8 @@ cyberapi-service = { workspace = true }
 cyberapi-store = { workspace = true }
 cyberapi-store-bridge = { workspace = true }
 cyberapi-store-sql = { workspace = true }
+# A watched send's answer, streamed to the page as it comes.
+futures = { workspace = true }
 getrandom = "0.4.3"
 hex = "0.4.3"
 ipnet = "2.12.2"

@@ -25,6 +25,7 @@ pub mod redirect;
 pub mod response;
 pub mod search;
 pub mod send;
+pub mod sse;
 pub mod sync;
 pub mod template;
 pub mod template_hints;

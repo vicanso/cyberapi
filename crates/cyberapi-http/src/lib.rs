@@ -9,6 +9,12 @@
 //!
 //! Dropping the future cancels the request (#2: the old app's "abort" only
 //! dropped the answer while the request went on).
+//!
+//! An event stream (`text/event-stream`) can be watched instead
+//! ([`HttpEngine::send_watched`]): its head and each piece of its body are
+//! told as they come, and it is read until the server ends it, it goes
+//! quiet for the read timeout, it reaches the body limit or the reader
+//! stops it — what came by then is the exchange, with how it ended.
 
 #[cfg(not(target_family = "wasm"))]
 mod native;
@@ -20,10 +26,14 @@ pub use cyberapi_core::send::PreparedRequest;
 pub use native::NativeEngine;
 pub use policy::TargetPolicy;
 
+use futures::FutureExt as _;
+use futures::channel::oneshot;
+use futures::future::Shared;
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// Why there is no exchange. Each carries the underlying message; the kind
 /// says which step failed.
@@ -78,9 +88,49 @@ impl SendError {
 
 pub type SendFuture = Pin<Box<dyn Future<Output = Result<Exchange, SendError>> + Send + 'static>>;
 
+/// What a watched send tells as an event stream comes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Progress {
+    /// The answer is an event stream: its status and headers, before any
+    /// of its body.
+    Head {
+        status: u16,
+        headers: Vec<(String, String)>,
+    },
+    /// A piece of its body, as it came.
+    Body(#[serde(with = "cyberapi_core::send::base64_bytes")] Vec<u8>),
+}
+
+/// Fires when the reader wants an event stream ended: sent, or its sender
+/// dropped.
+pub type Stop = Shared<oneshot::Receiver<()>>;
+
+/// A [`Stop`], and what fires it.
+pub fn stop_signal() -> (oneshot::Sender<()>, Stop) {
+    let (sender, receiver) = oneshot::channel();
+    (sender, receiver.shared())
+}
+
+/// How a send is watched: told of an event stream as it comes, and asked
+/// to end it.
+#[derive(Clone)]
+pub struct Watch {
+    pub progress: Arc<dyn Fn(Progress) + Send + Sync>,
+    pub stop: Stop,
+}
+
 /// Sends prepared requests. Dropping the future cancels its request.
 pub trait HttpEngine: Send + Sync {
     fn send(&self, request: PreparedRequest) -> SendFuture;
+
+    /// As [`Self::send`]; an answer that is an event stream is told to
+    /// `watch` as it comes and read until it ends, goes quiet or is
+    /// stopped. An engine that cannot watch sends as `send` does.
+    fn send_watched(&self, request: PreparedRequest, watch: Watch) -> SendFuture {
+        let _ = watch;
+        self.send(request)
+    }
 }
 
 #[cfg(test)]

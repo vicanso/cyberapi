@@ -986,6 +986,7 @@ impl RequestEditor {
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let request = self.api.read(cx).request().clone();
         let sending = self.api.read(cx).sending_since();
+        let streaming = self.api.read(cx).live().is_some();
         let (env, _) = split_env_prefix(&request.uri);
         let env = env.map(str::to_string);
         let environments: Vec<(String, String)> = self
@@ -1186,12 +1187,17 @@ impl RequestEditor {
                 // tall once its own padding is in, and suffix is for an icon.
                 .child(
                     match sending {
+                        // An event stream coming is stopped, and kept.
                         Some(started) => Button::new("request-send")
                             .danger()
                             .small()
                             .label(format!(
                                 "{} {:.1}s",
-                                t!("editor.cancel_send"),
+                                if streaming {
+                                    t!("editor.stop_stream")
+                                } else {
+                                    t!("editor.cancel_send")
+                                },
                                 started.elapsed().as_secs_f32()
                             ))
                             .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),

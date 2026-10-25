@@ -12,6 +12,8 @@ publish = false
 # through the bridge); the engine is native only.
 [dependencies]
 cyberapi-core = { workspace = true }
+# The signal that stops a watched event stream.
+futures = { workspace = true }
 ipnet = "2.12.2"
 serde = { workspace = true }
 snafu = { workspace = true }

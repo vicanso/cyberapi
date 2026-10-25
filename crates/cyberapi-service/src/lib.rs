@@ -5,4 +5,4 @@
 pub mod backup;
 mod send;
 
-pub use send::{SendFailure, Sender, curl, introspect, reflect, send};
+pub use send::{SendFailure, Sender, curl, introspect, reflect, send, send_watched};

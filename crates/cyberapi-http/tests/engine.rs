@@ -3,13 +3,15 @@
 use bytes::Bytes;
 use cyberapi_core::model::HttpMethod;
 use cyberapi_core::prefs::{HttpVersion, Timeouts};
-use cyberapi_http::{HttpEngine, NativeEngine, PreparedRequest, SendError, TargetPolicy};
+use cyberapi_core::response::StreamEnd;
+use cyberapi_http::{HttpEngine, NativeEngine, PreparedRequest, Progress, SendError, TargetPolicy, Watch, stop_signal};
 use http_body_util::{BodyExt as _, Full};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use pretty_assertions::assert_eq;
 use std::io::Write as _;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
@@ -78,6 +80,128 @@ async fn serve() -> SocketAddr {
         }
     });
     address
+}
+
+/// An event stream server: `/events` sends three events 50 ms apart and
+/// ends; `/open` sends one and stays open, quiet.
+async fn serve_events() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let service = service_fn(|request: hyper::Request<hyper::body::Incoming>| async move {
+                    let open = request.uri().path() == "/open";
+                    let count = if open { 1 } else { 3 };
+                    let pieces = futures::stream::unfold(0, move |n| async move {
+                        if n == count {
+                            if open {
+                                std::future::pending::<()>().await;
+                            }
+                            return None;
+                        }
+                        if n > 0 {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                        let piece = hyper::body::Frame::data(Bytes::from(format!("data: {n}\n\n")));
+                        Some((Ok::<_, std::convert::Infallible>(piece), n + 1))
+                    });
+                    hyper::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(http_body_util::StreamBody::new(pieces))
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await;
+            });
+        }
+    });
+    address
+}
+
+/// A watch that keeps what it is told, and fires its stop after `stop_after`
+/// pieces of body, if given.
+fn watching(stop_after: Option<usize>) -> (Watch, Arc<Mutex<Vec<Progress>>>) {
+    let told = Arc::new(Mutex::new(Vec::new()));
+    let (stop, stopped) = stop_signal();
+    let stop = Mutex::new(Some(stop));
+    let kept = told.clone();
+    let progress = move |progress: Progress| {
+        let mut told = kept.lock().expect("told");
+        told.push(progress);
+        let pieces = told.iter().filter(|p| matches!(p, Progress::Body(_))).count();
+        if Some(pieces) == stop_after
+            && let Some(stop) = stop.lock().expect("stop").take()
+        {
+            let _ = stop.send(());
+        }
+    };
+    (
+        Watch {
+            progress: Arc::new(progress),
+            stop: stopped,
+        },
+        told,
+    )
+}
+
+/// A watched event stream is told as it comes and read to its end; one
+/// the reader stops, or that goes quiet for the read timeout, is what came
+/// by then. Unwatched, it is read as any body.
+#[tokio::test]
+async fn a_watched_event_stream_is_read_as_it_comes() {
+    let address = serve_events().await;
+    let (watch, told) = watching(None);
+    let exchange = engine()
+        .send_watched(get(address, "/events"), watch)
+        .await
+        .expect("an exchange");
+    assert_eq!(exchange.body, b"data: 0\n\ndata: 1\n\ndata: 2\n\n");
+    let stream = exchange.stream.expect("a stream");
+    assert_eq!(stream.ended, StreamEnd::Closed);
+    assert_eq!(
+        stream.arrivals.iter().map(|(end, _)| *end).collect::<Vec<_>>(),
+        [9, 18, 27]
+    );
+    assert!(stream.arrivals[2].1 >= 100, "{:?}", stream.arrivals);
+    let told = told.lock().expect("told").clone();
+    assert!(matches!(&told[0], Progress::Head { status: 200, .. }));
+    assert_eq!(
+        told[1..],
+        [
+            Progress::Body(b"data: 0\n\n".to_vec()),
+            Progress::Body(b"data: 1\n\n".to_vec()),
+            Progress::Body(b"data: 2\n\n".to_vec())
+        ]
+    );
+
+    let (watch, _) = watching(Some(1));
+    let stopped = engine()
+        .send_watched(get(address, "/open"), watch)
+        .await
+        .expect("an exchange");
+    assert_eq!(stopped.body, b"data: 0\n\n");
+    assert_eq!(stopped.stream.map(|s| s.ended), Some(StreamEnd::Stopped));
+
+    let (watch, _) = watching(None);
+    let quiet = PreparedRequest {
+        timeouts: Timeouts {
+            read: 1,
+            ..Timeouts::default()
+        }
+        .effective(),
+        ..get(address, "/open")
+    };
+    let started = Instant::now();
+    let quieted = engine().send_watched(quiet, watch).await.expect("an exchange");
+    assert_eq!(quieted.stream.map(|s| s.ended), Some(StreamEnd::Quiet { seconds: 1 }));
+    assert!(started.elapsed() < Duration::from_secs(3));
+
+    let unwatched = engine().send(get(address, "/events")).await.expect("an exchange");
+    assert_eq!((unwatched.body.len(), unwatched.stream), (27, None));
 }
 
 fn engine() -> NativeEngine {

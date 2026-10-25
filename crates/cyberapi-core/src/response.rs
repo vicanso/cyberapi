@@ -81,6 +81,37 @@ pub struct Exchange {
     /// case.
     #[serde(default)]
     pub trailers: Vec<(String, String)>,
+    /// An event stream read as it came (`crate::sse`): when its pieces came
+    /// and how it ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<StreamInfo>,
+}
+
+/// How an event stream's body came.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StreamInfo {
+    /// For each piece: the body's length once it came, and when, in
+    /// milliseconds after the head.
+    pub arrivals: Vec<(u64, u64)>,
+    pub ended: StreamEnd,
+}
+
+/// Why an event stream's body ends where it does.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum StreamEnd {
+    /// The server ended it.
+    #[default]
+    Closed,
+    /// The reader stopped it.
+    Stopped,
+    /// Nothing came for this many seconds: the read timeout.
+    Quiet { seconds: u32 },
+    /// It reached the most the engine reads ([`RESPONSE_LIMIT`]).
+    Cut,
+    /// The connection failed in the middle of it.
+    Failed { message: String },
 }
 
 /// One entry of an API's history (F7.9): an exchange, or why there was none.
@@ -118,6 +149,9 @@ pub struct HttpResponse {
     /// What the panel says above the body: why a gRPC reply is shown as the
     /// bytes it came as.
     pub notice: Option<String>,
+    /// An event stream's arrivals and end (`crate::sse`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<StreamInfo>,
 }
 
 /// How the id of an answer the history did not keep starts: no store gives
@@ -350,6 +384,7 @@ impl HttpResponse {
             body_omitted: Some(self.body.len() as u64),
             truncated: self.truncated,
             notice: self.notice.clone(),
+            stream: self.stream.clone(),
         }
     }
 

@@ -17,7 +17,11 @@
 //! Sending a request is the other half (`docs/architecture.md` §5, D5): the
 //! page prepares it with the shared pipeline and [`BridgeHttpEngine`] posts
 //! it to [`SEND_PATH`], where the bridge's engine sends it and answers with a
-//! [`SendReply`].
+//! [`SendReply`]. A watched send (`HttpEngine::send_watched`) goes to
+//! [`SEND_STREAM_PATH`] instead, whose answer comes as it goes: one
+//! [`StreamReply`] a line — an event stream's head and pieces, then the
+//! exchange. The page stops a stream by leaving: what came by then is the
+//! exchange.
 
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::cookie::Cookie;
@@ -28,14 +32,16 @@ use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
+use cyberapi_core::response::{StreamEnd, StreamInfo};
 use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
-use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, SendError, SendFuture};
+use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, Progress, SendError, SendFuture, Watch};
 use cyberapi_store::{
     AccountEdit, CollectionEdit, CollectionStore, CookieStore, DirectoryStore, HistoryStore, Imported, Inserted,
     NewCollection, NewVariable, PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
 };
+use futures::{Stream, StreamExt as _};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -54,6 +60,30 @@ pub use client::{
 pub const STORE_PATH: &str = "/v1/store";
 /// Where requests to send are posted.
 pub const SEND_PATH: &str = "/v1/send";
+
+/// Where a watched send goes; its answer is NDJSON, one [`StreamReply`] a
+/// line.
+pub const SEND_STREAM_PATH: &str = "/v1/send/stream";
+
+/// One line of a watched send's answer: what the engine told as the event
+/// stream came, then how the send ended — the exchange's body left out
+/// when it came in pieces.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StreamReply {
+    Progress(Progress),
+    Done(SendReply),
+}
+
+impl StreamReply {
+    /// The reply as its line.
+    pub fn line(&self) -> Vec<u8> {
+        // Strings, numbers and bytes as base64 cannot fail to serialize.
+        let mut line = serde_json::to_vec(self).unwrap_or_default();
+        line.push(b'\n');
+        line
+    }
+}
 
 /// What sending answers: the exchange, or why there was none. Boxed, the
 /// exchange is as big as the reason; the JSON is the same.
@@ -360,6 +390,24 @@ pub trait Transport: Send + Sync {
     /// the body, or why nothing came back.
     fn post(&self, path: &'static str, body: Vec<u8>)
     -> Pin<Box<dyn Future<Output = Result<Response, String>> + Send>>;
+
+    /// As [`Self::post`], the body answered as it comes. One that cannot
+    /// read it so answers it whole, as one piece.
+    fn post_stream(
+        &self,
+        path: &'static str,
+        body: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Streamed, String>> + Send>> {
+        let posted = self.post(path, body);
+        Box::pin(async move {
+            let response = posted.await?;
+            let body = response.body;
+            Ok(Streamed {
+                status: response.status,
+                pieces: Box::pin(futures::stream::once(async move { Ok(body) })),
+            })
+        })
+    }
 }
 
 /// What came back from the bridge.
@@ -367,6 +415,12 @@ pub trait Transport: Send + Sync {
 pub struct Response {
     pub status: u16,
     pub body: Vec<u8>,
+}
+
+/// What came back from the bridge, its body as it comes.
+pub struct Streamed {
+    pub status: u16,
+    pub pieces: Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send>>,
 }
 
 /// Every Store trait, through the bridge — the browser's side.
@@ -690,6 +744,133 @@ impl HttpEngine for BridgeHttpEngine {
             }
         })
     }
+
+    fn send_watched(&self, request: PreparedRequest, watch: Watch) -> SendFuture {
+        let transport = self.transport.clone();
+        Box::pin(async move {
+            let bridge = |message: String| SendError::Bridge { message };
+            let body = serde_json::to_vec(&request).map_err(|e| bridge(e.to_string()))?;
+            let mut streamed = transport.post_stream(SEND_STREAM_PATH, body).await.map_err(bridge)?;
+            if streamed.status != 200 {
+                let mut answer = Vec::new();
+                while let Some(Ok(piece)) = streamed.pieces.next().await {
+                    answer.extend(piece);
+                }
+                return Err(bridge(match streamed.status {
+                    401 => "not signed in".into(),
+                    status => format!("answered {status}: {}", String::from_utf8_lossy(&answer)),
+                }));
+            }
+            let mut told = Told::new();
+            let mut line = Vec::new();
+            let mut stop = watch.stop.clone();
+            loop {
+                let next = match futures::future::select(&mut stop, streamed.pieces.next()).await {
+                    futures::future::Either::Left(_) => return told.ended(StreamEnd::Stopped),
+                    futures::future::Either::Right((next, _)) => next,
+                };
+                let piece = match next {
+                    Some(Ok(piece)) => piece,
+                    Some(Err(message)) => return told.ended(StreamEnd::Failed { message }),
+                    None => {
+                        let message = "the bridge ended the answer early".to_string();
+                        return told.ended(StreamEnd::Failed { message });
+                    }
+                };
+                for byte in piece {
+                    if byte != b'\n' {
+                        line.push(byte);
+                        continue;
+                    }
+                    let reply: StreamReply =
+                        serde_json::from_slice(&std::mem::take(&mut line)).map_err(|e| bridge(e.to_string()))?;
+                    match reply {
+                        StreamReply::Progress(progress) => {
+                            told.add(&progress);
+                            (watch.progress)(progress);
+                        }
+                        StreamReply::Done(SendReply::Ok(mut exchange)) => {
+                            if exchange.stream.is_some() {
+                                exchange.body = told.body;
+                            }
+                            return Ok(*exchange);
+                        }
+                        StreamReply::Done(SendReply::Err(error)) => return Err(error),
+                    }
+                }
+            }
+        })
+    }
+}
+
+/// What a watched send was told so far: what the page keeps of an event
+/// stream it stops, or that breaks off, before the bridge's own account of
+/// it.
+struct Told {
+    /// When the send began: how long a stream it ends took.
+    started: web_time::Instant,
+    status: u16,
+    headers: Vec<(String, String)>,
+    /// When the head came; `None` before it did.
+    head: Option<web_time::Instant>,
+    body: Vec<u8>,
+    arrivals: Vec<(u64, u64)>,
+}
+
+impl Told {
+    fn new() -> Self {
+        Self {
+            started: web_time::Instant::now(),
+            status: 0,
+            headers: Vec::new(),
+            head: None,
+            body: Vec::new(),
+            arrivals: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, progress: &Progress) {
+        match progress {
+            Progress::Head { status, headers } => {
+                self.status = *status;
+                self.headers = headers.clone();
+                self.head = Some(web_time::Instant::now());
+            }
+            Progress::Body(piece) => {
+                self.body.extend_from_slice(piece);
+                let at = self.head.map_or(0, |head| head.elapsed().as_millis() as u64);
+                self.arrivals.push((self.body.len() as u64, at));
+            }
+        }
+    }
+
+    /// The exchange of a stream that ended here, before the bridge said
+    /// so; a send that had not begun one has none.
+    fn ended(self, ended: StreamEnd) -> Result<Exchange, SendError> {
+        if self.head.is_none() {
+            return Err(SendError::Bridge {
+                message: match ended {
+                    StreamEnd::Failed { message } => message,
+                    _ => "stopped".into(),
+                },
+            });
+        }
+        Ok(Exchange {
+            status: self.status,
+            headers: self.headers,
+            stats: cyberapi_core::response::HttpStats {
+                total: self.started.elapsed(),
+                ..Default::default()
+            },
+            body_size: self.body.len() as u64,
+            body: self.body,
+            stream: Some(StreamInfo {
+                arrivals: self.arrivals,
+                ended,
+            }),
+            ..Default::default()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -720,5 +901,110 @@ mod tests {
         let reply = Reply::Err(StoreError::NameRequired);
         let json = serde_json::to_string(&reply).expect("serialize");
         assert_eq!(serde_json::from_str::<Reply>(&json).expect("parse"), reply);
+    }
+
+    /// A bridge answering a watched send with these lines, then — when
+    /// `open` — nothing more, its stream left open.
+    struct Streaming {
+        lines: Vec<StreamReply>,
+        open: bool,
+    }
+
+    impl Transport for Streaming {
+        fn post(&self, _: &'static str, _: Vec<u8>) -> Pin<Box<dyn Future<Output = Result<Response, String>> + Send>> {
+            Box::pin(async { Err("not posted".to_string()) })
+        }
+
+        fn post_stream(
+            &self,
+            path: &'static str,
+            _: Vec<u8>,
+        ) -> Pin<Box<dyn Future<Output = Result<Streamed, String>> + Send>> {
+            assert_eq!(path, SEND_STREAM_PATH);
+            // A line split across pieces too.
+            let mut pieces: Vec<Result<Vec<u8>, String>> = Vec::new();
+            for line in &self.lines {
+                let line = line.line();
+                let (a, b) = line.split_at(line.len() / 2);
+                pieces.push(Ok(a.to_vec()));
+                pieces.push(Ok(b.to_vec()));
+            }
+            let open = self.open;
+            let pieces = futures::stream::iter(pieces).chain(futures::stream::once(async move {
+                if open {
+                    std::future::pending::<()>().await;
+                }
+                Err("closed".to_string())
+            }));
+            Box::pin(async move {
+                Ok(Streamed {
+                    status: 200,
+                    pieces: Box::pin(pieces),
+                })
+            })
+        }
+    }
+
+    fn watch() -> (
+        Watch,
+        Arc<std::sync::Mutex<Vec<Progress>>>,
+        futures::channel::oneshot::Sender<()>,
+    ) {
+        let told = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = told.clone();
+        let (stop, stopped) = cyberapi_http::stop_signal();
+        let watch = Watch {
+            progress: Arc::new(move |progress| kept.lock().expect("told").push(progress)),
+            stop: stopped,
+        };
+        (watch, told, stop)
+    }
+
+    /// The bridge's lines are told as they come; its exchange takes the
+    /// body the pieces made. Stopped before the bridge's last line, the
+    /// exchange is what came.
+    #[test]
+    fn a_watched_send_is_told_as_the_bridge_streams_it() {
+        let head = Progress::Head {
+            status: 200,
+            headers: vec![("content-type".into(), "text/event-stream".into())],
+        };
+        let pieces = [
+            Progress::Body(b"data: 0\n\n".to_vec()),
+            Progress::Body(b"data: 1\n\n".to_vec()),
+        ];
+        let stream = StreamInfo {
+            arrivals: vec![(9, 5), (18, 50)],
+            ended: StreamEnd::Closed,
+        };
+        let done = Exchange {
+            status: 200,
+            stream: Some(stream.clone()),
+            ..Default::default()
+        };
+        let mut lines = vec![StreamReply::Progress(head.clone())];
+        lines.extend(pieces.iter().cloned().map(StreamReply::Progress));
+        lines.push(StreamReply::Done(SendReply::Ok(Box::new(done))));
+        let engine = BridgeHttpEngine::new(Arc::new(Streaming { lines, open: false }));
+        let (watched, told, _stop) = watch();
+        let exchange =
+            futures::executor::block_on(engine.send_watched(PreparedRequest::default(), watched)).expect("an exchange");
+        assert_eq!(exchange.body, b"data: 0\n\ndata: 1\n\n");
+        assert_eq!(exchange.stream, Some(stream));
+        assert_eq!(told.lock().expect("told").len(), 3);
+
+        let lines = vec![StreamReply::Progress(head), StreamReply::Progress(pieces[0].clone())];
+        let engine = BridgeHttpEngine::new(Arc::new(Streaming { lines, open: true }));
+        let (watched, told, stop) = watch();
+        let sending = engine.send_watched(PreparedRequest::default(), watched);
+        let waiting = std::thread::spawn(move || futures::executor::block_on(sending));
+        while told.lock().expect("told").len() < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let _ = stop.send(());
+        let stopped = waiting.join().expect("joined").expect("an exchange");
+        assert_eq!((stopped.status, stopped.body.as_slice()), (200, &b"data: 0\n\n"[..]));
+        assert_eq!(stopped.stream.map(|stream| stream.ended), Some(StreamEnd::Stopped));
+        assert!(stopped.stats.total > std::time::Duration::ZERO, "how long it took");
     }
 }
