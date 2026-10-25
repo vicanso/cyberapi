@@ -393,6 +393,9 @@ async fn requests_are_saved(storage: &Storage) {
             enabled: false,
         }],
         auth: vec![],
+        // What a newer version keeps in a request comes back as it went
+        // (`docs/batch4-design.md` §2.1).
+        extra: HttpRequest::from_json_lenient(r#"{"laterField": {"kept": [1, "two"]}}"#).extra,
     };
     let saved = storage
         .tree()

@@ -58,6 +58,25 @@ pub use client::{
 
 /// Where calls are posted.
 pub const STORE_PATH: &str = "/v1/store";
+
+/// The header a client names its `cyberapi_core::version::MODEL` in, and the
+/// bridge its own in its answers.
+pub const MODEL_HEADER: &str = "x-cyberapi-model";
+
+/// The header a client sends with each post: its model.
+pub fn model_header() -> (&'static str, String) {
+    (MODEL_HEADER, cyberapi_core::version::MODEL.to_string())
+}
+
+/// Whether the bridge, keeping projects as `bridge` (its model), refuses
+/// `call` from a client that keeps them as `client` — `None` from one
+/// that did not say, which keeps them as the first did: a change to a
+/// project's content from an older client would drop what it cannot read.
+/// Reading is never refused, nor what is the reader's own (prefs, history,
+/// cookies).
+pub fn refused_as_too_old(call: &Call, client: Option<u32>, bridge: u32) -> bool {
+    call.changes_project() && client.unwrap_or(1) < bridge
+}
 /// Where requests to send are posted.
 pub const SEND_PATH: &str = "/v1/send";
 
@@ -271,6 +290,70 @@ pub enum Call {
     DirectoryRevokeMcpToken {
         id: McpTokenId,
     },
+}
+
+impl Call {
+    /// Whether it changes a project's content — its tree, requests or
+    /// variables, what a client of an older model would write without what
+    /// it cannot read. A project's name and its being there are not that
+    /// (`docs/batch4-design.md` §2.1).
+    pub fn changes_project(&self) -> bool {
+        match self {
+            Self::TreeCreateFolder { .. }
+            | Self::TreeCreateApi { .. }
+            | Self::TreeRename { .. }
+            | Self::TreeSaveRequest { .. }
+            | Self::TreeMove { .. }
+            | Self::TreeImport { .. }
+            | Self::TreeDelete { .. }
+            | Self::TreeReplace { .. }
+            | Self::VariablesCreate { .. }
+            | Self::VariablesUpdate { .. }
+            | Self::VariablesDelete { .. } => true,
+            Self::CollectionsList
+            | Self::CollectionsGet { .. }
+            | Self::CollectionsCreate { .. }
+            | Self::CollectionsUpdate { .. }
+            | Self::CollectionsDelete { .. }
+            | Self::CollectionsApiCounts
+            | Self::TreeLoad { .. }
+            | Self::TreeConfig { .. }
+            | Self::VariablesList { .. }
+            | Self::PrefsApp
+            | Self::PrefsSetApp { .. }
+            | Self::PrefsWorkspace { .. }
+            | Self::PrefsSetWorkspace { .. }
+            | Self::PrefsClearWorkspaces
+            | Self::HistoryAdd { .. }
+            | Self::HistoryList { .. }
+            | Self::HistoryLatest { .. }
+            | Self::HistoryClear { .. }
+            | Self::HistoryClearAll
+            | Self::CookiesList
+            | Self::CookiesPut { .. }
+            | Self::CookiesDelete { .. }
+            | Self::CookiesClear
+            | Self::DirectoryMe
+            | Self::DirectoryAccounts
+            | Self::DirectoryCreateTeam { .. }
+            | Self::DirectoryRenameTeam { .. }
+            | Self::DirectoryDeleteTeam { .. }
+            | Self::DirectoryMembers { .. }
+            | Self::DirectorySetMember { .. }
+            | Self::DirectoryGrants { .. }
+            | Self::DirectorySetGrant { .. }
+            | Self::DirectoryTransfer { .. }
+            | Self::DirectoryInvites
+            | Self::DirectoryCreateInvite { .. }
+            | Self::DirectoryRevokeInvite { .. }
+            | Self::DirectoryUpdateAccount { .. }
+            | Self::DirectoryResetPassword { .. }
+            | Self::DirectoryChangePassword { .. }
+            | Self::DirectoryMcpTokens
+            | Self::DirectoryIssueMcpToken { .. }
+            | Self::DirectoryRevokeMcpToken { .. } => false,
+        }
+    }
 }
 
 /// What a call answers: the method's value, or the store's refusal.
@@ -876,6 +959,31 @@ impl Told {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_older_client_reads_projects_but_does_not_change_them() {
+        let rename = Call::TreeRename {
+            collection: CollectionId::from("c"),
+            item: ItemId::from("i"),
+            name: "n".into(),
+        };
+        let load = Call::TreeLoad {
+            collection: CollectionId::from("c"),
+        };
+        let prefs = Call::PrefsApp;
+        // A bridge two shapes on: a client that does not say is the first.
+        assert!(refused_as_too_old(&rename, None, 2));
+        assert!(refused_as_too_old(&rename, Some(1), 2));
+        assert!(!refused_as_too_old(&rename, Some(2), 2));
+        assert!(!refused_as_too_old(&rename, Some(3), 2), "a newer client may write");
+        assert!(!refused_as_too_old(&load, None, 2), "reading is never refused");
+        assert!(
+            !refused_as_too_old(&prefs, None, 2),
+            "the reader's own is not a project's"
+        );
+        // The first shape refuses no one.
+        assert!(!refused_as_too_old(&rename, None, 1));
+    }
 
     #[test]
     fn calls_read_as_named_methods() {

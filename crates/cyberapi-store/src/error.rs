@@ -117,4 +117,8 @@ pub enum Refusal {
     TokenNameTaken,
     /// A token lasts one of `MCP_TOKEN_DAYS`, or until revoked.
     BadTokenDays,
+    /// The client keeps projects in an older shape than the server
+    /// (`cyberapi_core::version::MODEL`): what it wrote would drop what it
+    /// cannot read. It may still read.
+    ClientTooOld,
 }

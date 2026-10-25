@@ -44,6 +44,7 @@ refused_invite_gone = "这个邀请已失效：已被使用、已撤销或已过
 refused_bad_token_name = "令牌名称为 1 到 64 个字符。"
 refused_token_name_taken = "已经有同名的令牌了。"
 refused_bad_token_days = "令牌的有效期只能是 30、90、365 天，或一直有效到吊销。"
+refused_client_too_old = "服务器保存项目的方式比这个应用新，修改没有保存。请刷新网页，或更新桌面版；在此之前只能查看服务器项目。"
 
 [dashboard]
 title = "项目"

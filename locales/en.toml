@@ -44,6 +44,7 @@ refused_invite_gone = "This invitation no longer works: it was used, taken back 
 refused_bad_token_name = "A token's name has 1 to 64 characters."
 refused_token_name_taken = "You have a token of that name already."
 refused_bad_token_days = "A token lasts 30, 90 or 365 days, or until it is revoked."
+refused_client_too_old = "The server keeps projects in a newer way than this app, so the change was not saved. Reload the page, or update the desktop app; until then its projects can be read."
 
 [dashboard]
 title = "Projects"

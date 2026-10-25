@@ -39,14 +39,16 @@ use auth::{hash_password, hash_token, new_token, session_cookie, signed_in, veri
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Json, Request, State};
-use axum::http::{Extensions, HeaderMap, StatusCode, header};
+use axum::http::{Extensions, HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use cyberapi_core::directory::{valid_account_name, valid_password};
+use cyberapi_core::version::MODEL;
 use cyberapi_http::{HttpEngine, PreparedRequest, SendError, Watch, stop_signal};
 use cyberapi_store::{Refusal, StoreError};
 use cyberapi_store_bridge::{
-    BearerSession, Call, LoginForm, SEND_PATH, SEND_STREAM_PATH, STORE_PATH, SendReply, StreamReply, dispatch,
+    BearerSession, Call, LoginForm, MODEL_HEADER, Reply, SEND_PATH, SEND_STREAM_PATH, STORE_PATH, SendReply,
+    StreamReply, dispatch, refused_as_too_old,
 };
 use cyberapi_store_sql::{Acceptance, Account, NewAccount, SqlStore};
 use futures::StreamExt as _;
@@ -498,9 +500,21 @@ async fn store_call(State(bridge): State<Bridge>, headers: HeaderMap, Json(call)
         Ok(account) => account,
         Err(status) => return status.into_response(),
     };
-    let storage = bridge.inner.store.scoped(account.id.clone());
-    let directory = bridge.inner.store.directory(account.id);
-    Json(dispatch(&storage, directory.as_ref(), call).await).into_response()
+    // A client keeping projects in an older shape reads them but does not
+    // change them: it would drop what it cannot read (§2.1).
+    let model = |headers: &HeaderMap| headers.get(MODEL_HEADER)?.to_str().ok()?.trim().parse::<u32>().ok();
+    let reply = if refused_as_too_old(&call, model(&headers), MODEL) {
+        Reply::Err(StoreError::Refused {
+            reason: Refusal::ClientTooOld,
+        })
+    } else {
+        let storage = bridge.inner.store.scoped(account.id.clone());
+        let directory = bridge.inner.store.directory(account.id);
+        dispatch(&storage, directory.as_ref(), call).await
+    };
+    let mut response = Json(reply).into_response();
+    response.headers_mut().insert(MODEL_HEADER, HeaderValue::from(MODEL));
+    response
 }
 
 /// Sends as [`send_request`] does, an event stream's answer told to the page

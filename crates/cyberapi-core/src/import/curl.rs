@@ -236,6 +236,7 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
                 query,
                 headers,
                 auth,
+                ..Default::default()
             },
         }],
         ..Default::default()

@@ -12,6 +12,15 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
     _ => env!("CARGO_PKG_VERSION"),
 };
 
+/// The version of the shape a project's content is kept in (requests,
+/// folders, variables, what a project syncs). It goes up by one with each
+/// change to that shape (`docs/batch4-design.md` §2.1), whatever the app's
+/// version, so a nightly is told apart from the release before it. A
+/// client that has an older one reads a server's projects but may not
+/// change them: it would drop what it cannot read. Clients that do not say
+/// which they have (0.2.1 and before) have the first.
+pub const MODEL: u32 = 1;
+
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {
     Some(commit) if !commit.is_empty() => Some(commit),

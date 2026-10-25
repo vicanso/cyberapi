@@ -219,6 +219,7 @@ mod tests {
                     query: vec![kv("debug", "1", false)],
                     headers: vec![kv("X-Off", "1", false)],
                     auth: vec![kv("u", "p", true)],
+                    ..Default::default()
                 },
             }
         );

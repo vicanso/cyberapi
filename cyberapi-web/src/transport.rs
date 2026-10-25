@@ -31,10 +31,14 @@ impl FetchTransport {
         url: String,
         body: Vec<u8>,
     ) -> Result<gpui_kit::http_client::Response<AsyncBody>, String> {
+        // Which shape this page keeps projects in: one left open across the
+        // bridge's upgrade is told it is too old to change them.
+        let (model, version) = cyberapi_store_bridge::model_header();
         let request = Request::builder()
             .method("POST")
             .uri(&url)
             .header("content-type", "application/json")
+            .header(model, version)
             .body(AsyncBody::from(body))
             .map_err(|e| format!("the request could not be built: {e}"))?;
         let response = client

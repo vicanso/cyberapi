@@ -67,6 +67,7 @@ pub fn store_error(error: &StoreError) -> String {
             Refusal::BadTokenName => t!("errors.refused_bad_token_name").into(),
             Refusal::TokenNameTaken => t!("errors.refused_token_name_taken").into(),
             Refusal::BadTokenDays => t!("errors.refused_bad_token_days").into(),
+            Refusal::ClientTooOld => t!("errors.refused_client_too_old").into(),
         },
         StoreError::Forbidden { .. } => t!("errors.forbidden").into(),
         StoreError::NameRequired => t!("errors.name_required").into(),

@@ -242,6 +242,8 @@ claude mcp add --transport http cyberapi https://cyberapi.example.com/v1/mcp \
 
 `cyberapi-bridge --version`, and the first line it logs, say which build runs: a release's version and commit, `0.2.2 (abc1234)`, or a nightly's version with its day and commit, `0.2.2-nightly.20261024.137a858` (*0.2.2*). The new version brings the schema up to date on start. **An older bridge does not start on a database a newer one has upgraded**, so going back means restoring the backup taken before. Read [`CHANGELOG.md`](../CHANGELOG.md) for what changed. Sessions survive the upgrade; a page already open keeps the version it loaded until it is reloaded, so reload it.
 
+**Upgrade the team's desktop apps with the bridge** (*0.2.2*). Each version keeps projects in a shape it names with a number, which goes up when a version keeps something new in them. A client of an older shape than the bridge's — a desktop app not yet updated, or a page left open across the upgrade — may still open and read server projects, but its changes to them are refused with a note to update the app or reload the page: it would write a project without what it cannot read, dropping other people's settings. Clients from before 0.2.2 do not say their shape and count as the first.
+
 ## Backups
 
 Everything the server keeps is in its database: back it up as you back up any database (`pg_dump`, `mysqldump`, or your provider's snapshots). Two things are not in it:
