@@ -13,7 +13,9 @@
 
 use cyberapi_core::Timestamp;
 use cyberapi_core::cookie::{cookie_header, parse_set_cookie};
-use cyberapi_core::model::{HttpRequest, Variable, VariableCategory};
+use cyberapi_core::graphql::GraphQlBody;
+use cyberapi_core::graphql_schema::{INTROSPECTION_QUERY, Schema};
+use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{SendPrefs, Timeouts};
 use cyberapi_core::redirect::{self, MAX_REDIRECTS};
 use cyberapi_core::response::{Exchange, HttpResponse};
@@ -162,6 +164,37 @@ pub async fn send(
                 ..response
             })
         }
+    }
+}
+
+/// A GraphQL endpoint's schema, asked of it with the introspection query:
+/// the request as it is — its URL, headers, auth, the jar's cookies — with
+/// that query in place of its body, as a POST. Nothing goes into the
+/// history; a redirect is not followed. `Err` says why there is none.
+pub async fn introspect(sender: Sender, collection: CollectionId, request: HttpRequest) -> Result<Schema, String> {
+    let asking = HttpRequest {
+        method: HttpMethod::Post,
+        content_type: ContentType::GraphQl,
+        body: GraphQlBody {
+            query: INTROSPECTION_QUERY.into(),
+            ..Default::default()
+        }
+        .to_body(),
+        ..request
+    };
+    let mut prepared = prepare(&sender, &collection, &asking, None)
+        .await
+        .map_err(|failure| failure.to_string())?;
+    if prepared.header("cookie").is_none() {
+        add_cookies(&sender, &mut prepared)
+            .await
+            .map_err(|failure| failure.to_string())?;
+    }
+    let exchange = sender.engine.send(prepared).await.map_err(|error| error.to_string())?;
+    match Schema::from_introspection(&exchange.body) {
+        Ok(schema) => Ok(schema),
+        Err(why) if !(200..300).contains(&exchange.status) => Err(format!("{} ({why})", exchange.status)),
+        Err(why) => Err(why),
     }
 }
 
@@ -419,6 +452,55 @@ mod tests {
             body_size: body.len() as u64,
             ..Default::default()
         })
+    }
+
+    /// The schema is asked of the API's endpoint as the API is sent — its
+    /// environment, its headers — and kept nowhere.
+    #[test]
+    fn a_schema_is_asked_for_as_the_api_would_be_sent() {
+        let answer = r#"{"data": {"__schema": {"queryType": {"name": "Query"}, "types": [
+            {"kind": "OBJECT", "name": "Query", "fields": [{"name": "me", "args": [], "type": {"kind": "SCALAR", "name": "ID"}}]}
+        ]}}}"#;
+        let setup = setup(ok(200, answer));
+        variable(&setup, VariableCategory::Environment, "HOST", "https://api.test");
+        let api = new_api(&setup, "me");
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            uri: "{{HOST}}/graphql".into(),
+            headers: vec![kv("Authorization", "Bearer t")],
+            content_type: ContentType::GraphQl,
+            body: GraphQlBody {
+                query: "{ me }".into(),
+                ..Default::default()
+            }
+            .to_body(),
+            ..Default::default()
+        };
+        let schema =
+            pollster::block_on(introspect(setup.sender.clone(), setup.collection.clone(), request)).expect("a schema");
+        assert_eq!(schema.query.as_deref(), Some("Query"));
+        let sent = setup.engine.sent.lock().expect("sent").clone();
+        assert_eq!(
+            (sent[0].method, sent[0].url.as_str()),
+            (HttpMethod::Post, "https://api.test/graphql")
+        );
+        assert_eq!(sent[0].header("authorization"), Some("Bearer t"));
+        let body: serde_json::Value = serde_json::from_slice(&sent[0].body).expect("JSON");
+        assert_eq!(body["query"], serde_json::json!(INTROSPECTION_QUERY));
+        let history = pollster::block_on(setup.storage.history().list(setup.collection.clone(), api)).expect("list");
+        assert!(history.is_empty(), "not kept");
+
+        let refused = setup_refusing();
+        let request = HttpRequest {
+            uri: "https://api.test/graphql".into(),
+            ..Default::default()
+        };
+        let why = pollster::block_on(introspect(refused.sender.clone(), refused.collection.clone(), request));
+        assert_eq!(why, Err("introspection is off".into()));
+    }
+
+    fn setup_refusing() -> Setup {
+        setup(ok(200, r#"{"errors": [{"message": "introspection is off"}]}"#))
     }
 
     #[test]

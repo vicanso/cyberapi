@@ -216,6 +216,12 @@ pub fn path_api(text: &str, caret: usize) -> Option<String> {
     }
 }
 
+/// Whether the caret is in an expression being typed, where the hints are
+/// this module's — not, say, a GraphQL query's around it.
+pub fn in_expression(text: &str, caret: usize) -> bool {
+    caret_spot(text, caret).is_some()
+}
+
 /// Whether the caret is where a part of an expression starts, nothing of it
 /// typed: after `{{` or `.`, in `value(` or `get(`, after `get`'s comma. A
 /// choice writes up to such a place, and the list opens again there.
@@ -706,6 +712,20 @@ mod tests {
         }
         for text in ["|", "{{va|", "{{get(01P, da|", "{{md5(|", "{{ts()}}|"] {
             assert!(!fresh(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn an_expression_is_told_from_the_text_around_it() {
+        let inside = |text: &str| {
+            let caret = text.find('|').expect("a caret");
+            in_expression(&text.replace('|', ""), caret)
+        };
+        for text in ["{ user(id: \"{{va|", "{{get(01P, da|", "{{|"] {
+            assert!(inside(text), "{text}");
+        }
+        for text in ["{ us|", "{{ts()}} us|", "|"] {
+            assert!(!inside(text), "{text}");
         }
     }
 

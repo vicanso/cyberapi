@@ -157,11 +157,22 @@ impl CompletionProvider for EditorHints {
     }
 }
 
+/// The hints as a code editor's completion provider, for one that offers
+/// its own around the expressions (a GraphQL query's fields).
+pub fn provider(source: &HintSource) -> Rc<dyn CompletionProvider> {
+    Rc::new(EditorHints(source.clone()))
+}
+
 /// Gives the code editor `editor` the hints, in its own menu. Called as it
 /// is built.
 pub fn complete_in(editor: &mut EditorState, source: &HintSource) {
+    complete_with(editor, provider(source));
+}
+
+/// Gives the code editor `editor` `provider`'s menu.
+pub fn complete_with(editor: &mut EditorState, provider: Rc<dyn CompletionProvider>) {
     let lsp = editor.lsp_mut();
-    lsp.completion_provider = Some(Rc::new(EditorHints(source.clone())));
+    lsp.completion_provider = Some(provider);
     // Room for what a function does beside its name.
     lsp.completion_menu.max_width = px(480.);
 }

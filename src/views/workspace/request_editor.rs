@@ -7,6 +7,7 @@ use super::{KEY_CONTEXT, Send as SendAction, method_color};
 use crate::json_view_local::JsonView;
 use crate::states::{ApiEvent, ApiState, AppStore, WorkspaceState};
 use crate::this_build;
+use crate::views::graphql_hints;
 use crate::views::json_tree::{JsonTree, json_view_switch};
 use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::open_variables_dialog;
@@ -136,9 +137,11 @@ struct GraphQlFields {
 
 /// A GraphQL body's fields, filled from `request` when it is one. The
 /// query is highlighted as GraphQL and the variables as JSON where the
-/// grammars are compiled in; both offer the template hints.
+/// grammars are compiled in; both offer the template hints, and the query
+/// the fields of `api`'s endpoint's schema.
 fn graphql_fields(
     request: &HttpRequest,
+    api: &Entity<ApiState>,
     hints: &HintSource,
     window: &mut Window,
     cx: &mut Context<RequestEditor>,
@@ -157,7 +160,11 @@ fn graphql_fields(
                 .soft_wrap(wrap)
                 .tab_size(crate::views::json_tab())
                 .default_value(text);
-            template_hints::complete_in(&mut editor, hints);
+            if language == "graphql" {
+                graphql_hints::complete_in(&mut editor, api, hints);
+            } else {
+                template_hints::complete_in(&mut editor, hints);
+            }
             editor
         })
     };
@@ -190,7 +197,7 @@ impl RequestEditor {
         });
         let hints = HintSource::new(&workspace);
         let body = body_state(&request, &hints, window, cx);
-        let graphql = graphql_fields(&request, &hints, window, cx);
+        let graphql = graphql_fields(&request, &api, &hints, window, cx);
         // Values that are templates offer the hints; Basic auth's are not.
         let kv = |list, options, hints: Option<&HintSource>, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
@@ -261,6 +268,10 @@ impl RequestEditor {
                 }
                 ApiEvent::NotSaved(message) => {
                     window.push_notification(Notification::error(message.clone()), cx);
+                }
+                ApiEvent::NoSchema(reason) => {
+                    let message = t!("editor.graphql_no_schema", reason = reason).to_string();
+                    window.push_notification(Notification::error(message), cx);
                 }
                 ApiEvent::Failed(_) => {}
             }),
@@ -443,7 +454,7 @@ impl RequestEditor {
     /// The GraphQL fields made again from the request.
     fn rebuild_graphql(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let request = self.api.read(cx).request().clone();
-        self.graphql = graphql_fields(&request, &self.hints, window, cx);
+        self.graphql = graphql_fields(&request, &self.api, &self.hints, window, cx);
         let watching = Self::watch_graphql(&self.graphql, window, cx);
         self._subscriptions.extend(watching);
     }
@@ -1109,6 +1120,16 @@ impl RequestEditor {
                 )
             });
         let toolbar = toolbar.when(request.content_type == ContentType::GraphQl, |this| {
+            // The schema the query's fields are offered from: asked for
+            // here, and asked again after the endpoint changed.
+            let (asking, schema) = {
+                let api = self.api.read(cx);
+                (api.asking_schema(), api.schema(cx))
+            };
+            let label = match &schema {
+                Some(schema) => crate::i18n::counted("editor.graphql_schema_types", schema.type_count()),
+                None => t!("editor.graphql_schema").to_string(),
+            };
             this.child(
                 Button::new("body-format-variables")
                     .ghost()
@@ -1116,6 +1137,16 @@ impl RequestEditor {
                     .icon(gpui_kit::assets::IconName::WandSparkles)
                     .label(t!("editor.format_variables").to_string())
                     .on_click(cx.listener(|this, _, window, cx| this.format_variables(window, cx))),
+            )
+            .child(
+                Button::new("body-graphql-schema")
+                    .ghost()
+                    .xsmall()
+                    .icon(gpui_kit::assets::IconName::ListTree)
+                    .label(label)
+                    .loading(asking)
+                    .tooltip(t!("editor.graphql_schema_about").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| this.api.update(cx, |api, cx| api.ask_schema(cx)))),
             )
         });
         let content: AnyElement = if request.content_type == ContentType::GraphQl {

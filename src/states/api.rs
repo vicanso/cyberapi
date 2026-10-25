@@ -15,6 +15,7 @@
 
 use super::{Load, WorkspaceState, run_store};
 use crate::this_build;
+use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::model::{ApiSetting, ContentType, HttpMethod, HttpRequest, KvParam};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::send::PrepareError;
@@ -66,6 +67,8 @@ pub enum ApiEvent {
     Saved(String),
     /// A body could not be saved, or opened outside the app: why.
     NotSaved(String),
+    /// A GraphQL endpoint gave no schema: why.
+    NoSchema(String),
 }
 
 /// A request on its way.
@@ -94,6 +97,8 @@ pub struct ApiState {
     history: Load,
     /// The response the panel shows: the newest unless one was chosen.
     shown: Option<String>,
+    /// A GraphQL endpoint's schema being asked for.
+    asking_schema: Option<Task<()>>,
 }
 
 impl EventEmitter<ApiEvent> for ApiState {}
@@ -137,6 +142,7 @@ impl ApiState {
             responses: Vec::new(),
             history: Load::Loading,
             shown: None,
+            asking_schema: None,
         };
         state.load_history(cx);
         state
@@ -473,6 +479,44 @@ impl ApiState {
             self.sender.sending = prefs.sending;
         }
         self.sender.clone()
+    }
+
+    /// The schema of the GraphQL endpoint the request goes to, as this API
+    /// or another sent there asked for it.
+    pub fn schema(&self, cx: &App) -> Option<Arc<Schema>> {
+        self.workspace.upgrade()?.read(cx).schema(&self.request.uri)
+    }
+
+    pub fn asking_schema(&self) -> bool {
+        self.asking_schema.is_some()
+    }
+
+    /// Asks the endpoint for its schema with the introspection query, sent
+    /// as the request would be; the project keeps the answer for every API
+    /// sent there. Nothing goes into the history.
+    pub fn ask_schema(&mut self, cx: &mut Context<Self>) {
+        if self.asking_schema.is_some() {
+            return;
+        }
+        let uri = self.request.uri.clone();
+        let call = cyberapi_service::introspect(self.sender(cx), self.collection.clone(), self.request.clone());
+        self.asking_schema = Some(cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(call).await;
+            let _ = this.update(cx, |this, cx| {
+                this.asking_schema = None;
+                match result {
+                    Ok(schema) => {
+                        let schema = Arc::new(schema);
+                        let _ = this
+                            .workspace
+                            .update(cx, |workspace, cx| workspace.keep_schema(&uri, schema, cx));
+                    }
+                    Err(why) => cx.emit(ApiEvent::NoSchema(why)),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
     /// F7.8: the command of the request as the editor holds it.

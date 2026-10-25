@@ -21,6 +21,7 @@ use super::{ApiState, AppStore, Load, run_serial, run_store};
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::ItemId;
+use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::import::{ImportBundle, ImportItem};
 use cyberapi_core::model::{ApiSetting, Collection, Folder, Variable, VariableCategory};
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
@@ -123,6 +124,10 @@ pub struct WorkspaceState {
     /// offers (M6): `None` for one with no JSON answer. Kept until the API
     /// answers again.
     answers: HashMap<ItemId, Option<Arc<serde_json::Value>>>,
+    /// GraphQL endpoints' schemas, by the URI as the APIs write it: asked
+    /// for by one API, offered to every API sent there, until the project
+    /// is left.
+    schemas: HashMap<String, Arc<Schema>>,
     /// A server project's working copy; `None` for a project of this
     /// machine's, whose changes are written at once.
     copy: Option<CopyState>,
@@ -196,6 +201,7 @@ impl WorkspaceState {
             global_headers: Vec::new(),
             custom: Vec::new(),
             answers: HashMap::new(),
+            schemas: HashMap::new(),
             copy,
             _poll: poll.map(|every| Self::poll(every, cx)),
         };
@@ -721,6 +727,16 @@ impl WorkspaceState {
     /// `api` answered: the answer its fields were read from is not the last.
     pub fn forget_answer(&mut self, api: &ItemId) {
         self.answers.remove(api);
+    }
+
+    /// The schema of the GraphQL endpoint at `uri`, if an API asked for it.
+    pub fn schema(&self, uri: &str) -> Option<Arc<Schema>> {
+        self.schemas.get(uri.trim()).cloned()
+    }
+
+    pub fn keep_schema(&mut self, uri: &str, schema: Arc<Schema>, cx: &mut Context<Self>) {
+        self.schemas.insert(uri.trim().to_string(), schema);
+        cx.notify();
     }
 
     /// Reads the variables kept here again: the project changed.
@@ -2028,6 +2044,75 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(heard.borrow().as_slice(), ["no host"]);
         assert!(api.read_with(cx, |api, _| api.responses().is_empty()), "nothing sent");
+    }
+
+    /// A GraphQL endpoint's schema, asked for by one API, is offered to
+    /// every API of the project sent to the same URI, and to no other.
+    #[gpui_kit::test]
+    async fn a_schema_one_api_asked_for_serves_every_api_sent_there(cx: &mut TestAppContext) {
+        struct Introspected;
+        impl HttpEngine for Introspected {
+            fn send(&self, _: PreparedRequest) -> SendFuture {
+                let body = r#"{"data": {"__schema": {"queryType": {"name": "Query"},
+                    "types": [{"kind": "OBJECT", "name": "Query", "fields": []}]}}}"#;
+                Box::pin(async move {
+                    Ok(Exchange {
+                        status: 200,
+                        body: body.as_bytes().to_vec(),
+                        ..Default::default()
+                    })
+                })
+            }
+        }
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let introspected = Sender {
+            engine: Arc::new(Introspected),
+            ..sender(&storage, true)
+        };
+        let state = cx.new(|cx| WorkspaceState::new(introspected, collection.clone(), cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.create_api(None, "me".into(), cx));
+        cx.run_until_parked();
+        let me = editor(&state, cx);
+        me.update(cx, |api, cx| api.set_uri("http://gql.test/graphql".into(), cx));
+        me.update(cx, |api, cx| api.ask_schema(cx));
+        assert!(me.read_with(cx, |api, _| api.asking_schema()));
+        cx.run_until_parked();
+        me.read_with(cx, |api, cx| {
+            assert!(!api.asking_schema());
+            assert_eq!(api.schema(cx).map(|schema| schema.type_count()), Some(1));
+            assert!(api.responses().is_empty(), "not in the history");
+        });
+
+        state.update(cx, |state, cx| state.create_api(None, "users".into(), cx));
+        cx.run_until_parked();
+        let users = editor(&state, cx);
+        assert!(users.read_with(cx, |api, cx| api.schema(cx).is_none()));
+        users.update(cx, |api, cx| api.set_uri(" http://gql.test/graphql ".into(), cx));
+        assert!(
+            users.read_with(cx, |api, cx| api.schema(cx).is_some()),
+            "the same endpoint"
+        );
+
+        // An endpoint that answers with no schema says why.
+        let plain = cx.new(|cx| WorkspaceState::new(sender(&storage, true), collection.clone(), cx));
+        cx.run_until_parked();
+        let api = editor(&plain, cx);
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let into = heard.clone();
+        cx.update(|cx| {
+            cx.subscribe(&api, move |_, event, _| {
+                if let ApiEvent::NoSchema(why) = event {
+                    into.borrow_mut().push(why.clone());
+                }
+            })
+            .detach();
+        });
+        api.update(cx, |api, cx| api.ask_schema(cx));
+        cx.run_until_parked();
+        assert!(heard.borrow()[0].starts_with("not JSON"), "{:?}", heard.borrow());
+        assert!(api.read_with(cx, |api, cx| api.schema(cx).is_none()));
     }
 
     #[gpui_kit::test]
