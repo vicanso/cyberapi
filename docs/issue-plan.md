@@ -1,6 +1,6 @@
 # Issue #55 起的处理计划
 
-> 状态：A、B 两组和 C 组第 1、2 批已完成（2026-10-25），第 3、4 批待做，按批次顺序进行。每个 issue 单独提交，提交信息带 issue 编号。
+> 状态：A、B 两组和 C 组第 1–3 批已完成（2026-10-25），第 4 批待做。每个 issue 单独提交，提交信息带 issue 编号。
 
 2026-10-25 把 [vicanso/cyberapi](https://github.com/vicanso/cyberapi/issues) #55 起的 issue 分了组：A 是 bug，B 是改动小、马上能做的优化，C 是要单独规划的功能。
 
@@ -22,6 +22,8 @@
 | #63 | JSON 响应在 Pretty / Tree 视图用 JSONPath 过滤，开关在响应状态行，条件按接口记住 | 45415d1 |
 | #58 | Details 显示实际发出的请求：每个请求头及其来源（含引擎加的），请求体，密钥打码可切换 | 13fc381 |
 | #69 | 复制为 cURL、HTTPie、JavaScript fetch、Python requests、Go net/http（响应的 `>_` 菜单和接口树子菜单） | 98a24a1 |
+| #70 | GraphQL：“格式化”也缩进查询（保留注释）；响应的错误位置标在查询里；浏览 Schema，点字段写进查询 | 7ba0e05、4c148ad、38e7c25 |
+| #60 | 桌面版的代理：环境变量（默认）/ 在设置里填写（HTTP、SOCKS5，可带账号和绕过列表）/ 不使用；本机地址始终直连；bridge 始终直连 | 03da11a |
 
 ## 搁置：#63 的可见搜索按钮
 
