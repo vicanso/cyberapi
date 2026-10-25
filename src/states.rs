@@ -15,7 +15,7 @@ mod update;
 mod variables;
 mod workspace;
 
-pub use api::{ApiEvent, ApiState};
+pub use api::{ApiEvent, ApiState, GrpcDefinitions};
 pub use app::{AppEvent, AppState, AppStore, Route};
 pub use cookies::{CookieKey, CookiesEvent, CookiesState, cookie_key};
 pub use copy::ServerCopy;

@@ -13,6 +13,7 @@ use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::open_variables_dialog;
 use crate::views::template_hints::{self, HintSource};
 use cyberapi_core::graphql::GraphQlBody;
+use cyberapi_core::grpc::{FROM_REFLECTION, GrpcBody};
 use cyberapi_core::import::{request_from_curl, split_url};
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
 use cyberapi_core::prefs::RequestTab;
@@ -26,7 +27,8 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _,
+    h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -67,6 +69,9 @@ pub struct RequestEditor {
     /// A GraphQL body's query, variables and operation, edited apart and
     /// kept together (`cyberapi_core::graphql::GraphQlBody`).
     graphql: GraphQlFields,
+    /// A gRPC call's message (`cyberapi_core::grpc::GrpcBody`); the rest of
+    /// the call is the API state's.
+    grpc_message: Entity<EditorState>,
     form: Entity<KvEditor>,
     query: Entity<KvEditor>,
     headers: Entity<KvEditor>,
@@ -126,6 +131,31 @@ fn content_type_label(content_type: ContentType) -> &'static str {
         ContentType::GraphQl => "GraphQL",
         other => other.as_str(),
     }
+}
+
+/// A gRPC call's message editor: JSON, with the template hints.
+fn grpc_message_state(
+    request: &HttpRequest,
+    hints: &HintSource,
+    window: &mut Window,
+    cx: &mut Context<RequestEditor>,
+) -> Entity<EditorState> {
+    let message = if request.method == HttpMethod::Grpc {
+        GrpcBody::read(&request.body).message
+    } else {
+        String::new()
+    };
+    let wrap = AppStore::global(cx).state().read(cx).prefs().text.wrap;
+    cx.new(|cx| {
+        let mut editor = EditorState::new(window, cx)
+            .language("json")
+            .line_number(true)
+            .soft_wrap(wrap)
+            .tab_size(crate::views::json_tab())
+            .default_value(message);
+        template_hints::complete_in(&mut editor, hints);
+        editor
+    })
 }
 
 /// The fields of a GraphQL body.
@@ -198,6 +228,7 @@ impl RequestEditor {
         let hints = HintSource::new(&workspace);
         let body = body_state(&request, &hints, window, cx);
         let graphql = graphql_fields(&request, &api, &hints, window, cx);
+        let grpc_message = grpc_message_state(&request, &hints, window, cx);
         // Values that are templates offer the hints; Basic auth's are not.
         let kv = |list, options, hints: Option<&HintSource>, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
@@ -261,7 +292,7 @@ impl RequestEditor {
                 }
                 ApiEvent::Curl(command) => {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(command.clone()));
-                    window.push_notification(Notification::success(t!("response.curl_copied").to_string()), cx);
+                    window.push_notification(Notification::success(crate::views::copied_command(command)), cx);
                 }
                 ApiEvent::Saved(path) => {
                     window.push_notification(Notification::success(t!("export.saved", path = path).to_string()), cx);
@@ -271,6 +302,19 @@ impl RequestEditor {
                 }
                 ApiEvent::NoSchema(reason) => {
                     let message = t!("editor.graphql_no_schema", reason = reason).to_string();
+                    window.push_notification(Notification::error(message), cx);
+                }
+                ApiEvent::GrpcDefinitions { methods, example } => {
+                    let message = crate::i18n::counted("editor.grpc_loaded", *methods);
+                    window.push_notification(Notification::success(message), cx);
+                    if let Some(example) = example
+                        && this.grpc_message.read(cx).value().trim().is_empty()
+                    {
+                        this.set_grpc_message(example.clone(), window, cx);
+                    }
+                }
+                ApiEvent::NoGrpcDefinitions(reason) => {
+                    let message = t!("editor.grpc_no_definitions", reason = reason).to_string();
                     window.push_notification(Notification::error(message), cx);
                 }
                 ApiEvent::Failed(_) => {}
@@ -317,13 +361,19 @@ impl RequestEditor {
         subscriptions.push(Self::watch_body(&body, window, cx));
         subscriptions.extend(template_hints::watch(&body, window, cx));
         subscriptions.extend(Self::watch_graphql(&graphql, window, cx));
+        subscriptions.extend(Self::watch_grpc(&grpc_message, window, cx));
         let app = AppStore::global(cx).state().clone();
         let wrap = app.read(cx).prefs().text.wrap;
         subscriptions.push(cx.observe_in(&app, window, |this, app, window, cx| {
             let wrap = app.read(cx).prefs().text.wrap;
             if wrap != this.wrap {
                 this.wrap = wrap;
-                for editor in [&this.body, &this.graphql.query, &this.graphql.variables] {
+                for editor in [
+                    &this.body,
+                    &this.graphql.query,
+                    &this.graphql.variables,
+                    &this.grpc_message,
+                ] {
                     editor.update(cx, |editor, cx| editor.set_soft_wrap(wrap, window, cx));
                 }
             }
@@ -337,6 +387,7 @@ impl RequestEditor {
             uri,
             body,
             graphql,
+            grpc_message,
             form,
             query,
             headers,
@@ -399,7 +450,8 @@ impl RequestEditor {
 
     fn watch_body(body: &Entity<EditorState>, window: &mut Window, cx: &mut Context<Self>) -> Subscription {
         cx.subscribe_in(body, window, |this, body, event: &InputEvent, _, cx| {
-            if matches!(event, InputEvent::Change) {
+            // A gRPC call's body is its own editor's: this one is hidden.
+            if matches!(event, InputEvent::Change) && this.api.read(cx).request().method != HttpMethod::Grpc {
                 let text = body.read(cx).value().to_string();
                 this.api.update(cx, |api, cx| api.set_body(text, cx));
                 this.check_json(cx);
@@ -433,6 +485,240 @@ impl RequestEditor {
         watching
     }
 
+    /// A gRPC call's message, kept in its body as it changes.
+    fn watch_grpc(message: &Entity<EditorState>, window: &mut Window, cx: &mut Context<Self>) -> Vec<Subscription> {
+        let mut watching = vec![cx.subscribe_in(message, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.save_grpc(cx);
+            }
+        })];
+        watching.extend(template_hints::watch(message, window, cx));
+        watching
+    }
+
+    /// The call's body with the message as the editor holds it.
+    fn grpc_body(&self, cx: &App) -> String {
+        let mut body = GrpcBody::read(&self.api.read(cx).request().body);
+        body.message = self.grpc_message.read(cx).value().to_string();
+        body.to_body()
+    }
+
+    fn save_grpc(&mut self, cx: &mut Context<Self>) {
+        if self.api.read(cx).request().method != HttpMethod::Grpc {
+            return;
+        }
+        let body = self.grpc_body(cx);
+        self.api.update(cx, |api, cx| api.set_body(body, cx));
+    }
+
+    fn set_grpc_message(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.grpc_message
+            .update(cx, |editor, cx| editor.set_value(message, window, cx));
+        self.save_grpc(cx);
+    }
+
+    /// Calls `service`'s `method`. A message not written yet — empty, or the
+    /// example of the method chosen before — becomes the new one's example.
+    fn choose_grpc_method(&mut self, service: &str, method: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let before = self.api.read(cx).grpc_example(cx);
+        let example = self
+            .api
+            .update(cx, |api, cx| api.choose_grpc_method(service, method, cx));
+        let written = self.grpc_message.read(cx).value().trim().to_string();
+        let untouched = written.is_empty() || before.is_some_and(|before| before.trim() == written);
+        if let Some(example) = example.filter(|_| untouched) {
+            self.set_grpc_message(example, window, cx);
+        }
+    }
+
+    /// The `.proto` files the reader picks, compiled for the definitions.
+    fn import_protos(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: None,
+        });
+        let api = self.api.downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                if let Ok(Ok(Some(paths))) = picked.await
+                    && !paths.is_empty()
+                {
+                    let _ = api.update(cx, |api, cx| api.import_protos(paths, cx));
+                }
+            })
+            .detach();
+    }
+
+    /// The message indented, as the JSON body's Format does.
+    fn format_grpc_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.grpc_message.read(cx).value().to_string();
+        match send::format_json(&text) {
+            Ok(pretty) => self.set_grpc_message(pretty, window, cx),
+            Err(problem) => {
+                let message = t!("editor.grpc_message_broken", reason = problem).to_string();
+                window.push_notification(Notification::error(message), cx);
+            }
+        }
+    }
+
+    /// A gRPC call's body: which method it calls and where its definitions
+    /// come from, then its message.
+    fn render_grpc(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let (body, known, loading) = {
+            let api = self.api.read(cx);
+            (
+                GrpcBody::read(&api.request().body),
+                api.grpc_definitions(cx),
+                api.loading_grpc(),
+            )
+        };
+        // The service by its own name: the package is in the menu.
+        let chosen = (!body.service.is_empty()).then(|| {
+            let service = body.service.rsplit('.').next().unwrap_or(&body.service);
+            format!("{service}/{}", body.method)
+        });
+        let methods = known
+            .as_ref()
+            .map(|known| known.definitions.methods())
+            .unwrap_or_default();
+        let this = cx.entity().downgrade();
+        let current = (body.service.clone(), body.method.clone());
+        let method_menu = move |menu: gpui_kit::component::menu::PopupMenu,
+                                _: &mut Window,
+                                _: &mut Context<gpui_kit::component::menu::PopupMenu>| {
+            if methods.is_empty() {
+                return menu.item(PopupMenuItem::label(t!("editor.grpc_no_methods").to_string()));
+            }
+            let mut menu = menu.max_h(px(420.)).scrollable(true);
+            let mut service = "";
+            for method in &methods {
+                // Each service's methods under its name.
+                if method.service != service {
+                    service = &method.service;
+                    menu = menu.item(PopupMenuItem::label(service.to_string()));
+                }
+                let label = if method.streaming {
+                    format!("{} · {}", method.method, t!("editor.grpc_streaming"))
+                } else {
+                    method.method.clone()
+                };
+                let (this, picked) = (this.clone(), (method.service.clone(), method.method.clone()));
+                let checked = picked == current;
+                menu = menu.item(
+                    PopupMenuItem::new(label)
+                        .checked(checked)
+                        .disabled(method.streaming)
+                        .on_click(move |_, window, cx| {
+                            let _ =
+                                this.update(cx, |this, cx| this.choose_grpc_method(&picked.0, &picked.1, window, cx));
+                        }),
+                );
+            }
+            menu
+        };
+        let source = match known.as_ref().map(|known| known.source.as_str()) {
+            Some(FROM_REFLECTION) => t!("editor.grpc_from_reflection").to_string(),
+            Some(files) => t!("editor.grpc_from_files", files = files).to_string(),
+            None => t!("editor.grpc_no_source").to_string(),
+        };
+        let toolbar = h_flex()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .items_center()
+            .overflow_hidden()
+            .child(
+                Button::new("grpc-method")
+                    .ghost()
+                    .xsmall()
+                    .when(!body.service.is_empty(), |this| this.tooltip(body.path()))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .child(chosen.unwrap_or_else(|| t!("editor.grpc_choose_method").to_string())),
+                            )
+                            .child(Icon::new(IconName::ChevronDown).xsmall().text_color(muted)),
+                    )
+                    .dropdown_menu_with_anchor(Anchor::TopLeft, method_menu),
+            )
+            .child(
+                Button::new("grpc-reflect")
+                    .ghost()
+                    .xsmall()
+                    .icon(gpui_kit::assets::IconName::ListTree)
+                    .label(t!("editor.grpc_reflect").to_string())
+                    .loading(loading)
+                    .tooltip(t!("editor.grpc_reflect_about").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.api.update(cx, |api, cx| api.load_grpc_reflection(cx));
+                    })),
+            )
+            .when(this_build::reads_files(), |this| {
+                this.child(
+                    Button::new("grpc-import")
+                        .ghost()
+                        .xsmall()
+                        .icon(gpui_kit::assets::IconName::FileCode)
+                        .label(t!("editor.grpc_import").to_string())
+                        .disabled(loading)
+                        .on_click(cx.listener(|this, _, window, cx| this.import_protos(window, cx))),
+                )
+            })
+            .child(
+                Button::new("grpc-example")
+                    .ghost()
+                    .xsmall()
+                    .icon(gpui_kit::assets::IconName::Braces)
+                    .tooltip(t!("editor.grpc_example").to_string())
+                    .disabled(body.service.is_empty())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if let Some(example) = this.api.read(cx).grpc_example(cx) {
+                            this.set_grpc_message(example, window, cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("grpc-format")
+                    .ghost()
+                    .xsmall()
+                    .icon(gpui_kit::assets::IconName::WandSparkles)
+                    .tooltip(t!("editor.format").to_string())
+                    .on_click(cx.listener(|this, _, window, cx| this.format_grpc_message(window, cx))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_right()
+                    .text_xs()
+                    .text_color(muted)
+                    .truncate()
+                    .child(source),
+            );
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .child(toolbar)
+            .child(
+                div().flex_1().min_h_0().relative().child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(Editor::new(&self.grpc_message).w_full().h_full().bordered(false)),
+                ),
+            )
+            .into_any_element()
+    }
+
     /// The GraphQL fields as the body they make.
     fn graphql_body(&self, cx: &App) -> String {
         GraphQlBody {
@@ -444,7 +730,9 @@ impl RequestEditor {
     }
 
     fn save_graphql(&mut self, cx: &mut Context<Self>) {
-        if self.api.read(cx).request().content_type != ContentType::GraphQl {
+        // A gRPC call keeps its content type unused: the fields are hidden.
+        let request = self.api.read(cx).request();
+        if request.content_type != ContentType::GraphQl || request.method == HttpMethod::Grpc {
             return;
         }
         let body = self.graphql_body(cx);
@@ -469,6 +757,9 @@ impl RequestEditor {
         self._subscriptions
             .extend(template_hints::watch(&self.body, window, cx));
         self.rebuild_graphql(window, cx);
+        self.grpc_message = grpc_message_state(&request, &self.hints, window, cx);
+        let watching = Self::watch_grpc(&self.grpc_message, window, cx);
+        self._subscriptions.extend(watching);
         self.form
             .update(cx, |form, cx| form.set_list(&form_fields(&request.body), window, cx));
         self.query.update(cx, |kv, cx| kv.set_list(&request.query, window, cx));
@@ -489,13 +780,18 @@ impl RequestEditor {
             self.headers.read(cx).list(cx),
             self.auth.read(cx).list(cx),
         );
-        let content_type = self.api.read(cx).request().content_type;
+        let (method, content_type) = {
+            let request = self.api.read(cx).request();
+            (request.method, request.content_type)
+        };
         let body = match content_type {
+            // A gRPC call's body is its message's, whatever the type.
+            _ if method == HttpMethod::Grpc => Some(self.grpc_body(cx)),
             ContentType::GraphQl => Some(self.graphql_body(cx)),
             _ if content_type.is_key_value() => None,
             _ => Some(self.body.read(cx).value().to_string()),
         };
-        let form = content_type.is_key_value().then(|| self.form.read(cx).list(cx));
+        let form = (content_type.is_key_value() && method != HttpMethod::Grpc).then(|| self.form.read(cx).list(cx));
         self.api.update(cx, |api, cx| {
             api.set_query(query, cx);
             api.set_headers(headers, cx);
@@ -920,12 +1216,16 @@ impl RequestEditor {
 
     fn render_tabs(&self, tab: RequestTab, cx: &mut Context<Self>) -> impl IntoElement {
         let request = self.api.read(cx).request().clone();
-        let tabs = RequestTab::for_request(request.has_body_tab());
+        let tabs = RequestTab::for_request(&request);
         // F4.13: how many entries are sent. A `//` line stays in the list and
         // is not counted (#43).
         let count = |list: &[cyberapi_core::model::KvParam]| list.iter().filter(|row| row.enabled).count();
+        // A gRPC call's body is its message, its headers the metadata.
+        let grpc = request.method == HttpMethod::Grpc;
         let label = |tab: &RequestTab| {
             let (name, count) = match tab {
+                RequestTab::Body if grpc => (t!("editor.grpc_message"), 0),
+                RequestTab::Headers if grpc => (t!("editor.grpc_metadata"), count(&request.headers)),
                 RequestTab::Body => (
                     t!("editor.body"),
                     if request.content_type.is_key_value() {
@@ -1040,6 +1340,9 @@ impl RequestEditor {
 
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let request = self.api.read(cx).request().clone();
+        if request.method == HttpMethod::Grpc {
+            return self.render_grpc(cx);
+        }
         let this = cx.entity().downgrade();
         let current = request.content_type;
         let type_menu = move |menu: gpui_kit::component::menu::PopupMenu,

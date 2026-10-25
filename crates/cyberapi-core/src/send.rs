@@ -11,8 +11,13 @@
 //!
 //! The engine is `cyberapi-http`'s; in the browser build the prepared
 //! request crosses the bridge as JSON.
+//!
+//! A gRPC call (`crate::grpc`) goes as the HTTP/2 POST gRPC is: its message
+//! encoded with the definitions the API keeps, its headers the metadata,
+//! no query.
 
 use crate::graphql::GraphQlBody;
+use crate::grpc::{self, GrpcBody};
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam, Variable, VariableCategory, split_env_prefix};
 use crate::prefs::{HttpVersion, Timeouts};
 use crate::template::{self, FileReader, Inputs, Needs, TemplateError};
@@ -64,6 +69,10 @@ pub enum PrepareError {
     /// JSON object.
     #[snafu(display("the GraphQL variables cannot be read: {message}"))]
     GraphQlVariables { message: String },
+    /// A gRPC call cannot be made: no method chosen, no definitions, a
+    /// message they do not read.
+    #[snafu(display("{message}"))]
+    Grpc { message: String },
 }
 
 /// What [`prepare`] takes besides the request.
@@ -127,7 +136,10 @@ pub fn fill_values(request: &HttpRequest, variables: &[Variable]) -> HttpRequest
 /// query and header values (not keys, not the URI); the global headers.
 fn templated_texts<'a>(request: &'a HttpRequest, variables: &'a [Variable]) -> Vec<std::borrow::Cow<'a, str>> {
     let mut texts: Vec<std::borrow::Cow<'a, str>> = Vec::new();
-    if request.content_type == ContentType::GraphQl {
+    let grpc = request.method == HttpMethod::Grpc;
+    if grpc {
+        texts.push(GrpcBody::read(&request.body).message.into());
+    } else if request.content_type == ContentType::GraphQl {
         // A GET sends it too, as parameters.
         let graphql = GraphQlBody::read(&request.body);
         texts.push(graphql.query.into());
@@ -139,10 +151,12 @@ fn templated_texts<'a>(request: &'a HttpRequest, variables: &'a [Variable]) -> V
             texts.push(request.body.as_str().into());
         }
     }
+    // A gRPC call sends no query.
     let lists = [&request.query, &request.headers];
     texts.extend(
         lists
             .into_iter()
+            .skip(usize::from(grpc))
             .flatten()
             .filter(|kv| kv.enabled)
             .map(|kv| kv.value.as_str().into()),
@@ -292,15 +306,89 @@ fn with_scheme(uri: &str) -> String {
     }
 }
 
+fn rendered(text: &str, cx: &Context<'_>) -> Result<String, PrepareError> {
+    template::render(text, cx.template, cx.files).context(TemplateSnafu)
+}
+
+/// #50: a URI that starts with an environment variable no enabled one is
+/// named as.
+fn check_environment(request: &HttpRequest, cx: &Context<'_>) -> Result<(), PrepareError> {
+    match split_env_prefix(request.uri.trim()) {
+        (Some(name), _)
+            if !enabled(cx.variables, VariableCategory::Environment).any(|variable| variable.name == name) =>
+        {
+            Err(PrepareError::Environment { name: name.to_string() })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The headers every request sends, each replacing a same-named one
+/// before it (#3): the User-Agent, the project's global headers, Basic
+/// auth, the request's own.
+fn sent_headers(request: &HttpRequest, cx: &Context<'_>) -> Result<Headers, PrepareError> {
+    let mut headers = Headers::default();
+    headers.set("User-Agent", cx.user_agent);
+    for variable in global_headers(cx.variables) {
+        headers.set(variable.name.trim(), &rendered(&variable.value, cx)?);
+    }
+    if let Some(auth) = request.auth.iter().find(|kv| kv.enabled) {
+        let token = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", auth.key, auth.value));
+        headers.set("Authorization", &format!("Basic {token}"));
+    }
+    for kv in request
+        .headers
+        .iter()
+        .filter(|kv| kv.enabled && !kv.key.trim().is_empty())
+    {
+        headers.set(kv.key.trim(), &rendered(&kv.value, cx)?);
+    }
+    Ok(headers)
+}
+
+/// A gRPC call of `path` (`/package.Service/Method`) at the request's
+/// address, its metadata, `body` the framed messages: an API's own call,
+/// or the reflection one asking for its definitions.
+pub fn grpc_call(
+    request: &HttpRequest,
+    cx: &Context<'_>,
+    path: &str,
+    body: Vec<u8>,
+) -> Result<PreparedRequest, PrepareError> {
+    check_environment(request, cx)?;
+    let address = grpc::address_url(&resolve_uri(&request.uri, cx.variables));
+    let mut url = url::Url::parse(&address).map_err(|error| PrepareError::Url {
+        uri: address.clone(),
+        message: error.to_string(),
+    })?;
+    let base = url.path().trim_end_matches('/').to_string();
+    url.set_path(&format!("{base}{path}"));
+    let mut headers = sent_headers(request, cx)?;
+    headers.set("Content-Type", "application/grpc");
+    headers.set("TE", "trailers");
+    Ok(PreparedRequest {
+        method: HttpMethod::Post,
+        url: url.to_string(),
+        headers: headers.0,
+        body,
+        timeouts: cx.timeouts.effective(),
+        accept_invalid_certs: cx.accept_invalid_certs,
+        http_version: HttpVersion::Http2,
+    })
+}
+
 /// F5.2–F5.4: everything the engine needs.
 pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedRequest, PrepareError> {
-    let render = |text: &str| template::render(text, cx.template, cx.files).context(TemplateSnafu);
+    let render = |text: &str| rendered(text, cx);
 
-    if let (Some(name), _) = split_env_prefix(request.uri.trim())
-        && !enabled(cx.variables, VariableCategory::Environment).any(|variable| variable.name == name)
-    {
-        return Err(PrepareError::Environment { name: name.to_string() });
+    if request.method == HttpMethod::Grpc {
+        let grpc = GrpcBody::read(&request.body);
+        let body = grpc
+            .request(&render(&grpc.message)?)
+            .map_err(|message| PrepareError::Grpc { message })?;
+        return grpc_call(request, cx, &grpc.path(), body);
     }
+    check_environment(request, cx)?;
     // The URL, then the enabled query appended to what it already has.
     let uri = with_scheme(&resolve_uri(&request.uri, cx.variables));
     let mut url = url::Url::parse(&uri).map_err(|error| PrepareError::Url {
@@ -328,22 +416,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         }
     }
 
-    let mut headers = Headers::default();
-    headers.set("User-Agent", cx.user_agent);
-    for variable in global_headers(cx.variables) {
-        headers.set(variable.name.trim(), &render(&variable.value)?);
-    }
-    if let Some(auth) = request.auth.iter().find(|kv| kv.enabled) {
-        let token = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", auth.key, auth.value));
-        headers.set("Authorization", &format!("Basic {token}"));
-    }
-    for kv in request
-        .headers
-        .iter()
-        .filter(|kv| kv.enabled && !kv.key.trim().is_empty())
-    {
-        headers.set(kv.key.trim(), &render(&kv.value)?);
-    }
+    let mut headers = sent_headers(request, cx)?;
 
     // F5.3: only POST, PUT and PATCH carry a body and its type.
     let mut body = Vec::new();
@@ -808,6 +881,53 @@ mod tests {
                 }
             })
         );
+    }
+
+    /// A gRPC call goes as an HTTP/2 POST to its method's path at the
+    /// address, the message encoded, the metadata its headers, no query.
+    #[test]
+    fn a_grpc_call_is_an_http2_post_of_its_encoded_message() {
+        let variables = [variable(
+            VariableCategory::Environment,
+            "SHOP",
+            "grpcs://shop.test",
+            true,
+        )];
+        let call = crate::grpc::tests::body("Get");
+        let request = HttpRequest {
+            method: HttpMethod::Grpc,
+            uri: "{{SHOP}}".into(),
+            body: GrpcBody {
+                message: r#"{"id": "{{timestamp()}}"}"#.into(),
+                ..call.clone()
+            }
+            .to_body(),
+            query: vec![kv("q", "1")],
+            headers: vec![kv("authorization", "Bearer t"), kv("Content-Type", "text/plain")],
+            ..Default::default()
+        };
+        let prepared = prepare_with(&request, &variables).expect("prepared");
+        assert_eq!(prepared.method, HttpMethod::Post);
+        assert_eq!(prepared.url, "https://shop.test/shop.Store/Get");
+        assert_eq!(prepared.http_version, HttpVersion::Http2);
+        assert_eq!(prepared.header("content-type"), Some("application/grpc"));
+        assert_eq!(prepared.header("te"), Some("trailers"));
+        assert_eq!(prepared.header("authorization"), Some("Bearer t"));
+        assert_eq!(prepared.body, [0, 0, 0, 0, 3, 0x0a, 1, b'7'], "the template ran");
+        assert_eq!(needs(&request, &variables).responses, Vec::<String>::new());
+
+        let unknown = HttpRequest {
+            body: GrpcBody {
+                message: r#"{"nope": 1}"#.into(),
+                ..call
+            }
+            .to_body(),
+            ..request
+        };
+        assert!(matches!(
+            prepare_with(&unknown, &variables),
+            Err(PrepareError::Grpc { message }) if message.contains("shop.Ask")
+        ));
     }
 
     #[test]

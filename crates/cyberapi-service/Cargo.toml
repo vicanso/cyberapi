@@ -25,6 +25,8 @@ zip = { workspace = true }
 [dev-dependencies]
 pollster = { workspace = true }
 pretty_assertions = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
 
 [lints.clippy]
 unwrap_used = "deny"

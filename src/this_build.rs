@@ -284,11 +284,42 @@ pub fn files() -> Arc<dyn FileReader + Send + Sync> {
     ))
 }
 
+/// `.proto` files compiled for a gRPC call's definitions: what they import
+/// is looked for beside each, then in the folders above it (an import
+/// names a file from the root of its tree); Google's own are built in. A
+/// page reads no files.
+#[cfg(not(target_family = "wasm"))]
+pub fn compile_protos(paths: &[std::path::PathBuf]) -> Result<cyberapi_core::grpc::Definitions, String> {
+    desktop::compile_protos(paths)
+}
+#[cfg(target_family = "wasm")]
+pub fn compile_protos(_: &[std::path::PathBuf]) -> Result<cyberapi_core::grpc::Definitions, String> {
+    Err("the browser build cannot read .proto files".into())
+}
+
 #[cfg(not(target_family = "wasm"))]
 mod desktop {
     use cyberapi_core::template::{BaseDir, FileReader};
     use std::path::{Path, PathBuf};
     use std::sync::OnceLock;
+
+    /// How many folders above a `.proto` file its imports are looked for in.
+    const IMPORT_LEVELS: usize = 5;
+
+    pub(super) fn compile_protos(paths: &[PathBuf]) -> Result<cyberapi_core::grpc::Definitions, String> {
+        let mut includes: Vec<&Path> = Vec::new();
+        for path in paths {
+            for folder in path.ancestors().skip(1).take(IMPORT_LEVELS) {
+                if !folder.as_os_str().is_empty() && !includes.contains(&folder) {
+                    includes.push(folder);
+                }
+            }
+        }
+        let mut compiler = protox::Compiler::new(includes).map_err(|error| error.to_string())?;
+        compiler.include_imports(true);
+        compiler.open_files(paths).map_err(|error| error.to_string())?;
+        cyberapi_core::grpc::Definitions::decode(&compiler.encode_file_descriptor_set())
+    }
 
     /// Read once: finding it out may start a process, and every request's
     /// User-Agent names it.

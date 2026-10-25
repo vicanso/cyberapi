@@ -93,9 +93,10 @@ pub struct HttpRequest {
 
 impl HttpRequest {
     /// Whether the editor has a Body tab for it (F4.12): a method that sends
-    /// one, or a GraphQL query, which a GET sends as parameters.
+    /// one, a GraphQL query, which a GET sends as parameters, or a gRPC
+    /// call's message.
     pub fn has_body_tab(&self) -> bool {
-        self.method.has_body() || self.content_type == ContentType::GraphQl
+        self.method.has_body() || self.content_type == ContentType::GraphQl || self.method == HttpMethod::Grpc
     }
 
     /// Reads `api_settings.setting`. What cannot be read is an empty request
@@ -171,11 +172,14 @@ pub enum HttpMethod {
     Head,
     Connect,
     Trace,
+    /// A gRPC unary call (`crate::grpc`): sent as HTTP/2 POSTs are, to a
+    /// service's method, with a message its definitions encode.
+    Grpc,
 }
 
 impl HttpMethod {
     /// The methods the editor offers (F4.2), in its order.
-    pub const EDITABLE: [Self; 7] = [
+    pub const EDITABLE: [Self; 8] = [
         Self::Get,
         Self::Post,
         Self::Put,
@@ -183,6 +187,7 @@ impl HttpMethod {
         Self::Delete,
         Self::Options,
         Self::Head,
+        Self::Grpc,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -196,6 +201,7 @@ impl HttpMethod {
             Self::Head => "HEAD",
             Self::Connect => "CONNECT",
             Self::Trace => "TRACE",
+            Self::Grpc => "gRPC",
         }
     }
 
@@ -210,6 +216,7 @@ impl HttpMethod {
             "HEAD" => Self::Head,
             "CONNECT" => Self::Connect,
             "TRACE" => Self::Trace,
+            "GRPC" => Self::Grpc,
             _ => Self::Get,
         }
     }

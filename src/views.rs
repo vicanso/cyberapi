@@ -29,6 +29,15 @@ mod variables_dialog;
 mod workspace;
 
 pub use access_dialog::open_access_dialog;
+
+/// What copying a request's command says: a gRPC call's is grpcurl's.
+pub fn copied_command(command: &str) -> String {
+    if command.starts_with("grpcurl ") {
+        rust_i18n::t!("response.grpcurl_copied").to_string()
+    } else {
+        rust_i18n::t!("response.curl_copied").to_string()
+    }
+}
 pub use accounts_dialog::open_accounts_dialog;
 pub use cookies_dialog::open_cookies_dialog;
 pub use dashboard::DashboardView;

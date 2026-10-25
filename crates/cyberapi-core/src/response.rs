@@ -1,8 +1,9 @@
 //! What came back (4.4, M7): the engine's [`Exchange`], the [`HttpResponse`]
 //! kept in an API's history, and the rules for showing one.
 
+use crate::grpc::GrpcStatus;
 use crate::media::{self, ImageType, Sniffed};
-use crate::model::HttpRequest;
+use crate::model::{HttpMethod, HttpRequest};
 use crate::redirect;
 use crate::send::base64_bytes;
 use crate::{CollectionId, ItemId, Timestamp};
@@ -114,6 +115,9 @@ pub struct HttpResponse {
     /// The body was longer than the engine reads ([`RESPONSE_LIMIT`]): this
     /// is its start.
     pub truncated: bool,
+    /// What the panel says above the body: why a gRPC reply is shown as the
+    /// bytes it came as.
+    pub notice: Option<String>,
 }
 
 /// How the id of an answer the history did not keep starts: no store gives
@@ -166,12 +170,28 @@ impl HttpResponse {
         self.header_values("content-type").collect::<Vec<_>>().join(" ")
     }
 
+    /// How a gRPC call ended: from its trailers, which the headers end
+    /// with. `None` for an HTTP request, or a call the server gave no
+    /// status.
+    pub fn grpc_status(&self) -> Option<GrpcStatus> {
+        (self.request.method == HttpMethod::Grpc)
+            .then(|| GrpcStatus::read(&self.headers))
+            .flatten()
+    }
+
     /// F7.1. A declared type wins, unless it says only "bytes"
     /// (`application/octet-stream`): an image or a PDF among them is shown
     /// as one. With no type, the first bytes tell an image or a PDF; a
     /// UTF-8 body is text and an object or array is JSON; bytes that are
     /// not UTF-8 stay binary (#43).
     pub fn body_kind(&self) -> BodyKind {
+        // A gRPC reply is kept read as JSON, unless it could not be.
+        if self.request.method == HttpMethod::Grpc {
+            return match self.notice {
+                None => BodyKind::Json,
+                Some(_) => BodyKind::Binary,
+            };
+        }
         let declared = self.content_type();
         if declared.trim().is_empty() {
             return sniffed_kind(&self.body);
@@ -248,7 +268,11 @@ impl HttpResponse {
     }
 
     /// F7.2: `content-length` when the server sent one, the body otherwise.
+    /// A gRPC reply's is what came, not the JSON it was read as.
     pub fn size(&self) -> u64 {
+        if self.request.method == HttpMethod::Grpc {
+            return self.body_size;
+        }
         self.header_values("content-length")
             .next()
             .and_then(|value| value.trim().parse().ok())
@@ -258,6 +282,10 @@ impl HttpResponse {
     /// F7.2: for a body that came compressed, its size on the wire and that
     /// as a whole percentage (rounded up) of the body it decoded to.
     pub fn compression(&self) -> Option<(u64, u64)> {
+        // A gRPC reply was read, not decompressed.
+        if self.request.method == HttpMethod::Grpc {
+            return None;
+        }
         let decoded = self.body_omitted.unwrap_or(self.body.len() as u64);
         (self.body_size > 0 && self.body_size < decoded)
             .then(|| (self.body_size, (self.body_size * 100).div_ceil(decoded)))
@@ -321,6 +349,7 @@ impl HttpResponse {
             created_at: self.created_at,
             body_omitted: Some(self.body.len() as u64),
             truncated: self.truncated,
+            notice: self.notice.clone(),
         }
     }
 

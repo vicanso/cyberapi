@@ -24,10 +24,11 @@ use axum::response::{IntoResponse, Response};
 use cyberapi_core::access::CollectionRole;
 use cyberapi_core::directory::McpToken;
 use cyberapi_core::graphql::GraphQlBody;
+use cyberapi_core::grpc::GrpcBody;
 use cyberapi_core::mcp::{
     MAX_RESULT_BYTES, MAX_TEXT_CHARS, cut, find_api, listing, masked, masked_body, masked_params,
 };
-use cyberapi_core::model::{ApiSetting, Collection, ContentType, KvParam, VariableCategory};
+use cyberapi_core::model::{ApiSetting, Collection, ContentType, HttpMethod, KvParam, VariableCategory};
 use cyberapi_core::response::{BodyKind, HttpResponse};
 use cyberapi_core::template::NoFiles;
 use cyberapi_core::version;
@@ -426,6 +427,16 @@ async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
             |entry| json!({ "type": "basic", "username": entry.key, "password": masked("password", &entry.value) }),
         );
     let body = match request.content_type {
+        // A gRPC call: its method and message; its definitions (base64
+        // descriptors) say nothing an assistant reads.
+        _ if request.method == HttpMethod::Grpc => {
+            let grpc = GrpcBody::read(&request.body);
+            json!({
+                "service": grpc.service,
+                "method": grpc.method,
+                "message": cut(&masked_body(&grpc.message), MAX_TEXT_CHARS),
+            })
+        }
         // A form's fields are kept as the JSON of a list.
         ContentType::Form | ContentType::Multipart => {
             let fields: Vec<KvParam> = serde_json::from_str(&request.body).unwrap_or_default();

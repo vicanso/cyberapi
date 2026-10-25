@@ -9,7 +9,7 @@
 //! (F14.8, F14.9), and an HTTP version other than curl's own choice is named
 //! (F14.10).
 
-use crate::model::{ContentType, HttpRequest};
+use crate::model::{ContentType, HttpMethod, HttpRequest};
 use crate::prefs::HttpVersion;
 use crate::send::{PreparedRequest, form_fields};
 
@@ -32,6 +32,10 @@ pub fn curl(
     cookies: &[CurlCookie<'_>],
     follow_redirects: bool,
 ) -> String {
+    // A gRPC call is no cURL command: grpcurl makes it.
+    if request.method == HttpMethod::Grpc {
+        return crate::grpc::grpcurl(prepared, &crate::grpc::GrpcBody::read(&request.body));
+    }
     let mut parts = vec!["curl".to_string(), "-v".to_string()];
     if follow_redirects {
         parts.push("-L".to_string());

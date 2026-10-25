@@ -5,6 +5,7 @@
 //! from a document written before it, and one that is gone is ignored.
 
 use crate::collection::SortOrder;
+use crate::model::{HttpMethod, HttpRequest};
 use crate::{CollectionId, ItemId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -401,19 +402,17 @@ pub enum RequestTab {
 }
 
 impl RequestTab {
-    /// In the editor's order; Body only for a request that has one
-    /// (`HttpRequest::has_body_tab`).
-    pub fn for_request(body: bool) -> &'static [Self] {
-        if body {
+    /// In the editor's order, the first shown first: Body only for a
+    /// request that has one (`HttpRequest::has_body_tab`); a gRPC call has
+    /// its message and metadata, and no query.
+    pub fn for_request(request: &HttpRequest) -> &'static [Self] {
+        if request.method == HttpMethod::Grpc {
+            &[Self::Body, Self::Headers, Self::Auth]
+        } else if request.has_body_tab() {
             &[Self::Body, Self::Query, Self::Headers, Self::Auth]
         } else {
             &[Self::Query, Self::Headers, Self::Auth]
         }
-    }
-
-    /// Body for a request that has one, Query otherwise.
-    pub fn default_for(body: bool) -> Self {
-        if body { Self::Body } else { Self::Query }
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -439,17 +438,18 @@ impl RequestTab {
 impl WorkspacePrefs {
     /// The tab `api` shows: the one kept, if its request has it, or the
     /// default. `body`: the request has a Body tab.
-    pub fn tab(&self, api: &ItemId, body: bool) -> RequestTab {
+    pub fn tab(&self, api: &ItemId, request: &HttpRequest) -> RequestTab {
+        let tabs = RequestTab::for_request(request);
         self.tabs
             .get(api)
             .and_then(|tab| RequestTab::parse(tab))
-            .filter(|tab| RequestTab::for_request(body).contains(tab))
-            .unwrap_or(RequestTab::default_for(body))
+            .filter(|tab| tabs.contains(tab))
+            .unwrap_or(tabs[0])
     }
 
-    /// Keeps `tab` for `api`; the method's default is kept as nothing.
-    pub fn set_tab(&mut self, api: &ItemId, body: bool, tab: RequestTab) {
-        if tab == RequestTab::default_for(body) {
+    /// Keeps `tab` for `api`; the request's first is kept as nothing.
+    pub fn set_tab(&mut self, api: &ItemId, request: &HttpRequest, tab: RequestTab) {
+        if tab == RequestTab::for_request(request)[0] {
             self.tabs.remove(api);
         } else {
             self.tabs.insert(api.clone(), tab.as_str().to_string());
@@ -487,17 +487,33 @@ mod tests {
     #[test]
     fn tabs_default_by_method_and_keep_only_the_others() {
         let api = ItemId::from("a");
+        let request = |method| HttpRequest {
+            method,
+            ..Default::default()
+        };
+        let (get, post, grpc) = (
+            request(HttpMethod::Get),
+            request(HttpMethod::Post),
+            request(HttpMethod::Grpc),
+        );
         let mut prefs = WorkspacePrefs::default();
-        assert_eq!(prefs.tab(&api, false), RequestTab::Query);
-        assert_eq!(prefs.tab(&api, true), RequestTab::Body);
-        prefs.set_tab(&api, true, RequestTab::Headers);
+        assert_eq!(prefs.tab(&api, &get), RequestTab::Query);
+        assert_eq!(prefs.tab(&api, &post), RequestTab::Body);
+        prefs.set_tab(&api, &post, RequestTab::Headers);
         assert_eq!(prefs.tabs.get(&api).map(String::as_str), Some("header"));
-        assert_eq!(prefs.tab(&api, true), RequestTab::Headers);
-        prefs.set_tab(&api, true, RequestTab::Body);
+        assert_eq!(prefs.tab(&api, &post), RequestTab::Headers);
+        prefs.set_tab(&api, &post, RequestTab::Body);
         assert!(prefs.tabs.is_empty(), "the default is kept as nothing");
         // A kept Body tab on a method without one falls back to Query.
         prefs.tabs.insert(api.clone(), "body".into());
-        assert_eq!(prefs.tab(&api, false), RequestTab::Query);
+        assert_eq!(prefs.tab(&api, &get), RequestTab::Query);
+        // A gRPC call has no query.
+        prefs.tabs.insert(api.clone(), "query".into());
+        assert_eq!(prefs.tab(&api, &grpc), RequestTab::Body);
+        assert_eq!(
+            RequestTab::for_request(&grpc),
+            [RequestTab::Body, RequestTab::Headers, RequestTab::Auth]
+        );
     }
 
     /// A frame on a monitor, not zoomed.

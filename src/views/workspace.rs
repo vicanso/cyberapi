@@ -135,11 +135,12 @@ pub fn bind_mac_page_keys(cx: &mut App) {
 }
 
 /// The color of a method's label (§6): DELETE red, the methods with a body
-/// green, the rest blue.
+/// green, a gRPC call magenta, the rest blue.
 pub fn method_color(method: HttpMethod, cx: &App) -> Hsla {
     let theme = cx.theme();
     match method {
         HttpMethod::Delete => theme.danger,
+        HttpMethod::Grpc => theme.magenta,
         method if method.has_body() => theme.success,
         _ => theme.info,
     }
@@ -397,7 +398,7 @@ impl WorkspaceView {
                 }
                 WorkspaceEvent::Curl(command) => {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(command.clone()));
-                    window.push_notification(Notification::success(t!("response.curl_copied").to_string()), cx);
+                    window.push_notification(Notification::success(crate::views::copied_command(command)), cx);
                 }
                 WorkspaceEvent::CurlFailed(message) => {
                     window.push_notification(Notification::error(message.clone()), cx);

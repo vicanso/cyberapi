@@ -17,7 +17,7 @@
 //! draft's.
 
 use super::copy::{self, Kept, Pushed, ServerCopy};
-use super::{ApiState, AppStore, Load, run_serial, run_store};
+use super::{ApiState, AppStore, GrpcDefinitions, Load, run_serial, run_store};
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::ItemId;
@@ -128,6 +128,8 @@ pub struct WorkspaceState {
     /// for by one API, offered to every API sent there, until the project
     /// is left.
     schemas: HashMap<String, Arc<Schema>>,
+    /// gRPC definitions by the address as the APIs write it, the same way.
+    grpc: HashMap<String, Arc<GrpcDefinitions>>,
     /// A server project's working copy; `None` for a project of this
     /// machine's, whose changes are written at once.
     copy: Option<CopyState>,
@@ -202,6 +204,7 @@ impl WorkspaceState {
             custom: Vec::new(),
             answers: HashMap::new(),
             schemas: HashMap::new(),
+            grpc: HashMap::new(),
             copy,
             _poll: poll.map(|every| Self::poll(every, cx)),
         };
@@ -739,6 +742,17 @@ impl WorkspaceState {
         cx.notify();
     }
 
+    /// The gRPC definitions loaded for the address `uri`, if an API loaded
+    /// any.
+    pub fn grpc_definitions(&self, uri: &str) -> Option<Arc<GrpcDefinitions>> {
+        self.grpc.get(uri.trim()).cloned()
+    }
+
+    pub fn keep_grpc_definitions(&mut self, uri: &str, definitions: Arc<GrpcDefinitions>, cx: &mut Context<Self>) {
+        self.grpc.insert(uri.trim().to_string(), definitions);
+        cx.notify();
+    }
+
     /// Reads the variables kept here again: the project changed.
     fn refresh_kept_variables(&mut self, cx: &mut Context<Self>) {
         self.refresh_variables(VariableCategory::Environment, cx);
@@ -770,17 +784,17 @@ impl WorkspaceState {
     /// F4.12: the tab the selected API's editor shows.
     pub fn tab(&self, cx: &gpui_kit::App) -> Option<RequestTab> {
         let api = self.api.as_ref()?.read(cx);
-        Some(self.prefs.tab(api.api(), api.request().has_body_tab()))
+        Some(self.prefs.tab(api.api(), api.request()))
     }
 
     pub fn set_tab(&mut self, tab: RequestTab, cx: &mut Context<Self>) {
         let Some(api) = self.api.as_ref() else { return };
-        let (id, body) = {
+        let (id, request) = {
             let api = api.read(cx);
-            (api.api().clone(), api.request().has_body_tab())
+            (api.api().clone(), api.request().clone())
         };
-        if self.prefs.tab(&id, body) != tab {
-            self.prefs.set_tab(&id, body, tab);
+        if self.prefs.tab(&id, &request) != tab {
+            self.prefs.set_tab(&id, &request, tab);
             self.save_prefs(cx);
             cx.notify();
         }
@@ -1322,6 +1336,7 @@ mod tests {
     use crate::states::ApiEvent;
     use crate::states::api::SAVE_DELAY;
     use cyberapi_core::access::CollectionRole;
+    use cyberapi_core::grpc::{Definitions, GrpcBody};
     use cyberapi_core::model::{HttpMethod, HttpRequest, KvParam};
     use cyberapi_core::prefs::{SendPrefs, Timeouts};
     use cyberapi_core::response::Exchange;
@@ -2113,6 +2128,100 @@ mod tests {
         cx.run_until_parked();
         assert!(heard.borrow()[0].starts_with("not JSON"), "{:?}", heard.borrow());
         assert!(api.read_with(cx, |api, cx| api.schema(cx).is_none()));
+    }
+
+    /// A gRPC call: the body becomes its message; `.proto` files give the
+    /// definitions, every API at the address is offered them, and a call
+    /// with no method takes the first it can make, with its example.
+    #[gpui_kit::test]
+    async fn a_grpc_call_takes_its_definitions_from_proto_files(cx: &mut TestAppContext) {
+        let folder = tempfile::tempdir().expect("a folder");
+        let proto = folder.path().join("shop.proto");
+        std::fs::write(
+            &proto,
+            "syntax = \"proto3\";\npackage shop;\nimport \"google/protobuf/timestamp.proto\";\n\
+             message Ask { string id = 1; google.protobuf.Timestamp at = 2; }\n\
+             service Store { rpc Watch(Ask) returns (stream Ask); rpc Get(Ask) returns (Ask); }\n",
+        )
+        .expect("written");
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_api(None, "get".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let into = heard.clone();
+        cx.update(|cx| {
+            cx.subscribe(&api, move |_, event, _| match event {
+                ApiEvent::RequestReplaced => into.borrow_mut().push("replaced".to_string()),
+                ApiEvent::GrpcDefinitions { methods, example } => into
+                    .borrow_mut()
+                    .push(format!("{methods} {}", example.as_deref().unwrap_or("-"))),
+                ApiEvent::NoGrpcDefinitions(why) => into.borrow_mut().push(why.clone()),
+                _ => {}
+            })
+            .detach();
+        });
+        api.update(cx, |api, cx| {
+            api.set_method(HttpMethod::Post, cx);
+            api.set_body(r#"{"id": "7"}"#.into(), cx);
+            api.set_uri("localhost:50051".into(), cx);
+            api.set_method(HttpMethod::Grpc, cx);
+        });
+        let message = |api: &Entity<ApiState>, cx: &mut TestAppContext| {
+            api.read_with(cx, |api, _| GrpcBody::read(&api.request().body))
+        };
+        assert_eq!(message(&api, cx).message, r#"{"id": "7"}"#);
+        assert_eq!(heard.borrow().as_slice(), ["replaced"]);
+
+        api.update(cx, |api, cx| api.import_protos(vec![proto], cx));
+        assert!(api.read_with(cx, |api, _| api.loading_grpc()));
+        cx.run_until_parked();
+        assert_eq!(
+            heard.borrow()[1],
+            "2 {\n    \"id\": \"\",\n    \"at\": \"1970-01-01T00:00:00Z\"\n}",
+            "Watch streams: Get is taken"
+        );
+        let body = message(&api, cx);
+        assert_eq!((body.service.as_str(), body.method.as_str()), ("shop.Store", "Get"));
+        assert_eq!(body.source, "shop.proto");
+        assert_eq!(body.message, r#"{"id": "7"}"#, "what the reader wrote stays");
+        let kept = Definitions::from_base64(&body.descriptors).expect("kept");
+        assert_eq!(kept.methods().len(), 2);
+
+        // Another API at the address is offered them.
+        state.update(cx, |state, cx| state.create_api(None, "other".into(), cx));
+        cx.run_until_parked();
+        let other = editor(&state, cx);
+        other.update(cx, |api, cx| {
+            api.set_method(HttpMethod::Grpc, cx);
+            api.set_uri(" localhost:50051 ".into(), cx);
+        });
+        let offered = other.read_with(cx, |api, cx| api.grpc_definitions(cx).map(|known| known.source.clone()));
+        assert_eq!(offered.as_deref(), Some("shop.proto"));
+
+        // Back to HTTP, the message is the body again.
+        api.update(cx, |api, cx| api.set_method(HttpMethod::Post, cx));
+        assert_eq!(api.read_with(cx, |api, _| api.request().body.clone()), r#"{"id": "7"}"#);
+
+        // A file that does not compile says why; what was loaded stays.
+        let refused = Rc::new(RefCell::new(Vec::new()));
+        let into = refused.clone();
+        cx.update(|cx| {
+            cx.subscribe(&other, move |_, event, _| {
+                if let ApiEvent::NoGrpcDefinitions(why) = event {
+                    into.borrow_mut().push(why.clone());
+                }
+            })
+            .detach();
+        });
+        let broken = folder.path().join("broken.proto");
+        std::fs::write(&broken, "syntax = \"proto3\";\nmessage {").expect("written");
+        other.update(cx, |api, cx| api.import_protos(vec![broken], cx));
+        cx.run_until_parked();
+        assert_eq!(refused.borrow().len(), 1, "{:?}", refused.borrow());
+        assert!(other.read_with(cx, |api, cx| api.grpc_definitions(cx).is_some()));
     }
 
     #[gpui_kit::test]

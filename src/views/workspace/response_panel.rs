@@ -8,8 +8,9 @@ use crate::states::{ApiState, AppStore};
 use crate::this_build;
 use crate::views::json_tree::{JsonTree, response_view_switch};
 use cyberapi_core::graphql;
+use cyberapi_core::grpc::GrpcStatus;
 use cyberapi_core::media::{self, HEX_LIMIT, ImageType};
-use cyberapi_core::model::ContentType;
+use cyberapi_core::model::{ContentType, HttpMethod};
 use cyberapi_core::response::{
     BodyKind, DISPLAY_LIMIT, HttpResponse, RESPONSE_LIMIT, StatusLevel, clip_text, format_duration, format_size,
     status_level, status_text, unwrappable_line,
@@ -232,6 +233,18 @@ impl ResponsePanel {
         }
     }
 
+    /// A gRPC call's status in its colour: OK green, one the caller can
+    /// mend (an argument, a permission, what is not found) yellow, the
+    /// server's red.
+    fn grpc_color(&self, status: &GrpcStatus, cx: &App) -> Hsla {
+        let theme = cx.theme();
+        match status.code {
+            0 => theme.success,
+            1 | 3 | 5 | 6 | 7 | 9 | 11 | 16 => theme.warning,
+            _ => theme.danger,
+        }
+    }
+
     fn render_summary(&self, response: Option<&HttpResponse>, cx: &mut Context<Self>) -> AnyElement {
         let api = self.api.read(cx);
         let muted = cx.theme().muted_foreground;
@@ -242,9 +255,10 @@ impl ResponsePanel {
             .responses()
             .iter()
             .map(|response| {
-                let (status, color) = match response.status {
-                    Some(code) => (code.to_string(), self.status_color(code, cx)),
-                    None => (t!("response.failed").to_string(), cx.theme().danger),
+                let (status, color) = match (response.grpc_status(), response.status) {
+                    (Some(grpc), _) => (grpc.code.to_string(), self.grpc_color(&grpc, cx)),
+                    (None, Some(code)) => (code.to_string(), self.status_color(code, cx)),
+                    (None, None) => (t!("response.failed").to_string(), cx.theme().danger),
                 };
                 let at = response.created_at.get().with_timezone(&chrono::Local);
                 let when = if at.date_naive() == today {
@@ -305,20 +319,23 @@ impl ResponsePanel {
                 )))
                 .into_any_element(),
             (None, Some(response)) => {
-                let status: AnyElement = match response.status {
-                    Some(code) => {
-                        let color = self.status_color(code, cx);
-                        h_flex()
-                            .h(px(22.))
-                            .px_2()
-                            .items_center()
-                            .rounded_full()
-                            .bg(color.opacity(0.16))
-                            .font_semibold()
-                            .text_color(color)
-                            .child(format!("{code} {}", status_text(code)))
-                            .into_any_element()
-                    }
+                // A gRPC call's own status, where it gave one.
+                let shown = match (response.grpc_status(), response.status) {
+                    (Some(grpc), _) => Some((format!("{} {}", grpc.code, grpc.name()), self.grpc_color(&grpc, cx))),
+                    (None, Some(code)) => Some((format!("{code} {}", status_text(code)), self.status_color(code, cx))),
+                    (None, None) => None,
+                };
+                let status: AnyElement = match shown {
+                    Some((text, color)) => h_flex()
+                        .h(px(22.))
+                        .px_2()
+                        .items_center()
+                        .rounded_full()
+                        .bg(color.opacity(0.16))
+                        .font_semibold()
+                        .text_color(color)
+                        .child(text)
+                        .into_any_element(),
                     None => {
                         let color = cx.theme().danger;
                         h_flex()
@@ -367,7 +384,11 @@ impl ResponsePanel {
                     .ghost()
                     .small()
                     .icon(gpui_kit::assets::IconName::Terminal)
-                    .tooltip(t!("response.copy_curl").to_string())
+                    .tooltip(if self.api.read(cx).request().method == HttpMethod::Grpc {
+                        t!("response.copy_grpcurl").to_string()
+                    } else {
+                        t!("response.copy_curl").to_string()
+                    })
                     .on_click(cx.listener(|this, _, _, cx| this.api.update(cx, |api, cx| api.copy_curl(cx)))),
             )
             .child(
@@ -567,13 +588,46 @@ impl ResponsePanel {
                     .children(shown.into_iter().map(|error| div().text_xs().child(error.to_string())))
                     .into_any_element()
             });
-        if redirect.is_none() && cut.is_none() && unkept.is_none() && graphql.is_none() {
+        // A gRPC call that failed says why in its status; a reply its
+        // definitions do not read is shown as the bytes it came as.
+        let grpc = response.grpc_status().filter(|status| !status.is_ok()).map(|status| {
+            let danger = cx.theme().danger;
+            let title = t!(
+                "response.grpc_failed",
+                status = format!("{} {}", status.code, status.name())
+            )
+            .to_string();
+            v_flex()
+                .px_3()
+                .py_2()
+                .gap_0p5()
+                .text_sm()
+                .text_color(danger)
+                .child(title)
+                .when(!status.message.is_empty(), |this| {
+                    this.child(div().text_xs().child(status.message.clone()))
+                })
+                .into_any_element()
+        });
+        let unread = response
+            .notice
+            .as_ref()
+            .map(|why| note(t!("response.grpc_unread", reason = why).to_string(), Vec::new(), cx));
+        if redirect.is_none()
+            && cut.is_none()
+            && unkept.is_none()
+            && graphql.is_none()
+            && grpc.is_none()
+            && unread.is_none()
+        {
             return body;
         }
         v_flex()
             .size_full()
             .children(unkept)
             .children(graphql)
+            .children(grpc)
+            .children(unread)
             .children(redirect)
             .children(cut)
             .child(div().flex_1().min_h_0().child(body))

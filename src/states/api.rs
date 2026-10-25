@@ -12,10 +12,16 @@
 //! cancels it, and a cancelled request is dropped — its connection closes
 //! (#2) — rather than left to finish unseen. A second click within 200 ms of
 //! the first is taken as a double click and ignored.
+//!
+//! A gRPC call (`cyberapi_core::grpc`) is encoded with definitions: from the
+//! server's reflection, or `.proto` files on the desktop. The project keeps
+//! the ones loaded for an address, for every API sent there; the API keeps
+//! the files its chosen service needs.
 
 use super::{Load, WorkspaceState, run_store};
 use crate::this_build;
 use cyberapi_core::graphql_schema::Schema;
+use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody};
 use cyberapi_core::model::{ApiSetting, ContentType, HttpMethod, HttpRequest, KvParam};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::send::PrepareError;
@@ -23,6 +29,8 @@ use cyberapi_core::{CollectionId, ItemId};
 use cyberapi_service::{SendFailure, Sender};
 use cyberapi_store::StoreError;
 use gpui_kit::{App, AppContext as _, Context, EventEmitter, Task, WeakEntity};
+use std::cell::RefCell;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
@@ -69,6 +77,18 @@ pub enum ApiEvent {
     NotSaved(String),
     /// A GraphQL endpoint gave no schema: why.
     NoSchema(String),
+    /// gRPC definitions were loaded, with this many methods; the example
+    /// message of the method a call without one took, for a message not
+    /// written yet.
+    GrpcDefinitions { methods: usize, example: Option<String> },
+    /// No gRPC definitions: why.
+    NoGrpcDefinitions(String),
+}
+
+/// gRPC definitions, and where they came from (`GrpcBody::source`).
+pub struct GrpcDefinitions {
+    pub definitions: Definitions,
+    pub source: String,
 }
 
 /// A request on its way.
@@ -99,6 +119,11 @@ pub struct ApiState {
     shown: Option<String>,
     /// A GraphQL endpoint's schema being asked for.
     asking_schema: Option<Task<()>>,
+    /// gRPC definitions being loaded.
+    loading_grpc: Option<Task<()>>,
+    /// The gRPC definitions the body keeps, read once for the descriptors
+    /// it keeps: what the view draws asks for them every frame.
+    own_grpc: RefCell<Option<(String, Option<Arc<GrpcDefinitions>>)>>,
 }
 
 impl EventEmitter<ApiEvent> for ApiState {}
@@ -143,6 +168,8 @@ impl ApiState {
             history: Load::Loading,
             shown: None,
             asking_schema: None,
+            loading_grpc: None,
+            own_grpc: RefCell::new(None),
         };
         state.load_history(cx);
         state
@@ -233,15 +260,22 @@ impl ApiState {
         });
     }
 
-    /// F4.2: saved at once.
+    /// F4.2: saved at once. To or from gRPC, the body becomes the call's
+    /// message, or the message the body; the editor reads it again.
     pub fn set_method(&mut self, method: HttpMethod, cx: &mut Context<Self>) {
         if self.request.method != method {
+            let body = grpc::switched_body(&self.request.body, self.request.method, method);
+            let replaced = body != self.request.body;
+            self.request.body = body;
             self.request.method = method;
             self.save_now(cx);
             let api = self.api.clone();
             let _ = self
                 .workspace
                 .update(cx, |workspace, cx| workspace.method_changed(&api, cx));
+            if replaced {
+                cx.emit(ApiEvent::RequestReplaced);
+            }
         }
     }
 
@@ -295,8 +329,12 @@ impl ApiState {
         cx.emit(ApiEvent::RequestReplaced);
     }
 
-    /// F4.8: a form or multipart body's fields.
+    /// F4.8: a form or multipart body's fields. A gRPC call's body is its
+    /// own: the hidden list writes nothing there.
     pub fn set_form(&mut self, fields: Vec<KvParam>, cx: &mut Context<Self>) {
+        if self.request.method == HttpMethod::Grpc {
+            return;
+        }
         self.set_body(serde_json::to_string(&kept(fields)).unwrap_or_default(), cx);
     }
 
@@ -517,6 +555,135 @@ impl ApiState {
             });
         }));
         cx.notify();
+    }
+
+    /// The gRPC definitions the call's method is chosen from: the ones the
+    /// project keeps for its address — loaded by this API or another sent
+    /// there — or else the ones its body keeps.
+    pub fn grpc_definitions(&self, cx: &App) -> Option<Arc<GrpcDefinitions>> {
+        let known = self
+            .workspace
+            .upgrade()
+            .and_then(|workspace| workspace.read(cx).grpc_definitions(&self.request.uri));
+        known.or_else(|| self.own_grpc_definitions())
+    }
+
+    fn own_grpc_definitions(&self) -> Option<Arc<GrpcDefinitions>> {
+        let body = GrpcBody::read(&self.request.body);
+        let mut memo = self.own_grpc.borrow_mut();
+        if let Some((descriptors, read)) = memo.as_ref()
+            && *descriptors == body.descriptors
+        {
+            return read.clone();
+        }
+        let read = body.definitions().and_then(Result::ok).map(|definitions| {
+            Arc::new(GrpcDefinitions {
+                definitions,
+                source: body.source.clone(),
+            })
+        });
+        *memo = Some((body.descriptors, read.clone()));
+        read
+    }
+
+    pub fn loading_grpc(&self) -> bool {
+        self.loading_grpc.is_some()
+    }
+
+    /// Asks the server's reflection for its definitions, with the request's
+    /// address and metadata.
+    pub fn load_grpc_reflection(&mut self, cx: &mut Context<Self>) {
+        let call = cyberapi_service::reflect(self.sender(cx), self.collection.clone(), self.request.clone());
+        self.load_grpc(call, FROM_REFLECTION.to_string(), cx);
+    }
+
+    /// Compiles `.proto` files for the definitions (the desktop).
+    pub fn import_protos(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let names: Vec<String> = paths
+            .iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        let compiling = async move { this_build::compile_protos(&paths) };
+        self.load_grpc(compiling, names.join(", "), cx);
+    }
+
+    fn load_grpc(
+        &mut self,
+        loading: impl Future<Output = Result<Definitions, String>> + Send + 'static,
+        source: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.loading_grpc.is_some() {
+            return;
+        }
+        let uri = self.request.uri.clone();
+        self.loading_grpc = Some(cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(loading).await;
+            let _ = this.update(cx, |this, cx| this.grpc_loaded(result, &uri, source, cx));
+        }));
+        cx.notify();
+    }
+
+    fn grpc_loaded(&mut self, result: Result<Definitions, String>, uri: &str, source: String, cx: &mut Context<Self>) {
+        self.loading_grpc = None;
+        match result {
+            Ok(definitions) => {
+                let known = Arc::new(GrpcDefinitions { definitions, source });
+                let _ = self.workspace.update(cx, |workspace, cx| {
+                    workspace.keep_grpc_definitions(uri, known.clone(), cx)
+                });
+                let methods = known.definitions.methods();
+                // A call with no method yet takes the first it can make.
+                let example = if GrpcBody::read(&self.request.body).service.is_empty() {
+                    methods
+                        .iter()
+                        .find(|method| !method.streaming)
+                        .and_then(|method| self.choose_grpc_method_in(&known, &method.service, &method.method, cx))
+                } else {
+                    None
+                };
+                cx.emit(ApiEvent::GrpcDefinitions {
+                    methods: methods.len(),
+                    example,
+                });
+            }
+            Err(why) => cx.emit(ApiEvent::NoGrpcDefinitions(why)),
+        }
+        cx.notify();
+    }
+
+    /// Chooses the method the call makes, keeping the definitions its
+    /// service needs. Answers the example of its message, for the view to
+    /// put in a message not written yet.
+    pub fn choose_grpc_method(&mut self, service: &str, method: &str, cx: &mut Context<Self>) -> Option<String> {
+        let known = self.grpc_definitions(cx)?;
+        self.choose_grpc_method_in(&known, service, method, cx)
+    }
+
+    fn choose_grpc_method_in(
+        &mut self,
+        known: &GrpcDefinitions,
+        service: &str,
+        method: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let mut body = GrpcBody::read(&self.request.body);
+        body.descriptors = known.definitions.kept_for(service)?;
+        body.service = service.to_string();
+        body.method = method.to_string();
+        body.source = known.source.clone();
+        self.request.body = body.to_body();
+        self.save_now(cx);
+        known.definitions.example(service, method)
+    }
+
+    /// The example message of the method the call makes.
+    pub fn grpc_example(&self, cx: &App) -> Option<String> {
+        let body = GrpcBody::read(&self.request.body);
+        self.grpc_definitions(cx)?
+            .definitions
+            .example(&body.service, &body.method)
     }
 
     /// F7.8: the command of the request as the editor holds it.

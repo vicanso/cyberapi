@@ -64,6 +64,13 @@ mime_guess = "2.0.5"
 # An image's width and height from its header, for the response panel (F7.4).
 imagesize = { version = "0.15.0", default-features = false, features = ["bmp", "gif", "heif", "ico", "jpeg", "png", "pnm", "tiff", "webp"] }
 percent-encoding = "2.3.2"
+# gRPC (unary calls): a message encoded and decoded with the definitions an
+# API keeps, read from a server's reflection or compiled from .proto files.
+prost = "0.14.4"
+prost-types = "0.14.4"
+prost-reflect = { version = "0.16.5", features = ["serde"] }
+# .proto files compiled in-process, without protoc: the desktop's import.
+protox = "0.10.0"
 pollster = "1.0.1"
 pretty_assertions = "1.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -150,6 +157,8 @@ gpui-kit = { workspace = true, features = ["tree-sitter", "tree-sitter-html", "g
 # brings the grammar with an empty highlight query.
 tree-sitter = "0.26.13"
 tree-sitter-graphql = "0.1.0"
+# A gRPC call's definitions from .proto files the reader picks.
+protox = { workspace = true }
 # The OS version, for the about section and the User-Agent (F1.7, F5.4).
 os_info = { version = "3.15.0", default-features = false }
 # Blocks on the store's first answers before the first window opens.

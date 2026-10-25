@@ -12,6 +12,7 @@ pub mod directory;
 pub mod format;
 pub mod graphql;
 pub mod graphql_schema;
+pub mod grpc;
 mod id;
 pub mod import;
 pub mod json_view;
