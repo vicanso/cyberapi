@@ -651,7 +651,7 @@ impl ApiState {
         if let Some(store) = cx.try_global::<super::AppStore>() {
             let prefs = store.state().read(cx).prefs();
             self.sender.timeouts = prefs.timeouts;
-            self.sender.sending = prefs.sending;
+            self.sender.sending = prefs.sending.clone();
         }
         self.sender.clone()
     }

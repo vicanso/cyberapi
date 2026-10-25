@@ -85,7 +85,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 - 浏览 Schema：点“Schema：N 个类型”打开面板，列类型、字段、参数和说明（`graphql_schema` 已经取了 `description`），点击插入到光标处。数据来自 `WorkspaceState` 按 URI 缓存的 Schema。
 - 错误位置：`graphql::response_errors` 已读出错误，再读 `locations` 的行列，在查询编辑器里标出来，参考请求体 JSON 错误标位置的做法。
 
-### #60 代理
+### #60 代理（已完成）
 
 设置里加代理：跟随系统 / 环境变量（`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`，默认）、手动（HTTP CONNECT、SOCKS5，可带认证和绕过列表）、不用代理。
 

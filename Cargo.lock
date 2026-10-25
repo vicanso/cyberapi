@@ -1865,6 +1865,7 @@ dependencies = [
 name = "cyberapi-http"
 version = "0.2.1"
 dependencies = [
+ "base64 0.23.1",
  "brotli-decompressor",
  "bytes",
  "cyberapi-core",

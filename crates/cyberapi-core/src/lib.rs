@@ -24,6 +24,7 @@ pub mod mcp;
 pub mod media;
 pub mod model;
 pub mod prefs;
+pub mod proxy;
 pub mod redirect;
 pub mod response;
 pub mod search;

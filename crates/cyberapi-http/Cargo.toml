@@ -19,6 +19,8 @@ serde = { workspace = true }
 snafu = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+# A proxy's Basic sign-in (#60).
+base64 = { workspace = true }
 brotli-decompressor = "6.1.0"
 bytes = "1.12.1"
 flate2 = "1.1.10"
@@ -30,7 +32,8 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 rustls-native-certs = "0.8.5"
 # zstd bodies, decoded in Rust: no C library to build for every target.
 ruzstd = "0.9.1"
-tokio = { workspace = true }
+# `io-util`: talking to a proxy (#60).
+tokio = { workspace = true, features = ["io-util"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 tracing = { workspace = true }
 url = { workspace = true }

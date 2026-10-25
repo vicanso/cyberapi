@@ -734,3 +734,217 @@ async fn https_with_the_systems_roots() {
     assert!(!exchange.stats.cipher.is_empty());
     assert!(exchange.stats.tls > Duration::ZERO);
 }
+
+/// A proxy for the tests (#60): an HTTP one answers a plain request itself,
+/// with the head it was sent, and tunnels a `CONNECT` to `to` (one to a
+/// host named `blocked…` it refuses); a SOCKS5 one connects every request
+/// to `to`. What each was asked is kept, a line a request.
+async fn serve_proxy(socks: bool, to: SocketAddr) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let asked: Arc<Mutex<Vec<String>>> = Arc::default();
+    let kept = asked.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut client, _)) = listener.accept().await else {
+                return;
+            };
+            let asked = asked.clone();
+            tokio::spawn(async move {
+                let note = |line: String| asked.lock().expect("asked").push(line);
+                if socks {
+                    let mut head = [0u8; 2];
+                    client.read_exact(&mut head).await.expect("greeting");
+                    let mut methods = vec![0u8; usize::from(head[1])];
+                    client.read_exact(&mut methods).await.expect("methods");
+                    if methods.contains(&0x02) {
+                        client.write_all(&[0x05, 0x02]).await.expect("method");
+                        let mut length = [0u8; 2];
+                        client.read_exact(&mut length).await.expect("user length");
+                        let mut user = vec![0u8; usize::from(length[1])];
+                        client.read_exact(&mut user).await.expect("user");
+                        let mut password_length = [0u8];
+                        client.read_exact(&mut password_length).await.expect("password length");
+                        let mut password = vec![0u8; usize::from(password_length[0])];
+                        client.read_exact(&mut password).await.expect("password");
+                        note(format!(
+                            "user {}:{}",
+                            String::from_utf8_lossy(&user),
+                            String::from_utf8_lossy(&password)
+                        ));
+                        client.write_all(&[0x01, 0x00]).await.expect("signed in");
+                    } else {
+                        client.write_all(&[0x05, 0x00]).await.expect("method");
+                    }
+                    let mut request = [0u8; 4];
+                    client.read_exact(&mut request).await.expect("request");
+                    let host = match request[3] {
+                        0x01 => {
+                            let mut octets = [0u8; 4];
+                            client.read_exact(&mut octets).await.expect("ipv4");
+                            std::net::Ipv4Addr::from(octets).to_string()
+                        }
+                        _ => {
+                            let mut length = [0u8];
+                            client.read_exact(&mut length).await.expect("name length");
+                            let mut name = vec![0u8; usize::from(length[0])];
+                            client.read_exact(&mut name).await.expect("name");
+                            String::from_utf8_lossy(&name).into_owned()
+                        }
+                    };
+                    let mut port = [0u8; 2];
+                    client.read_exact(&mut port).await.expect("port");
+                    note(format!("connect {host}:{}", u16::from_be_bytes(port)));
+                    client
+                        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                        .await
+                        .expect("reply");
+                } else {
+                    let mut head = Vec::new();
+                    while !head.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0u8];
+                        if client.read(&mut byte).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                        head.push(byte[0]);
+                    }
+                    let head = String::from_utf8_lossy(&head).into_owned();
+                    note(head.trim_end().replace("\r\n", " | "));
+                    if !head.starts_with("CONNECT ") {
+                        let answer = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{head}", head.len());
+                        client.write_all(answer.as_bytes()).await.expect("answer");
+                        return;
+                    }
+                    if head.starts_with("CONNECT blocked") {
+                        client
+                            .write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n")
+                            .await
+                            .expect("refusal");
+                        return;
+                    }
+                    client
+                        .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                        .await
+                        .expect("tunnel");
+                }
+                let mut server = tokio::net::TcpStream::connect(to).await.expect("the server");
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+            });
+        }
+    });
+    (address, kept)
+}
+
+fn through(url: &str, proxy: &str) -> PreparedRequest {
+    PreparedRequest {
+        method: HttpMethod::Get,
+        url: url.into(),
+        timeouts: Timeouts::default().effective(),
+        accept_invalid_certs: true,
+        proxy: cyberapi_core::proxy::ProxyPrefs {
+            mode: cyberapi_core::proxy::ProxyMode::Manual,
+            url: proxy.into(),
+            bypass: String::new(),
+        },
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_plain_request_goes_to_an_http_proxy_whole() {
+    let (proxy, asked) = serve_proxy(false, serve().await).await;
+    let engine = engine().with_proxies();
+    let exchange = engine
+        .send(through(
+            "http://origin.test:8080/x?y=1#part",
+            &format!("http://u:p@{proxy}"),
+        ))
+        .await
+        .expect("an exchange");
+    let head = String::from_utf8(exchange.body).expect("text");
+    assert!(
+        head.starts_with("GET http://origin.test:8080/x?y=1 HTTP/1.1\r\n"),
+        "{head}"
+    );
+    assert!(
+        head.to_ascii_lowercase().contains("proxy-authorization: basic dtpw"),
+        "{head}"
+    );
+    assert!(head.to_ascii_lowercase().contains("host: origin.test:8080"), "{head}");
+    assert_eq!(exchange.stats.proxy, format!("http://{proxy}"));
+    assert_eq!(exchange.stats.remote_addr, proxy.to_string());
+    assert_eq!(asked.lock().expect("asked").len(), 1);
+}
+
+#[tokio::test]
+async fn https_goes_through_a_connect_tunnel() {
+    let (proxy, asked) = serve_proxy(false, serve_self_signed().await).await;
+    let engine = engine().with_proxies();
+    let exchange = engine
+        .send(through("https://origin.test/", &format!("{proxy}")))
+        .await
+        .expect("an exchange");
+    assert_eq!(exchange.body, b"secret");
+    assert!(exchange.stats.is_https);
+    assert_eq!(
+        asked.lock().expect("asked").as_slice(),
+        ["CONNECT origin.test:443 HTTP/1.1 | Host: origin.test:443"]
+    );
+    // A proxy that will not connect says so.
+    let refused = engine.send(through("https://blocked.test/", &format!("{proxy}"))).await;
+    match refused {
+        Err(SendError::Proxy { message }) => assert!(message.contains("403"), "{message}"),
+        other => panic!("not refused: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn socks5_connects_by_name_or_by_address() {
+    let (proxy, asked) = serve_proxy(true, serve().await).await;
+    let engine = engine().with_proxies();
+    let exchange = engine
+        .send(through("http://origin.test/echo", &format!("socks5h://u:p@{proxy}")))
+        .await
+        .expect("an exchange");
+    let echo = String::from_utf8(exchange.body).expect("text");
+    assert!(echo.starts_with("GET /echo"), "{echo}");
+    assert_eq!(exchange.stats.proxy, format!("socks5h://{proxy}"));
+    // socks5: the address found here; an address as it is.
+    engine
+        .send(through("http://10.9.8.7:81/echo", &format!("socks5://{proxy}")))
+        .await
+        .expect("an exchange");
+    assert_eq!(
+        asked.lock().expect("asked").as_slice(),
+        ["user u:p", "connect origin.test:80", "connect 10.9.8.7:81"]
+    );
+}
+
+#[tokio::test]
+async fn this_machine_and_the_bridge_go_straight_to_the_server() {
+    let address = serve().await;
+    // Nothing listens there: going through it would fail.
+    let dead = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind")
+        .local_addr()
+        .expect("address");
+    let to_loopback = through(&format!("http://{address}/echo"), &format!("http://{dead}"));
+    let exchange = engine().with_proxies().send(to_loopback).await.expect("straight there");
+    assert!(exchange.stats.proxy.is_empty());
+    // The bridge's engine takes no proxy from a request (a page's): this
+    // one would answer for any address; straight there, there is none.
+    let (proxy, asked) = serve_proxy(false, address).await;
+    let elsewhere = through("http://10.9.8.7:1/", &format!("http://{proxy}"));
+    let direct = engine().send(PreparedRequest {
+        timeouts: Timeouts {
+            connect: 1,
+            ..Timeouts::default()
+        }
+        .effective(),
+        ..elsewhere
+    });
+    assert!(direct.await.is_err(), "not through the proxy");
+    assert!(asked.lock().expect("asked").is_empty());
+}

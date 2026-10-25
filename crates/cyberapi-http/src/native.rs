@@ -19,10 +19,17 @@
 //! together bound the exchange after that — but for an event stream someone
 //! watches (`HttpEngine::send_watched`), which is read for as long as it
 //! goes on, and ends when nothing came for the read timeout.
+//!
+//! An engine made [`NativeEngine::with_proxies`] (the desktop's) goes
+//! through the proxy a request names (#60): an HTTP proxy is sent a plain
+//! request whole and tunnels the rest with `CONNECT`, a SOCKS5 proxy is
+//! asked to connect. The bridge's goes straight to every server, whatever a
+//! request says: a page must not reach past the bridge's address rules.
 
 use crate::{Exchange, HttpEngine, PreparedRequest, Progress, SendError, SendFuture, TargetPolicy, Watch};
 use bytes::Bytes;
 use cyberapi_core::prefs::HttpVersion;
+use cyberapi_core::proxy::ProxyKind;
 use cyberapi_core::response::{HttpStats, RESPONSE_LIMIT, StreamEnd, StreamInfo};
 use cyberapi_core::sse;
 use http_body_util::{BodyExt as _, Full};
@@ -52,6 +59,7 @@ pub struct NativeEngine {
     runtime: Handle,
     policy: TargetPolicy,
     body_limit: usize,
+    proxies: bool,
 }
 
 impl NativeEngine {
@@ -60,7 +68,15 @@ impl NativeEngine {
             runtime,
             policy,
             body_limit: RESPONSE_LIMIT,
+            proxies: false,
         }
+    }
+
+    /// Goes through the proxy each request names, or the environment's
+    /// (#60): the desktop's engine, not the bridge's.
+    pub fn with_proxies(mut self) -> Self {
+        self.proxies = true;
+        self
     }
 
     /// Reads at most `limit` bytes of a body, as it comes and decompressed;
@@ -86,6 +102,7 @@ impl NativeEngine {
         let task = self.runtime.spawn(exchange(
             request,
             self.policy.clone(),
+            self.proxies,
             Reading {
                 limit: self.body_limit,
                 watch,
@@ -210,7 +227,12 @@ struct Reading {
     watch: Option<Watch>,
 }
 
-async fn exchange(request: PreparedRequest, policy: TargetPolicy, reading: Reading) -> Result<Exchange, SendError> {
+async fn exchange(
+    request: PreparedRequest,
+    policy: TargetPolicy,
+    proxies: bool,
+    reading: Reading,
+) -> Result<Exchange, SendError> {
     let started = Instant::now();
     let timeouts = request.timeouts;
     let invalid = |message: String| SendError::Invalid { message };
@@ -220,21 +242,45 @@ async fn exchange(request: PreparedRequest, policy: TargetPolicy, reading: Readi
         "https" => true,
         other => return Err(invalid(format!("{other}: only http and https"))),
     };
-    let host = url.host().ok_or_else(|| invalid(format!("{}: no host", request.url)))?;
+    let host = url
+        .host()
+        .ok_or_else(|| invalid(format!("{}: no host", request.url)))?
+        .to_owned();
     let port = url.port_or_known_default().unwrap_or(if https { 443 } else { 80 });
     let connect_limit = seconds(timeouts.connect);
+    let proxy_failed = |message: String| SendError::Proxy { message };
+    let via = if proxies {
+        cyberapi_core::proxy::choose(&request.proxy, &url, |name| std::env::var(name).ok()).map_err(proxy_failed)?
+    } else {
+        None
+    };
+    // Where the connection goes: the proxy, when there is one.
+    let (dial, dial_port) = match &via {
+        Some(proxy) => {
+            let written = if proxy.host.contains(':') {
+                format!("[{}]", proxy.host)
+            } else {
+                proxy.host.clone()
+            };
+            (
+                Host::parse(&written).map_err(|error| proxy_failed(error.to_string()))?,
+                proxy.port,
+            )
+        }
+        None => (host.clone(), port),
+    };
 
     let mut stats = HttpStats {
         is_https: https,
         ..Default::default()
     };
     let connecting = async {
-        let addresses: Vec<SocketAddr> = match &host {
-            Host::Ipv4(ip) => vec![SocketAddr::new((*ip).into(), port)],
-            Host::Ipv6(ip) => vec![SocketAddr::new((*ip).into(), port)],
+        let addresses: Vec<SocketAddr> = match &dial {
+            Host::Ipv4(ip) => vec![SocketAddr::new((*ip).into(), dial_port)],
+            Host::Ipv6(ip) => vec![SocketAddr::new((*ip).into(), dial_port)],
             Host::Domain(name) => {
                 let resolving = Instant::now();
-                let found = tokio::net::lookup_host((*name, port))
+                let found = tokio::net::lookup_host((name.as_str(), dial_port))
                     .await
                     .map_err(|error| SendError::Dns {
                         host: name.to_string(),
@@ -249,9 +295,9 @@ async fn exchange(request: PreparedRequest, policy: TargetPolicy, reading: Readi
         let permitted: Vec<SocketAddr> = addresses.into_iter().filter(|a| policy.permits(a.ip())).collect();
         if permitted.is_empty() {
             // A name says where it led, which is what an allowed range names.
-            let target = match (&host, refused) {
+            let target = match (&dial, refused) {
                 (Host::Domain(name), Some(address)) => format!("{name} ({address})"),
-                _ => host.to_string(),
+                _ => dial.to_string(),
             };
             return Err(SendError::Forbidden { target });
         }
@@ -278,9 +324,55 @@ async fn exchange(request: PreparedRequest, policy: TargetPolicy, reading: Readi
             message: last_error.map(|e| e.to_string()).unwrap_or_default(),
         })
     };
-    let stream = timeout(connect_limit, connecting)
+    let mut stream = timeout(connect_limit, connecting)
         .await
         .map_err(|_| timed_out("connect", timeouts.connect))??;
+
+    // #60: through the proxy — a tunnel to the server, or, for a plain
+    // request to an HTTP proxy, the request sent to it whole (`forward`).
+    let mut forward = None;
+    if let Some(proxy) = &via {
+        let tunnelling = Instant::now();
+        let authority = format!("{}:{port}", url.host_str().unwrap_or_default());
+        let through = async {
+            match proxy.kind {
+                ProxyKind::Socks5 { remote_dns } => {
+                    let target = match &host {
+                        Host::Domain(name) if !remote_dns => {
+                            let resolving = Instant::now();
+                            let found = tokio::net::lookup_host((name.as_str(), port))
+                                .await
+                                .map_err(|error| error.to_string())?
+                                .next()
+                                .ok_or(format!("{name} has no address"))?;
+                            stats.dns += resolving.elapsed();
+                            match found.ip() {
+                                std::net::IpAddr::V4(address) => Host::Ipv4(address),
+                                std::net::IpAddr::V6(address) => Host::Ipv6(address),
+                            }
+                        }
+                        other => other.clone(),
+                    };
+                    crate::proxy::socks5(&mut stream, proxy, &target, port).await
+                }
+                ProxyKind::Http if https || request.http_version == HttpVersion::Http2 => {
+                    crate::proxy::tunnel(&mut stream, proxy, &authority).await
+                }
+                ProxyKind::Http => {
+                    forward = Some(Forward {
+                        authorization: crate::proxy::authorization(proxy),
+                    });
+                    Ok(())
+                }
+            }
+        };
+        timeout(connect_limit, through)
+            .await
+            .map_err(|_| timed_out("proxy", timeouts.connect))?
+            .map_err(proxy_failed)?;
+        stats.tcp += tunnelling.elapsed();
+        stats.proxy = proxy.display();
+    }
 
     if https {
         let shaking = Instant::now();
@@ -316,14 +408,21 @@ async fn exchange(request: PreparedRequest, policy: TargetPolicy, reading: Readi
                 message: "the server did not agree to HTTP/2".to_string(),
             });
         }
-        over(tls, &request, &url, stats, started, h2, reading).await
+        over(tls, &request, &url, stats, started, h2, None, reading).await
     } else {
         let h2 = request.http_version == HttpVersion::Http2;
-        over(stream, &request, &url, stats, started, h2, reading).await
+        over(stream, &request, &url, stats, started, h2, forward, reading).await
     }
 }
 
+/// A plain request an HTTP proxy is sent whole (#60): with the address in
+/// full on its first line, and the proxy's sign-in.
+struct Forward {
+    authorization: Option<String>,
+}
+
 /// The exchange on a connected stream, in HTTP/2 when `h2`.
+#[allow(clippy::too_many_arguments)]
 async fn over<S>(
     stream: S,
     request: &PreparedRequest,
@@ -331,6 +430,7 @@ async fn over<S>(
     mut stats: HttpStats,
     started: Instant,
     h2: bool,
+    forward: Option<Forward>,
     reading: Reading,
 ) -> Result<Exchange, SendError>
 where
@@ -346,7 +446,7 @@ where
         inner: stream,
         timeline: timeline.clone(),
     });
-    let outgoing = build(request, url, h2)?.map(|inner| TimedBody {
+    let outgoing = build(request, url, h2, forward.as_ref())?.map(|inner| TimedBody {
         inner,
         timeline: timeline.clone(),
     });
@@ -567,10 +667,16 @@ const HTTP1_ONLY: [&str; 5] = [
 ];
 
 /// The request, with `Accept-Encoding` unless it names its own. Over
-/// HTTP/1.1 in origin form with `Host`; over HTTP/2 with the address in
+/// HTTP/1.1 in origin form with `Host` — or, to a proxy (`forward`), the
+/// address in full and the proxy's sign-in; over HTTP/2 with the address in
 /// full, a `Host` the request names as its authority, and the headers
 /// HTTP/2 forbids left out.
-fn build(request: &PreparedRequest, url: &Url, h2: bool) -> Result<http::Request<Full<Bytes>>, SendError> {
+fn build(
+    request: &PreparedRequest,
+    url: &Url,
+    h2: bool,
+    forward: Option<&Forward>,
+) -> Result<http::Request<Full<Bytes>>, SendError> {
     let invalid = |message: String| SendError::Invalid { message };
     let mut target = url.path().to_string();
     if let Some(query) = url.query() {
@@ -595,7 +701,18 @@ fn build(request: &PreparedRequest, url: &Url, h2: bool) -> Result<http::Request
             .version(http::Version::HTTP_2)
             .uri(format!("{}://{authority}{target}", url.scheme()))
     } else {
-        let builder = builder.uri(target);
+        let builder = match forward {
+            Some(_) => {
+                let mut whole = url.clone();
+                whole.set_fragment(None);
+                builder.uri(whole.as_str())
+            }
+            None => builder.uri(target),
+        };
+        let builder = match forward.and_then(|forward| forward.authorization.as_deref()) {
+            Some(authorization) => builder.header("Proxy-Authorization", authorization),
+            None => builder,
+        };
         if request.header("host").is_none() {
             builder.header("Host", authority)
         } else {

@@ -56,6 +56,17 @@ pub fn reads_files() -> bool {
     false
 }
 
+/// Whether requests may go through a proxy (#60): the desktop's do; a
+/// page's go from the bridge, straight to their servers.
+#[cfg(not(target_family = "wasm"))]
+pub fn proxies() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn proxies() -> bool {
+    false
+}
+
 /// Whether the app sizes its own window (F14.2); a page's is the tab's.
 #[cfg(not(target_family = "wasm"))]
 pub fn sizes_window() -> bool {

@@ -487,6 +487,7 @@ async fn prepare(
         timeouts: sender.timeouts,
         accept_invalid_certs: sender.sending.accept_invalid_certs,
         http_version: sender.sending.http_version,
+        proxy: &sender.sending.proxy,
         boundary: &boundary,
     };
     let prepared = match grpc_call {

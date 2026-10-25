@@ -63,6 +63,11 @@ pub struct HttpStats {
     pub content_transfer: Duration,
     #[serde(with = "micros")]
     pub total: Duration,
+    /// The proxy it went through (#60), without its password; empty for
+    /// none. Its connecting and tunnelling are in `tcp`, and
+    /// `remote_addr` is its address.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub proxy: String,
 }
 
 /// What the engine answers for a request that reached a server.

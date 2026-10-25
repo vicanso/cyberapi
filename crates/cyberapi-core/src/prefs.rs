@@ -143,7 +143,7 @@ fn within(value: u32, default: u32, sizes: RangeInclusive<u32>) -> u32 {
 
 /// How a request goes out besides its timeouts. The switches off is how the
 /// old app sent, and what a document from before them reads as.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SendPrefs {
     /// A redirect is followed to where it points (F14.8); off, the
@@ -154,6 +154,9 @@ pub struct SendPrefs {
     pub accept_invalid_certs: bool,
     /// F14.10.
     pub http_version: HttpVersion,
+    /// #60: on the desktop; a page's requests go from the bridge, which
+    /// takes no proxy from them.
+    pub proxy: crate::proxy::ProxyPrefs,
 }
 
 /// Which HTTP a request speaks (F14.10).

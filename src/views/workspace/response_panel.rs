@@ -1334,6 +1334,10 @@ impl ResponsePanel {
         if !stats.remote_addr.is_empty() {
             rows.push((t!("response.remote").to_string(), stats.remote_addr.clone()));
         }
+        // #60: the peer above is the proxy's.
+        if !stats.proxy.is_empty() {
+            rows.push((t!("response.proxy").to_string(), stats.proxy.clone()));
+        }
         if !stats.version.is_empty() {
             rows.push((t!("response.version").to_string(), stats.version.clone()));
         }

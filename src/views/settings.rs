@@ -19,6 +19,7 @@ use crate::views::json_tree::json_view_label;
 use crate::views::server_section::ServerSection;
 use crate::views::update_dialog::open_update_dialog;
 use cyberapi_core::prefs::{HttpVersion, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
+use cyberapi_core::proxy::{ProxyMode, ProxyPrefs};
 use cyberapi_core::redirect::MAX_REDIRECTS;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
@@ -181,6 +182,24 @@ enum Number {
     WindowSize,
 }
 
+/// A proxy mode's name, as the list offers it.
+fn proxy_mode_label(mode: ProxyMode) -> String {
+    match mode {
+        ProxyMode::Environment => t!("settings.proxy_environment"),
+        ProxyMode::Manual => t!("settings.proxy_manual"),
+        ProxyMode::Off => t!("settings.proxy_off"),
+    }
+    .to_string()
+}
+
+/// The proxy settings changed by `change`, read by the next request.
+fn set_proxy(cx: &mut App, change: impl FnOnce(&mut ProxyPrefs)) {
+    let app = AppStore::global(cx).state().clone();
+    let mut sending = app.read(cx).prefs().sending.clone();
+    change(&mut sending.proxy);
+    app.update(cx, |app, cx| app.set_sending(sending, cx));
+}
+
 pub struct SettingsView {
     section: Section,
     /// Where the focus goes when the section changes: the field that held
@@ -199,6 +218,10 @@ pub struct SettingsView {
     language: Choices,
     json_view: Choices,
     http_version: Choices,
+    /// #60, on the desktop: where the proxy comes from, and the settings'.
+    proxy_mode: Choices,
+    proxy_url: Entity<InputState>,
+    proxy_bypass: Entity<InputState>,
     ui_size: Entity<InputState>,
     editor_size: Entity<InputState>,
     connect: Entity<InputState>,
@@ -287,10 +310,60 @@ impl SettingsView {
                 let app = AppStore::global(cx).state().clone();
                 let sending = SendPrefs {
                     http_version: HTTP_VERSIONS[index],
-                    ..app.read(cx).prefs().sending
+                    ..app.read(cx).prefs().sending.clone()
                 };
                 app.update(cx, |app, cx| app.set_sending(sending, cx));
             },
+            window,
+            cx,
+            &mut subscriptions,
+        );
+
+        // #60.
+        let proxy_mode = Self::choices(
+            ProxyMode::ALL.iter().map(|mode| proxy_mode_label(*mode)).collect(),
+            ProxyMode::ALL
+                .iter()
+                .position(|mode| *mode == prefs.sending.proxy.mode)
+                .unwrap_or(0),
+            |index, cx| {
+                set_proxy(cx, |proxy| proxy.mode = ProxyMode::ALL[index]);
+            },
+            window,
+            cx,
+            &mut subscriptions,
+        );
+        let proxy_text = |value: &str,
+                          placeholder: String,
+                          set: fn(&mut ProxyPrefs, String),
+                          window: &mut Window,
+                          cx: &mut Context<Self>,
+                          subscriptions: &mut Vec<Subscription>| {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(placeholder)
+                    .default_value(value.to_string())
+            });
+            subscriptions.push(cx.subscribe(&input, move |_, input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    let text = input.read(cx).value().to_string();
+                    set_proxy(cx, |proxy| set(proxy, text));
+                }
+            }));
+            input
+        };
+        let proxy_url = proxy_text(
+            &prefs.sending.proxy.url,
+            "http://127.0.0.1:8080".to_string(),
+            |proxy, text| proxy.url = text,
+            window,
+            cx,
+            &mut subscriptions,
+        );
+        let proxy_bypass = proxy_text(
+            &prefs.sending.proxy.bypass,
+            "internal.example.com, 10.0.0.5".to_string(),
+            |proxy, text| proxy.bypass = text,
             window,
             cx,
             &mut subscriptions,
@@ -400,6 +473,9 @@ impl SettingsView {
             language,
             json_view,
             http_version,
+            proxy_mode,
+            proxy_url,
+            proxy_bypass,
             ui_size,
             editor_size,
             connect,
@@ -422,6 +498,35 @@ impl SettingsView {
         *self = Self::new(self.main, window, cx);
         self.section = section;
         self.focus_handle.focus(window, cx);
+    }
+
+    /// #60: the proxy, on the desktop; its address and list when they are
+    /// the settings' own.
+    fn proxy_rows(&self, proxy: &ProxyPrefs, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if !this_build::proxies() {
+            return Vec::new();
+        }
+        let mut rows = vec![setting_row(
+            t!("settings.proxy").to_string(),
+            Some(t!("settings.proxy_desc").to_string()),
+            Select::new(&self.proxy_mode).small(),
+            cx,
+        )];
+        if proxy.mode == ProxyMode::Manual {
+            rows.push(setting_row(
+                t!("settings.proxy_url").to_string(),
+                Some(t!("settings.proxy_url_desc").to_string()),
+                Input::new(&self.proxy_url).small(),
+                cx,
+            ));
+            rows.push(setting_row(
+                t!("settings.proxy_bypass").to_string(),
+                Some(t!("settings.proxy_bypass_desc").to_string()),
+                Input::new(&self.proxy_bypass).small(),
+                cx,
+            ));
+        }
+        rows
     }
 
     /// A drop-down list of `labels` with `chosen` picked; `on_choose` gets
@@ -729,7 +834,10 @@ impl SettingsView {
                         .on_click(set_sending(|sending, on| sending.accept_invalid_certs = !on)),
                     cx,
                 ),
-            ],
+            ]
+            .into_iter()
+            .chain(self.proxy_rows(&prefs.sending.proxy, cx))
+            .collect(),
             Section::Window => vec![
                 setting_row(
                     t!("settings.maximized").to_string(),
@@ -1025,7 +1133,7 @@ fn size_description(sizes: RangeInclusive<u32>, default: u32, key: &str) -> Stri
 fn set_sending(change: fn(&mut SendPrefs, bool)) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
     move |checked, _, cx| {
         let app = AppStore::global(cx).state().clone();
-        let mut sending = app.read(cx).prefs().sending;
+        let mut sending = app.read(cx).prefs().sending.clone();
         change(&mut sending, *checked);
         app.update(cx, |app, cx| app.set_sending(sending, cx));
     }
@@ -1162,6 +1270,7 @@ mod tests {
                 follow_redirects: true,
                 accept_invalid_certs: true,
                 http_version: HttpVersion::Auto,
+                ..Default::default()
             }
         );
         assert!(!shown(cx, "settings-wrap"));

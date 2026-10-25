@@ -137,7 +137,7 @@ impl AppStore {
             files: this_build::files(),
             user_agent: this_build::user_agent(),
             timeouts: self.state.read(cx).prefs().timeouts,
-            sending: self.state.read(cx).prefs().sending,
+            sending: self.state.read(cx).prefs().sending.clone(),
         }
     }
 
@@ -819,14 +819,15 @@ mod tests {
             follow_redirects: true,
             accept_invalid_certs: true,
             http_version: HttpVersion::Http1,
+            ..Default::default()
         };
         state.update(cx, |state, cx| {
             state.set_text(text, cx);
-            state.set_sending(sending, cx);
+            state.set_sending(sending.clone(), cx);
         });
         cx.run_until_parked();
         let kept = pollster::block_on(store.storage().prefs().app()).expect("prefs");
-        assert_eq!((kept.text, kept.sending), (text, sending));
+        assert_eq!((kept.text, kept.sending), (text, sending.clone()));
         assert_eq!(cx.update(|cx| AppStore::global(cx).sender(cx).sending), sending);
 
         state.update(cx, |state, cx| state.reset_prefs(cx));

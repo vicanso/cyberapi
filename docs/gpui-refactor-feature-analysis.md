@@ -659,6 +659,7 @@ Sending --异常--> Idle + 错误提示
 | F14.8 | 跟随重定向（新增） | 默认关闭（与旧版相同，3xx 原样返回）；开启后对 301 / 302 / 303 / 307 / 308 按 `Location` 逐跳重新发送，303 和 POST 的 301 / 302 改为 GET 并去掉 body，跨源时去掉 Authorization / Cookie / Host，每跳保存 `Set-Cookie` 并按新地址注入 Cookie；最多 10 次，超过即失败；历史只记最后一个响应 | — | D + S |
 | F14.9 | 校验 HTTPS 证书（新增） | 默认校验；关闭后接受自签名、过期、域名不符的证书（仍校验握手签名）；证书校验失败时响应面板提示此设置 | — | S + I |
 | F14.10 | HTTP 版本（新增） | 自动（默认）：HTTPS 经 ALPN 协商，服务器支持就用 HTTP/2，否则 HTTP/1.1，明文 HTTP 用 HTTP/1.1；仅 HTTP/1.1；仅 HTTP/2：TLS 协商不到 h2 即失败，明文走 h2c。实际版本显示在响应详情里，cURL 导出带上对应参数；响应体最多读 64 MB（解压后同样），超出截断并提示 | — | S + I |
+| F14.11 | 代理（新增，#60） | 桌面版：环境变量（默认，`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 和 `NO_PROXY`，大小写都认）/ 在设置里填写（`http://`、`socks5://`、`socks5h://`，可带账号；加不走代理的主机列表）/ 不使用。HTTP 代理收明文请求的绝对形式，HTTPS 和 h2c 走 `CONNECT` 隧道；SOCKS5 自己握手（`socks5h` 由代理解析主机名）。本机地址始终直连。规则在 `cyberapi_core::proxy`，握手在 `cyberapi-http` 的 `proxy.rs`；只有 `NativeEngine::with_proxies` 的引擎（桌面）走代理，bridge 的引擎始终直连，`PreparedRequest.proxy` 也不随页面的请求发给 bridge。Details 写明经过的代理，远端地址是代理的 | — | D + S |
 
 ### M15 通用能力
 

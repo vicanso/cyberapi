@@ -98,6 +98,8 @@ impl Transport for EngineTransport {
             accept_invalid_certs: false,
             http_version: HttpVersion::Auto,
             streams: false,
+            // The environment's proxy, as curl would take it (#60).
+            proxy: Default::default(),
         };
         let call = self.engine.send(request);
         Box::pin(async move {

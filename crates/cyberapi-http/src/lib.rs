@@ -20,6 +20,8 @@
 #[cfg(not(target_family = "wasm"))]
 mod native;
 mod policy;
+#[cfg(not(target_family = "wasm"))]
+mod proxy;
 
 pub use cyberapi_core::response::Exchange;
 pub use cyberapi_core::send::PreparedRequest;
@@ -73,6 +75,10 @@ pub enum SendError {
     /// most likely (F14.8).
     #[snafu(display("stopped after {count} redirects"))]
     Redirects { count: usize },
+    /// The proxy (#60) could not be used: a setting that does not read, or
+    /// a proxy that would not connect.
+    #[snafu(display("proxy: {message}"))]
+    Proxy { message: String },
     /// The bridge already has as many of this reader's requests on their
     /// way as it takes from one.
     #[snafu(display("{limit} requests are already on their way; send this one when one of them is back"))]

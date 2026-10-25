@@ -20,6 +20,7 @@ use crate::graphql::GraphQlBody;
 use crate::grpc::{self, GrpcBody};
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam, Variable, VariableCategory, split_env_prefix};
 use crate::prefs::{HttpVersion, Timeouts};
+use crate::proxy::ProxyPrefs;
 use crate::response::{HeaderSource, SENT_BODY_LIMIT, SentHeader, SentRequest};
 use crate::template::{self, FileReader, Inputs, Needs, TemplateError};
 use base64::Engine as _;
@@ -49,6 +50,10 @@ pub struct PreparedRequest {
     /// streams from the server): a watched send reads it as it comes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub streams: bool,
+    /// The proxy it goes through (#60). Never sent to the bridge: what a
+    /// page asks of it goes direct, within its address rules.
+    #[serde(skip)]
+    pub proxy: ProxyPrefs,
 }
 
 impl PreparedRequest {
@@ -92,6 +97,8 @@ pub struct Context<'a> {
     pub accept_invalid_certs: bool,
     /// F14.10.
     pub http_version: HttpVersion,
+    /// #60.
+    pub proxy: &'a ProxyPrefs,
     /// Separates multipart fields; random, from the caller.
     pub boundary: &'a str,
 }
@@ -486,6 +493,7 @@ pub fn grpc_call(
         accept_invalid_certs: cx.accept_invalid_certs,
         http_version: HttpVersion::Http2,
         streams: false,
+        proxy: cx.proxy.clone(),
     })
 }
 
@@ -587,6 +595,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         timeouts: cx.timeouts.effective(),
         accept_invalid_certs: cx.accept_invalid_certs,
         http_version: cx.http_version,
+        proxy: cx.proxy.clone(),
         streams: false,
     })
 }
@@ -725,6 +734,7 @@ mod tests {
                 timeouts: Timeouts::default(),
                 accept_invalid_certs: false,
                 http_version: HttpVersion::Auto,
+                proxy: &ProxyPrefs::default(),
                 boundary: "XYZ",
             },
         )
@@ -1126,6 +1136,7 @@ mod tests {
                     timeouts: Timeouts::default(),
                     accept_invalid_certs: false,
                     http_version: HttpVersion::Auto,
+                    proxy: &ProxyPrefs::default(),
                     boundary: "B",
                 }
             ),

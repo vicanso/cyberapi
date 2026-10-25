@@ -96,10 +96,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .thread_name("cyberapi-http")
         .enable_all()
         .build()?;
-    let engine: Arc<dyn HttpEngine> = Arc::new(cyberapi_http::NativeEngine::new(
-        runtime.handle().clone(),
-        cyberapi_http::TargetPolicy::Anywhere,
-    ));
+    // The reader's proxy, or the environment's (#60).
+    let engine: Arc<dyn HttpEngine> = Arc::new(
+        cyberapi_http::NativeEngine::new(runtime.handle().clone(), cyberapi_http::TargetPolicy::Anywhere)
+            .with_proxies(),
+    );
     gpui_kit::application().with_assets(assets::Assets).run(move |cx| {
         // Must come before anything that uses a component.
         gpui_kit::init(cx);

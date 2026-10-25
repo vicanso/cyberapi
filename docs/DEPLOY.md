@@ -199,6 +199,8 @@ Whoever can sign in to the page can therefore reach what the bridge's machine ca
 
 Ranges are written as addresses (CIDR), not names: the check is on what a name resolves to, so a name allowed by itself could lead anywhere. Each account has at most 16 requests under way at once; more are answered "busy" at once rather than queued.
 
+The bridge connects to every server itself: it does not go through a proxy, neither one in its environment (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) nor the desktop app's proxy setting, which a page's requests do not carry. A proxy would see past the checks above, which are on the address the bridge connects to.
+
 The desktop app sends its requests from the computer it runs on, even for server projects, so none of this applies there.
 
 ## Accounts, teams and invitations

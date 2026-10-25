@@ -99,6 +99,7 @@ mod tests {
             accept_invalid_certs: true,
             http_version: HttpVersion::Http2,
             streams: false,
+            proxy: Default::default(),
         }
     }
 

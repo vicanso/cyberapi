@@ -888,6 +888,11 @@ fn response(collection: &Collection, api: &ItemId, n: usize) -> HttpResponse {
             server_processing: std::time::Duration::from_micros(50),
             content_transfer: std::time::Duration::from_micros(60),
             total: std::time::Duration::from_micros(1500 + n as u64),
+            proxy: if n.is_multiple_of(2) {
+                "http://proxy.test:3128".into()
+            } else {
+                String::new()
+            },
         },
         truncated: n.is_multiple_of(4),
         ..Default::default()
