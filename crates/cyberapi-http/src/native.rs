@@ -389,9 +389,10 @@ where
     // An event stream someone watches is read as it comes, for as long as
     // it goes on (a compressed one could not be shown as it comes); any
     // other body within what is left of the time.
-    let encoded = headers
-        .iter()
-        .any(|(name, value)| name == "content-encoding" && !value.trim().eq_ignore_ascii_case("identity"));
+    // `none` is no encoding either, though only some servers say it.
+    let encoded = headers.iter().any(|(name, value)| {
+        name == "content-encoding" && !["identity", "none", ""].contains(&value.trim().to_ascii_lowercase().as_str())
+    });
     let Reading {
         limit: body_limit,
         watch,

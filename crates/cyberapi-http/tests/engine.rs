@@ -83,7 +83,8 @@ async fn serve() -> SocketAddr {
 }
 
 /// An event stream server: `/events` sends three events 50 ms apart and
-/// ends; `/open` sends one and stays open, quiet.
+/// ends, saying its encoding is `none` as GraphQL Yoga does; `/open` sends
+/// one and stays open, quiet.
 async fn serve_events() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let address = listener.local_addr().expect("address");
@@ -109,9 +110,13 @@ async fn serve_events() -> SocketAddr {
                         let piece = hyper::body::Frame::data(Bytes::from(format!("data: {n}\n\n")));
                         Some((Ok::<_, std::convert::Infallible>(piece), n + 1))
                     });
-                    hyper::Response::builder()
-                        .header("content-type", "text/event-stream")
-                        .body(http_body_util::StreamBody::new(pieces))
+                    let response = hyper::Response::builder().header("content-type", "text/event-stream");
+                    let response = if open {
+                        response
+                    } else {
+                        response.header("content-encoding", "none")
+                    };
+                    response.body(http_body_util::StreamBody::new(pieces))
                 });
                 let _ = hyper::server::conn::http1::Builder::new()
                     .serve_connection(TokioIo::new(stream), service)
