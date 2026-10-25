@@ -18,6 +18,10 @@ pub const HISTORY_BODY_LIMIT: usize = 2 * 1024 * 1024;
 /// The most of a text body the response panel shows; the rest is left out,
 /// and the panel says so.
 pub const DISPLAY_LIMIT: usize = 1024 * 1024;
+/// The biggest body the response panel reads into a tree (#57). The tree is
+/// read from the whole body, not the part the text views show; past this,
+/// parsing it would hold the window, and the panel says so.
+pub const TREE_LIMIT: usize = 16 * 1024 * 1024;
 /// The longest line the panel wraps (#51). Wrapping one line costs about
 /// five microseconds a byte, all before the panel draws: a 600 KB body of
 /// minified JSON, raw, held the window for three seconds. A longer line

@@ -13,8 +13,8 @@ use cyberapi_core::grpc::GrpcStatus;
 use cyberapi_core::media::{self, HEX_LIMIT, ImageType};
 use cyberapi_core::model::{ContentType, HttpMethod};
 use cyberapi_core::response::{
-    BodyKind, DISPLAY_LIMIT, HttpResponse, RESPONSE_LIMIT, StatusLevel, StreamEnd, clip_text, format_duration,
-    format_size, status_level, status_text, unwrappable_line,
+    BodyKind, DISPLAY_LIMIT, HttpResponse, RESPONSE_LIMIT, StatusLevel, StreamEnd, TREE_LIMIT, clip_text,
+    format_duration, format_size, status_level, status_text, unwrappable_line,
 };
 use cyberapi_http::SendError;
 use gpui_kit::component::alert::Alert;
@@ -90,6 +90,8 @@ pub struct ResponsePanel {
     tab: ResponseTab,
     /// The body as a tree, when this response's JSON is shown that way.
     json_tree: Entity<JsonTree>,
+    /// The response the tree was last given.
+    tree_of: Option<String>,
     /// The view picked on the panel, bound to one response. Another response
     /// opens in the saved default.
     body_view: Option<(String, JsonView)>,
@@ -130,7 +132,7 @@ impl ResponsePanel {
                 cx.notify();
             }),
         ];
-        let json_tree = cx.new(JsonTree::new);
+        let json_tree = cx.new(|cx| JsonTree::new(cx).for_response());
         let events = {
             let api = api.clone();
             cx.new(|cx| EventStream::new(api, cx))
@@ -149,6 +151,7 @@ impl ResponsePanel {
             long_line: None,
             tab: ResponseTab::Body,
             json_tree,
+            tree_of: None,
             body_view: None,
             wrap,
             events,
@@ -180,11 +183,23 @@ impl ResponsePanel {
         })
     }
 
+    /// Gives the tree the shown response's whole body, not the part the
+    /// text views show (#57).
     fn sync_response_tree(&mut self, cx: &mut Context<Self>) {
-        if !(self.shown_json(cx) && self.response_shows_tree(cx)) {
+        if !(self.shown_json(cx) && self.response_shows_tree(cx)) || self.tree_of == self.shown {
             return;
         }
-        let text = self.body.read(cx).value().to_string();
+        self.tree_of = self.shown.clone();
+        let Some(response) = self.api.read(cx).shown_response() else {
+            return;
+        };
+        if response.body.len() > TREE_LIMIT {
+            let size = format_size(response.body.len() as u64);
+            let reason = t!("response.json_tree_too_large", size = size).to_string().into();
+            self.json_tree.update(cx, |tree, cx| tree.set_unavailable(reason, cx));
+            return;
+        }
+        let text = String::from_utf8_lossy(&response.body).into_owned();
         self.json_tree.update(cx, |tree, cx| tree.set_text(&text, cx));
     }
 
@@ -748,7 +763,8 @@ impl ResponsePanel {
                 });
                 v_flex()
                     .size_full()
-                    .when_some(self.clipped, |this, shown| {
+                    // The tree has the whole body.
+                    .when_some(self.clipped.filter(|_| !tree), |this, shown| {
                         let text = t!("response.clipped", size = format_size(shown as u64)).to_string();
                         this.child(note(text, vec![save_button(cx)], cx))
                     })

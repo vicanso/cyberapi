@@ -104,6 +104,10 @@ pub(crate) struct JsonTree {
     rows: Rc<HashMap<SharedString, Row>>,
     /// Containers the reader opened, kept across a rebuild.
     expanded: HashSet<SharedString>,
+    /// What the view says when the text is not JSON.
+    invalid: SharedString,
+    /// Why there is no tree to show, said in its place.
+    unavailable: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -124,16 +128,34 @@ impl JsonTree {
             doc: None,
             rows: Rc::new(HashMap::new()),
             expanded: HashSet::new(),
+            invalid: t!("editor.json_tree_invalid").to_string().into(),
+            unavailable: None,
             _subscriptions: vec![subscription],
         }
+    }
+
+    /// A tree of a response, which the reader cannot fix: its note says
+    /// only that the body is not JSON.
+    pub(crate) fn for_response(mut self) -> Self {
+        self.invalid = t!("response.json_tree_invalid").to_string().into();
+        self
+    }
+
+    /// Shows `reason` in place of a tree.
+    pub(crate) fn set_unavailable(&mut self, reason: SharedString, cx: &mut Context<Self>) {
+        self.text.clear();
+        self.doc = None;
+        self.unavailable = Some(reason);
+        self.rebuild(cx);
     }
 
     /// Show `text`. Blank or not JSON leaves the tree empty, and the view
     /// says so.
     pub(crate) fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        if text == self.text {
+        if text == self.text && self.unavailable.is_none() {
             return;
         }
+        self.unavailable = None;
         self.text = text.to_string();
         self.doc = serde_json::from_str(text).ok();
         self.rebuild(cx);
@@ -219,7 +241,7 @@ impl Render for JsonTree {
                         .text_sm()
                         .text_center()
                         .text_color(cx.theme().muted_foreground)
-                        .child(t!("editor.json_tree_invalid").to_string()),
+                        .child(self.unavailable.clone().unwrap_or_else(|| self.invalid.clone())),
                 )
                 .into_any_element();
         }
