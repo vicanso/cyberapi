@@ -16,8 +16,10 @@ use crate::i18n;
 use crate::states::{ApiState, AppStore, ServerCopy, WorkspaceEvent, WorkspaceState};
 use crate::views::name_dialog::open_name_dialog;
 use crate::views::sync_dialog::open_conflict_dialog;
+use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{Collection, HttpMethod};
 use cyberapi_core::prefs::ColumnWidths;
+use cyberapi_core::send::unsent_body;
 use cyberapi_core::tree::ItemKind;
 use cyberapi_core::{CollectionId, ItemId};
 use gpui_kit::component::button::ButtonVariant;
@@ -216,13 +218,26 @@ fn paste_curl(state: &WeakEntity<WorkspaceState>, parent: Option<ItemId>, window
                 };
                 match cyberapi_core::import::curl_command(&text) {
                     Some(bundle) => {
+                        let unsent = bundle.items.iter().find_map(|item| match item {
+                            ImportItem::Api { request, .. } => unsent_body(request).then_some(request.method),
+                            _ => None,
+                        });
                         let _ = state.update(cx, |state, cx| state.import(parent, bundle, cx));
+                        if let Some(method) = unsent {
+                            tell_unsent_body(method, window, cx);
+                        }
                     }
                     None => window.push_notification(Notification::warning(t!("import.no_curl").to_string()), cx),
                 }
             });
         })
         .detach();
+}
+
+/// A cURL command's body its method does not send (#62): kept, and said.
+fn tell_unsent_body(method: HttpMethod, window: &mut Window, cx: &mut App) {
+    let text = t!("editor.curl_body_unsent", method = method.as_str()).to_string();
+    window.push_notification(Notification::warning(text), cx);
 }
 
 /// M11: the project or a folder as a file in the downloads folder — or, in

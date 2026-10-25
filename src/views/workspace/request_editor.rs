@@ -17,7 +17,7 @@ use cyberapi_core::grpc::{FROM_REFLECTION, GrpcBody};
 use cyberapi_core::import::{request_from_curl, split_url};
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
 use cyberapi_core::prefs::RequestTab;
-use cyberapi_core::send::{self, form_fields};
+use cyberapi_core::send::{self, form_fields, unsent_body};
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::ANIMATION_DURATION;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
@@ -832,12 +832,16 @@ impl RequestEditor {
         let Some(request) = request_from_curl(text) else {
             return false;
         };
+        let unsent = unsent_body(&request).then_some(request.method);
         self.api.update(cx, |api, cx| api.replace_request(request, cx));
         // The fields read the request now, not once the event is handled:
         // Enter sends at once, and sending first saves what the fields hold
         // — the URL field still the command (#55).
         self.reload(window, cx);
         window.push_notification(Notification::success(t!("editor.curl_filled").to_string()), cx);
+        if let Some(method) = unsent {
+            super::tell_unsent_body(method, window, cx);
+        }
         true
     }
 

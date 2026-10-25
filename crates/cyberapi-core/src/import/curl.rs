@@ -263,6 +263,18 @@ mod tests {
     }
 
     #[test]
+    fn a_delete_keeps_its_body_and_type() {
+        let got = request(
+            "curl -X DELETE http://127.0.0.1:8765/echo -H 'Content-Type: application/json' -d '{\"ids\":[1,2]}'",
+        );
+        assert_eq!(got.method, HttpMethod::Delete);
+        assert_eq!(got.content_type, ContentType::Json);
+        assert_eq!(got.body, "{\"ids\":[1,2]}");
+        assert!(got.headers.is_empty());
+        assert!(got.has_body_tab());
+    }
+
+    #[test]
     fn a_json_post_from_a_browser() {
         let got = request(
             r#"curl 'https://api.test/v1/users?page=2' -H 'content-type: application/json; charset=utf-8' -H 'X-Token: t' -b 'sid=1' --data-raw '{"name":"tree"}' --compressed"#,

@@ -186,6 +186,21 @@ pub fn form_fields(body: &str) -> Vec<KvParam> {
     serde_json::from_str(body).unwrap_or_default()
 }
 
+/// Whether the request's body is empty: blank text, or no field on.
+pub fn body_is_blank(request: &HttpRequest) -> bool {
+    if request.content_type.is_key_value() {
+        form_fields(&request.body).iter().all(|kv| !kv.enabled)
+    } else {
+        request.body.trim().is_empty()
+    }
+}
+
+/// A body the request keeps but does not send: one its method has no Body
+/// tab for, as a cURL command's `-X OPTIONS -d …` (#62).
+pub fn unsent_body(request: &HttpRequest) -> bool {
+    !request.has_body_tab() && !body_is_blank(request)
+}
+
 /// What `encodeURIComponent` leaves alone.
 const URI_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
@@ -425,9 +440,10 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
 
     let mut headers = sent_headers(request, cx)?;
 
-    // F5.3: only POST, PUT and PATCH carry a body and its type.
+    // F5.3: only POST, PUT, PATCH and DELETE carry a body and its type; a
+    // DELETE only one it has, so one without sends no Content-Type (#62).
     let mut body = Vec::new();
-    if request.method.has_body() {
+    if request.method.has_body() && !(request.method == HttpMethod::Delete && body_is_blank(request)) {
         let content_type = match request.content_type {
             ContentType::Form => {
                 let mut pairs = Vec::new();
@@ -747,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn bodies_go_only_with_post_put_and_patch() {
+    fn bodies_go_only_with_post_put_patch_and_delete() {
         let mut request = HttpRequest {
             uri: "http://a.test".into(),
             body: "{\n  // a comment\n  \"t\": \"{{ts()}}\"\n}".into(),
@@ -764,6 +780,44 @@ mod tests {
         request.headers = vec![kv("Content-Type", "application/vnd.api+json")];
         let prepared = prepare_with(&request, &[]).expect("prepare");
         assert_eq!(prepared.header("Content-Type"), Some("application/vnd.api+json"));
+    }
+
+    #[test]
+    fn a_delete_sends_a_body_only_when_it_has_one() {
+        let mut request = HttpRequest {
+            method: HttpMethod::Delete,
+            uri: "http://a.test".into(),
+            body: "{\"ids\": [1, 2]}".into(),
+            ..Default::default()
+        };
+        let prepared = prepare_with(&request, &[]).expect("prepare");
+        assert_eq!(String::from_utf8_lossy(&prepared.body), "{\"ids\": [1, 2]}");
+        assert_eq!(prepared.header("content-type"), Some("application/json"));
+        assert!(!unsent_body(&request));
+
+        // No body, no Content-Type: a DELETE as it went before.
+        request.body = " \n".into();
+        let prepared = prepare_with(&request, &[]).expect("prepare");
+        assert!(prepared.body.is_empty());
+        assert_eq!(prepared.header("content-type"), None);
+        request.content_type = ContentType::Form;
+        request.body = serde_json::to_string(&[KvParam {
+            key: "a".into(),
+            value: "1".into(),
+            enabled: false,
+        }])
+        .expect("json");
+        assert_eq!(
+            prepare_with(&request, &[]).expect("prepare").header("content-type"),
+            None
+        );
+
+        // An OPTIONS keeps its body unsent, which can be said.
+        request.method = HttpMethod::Options;
+        request.content_type = ContentType::Json;
+        request.body = "{}".into();
+        assert!(prepare_with(&request, &[]).expect("prepare").body.is_empty());
+        assert!(unsent_body(&request));
     }
 
     #[test]

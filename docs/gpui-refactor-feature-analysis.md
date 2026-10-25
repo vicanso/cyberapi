@@ -396,7 +396,7 @@ if parent == "":                                                       // 移动
 | F4.2 | Method | 可选 GET / POST / PUT / PATCH / DELETE / OPTIONS / HEAD，默认 GET；修改后立即保存 | `APISettingParams/uri.tsx:187` | D + S |
 | F4.3 | URI 与环境变量前缀 | 保存格式为 `{{ENV}}` + 路径。编辑时拆成“环境变量选择器 + 路径输入框”（`cuttingURI`），保存时再拼回去；失焦时保存；会去掉首尾空格 | `uri.tsx:70`，`uri.tsx:122` | D + St |
 | F4.4 | 选择环境变量 | 下拉中只列出**启用**的环境变量（显示 `名称 \| 值`），另有“新增”（打开环境变量弹窗）和“清除当前” | `uri.tsx:202` | St |
-| F4.5 | 有 body 的 method | 只有 POST / PUT / PATCH 才显示 Body Tab，发送时也只有这三种会带 body | `req_params.tsx:99`，`http_request.ts:274` | D |
+| F4.5 | 有 body 的 method | 只有 POST / PUT / PATCH 才显示 Body Tab，发送时也只有这三种会带 body（重写版加上 DELETE，批量删除常用；body 为空时不发 body 也不发 Content-Type，#62） | `req_params.tsx:99`，`http_request.ts:274` | D |
 | F4.6 | 切换 Content-Type | 可选 JSON（默认）/ Form / Multipart / XML / Plain。切换时**清空 body**，body 不为空时需要先确认 | `req_params.tsx:222` | S + St |
 | F4.7 | 文本 body 编辑 | JSON / XML / Plain 用文本编辑器编辑；JSON 可一键格式化；内容变化时去掉首尾空白后保存 | `req_params.tsx:199` | St |
 | F4.8 | Form / Multipart body | 以 KV 列表编辑；Multipart 的每一行可以选择文件，value 写为 `file://{绝对路径}`（文件对话框默认打开下载目录） | `req_params.tsx:572`，`ExKeyValue.tsx:153` | S + St |
@@ -435,7 +435,7 @@ Sending --异常--> Idle + 错误提示
 
 来源：`commands/http_request.ts:254`
 
-1. method 不是 POST / PUT / PATCH 时，body 和 contentType 都置空。
+1. method 不是 POST / PUT / PATCH 时，body 和 contentType 都置空。（重写版：DELETE 也带 body，空的除外；粘贴的 cURL 命令有 body 而 method 不发送时，保留 body 并提示，#62。）
 2. `convertBody`：如果 body 看起来像 JSON（去空白后首尾为 `{}` 或 `[]`），删除所有 `//` 开头的行；然后执行模板函数替换（M6）。
 3. Form：把 KV JSON 解析出来，取启用项，key 和 value 都做 `encodeURIComponent`，用 `&` 拼接。
 4. Multipart：取启用且 key 不为空的项；`file://` 开头的项读取二进制文件，MIME 按扩展名推断，文件名为完整路径；编码为 multipart（Content-Type 带 boundary）；body 以 base64 传给 Rust，Rust 发现 Content-Type 以 `multipart/form-data` 开头时先解码。

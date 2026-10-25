@@ -221,9 +221,10 @@ impl HttpMethod {
         }
     }
 
-    /// Only these show a Body tab and send a body (F4.5).
+    /// Only these show a Body tab and send a body (F4.5); a DELETE too, a
+    /// batch delete's ids, say, though only when it has one (#62).
     pub fn has_body(&self) -> bool {
-        matches!(self, Self::Post | Self::Put | Self::Patch)
+        matches!(self, Self::Post | Self::Put | Self::Patch | Self::Delete)
     }
 }
 
