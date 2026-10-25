@@ -97,7 +97,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 
 ## 第 4 批：数据模型（#71、#66、#61）
 
-三个都改请求或变量的数据模型，先一起设计，单独写一份设计说明再动手。共同要顾及的：
+三个都改请求或变量的数据模型，先一起设计，单独写一份设计说明再动手：见 [batch4-design.md](./batch4-design.md)（草案，第 7 节的问题待确认）。共同要顾及的：
 
 - 旧版 Tauri 的库按原样打开：`api_settings.setting` 的 JSON 加字段要有默认值；新表只能追加到 `MIGRATIONS`（Turso）和 `migrations/{postgres,mysql}/`（bridge）。
 - 服务器同步（`TreeStore::replace` 整份推送、`LocalItems::syncable`）、导出 / 导入（`import/own.rs`）、备份格式（`cyberapi_core::backup`）都要带上新字段，旧格式照常能读。
