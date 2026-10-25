@@ -28,6 +28,8 @@ hyper = { version = "1.12.0", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8.5"
+# zstd bodies, decoded in Rust: no C library to build for every target.
+ruzstd = "0.9.1"
 tokio = { workspace = true }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 tracing = { workspace = true }
@@ -35,6 +37,8 @@ url = { workspace = true }
 webpki-roots = "1.0.10"
 
 [dev-dependencies]
+# zstd bodies for the test server to send.
+ruzstd = "0.9.1"
 hyper = { version = "1.12.0", features = ["server", "http1", "http2"] }
 pretty_assertions = { workspace = true }
 # A certificate no root vouches for, made for the test's own HTTPS server.

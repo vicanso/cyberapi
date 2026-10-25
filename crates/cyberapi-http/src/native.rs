@@ -8,7 +8,8 @@
 //! HTTP/2 where TLS agrees on it, or straight away over plain HTTP when the
 //! request asks for it (F14.10); HTTP/1.1 otherwise. Redirects are not
 //! followed (the send pipeline follows them when the reader asks, one
-//! request per hop). `gzip` / `br` (and now `deflate`) bodies are
+//! request per hop). `gzip`, `br`, `zstd` and `deflate` bodies — and one
+//! encoded several times, as its `Content-Encoding` lists — are
 //! decompressed, away from the async threads, with their size as received
 //! kept; at most [`RESPONSE_LIMIT`] of a body is read either way. A request
 //! may take any certificate (F14.9); the handshake is still verified to be
@@ -602,7 +603,7 @@ fn build(request: &PreparedRequest, url: &Url, h2: bool) -> Result<http::Request
         }
     };
     if request.header("accept-encoding").is_none() {
-        builder = builder.header("Accept-Encoding", "gzip, deflate, br");
+        builder = builder.header("Accept-Encoding", "gzip, deflate, br, zstd");
     }
     for (name, value) in &request.headers {
         let lower = name.trim().to_ascii_lowercase();
@@ -629,15 +630,51 @@ fn build(request: &PreparedRequest, url: &Url, h2: bool) -> Result<http::Request
 /// read, or a body that does not decode, which then stays as it came. A
 /// body cut short (`cut`) gives what decodes of its start.
 fn decompress(encoding: &str, raw: &[u8], cut: bool, limit: usize) -> Option<(Vec<u8>, bool)> {
-    let inflate = |reader: &mut dyn Read, out: &mut Vec<u8>| reader.take(limit as u64 + 1).read_to_end(out);
+    // Listed in the order applied: the last one comes off first.
+    let codings: Vec<String> = encoding
+        .split(',')
+        .map(|coding| coding.trim().to_ascii_lowercase())
+        .filter(|coding| !["", "identity", "none"].contains(&coding.as_str()))
+        .collect();
+    let mut body = (raw.to_vec(), cut);
+    for coding in codings.iter().rev() {
+        body = decode(coding, &body.0, body.1, limit)?;
+    }
+    Some(body)
+}
+
+/// The largest window a zstd body may need, as RFC 9659 bounds HTTP's: what
+/// decoding one may allocate, whatever the frame asks for.
+const ZSTD_WINDOW: u64 = 8 * 1024 * 1024;
+
+/// `raw` with one content coding taken off, at most `limit` bytes of it.
+fn decode(coding: &str, raw: &[u8], cut: bool, limit: usize) -> Option<(Vec<u8>, bool)> {
+    let inflate = |reader: &mut dyn Read, out: &mut Vec<u8>| {
+        let room = (limit + 1).saturating_sub(out.len()) as u64;
+        reader.take(room).read_to_end(out)
+    };
     let mut out = Vec::new();
-    let read = match encoding.trim().to_ascii_lowercase().as_str() {
+    let read = match coding {
         "gzip" | "x-gzip" => inflate(&mut flate2::read::MultiGzDecoder::new(raw), &mut out),
         "deflate" => inflate(&mut flate2::read::ZlibDecoder::new(raw), &mut out).or_else(|_| {
             out.clear();
             inflate(&mut flate2::read::DeflateDecoder::new(raw), &mut out)
         }),
         "br" => inflate(&mut brotli_decompressor::Decompressor::new(raw, 4096), &mut out),
+        // One frame after another, as a body may hold several.
+        "zstd" => {
+            let mut source = raw;
+            let mut read = Ok(0);
+            while !source.is_empty() && out.len() <= limit {
+                read = ruzstd::decoding::StreamingDecoder::new_with_max_window_size(&mut source, ZSTD_WINDOW)
+                    .map_err(std::io::Error::other)
+                    .and_then(|mut frame| inflate(&mut frame, &mut out));
+                if read.is_err() {
+                    break;
+                }
+            }
+            read
+        }
         _ => return None,
     };
     if out.len() > limit {

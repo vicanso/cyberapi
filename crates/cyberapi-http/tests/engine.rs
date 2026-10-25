@@ -47,9 +47,16 @@ async fn serve() -> SocketAddr {
                         }
                         "/gzip" => {
                             response = response.header("content-encoding", "gzip");
-                            let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-                            encoder.write_all(&b"hello ".repeat(100)).expect("gzip");
-                            encoder.finish().expect("gzip")
+                            gzip(&b"hello ".repeat(100))
+                        }
+                        "/zstd" => {
+                            response = response.header("content-encoding", "zstd");
+                            zstd(&b"hello ".repeat(100))
+                        }
+                        // Gzip, then zstd over that.
+                        "/stacked" => {
+                            response = response.header("content-encoding", "gzip, zstd");
+                            zstd(&gzip(&b"hello ".repeat(100)))
                         }
                         "/found" => {
                             response = response.status(302).header("location", "/echo");
@@ -228,6 +235,16 @@ async fn a_watched_event_stream_is_read_as_it_comes() {
     assert_eq!((plain.body.len(), plain.stream), (27, None), "not said to stream");
 }
 
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).expect("gzip");
+    encoder.finish().expect("gzip")
+}
+
+fn zstd(bytes: &[u8]) -> Vec<u8> {
+    ruzstd::encoding::compress_to_vec(bytes, ruzstd::encoding::CompressionLevel::Fastest)
+}
+
 fn engine() -> NativeEngine {
     NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::Anywhere)
 }
@@ -259,7 +276,7 @@ async fn sends_what_was_prepared_and_times_it() {
     let lines: Vec<&str> = echo.lines().collect();
     assert_eq!(lines[0], "POST /echo?a=1&b=two");
     assert!(lines.contains(&format!("host: {address}").as_str()), "{echo}");
-    assert!(lines.contains(&"accept-encoding: gzip, deflate, br"), "{echo}");
+    assert!(lines.contains(&"accept-encoding: gzip, deflate, br, zstd"), "{echo}");
     assert!(lines.contains(&"x-token: t"), "{echo}");
     assert!(lines.contains(&"content-length: 8"), "{echo}");
     assert_eq!(lines.last(), Some(&"hi there"));
@@ -274,9 +291,15 @@ async fn sends_what_was_prepared_and_times_it() {
 #[tokio::test]
 async fn bodies_are_decompressed_with_their_size_as_received() {
     let address = serve().await;
-    let exchange = engine().send(get(address, "/gzip")).await.expect("an exchange");
-    assert_eq!(exchange.body, b"hello ".repeat(100));
-    assert!(exchange.body_size < 600, "the compressed size: {}", exchange.body_size);
+    for path in ["/gzip", "/zstd", "/stacked"] {
+        let exchange = engine().send(get(address, path)).await.expect("an exchange");
+        assert_eq!(exchange.body, b"hello ".repeat(100), "{path}");
+        assert!(
+            exchange.body_size < 600,
+            "{path}: the compressed size: {}",
+            exchange.body_size
+        );
+    }
 }
 
 #[tokio::test]
