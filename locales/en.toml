@@ -526,6 +526,8 @@ tree_close = "Close a folder, or go up"
 tree_open = "Open a folder, or go in"
 tree_toggle = "Open or close a folder"
 search_projects = "Search the projects"
+find_api = "Search the APIs (Enter opens the first found)"
+focus_url = "Go to the address"
 
 [sync]
 unreachable = "Server unreachable"

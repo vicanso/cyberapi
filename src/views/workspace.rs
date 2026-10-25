@@ -26,6 +26,7 @@ use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::empty::{
     Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
+use gpui_kit::component::input::Search;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
@@ -43,11 +44,11 @@ use response_panel::ResponsePanel;
 use rust_i18n::t;
 use tree_panel::TreePanel;
 pub(crate) use tree_panel::{
-    Close as TreeClose, KEY_CONTEXT as TREE_CONTEXT, Next as TreeNext, Open as TreeOpen, Previous as TreePrevious,
-    Rename as TreeRename, Toggle as TreeToggle,
+    Close as TreeClose, Duplicate as TreeDuplicate, KEY_CONTEXT as TREE_CONTEXT, Next as TreeNext, Open as TreeOpen,
+    Previous as TreePrevious, Remove as TreeRemove, Rename as TreeRename, Toggle as TreeToggle,
 };
 
-gpui_kit::actions!(workspace, [NewApi, NewFolder, Send, PasteCurl]);
+gpui_kit::actions!(workspace, [NewApi, NewFolder, Send, PasteCurl, FindApi, FocusUrl]);
 
 // F12.2 from the keyboard: Cmd/Ctrl and a pin's number selects it.
 gpui_kit::actions!(workspace, [Pin1, Pin2, Pin3, Pin4, Pin5, Pin6, Pin7, Pin8, Pin9]);
@@ -84,6 +85,10 @@ pub fn bind_keys(cx: &mut App) {
         // so it wins over the kit's).
         KeyBinding::new("secondary-enter", Send, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-enter", Send, Some("Workspace > Input")),
+        // #64: to the API search, Enter there opening the first found; a
+        // field that cannot search hands the same keys on as its `Search`.
+        KeyBinding::new("secondary-f", FindApi, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-l", FocusUrl, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-1", Pin1, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-2", Pin2, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-3", Pin3, Some(KEY_CONTEXT)),
@@ -134,6 +139,7 @@ pub fn bind_mac_page_keys(cx: &mut App) {
         KeyBinding::new("cmd-enter", Send, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-enter", Send, Some("Workspace > Input")),
         KeyBinding::new("cmd-v", PasteCurl, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-f", FindApi, Some(KEY_CONTEXT)),
     ]);
 }
 
@@ -589,6 +595,10 @@ impl WorkspaceView {
 
     /// F12.2: the pin with this number (from 0), if there is one, opened
     /// with the tree left as it is.
+    fn find_api(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tree.update(cx, |tree, cx| tree.focus_search(window, cx));
+    }
+
     fn select_pin(&mut self, index: usize, cx: &mut Context<Self>) {
         let id = self.state.read(cx).pinned().get(index).map(|api| api.id.clone());
         if let Some(id) = id {
@@ -712,6 +722,7 @@ impl Render for WorkspaceView {
             None => group.child(resizable_panel().child(self.render_nothing_selected(window, cx))),
         };
         let editor = self.selected.as_ref().map(|selected| selected.editor.downgrade());
+        let url_editor = editor.clone();
         h_flex()
             .size_full()
             .track_focus(&self.focus)
@@ -736,6 +747,13 @@ impl Render for WorkspaceView {
             .on_action(move |_: &Send, window, cx| {
                 if let Some(editor) = &editor {
                     let _ = editor.update(cx, |editor, cx| editor.send(window, cx));
+                }
+            })
+            .on_action(cx.listener(|this, _: &FindApi, window, cx| this.find_api(window, cx)))
+            .on_action(cx.listener(|this, _: &Search, window, cx| this.find_api(window, cx)))
+            .on_action(move |_: &FocusUrl, window, cx| {
+                if let Some(editor) = &url_editor {
+                    let _ = editor.update(cx, |editor, cx| editor.focus_uri_now(window, cx));
                 }
             })
             .child(

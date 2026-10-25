@@ -133,16 +133,17 @@ pub fn takes_new_keys() -> bool {
     web::on_mac()
 }
 
-/// Whether Cmd/Ctrl and a digit reach the app (F12.2), so a pin's key may
-/// be shown: a page on Windows or Linux has the browser take Ctrl-1 to
-/// Ctrl-9 for its tabs first. A Mac's browser switches tabs with Cmd and
-/// leaves Ctrl and a digit to the page.
+/// Whether Cmd/Ctrl and the keys a browser keeps for itself reach the app,
+/// so they may be shown: a page on Windows or Linux has the browser take
+/// Ctrl-1 to Ctrl-9 for its tabs (a pin's, F12.2), Ctrl-L for its address
+/// bar and Ctrl-D for a bookmark (#64) first. A Mac's browser does those
+/// with Cmd and leaves Ctrl to the page.
 #[cfg(not(target_family = "wasm"))]
-pub fn takes_pin_keys() -> bool {
+pub fn takes_browser_keys() -> bool {
     true
 }
 #[cfg(target_family = "wasm")]
-pub fn takes_pin_keys() -> bool {
+pub fn takes_browser_keys() -> bool {
     web::on_mac()
 }
 

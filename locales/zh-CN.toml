@@ -526,6 +526,8 @@ tree_close = "折叠目录，或到上一级"
 tree_open = "展开目录，或进入目录"
 tree_toggle = "展开或折叠目录"
 search_projects = "搜索项目"
+find_api = "搜索接口（回车打开第一个结果）"
+focus_url = "跳到地址栏"
 
 [sync]
 unreachable = "连不上服务器"

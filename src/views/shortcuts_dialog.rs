@@ -4,8 +4,9 @@
 
 use super::dashboard::{FocusSearch, KEY_CONTEXT as DASHBOARD};
 use super::workspace::{
-    KEY_CONTEXT as WORKSPACE, NewApi, NewFolder, PasteCurl, Pin1, Pin9, Send as SendAction, TREE_CONTEXT as TREE,
-    TreeClose, TreeNext, TreeOpen, TreePrevious, TreeRename, TreeToggle,
+    FindApi, FocusUrl, KEY_CONTEXT as WORKSPACE, NewApi, NewFolder, PasteCurl, Pin1, Pin9, Send as SendAction,
+    TREE_CONTEXT as TREE, TreeClose, TreeDuplicate, TreeNext, TreeOpen, TreePrevious, TreeRemove, TreeRename,
+    TreeToggle,
 };
 use crate::this_build;
 use gpui_kit::component::kbd::Kbd;
@@ -41,7 +42,15 @@ fn shortcuts(window: &mut Window, cx: &mut App) -> impl IntoElement {
     }
     workspace.push((t!("import.paste_curl").to_string(), keys(&PasteCurl, WORKSPACE, window)));
     workspace.push((t!("shortcuts.send").to_string(), keys(&SendAction, WORKSPACE, window)));
-    if this_build::takes_pin_keys() {
+    workspace.push((t!("shortcuts.find_api").to_string(), keys(&FindApi, WORKSPACE, window)));
+    let browser_keys = this_build::takes_browser_keys();
+    if browser_keys {
+        workspace.push((
+            t!("shortcuts.focus_url").to_string(),
+            keys(&FocusUrl, WORKSPACE, window),
+        ));
+    }
+    if browser_keys {
         workspace.push((t!("shortcuts.pins").to_string(), {
             let mut both = keys(&Pin1, WORKSPACE, window);
             if !both.is_empty() {
@@ -51,7 +60,7 @@ fn shortcuts(window: &mut Window, cx: &mut App) -> impl IntoElement {
             both
         }));
     }
-    let tree = vec![
+    let mut tree = vec![
         (t!("shortcuts.tree_move").to_string(), {
             let mut both = keys(&TreePrevious, TREE, window);
             both.extend(keys(&TreeNext, TREE, window));
@@ -61,7 +70,14 @@ fn shortcuts(window: &mut Window, cx: &mut App) -> impl IntoElement {
         (t!("shortcuts.tree_open").to_string(), keys(&TreeOpen, TREE, window)),
         (t!("shortcuts.tree_toggle").to_string(), keys(&TreeToggle, TREE, window)),
         (t!("workspace.rename").to_string(), keys(&TreeRename, TREE, window)),
+        (t!("common.delete").to_string(), keys(&TreeRemove, TREE, window)),
     ];
+    if browser_keys {
+        tree.push((
+            t!("workspace.duplicate").to_string(),
+            keys(&TreeDuplicate, TREE, window),
+        ));
+    }
     let projects = vec![(
         t!("shortcuts.search_projects").to_string(),
         keys(&FocusSearch, DASHBOARD, window),

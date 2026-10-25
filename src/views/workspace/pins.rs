@@ -61,7 +61,7 @@ impl Render for PinsBar {
         let selected = state.opened().cloned();
         let pinned = state.pinned();
         let any = !pinned.is_empty();
-        let shortcuts = crate::this_build::takes_pin_keys();
+        let shortcuts = crate::this_build::takes_browser_keys();
         let theme = cx.theme();
         let tags = pinned.into_iter().enumerate().map(|(index, api)| {
             let active = selected.as_ref() == Some(&api.id);

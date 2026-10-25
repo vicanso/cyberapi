@@ -445,6 +445,14 @@ impl RequestEditor {
         }
     }
 
+    /// The keys to the URI field now, its text selected to type over (#64).
+    pub fn focus_uri_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.uri.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+    }
+
     /// The keys to the URI field — once the name dialog that made the API
     /// has closed: it hands focus back at the end of its animation, over
     /// any given before.

@@ -39,14 +39,15 @@ use std::collections::HashSet;
 const INDENT: f32 = 14.;
 const ROW_HEIGHT: f32 = 28.;
 
-gpui_kit::actions!(tree, [Previous, Next, Close, Open, Toggle, Rename]);
+gpui_kit::actions!(tree, [Previous, Next, Close, Open, Toggle, Rename, Remove, Duplicate]);
 
 pub(crate) const KEY_CONTEXT: &str = "Tree";
 
 /// The tree from the keyboard, as a file list is walked: up and down move
 /// (an API reached is opened), left closes a folder or goes to the one
 /// above, right opens one or goes into it, Enter opens or closes, F2
-/// renames. A field in the tree keeps these keys for itself.
+/// renames, Delete deletes (once asked) and Cmd/Ctrl-D duplicates an API
+/// (#64). A field in the tree keeps these keys for itself.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("up", Previous, Some(KEY_CONTEXT)),
@@ -55,7 +56,26 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("right", Open, Some(KEY_CONTEXT)),
         KeyBinding::new("enter", Toggle, Some(KEY_CONTEXT)),
         KeyBinding::new("f2", Rename, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-d", Duplicate, Some(KEY_CONTEXT)),
     ]);
+    cx.bind_keys(remove_keys());
+}
+
+/// Delete, and Cmd-Backspace as a Mac's Finder has it. The key shown is
+/// the one bound last: the one this platform deletes with.
+#[cfg(target_os = "macos")]
+fn remove_keys() -> [KeyBinding; 2] {
+    [
+        KeyBinding::new("delete", Remove, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-backspace", Remove, Some(KEY_CONTEXT)),
+    ]
+}
+#[cfg(not(target_os = "macos"))]
+fn remove_keys() -> [KeyBinding; 2] {
+    [
+        KeyBinding::new("secondary-backspace", Remove, Some(KEY_CONTEXT)),
+        KeyBinding::new("delete", Remove, Some(KEY_CONTEXT)),
+    ]
 }
 
 /// An item whose name is being edited in place (F3.5).
@@ -268,6 +288,39 @@ impl TreePanel {
         {
             let id = row.id.clone();
             self.state.update(cx, |state, cx| state.toggle_folder(&id, cx));
+        }
+    }
+
+    /// The keys to the search, its text selected to type over (#64).
+    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+    }
+
+    /// The row the keys act on, when the tree has them and may be changed.
+    fn editable_cursor(&self, window: &Window, cx: &App) -> Option<(ItemId, String, ItemKind)> {
+        if !self.focus.is_focused(window) || !self.state.read(cx).editable() {
+            return None;
+        }
+        let rows = self.state.read(cx).rows();
+        let row = &rows[self.cursor_at(&rows, cx)?];
+        let name = self.state.read(cx).tree().get(&row.id)?.name().to_string();
+        Some((row.id.clone(), name, row.kind))
+    }
+
+    fn remove_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((id, name, kind)) = self.editable_cursor(window, cx) {
+            confirm_delete(&self.state.downgrade(), id, &name, kind, window, cx);
+        }
+    }
+
+    /// An API's copy, beside it; a folder has none.
+    fn duplicate_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((id, name, ItemKind::Api)) = self.editable_cursor(window, cx) {
+            let name = t!("workspace.copy_name", name = name).to_string();
+            self.state.update(cx, |state, cx| state.duplicate(&id, name, cx));
         }
     }
 
@@ -996,6 +1049,7 @@ fn item_menu(
             menu.item(
                 PopupMenuItem::new(t!("workspace.duplicate").to_string())
                     .icon(Icons::CopyPlus)
+                    .action(Box::new(Duplicate))
                     .on_click(move |_, _, cx| {
                         let _ = copy_state.update(cx, |state, cx| state.duplicate(&copy_id, copy_name.clone(), cx));
                     }),
@@ -1016,6 +1070,7 @@ fn item_menu(
     .item(
         PopupMenuItem::new(t!("common.delete").to_string())
             .icon(Icons::Trash)
+            .action(Box::new(Remove))
             .on_click(move |_, window, cx| {
                 confirm_delete(&delete_state, delete_id.clone(), &delete_name, kind, window, cx)
             }),
@@ -1092,6 +1147,8 @@ impl Render for TreePanel {
             .on_action(cx.listener(|this, _: &Open, window, cx| this.close_or_open(true, window, cx)))
             .on_action(cx.listener(|this, _: &Toggle, window, cx| this.toggle(window, cx)))
             .on_action(cx.listener(|this, _: &Rename, window, cx| this.rename_at_cursor(window, cx)))
+            .on_action(cx.listener(|this, _: &Remove, window, cx| this.remove_at_cursor(window, cx)))
+            .on_action(cx.listener(|this, _: &Duplicate, window, cx| this.duplicate_at_cursor(window, cx)))
             .on_action(cx.listener(|this, _: &NewApi, window, cx| this.new_here(ItemKind::Api, window, cx)))
             .on_action(cx.listener(|this, _: &PasteCurl, window, cx| this.paste_here(window, cx)))
             .on_action(cx.listener(|this, _: &NewFolder, window, cx| this.new_here(ItemKind::Folder, window, cx)))
