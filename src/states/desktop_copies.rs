@@ -283,6 +283,35 @@ fn shown(dashboard: &Entity<DashboardState>, cx: &mut TestAppContext) -> Vec<Str
     })
 }
 
+/// The list the server could not give: the last one stands, and the
+/// server is out of reach until it answers again — the copies' cards say
+/// so.
+#[gpui_kit::test]
+async fn a_list_the_server_cannot_give_keeps_the_last(cx: &mut TestAppContext) {
+    let machine = Machine::signed_in(cx);
+    let shop = machine.on_server("shop").await;
+    let dashboard = machine.dashboard(cx);
+    let revision = |cx: &mut TestAppContext| {
+        dashboard.read_with(cx, |state, _| {
+            state
+                .collections()
+                .iter()
+                .find(|found| found.id == shop.id)
+                .map(|found| found.revision)
+        })
+    };
+    let before = revision(cx);
+    assert!(dashboard.read_with(cx, |state, _| state.from_server(&shop.id)));
+
+    machine.bridge.online.store(false, Ordering::SeqCst);
+    dashboard.update(cx, |state, cx| state.refresh(cx));
+    cx.run_until_parked();
+    let status = machine.server.read_with(cx, |server, _| server.status().clone());
+    assert!(matches!(status, ServerStatus::Unreachable(_)), "{status:?}");
+    assert_eq!(revision(cx), before, "as the server last listed it");
+    assert!(dashboard.read_with(cx, |state, _| state.from_server(&shop.id)));
+}
+
 /// G1: one of this machine's projects uploaded keeps its id on the server,
 /// with all it holds; here it is the account's copy from then on, its
 /// history still with it, and it is offered for upload no more.

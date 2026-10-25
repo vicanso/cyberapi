@@ -49,6 +49,8 @@ refused_client_too_old = "服务器保存项目的方式比这个应用新，修
 refused_environment_name_taken = "项目里已经有同名的环境。"
 
 [dashboard]
+on_server = "服务器项目：本机是它的副本，在你选择时同步"
+on_server_unreached = "服务器项目，现在连不上服务器：正在用本机的副本"
 refresh = "重新向服务器获取项目"
 title = "项目"
 search = "搜索项目（支持拼音）"

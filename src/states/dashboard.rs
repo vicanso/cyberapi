@@ -405,9 +405,11 @@ impl DashboardState {
                         this.pull(desktop, stale, None, cx);
                     }
                 }
+                // The last list stands — the cards keep their teams — and
+                // the server state hears it is out of reach, to try again.
                 Err(error) => {
                     warn!(%error, "the server's projects could not be listed");
-                    this.on_server = None;
+                    this.heard_from_server(Some(&error), cx);
                 }
             }
             this.show();
@@ -701,6 +703,12 @@ impl DashboardState {
             cx.notify();
         });
         cx.notify();
+    }
+
+    /// Whether `id` is the signed-in account's copy of a server project,
+    /// on the desktop: its card says so, offline too.
+    pub fn from_server(&self, id: &CollectionId) -> bool {
+        self.mine(id).is_some()
     }
 
     /// G1: whether `id` is one of this machine's own projects, which the

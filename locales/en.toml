@@ -49,6 +49,8 @@ refused_client_too_old = "The server keeps projects in a newer way than this app
 refused_environment_name_taken = "The project has an environment of that name already."
 
 [dashboard]
+on_server = "On the server: this is your copy of it, synced when you choose"
+on_server_unreached = "On the server, which cannot be reached now: you work on your copy"
 refresh = "Ask the server for its projects again"
 title = "Projects"
 search = "Search projects"

@@ -654,7 +654,7 @@ impl DashboardView {
         };
         // The same menu on a right click, as the tree's rows have theirs.
         let context_actions = actions.clone();
-        let place = place_of(collection, cx);
+        let place = place_of(collection, self.state.read(cx).from_server(&collection.id), cx);
         // Every card of a row as tall as the row, the time at the bottom.
         v_flex()
             .id(SharedString::from(format!("collection-{key}")))
@@ -695,6 +695,25 @@ impl DashboardView {
                                             .font_semibold()
                                             .child(marked(&collection.name, keyword, cx)),
                                     )
+                                    // A server project's copy, among this
+                                    // machine's own; crossed out while its
+                                    // server cannot be reached.
+                                    .when(self.state.read(cx).from_server(&collection.id), |this| {
+                                        let unreached = self.state.read(cx).unreachable(&collection.id, cx).is_some();
+                                        let (icon, tip) = if unreached {
+                                            (Icons::CloudOff, t!("dashboard.on_server_unreached"))
+                                        } else {
+                                            (Icons::Cloud, t!("dashboard.on_server"))
+                                        };
+                                        let tip = tip.to_string();
+                                        this.child(
+                                            div()
+                                                .id(SharedString::from(format!("collection-cloud-{key}")))
+                                                .flex_none()
+                                                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                                                .child(Icon::new(icon).small().text_color(muted)),
+                                        )
+                                    })
                                     .child(
                                         // The menu's own clicks must not open the project.
                                         div()
@@ -1222,7 +1241,12 @@ fn project_mark(name: &str, cx: &App) -> impl IntoElement {
 /// A server project's: the team it belongs to, unless the reader's own
 /// space, and the reader's role where it is less than managing. This
 /// machine's, said as such where the desktop lists them among a server's.
-fn place_of(collection: &Collection, cx: &App) -> Option<String> {
+fn place_of(collection: &Collection, from_server: bool, cx: &App) -> Option<String> {
+    // A server project's copy kept from before the server answered: its
+    // team is not known here, and it is no project of this computer's.
+    if collection.owner.is_none() && from_server {
+        return None;
+    }
     if collection.owner.is_none() {
         let beside_server = AppStore::global(cx)
             .server()
