@@ -53,8 +53,6 @@ pub struct ServerState {
     /// bindings once read.
     copies: Option<Arc<dyn ServerCopyStore>>,
     bound: Option<Vec<CopyBinding>>,
-    /// The kept session was asked about once.
-    checked: bool,
 }
 
 impl EventEmitter<ServerEvent> for ServerState {}
@@ -71,17 +69,19 @@ impl ServerState {
             signing_in: false,
             copies,
             bound: None,
-            checked: false,
         };
         state.check(cx);
         state.reload_copies(cx);
         state
     }
 
-    /// Who is signed in and which projects are whose are known: what may
-    /// open is decided.
+    /// Which projects are whose is known: what may open is decided, by
+    /// the account the file keeps. Not by the bridge's answer about the
+    /// session — one slow or out of reach held every project shut until it
+    /// timed out; a session it turns out to have ended closes its copy then
+    /// (`AppState::set_me`).
     pub fn ready(&self) -> bool {
-        self.checked && (self.copies.is_none() || self.bound.is_some())
+        self.copies.is_none() || self.bound.is_some()
     }
 
     /// The project waiting to open may now. After this update: opening
@@ -213,10 +213,7 @@ impl ServerState {
     /// forgotten; one it could not be asked about stays.
     pub fn check(&mut self, cx: &mut Context<Self>) {
         let Some(transport) = self.transport() else {
-            let was = self.ready();
             self.status = ServerStatus::SignedOut;
-            self.checked = true;
-            self.became_ready(was, cx);
             return cx.notify();
         };
         self.status = ServerStatus::Checking;
@@ -224,7 +221,6 @@ impl ServerState {
         cx.spawn(async move |this, cx| {
             let answer = cx.background_spawn(async move { session_me(&transport).await }).await;
             let _ = this.update(cx, |this, cx| {
-                let was = this.ready();
                 this.status = match answer {
                     Ok(Some(me)) => {
                         let account = Some(me.account.id.as_str().to_string());
@@ -240,8 +236,6 @@ impl ServerState {
                     }
                     Err(reason) => ServerStatus::Unreachable(reason),
                 };
-                this.checked = true;
-                this.became_ready(was, cx);
                 this.tell_app(cx);
                 cx.notify();
             });
@@ -465,6 +459,32 @@ mod tests {
             seen.iter()
                 .any(|(url, bearer)| url == "https://bridge.test/v1/logout" && bearer.as_deref() == Some("Bearer tok"))
         );
+    }
+
+    /// A bridge slow to answer, or out of reach, holds no project shut while
+    /// the kept session is asked about: what may open is known from the
+    /// copies' bindings and the account the file keeps.
+    #[gpui_kit::test]
+    async fn projects_open_while_the_kept_session_is_asked_about(cx: &mut TestAppContext) {
+        struct Silent;
+        impl HttpEngine for Silent {
+            fn send(&self, _: PreparedRequest) -> SendFuture {
+                Box::pin(std::future::pending())
+            }
+        }
+        server_local::write(&ServerFile {
+            address: "https://bridge.test".into(),
+            token: Some("tok".into()),
+            account: Some("a1".into()),
+        });
+        let copies: Arc<dyn ServerCopyStore> = Arc::new(cyberapi_store::MemoryStore::new());
+        let server = cx.new(|cx| ServerState::new(Arc::new(Silent), Some(copies), cx));
+        cx.run_until_parked();
+        server.read_with(cx, |state, _| {
+            assert_eq!(state.status(), &ServerStatus::Checking, "still asking");
+            assert!(state.ready(), "and projects open meanwhile");
+            assert_eq!(state.account(), Some(AccountId::new("a1")));
+        });
     }
 
     /// A team made on the server after signing in is one to pick for a new
