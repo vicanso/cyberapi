@@ -1,9 +1,14 @@
-//! A project's variables of one category, in a dialog (M8).
+//! A project's variables of one category, in a dialog (M8), a layer at a
+//! time (#61): the shared ones, or a named environment's, which stand in
+//! for the shared ones of the same name. The environments are made,
+//! renamed and deleted here, in the dialog itself (a dialog over a dialog
+//! does not show in the page).
 
 use crate::i18n;
 use crate::states::{Load, VariablesEvent, VariablesState, WorkspaceState};
-use cyberapi_core::VariableId;
+use crate::views::inline_confirm::inline_confirm;
 use cyberapi_core::model::VariableCategory;
+use cyberapi_core::{EnvironmentId, VariableId};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -37,16 +42,20 @@ pub fn open_variables_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let (storage, collection, editable) = {
+    let (storage, collection, editable, layer) = {
         let workspace = workspace.read(cx);
         (
             workspace.storage().clone(),
             workspace.collection().id.clone(),
             workspace.editable(),
+            // The reader's environment's layer first (#61).
+            workspace
+                .current_environment()
+                .map(|environment| environment.id.clone()),
         )
     };
     let weak = workspace.downgrade();
-    let state = cx.new(|cx| VariablesState::new(storage, weak, collection, category, cx));
+    let state = cx.new(|cx| VariablesState::new(storage, weak, collection, category, layer, cx));
     let editor = cx.new(|cx| VariablesEditor::new(state, editable, window, cx));
     let (title, _) = describe(category);
     window.open_dialog(cx, move |dialog, _, _| {
@@ -54,6 +63,9 @@ pub fn open_variables_dialog(
             .title(title.clone())
             .w(px(680.))
             .child(crate::views::dialog_body(editor.clone()))
+            // No button to confirm: Enter is a field's — a new environment's
+            // name (#61) — not the dialog's to close.
+            .on_ok(|_, _, _| false)
     });
 }
 
@@ -63,11 +75,21 @@ struct Row {
     _subscriptions: [Subscription; 2],
 }
 
+/// An environment's name being typed: a new one's, or `renaming`'s.
+struct Naming {
+    input: Entity<InputState>,
+    renaming: Option<EnvironmentId>,
+    _subscription: Subscription,
+}
+
 struct VariablesEditor {
     state: Entity<VariablesState>,
     /// A viewer reads them only (§9.2).
     editable: bool,
     rows: HashMap<VariableId, Row>,
+    naming: Option<Naming>,
+    /// The environment asked about before it goes, with its variables.
+    deleting: Option<EnvironmentId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -85,8 +107,201 @@ impl VariablesEditor {
             state,
             editable,
             rows: HashMap::new(),
+            naming: None,
+            deleting: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// #61: a name for a new environment, or for `renaming`.
+    fn start_naming(&mut self, renaming: Option<EnvironmentId>, window: &mut Window, cx: &mut Context<Self>) {
+        let current = renaming.as_ref().and_then(|id| {
+            self.state
+                .read(cx)
+                .environments()
+                .iter()
+                .find(|environment| &environment.id == id)
+                .map(|environment| environment.name.clone())
+        });
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("variables.environment_name").to_string())
+                .default_value(current.unwrap_or_default())
+        });
+        let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
+            if let InputEvent::PressEnter { .. } = event {
+                this.finish_naming(window, cx);
+            }
+        });
+        input.update(cx, |input, cx| input.focus(window, cx));
+        self.deleting = None;
+        self.naming = Some(Naming {
+            input,
+            renaming,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    fn finish_naming(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(naming) = self.naming.take() else { return };
+        let name = naming.input.read(cx).value().trim().to_string();
+        if !name.is_empty() {
+            self.state.update(cx, |state, cx| match naming.renaming {
+                Some(id) => state.rename_environment(id, name, cx),
+                None => state.create_environment(name, cx),
+            });
+        }
+        cx.notify();
+    }
+
+    /// The layers: the shared one, each environment, and — for an editor —
+    /// a new one; the one shown, renamed or deleted under them.
+    fn render_layers(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let state = self.state.read(cx);
+        let layer = state.layer().cloned();
+        let muted = cx.theme().muted_foreground;
+        let button = |id: gpui_kit::ElementId, label: String, chosen: Option<EnvironmentId>| {
+            let selected = layer == chosen;
+            Button::new(id)
+                .small()
+                .when(selected, |button| button.primary())
+                .when(!selected, |button| button.ghost())
+                .label(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.naming = None;
+                    this.deleting = None;
+                    let chosen = chosen.clone();
+                    this.state.update(cx, |state, cx| state.set_layer(chosen, cx));
+                }))
+        };
+        let mut buttons = vec![button(
+            "variables-layer-shared".into(),
+            t!("variables.shared").to_string(),
+            None,
+        )];
+        for (index, environment) in state.environments().iter().enumerate() {
+            buttons.push(button(
+                ("variables-layer", index).into(),
+                environment.name.clone(),
+                Some(environment.id.clone()),
+            ));
+        }
+        let shown = layer
+            .as_ref()
+            .and_then(|id| state.environments().iter().find(|environment| &environment.id == id))
+            .cloned();
+        let editable = self.editable;
+        let bar = h_flex()
+            .gap_1()
+            .flex_wrap()
+            .items_center()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(muted)
+                    .mr_1()
+                    .child(t!("variables.layer").to_string()),
+            )
+            .children(buttons)
+            .when(editable && self.naming.is_none(), |bar| {
+                bar.child(
+                    Button::new("environment-new")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Plus)
+                        .label(t!("variables.new_environment").to_string())
+                        .on_click(cx.listener(|this, _, window, cx| this.start_naming(None, window, cx))),
+                )
+            });
+        let below: Option<gpui_kit::AnyElement> = if let Some(naming) = &self.naming {
+            Some(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().w(px(240.)).child(Input::new(&naming.input).small()))
+                    .child(
+                        Button::new("environment-name-ok")
+                            .primary()
+                            .small()
+                            .label(if naming.renaming.is_some() {
+                                t!("variables.rename_environment").to_string()
+                            } else {
+                                t!("common.create").to_string()
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| this.finish_naming(window, cx))),
+                    )
+                    .child(
+                        Button::new("environment-name-cancel")
+                            .ghost()
+                            .small()
+                            .label(t!("common.cancel").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.naming = None;
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+            )
+        } else if let (Some(environment), Some(deleting)) = (&shown, &self.deleting) {
+            let (view, keep) = (cx.entity().downgrade(), cx.entity().downgrade());
+            let id = deleting.clone();
+            Some(
+                inline_confirm(
+                    t!("variables.delete_environment_title", name = environment.name).to_string(),
+                    t!("variables.delete_environment_hint").to_string(),
+                    None,
+                    t!("common.delete").to_string(),
+                    move |_, cx| {
+                        let _ = keep.update(cx, |this, cx| {
+                            this.deleting = None;
+                            cx.notify();
+                        });
+                    },
+                    move |_, cx| {
+                        let id = id.clone();
+                        let _ = view.update(cx, |this, cx| {
+                            this.deleting = None;
+                            this.state.update(cx, |state, cx| state.delete_environment(id, cx));
+                        });
+                    },
+                    cx,
+                )
+                .into_any_element(),
+            )
+        } else if let (Some(environment), true) = (&shown, editable) {
+            let (rename, delete) = (environment.id.clone(), environment.id.clone());
+            Some(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Button::new("environment-rename")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Pencil)
+                            .label(t!("variables.rename_environment").to_string())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.start_naming(Some(rename.clone()), window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("environment-delete")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Trash)
+                            .label(t!("variables.delete_environment").to_string())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.deleting = Some(delete.clone());
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+        v_flex().gap_2().child(bar).children(below).into_any_element()
     }
 
     /// One click removes the row (#47). The request lists still ask twice
@@ -145,8 +360,20 @@ impl VariablesEditor {
 
 impl Render for VariablesEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let layers = self.render_layers(cx);
         let state = self.state.read(cx);
         let (_, hint) = describe(state.category());
+        // #61: what the layer shown is for.
+        let layer_hint = state
+            .layer()
+            .and_then(|id| state.environments().iter().find(|environment| &environment.id == id))
+            .map(|environment| t!("variables.environment_hint", name = environment.name).to_string())
+            .unwrap_or_else(|| t!("variables.shared_hint").to_string());
+        let stood_in_for: Vec<(String, String)> = state
+            .stood_in_for()
+            .into_iter()
+            .map(|variable| (variable.name.clone(), variable.value.clone()))
+            .collect();
         let editable = self.editable;
         let muted = cx.theme().muted_foreground;
         let body: gpui_kit::AnyElement =
@@ -157,7 +384,7 @@ impl Render for VariablesEditor {
                     .text_color(muted)
                     .child(Spinner::new().small())
                     .into_any_element(),
-                _ if state.variables().is_empty() => div()
+                _ if state.shown().next().is_none() => div()
                     .py_4()
                     .text_sm()
                     .text_color(muted)
@@ -192,7 +419,7 @@ impl Render for VariablesEditor {
                         )
                         .when(editable, |this| this.child(actions()));
                     let rows =
-                        state.variables().iter().enumerate().filter_map(|(index, variable)| {
+                        state.shown().enumerate().filter_map(|(index, variable)| {
                             let row = self.rows.get(&variable.id)?;
                             let (toggle_id, delete_id) = (variable.id.clone(), variable.id.clone());
                             Some(
@@ -251,10 +478,35 @@ impl Render for VariablesEditor {
                         .into_any_element()
                 }
             };
+        // The shared ones this environment stands in for, to compare.
+        let compared = (!stood_in_for.is_empty()).then(|| {
+            v_flex()
+                .gap_1()
+                .text_xs()
+                .text_color(muted)
+                .child(t!("variables.stood_in_for").to_string())
+                .children(stood_in_for.into_iter().map(|(name, value)| {
+                    // In the table's columns, past its checkbox.
+                    h_flex()
+                        .pl_8()
+                        .opacity(0.7)
+                        .child(div().w(px(200.)).flex_none().px_2().truncate().child(name))
+                        .child(div().flex_1().min_w_0().px_2().truncate().child(value))
+                }))
+        });
         v_flex()
             .gap_3()
-            .child(div().text_sm().text_color(muted).child(hint))
+            .child(layers)
+            .child(
+                v_flex()
+                    .gap_0p5()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(hint)
+                    .child(div().text_xs().child(layer_hint)),
+            )
             .child(div().id("variables").max_h(px(420.)).overflow_y_scrollbar().child(body))
+            .children(compared)
             .child(if editable {
                 h_flex()
                     .child(

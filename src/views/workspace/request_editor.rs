@@ -358,6 +358,7 @@ impl RequestEditor {
                 InputEvent::Blur => {
                     if !this.take_curl(window, cx) {
                         this.take_query(window, cx);
+                        this.take_prefix(window, cx);
                         this.save_uri(cx);
                     }
                 }
@@ -367,6 +368,7 @@ impl RequestEditor {
                     // is the request Enter then sends.
                     if !this.take_curl(window, cx) {
                         this.take_query(window, cx);
+                        this.take_prefix(window, cx);
                         this.save_uri(cx);
                     }
                     let has_uri = !this.api.read(cx).request().uri.trim().is_empty();
@@ -964,13 +966,31 @@ impl RequestEditor {
 
     /// The environment prefix, then what the field holds.
     fn save_uri(&mut self, cx: &mut Context<Self>) {
-        let rest = self.uri.read(cx).value().to_string();
-        let prefix = split_env_prefix(&self.api.read(cx).request().uri)
-            .0
-            .map(|name| format!("{{{{{name}}}}}"))
-            .unwrap_or_default();
-        self.api
-            .update(cx, |api, cx| api.set_uri(format!("{prefix}{}", rest.trim()), cx));
+        let rest = self.uri.read(cx).value().trim().to_string();
+        // A `{{NAME}}` typed at the field's start is the prefix now, in
+        // place of the one picked.
+        let uri = if split_env_prefix(&rest).0.is_some() {
+            rest
+        } else {
+            let prefix = split_env_prefix(&self.api.read(cx).request().uri)
+                .0
+                .map(|name| format!("{{{{{name}}}}}"))
+                .unwrap_or_default();
+            format!("{prefix}{rest}")
+        };
+        self.api.update(cx, |api, cx| api.set_uri(uri, cx));
+    }
+
+    /// F4.4: a `{{NAME}}` typed at the start of the field is the URI's
+    /// prefix, which the picker beside it shows: the field keeps the rest.
+    fn take_prefix(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.uri.read(cx).value().trim().to_string();
+        let (Some(_), rest) = split_env_prefix(&text) else {
+            return;
+        };
+        let rest = rest.to_string();
+        self.save_uri(cx);
+        self.uri.update(cx, |input, cx| input.set_value(rest, window, cx));
     }
 
     /// F4.4: the environment variable the URI starts with, or none.

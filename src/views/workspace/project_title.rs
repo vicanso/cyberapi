@@ -6,15 +6,21 @@
 //! machine's, or for a viewer, who is told instead that changes are not
 //! kept. While the server cannot be reached, that is said where the button
 //! is, whether or not there are changes to sync.
+//!
+//! Beside it, the reader's environment (#61), to switch.
 
 use crate::states::WorkspaceState;
+use crate::views::open_variables_dialog;
+use cyberapi_core::model::VariableCategory;
+use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::{
-    Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div, px,
+    Anchor, AnyElement, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use rust_i18n::t;
 
@@ -35,6 +41,71 @@ impl ProjectTitle {
 
 impl Render for ProjectTitle {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .child(self.title(cx))
+            .child(self.environment_switch(cx))
+    }
+}
+
+impl ProjectTitle {
+    /// #61: the reader's environment, and the others to switch to; the
+    /// variables' dialog, where they are made, from the same menu.
+    fn environment_switch(&self, cx: &mut Context<Self>) -> AnyElement {
+        let state = self.state.read(cx);
+        let current = state.current_environment().map(|environment| environment.id.clone());
+        let named = state.named_environments().to_vec();
+        let label = state
+            .current_environment()
+            .map(|environment| environment.name.clone())
+            .unwrap_or_else(|| t!("environments.none").to_string());
+        let workspace = self.state.downgrade();
+        Button::new("environment-switch")
+            .ghost()
+            .xsmall()
+            .icon(Icons::Globe)
+            .label(label)
+            .tooltip(t!("environments.switch_tooltip").to_string())
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
+                let pick = |id| {
+                    let workspace = workspace.clone();
+                    move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
+                        let _ = workspace.update(cx, |state, cx| state.set_environment(Option::clone(&id), cx));
+                    }
+                };
+                let menu = menu.item(
+                    PopupMenuItem::new(t!("environments.none").to_string())
+                        .checked(current.is_none())
+                        .on_click(pick(None)),
+                );
+                let menu = if named.is_empty() {
+                    menu
+                } else {
+                    named.iter().fold(menu.separator(), |menu, environment| {
+                        menu.item(
+                            PopupMenuItem::new(environment.name.clone())
+                                .checked(current.as_ref() == Some(&environment.id))
+                                .on_click(pick(Some(environment.id.clone()))),
+                        )
+                    })
+                };
+                let manage = workspace.clone();
+                menu.separator().item(
+                    PopupMenuItem::new(t!("environments.manage").to_string())
+                        .icon(Icons::Globe)
+                        .on_click(move |_, window, cx| {
+                            if let Some(workspace) = manage.upgrade() {
+                                open_variables_dialog(&workspace, VariableCategory::Environment, window, cx);
+                            }
+                        }),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn title(&self, cx: &mut Context<Self>) -> AnyElement {
         let state = self.state.read(cx);
         let unreachable = state
             .unreachable()

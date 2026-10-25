@@ -5,12 +5,16 @@
 //! typing updates it 300 ms after the last key, turning it on or off and
 //! removing it are immediate. The list is the store's order — by name — as
 //! it was when the dialog opened; a row does not jump while it is renamed.
+//!
+//! It shows one layer at a time (#61): the variables every environment
+//! shares, or one named environment's. What is added goes into the layer
+//! shown. The environments themselves are made, renamed and deleted here.
 
 use super::{Load, WorkspaceState, run_store};
-use cyberapi_core::model::{Variable, VariableCategory};
-use cyberapi_core::{CollectionId, VariableId};
-use cyberapi_store::{NewVariable, Storage, StoreError, VariableEdit};
-use gpui_kit::{Context, EventEmitter, Task, WeakEntity};
+use cyberapi_core::model::{Environment, Variable, VariableCategory};
+use cyberapi_core::{CollectionId, EnvironmentId, VariableId};
+use cyberapi_store::{NewVariable, Storage, StoreError, StoreFuture, VariableEdit};
+use gpui_kit::{AppContext as _, Context, EventEmitter, Task, WeakEntity};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -26,8 +30,13 @@ pub struct VariablesState {
     workspace: WeakEntity<WorkspaceState>,
     collection: CollectionId,
     category: VariableCategory,
+    /// Every layer's.
     variables: Vec<Variable>,
     load: Load,
+    /// The project's named environments, in order.
+    environments: Vec<Environment>,
+    /// The layer shown: `None` is the shared one.
+    layer: Option<EnvironmentId>,
     /// An update waiting for typing to pause, per variable.
     saving: HashMap<VariableId, Task<()>>,
 }
@@ -40,6 +49,7 @@ impl VariablesState {
         workspace: WeakEntity<WorkspaceState>,
         collection: CollectionId,
         category: VariableCategory,
+        layer: Option<EnvironmentId>,
         cx: &mut Context<Self>,
     ) -> Self {
         // Typing still waiting when the dialog goes is saved then.
@@ -90,6 +100,22 @@ impl VariablesState {
             }
             cx.notify();
         });
+        let call = storage.variables().environments(collection.clone());
+        run_store(cx, call, |this, result, cx| match result {
+            Ok(environments) => {
+                // A layer that is not there any more is the shared one.
+                if this
+                    .layer
+                    .as_ref()
+                    .is_some_and(|id| !environments.iter().any(|environment| &environment.id == id))
+                {
+                    this.layer = None;
+                }
+                this.environments = environments;
+                cx.notify();
+            }
+            Err(error) => cx.emit(VariablesEvent::Failed(error)),
+        });
         Self {
             storage,
             workspace,
@@ -97,6 +123,8 @@ impl VariablesState {
             category,
             variables: Vec::new(),
             load: Load::Loading,
+            environments: Vec::new(),
+            layer,
             saving: HashMap::new(),
         }
     }
@@ -105,8 +133,113 @@ impl VariablesState {
         self.category
     }
 
+    /// Every layer's.
     pub fn variables(&self) -> &[Variable] {
         &self.variables
+    }
+
+    /// The layer shown's.
+    pub fn shown(&self) -> impl Iterator<Item = &Variable> {
+        self.variables
+            .iter()
+            .filter(|variable| variable.environment == self.layer)
+    }
+
+    /// #61: the shared variables the environment shown stands in for — a
+    /// name it has enabled — to compare with; none on the shared layer.
+    pub fn stood_in_for(&self) -> Vec<&Variable> {
+        let Some(layer) = &self.layer else {
+            return Vec::new();
+        };
+        let effective = cyberapi_core::environments::effective(&self.variables, Some(layer));
+        self.variables
+            .iter()
+            .filter(|variable| variable.environment.is_none())
+            .filter(|variable| !effective.iter().any(|found| found.id == variable.id))
+            .collect()
+    }
+
+    pub fn environments(&self) -> &[Environment] {
+        &self.environments
+    }
+
+    pub fn layer(&self) -> Option<&EnvironmentId> {
+        self.layer.as_ref()
+    }
+
+    pub fn set_layer(&mut self, layer: Option<EnvironmentId>, cx: &mut Context<Self>) {
+        self.layer = layer;
+        cx.notify();
+    }
+
+    /// A change to the environments: once it is in, the workspace reads
+    /// them again, and every category — an environment that goes takes the
+    /// variables in it — whether or not the dialog is still open; `done`
+    /// applies it here while it is.
+    fn change_environments<R: Send + 'static>(
+        &self,
+        call: StoreFuture<R>,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, R, &mut Context<Self>) + 'static,
+    ) {
+        let workspace = self.workspace.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(call).await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                workspace.refresh_environments(cx);
+                for category in VariableCategory::ALL {
+                    workspace.refresh_variables(category, cx);
+                }
+            });
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(answer) => done(this, answer, cx),
+                Err(error) => cx.emit(VariablesEvent::Failed(error)),
+            });
+        })
+        .detach();
+    }
+
+    /// #61: a new environment, shown once made.
+    pub fn create_environment(&mut self, name: String, cx: &mut Context<Self>) {
+        let call = self
+            .storage
+            .variables()
+            .create_environment(self.collection.clone(), name);
+        self.change_environments(call, cx, |this, environment, cx| {
+            this.layer = Some(environment.id.clone());
+            this.environments.push(environment);
+            cx.notify();
+        });
+    }
+
+    pub fn rename_environment(&mut self, id: EnvironmentId, name: String, cx: &mut Context<Self>) {
+        let call = self
+            .storage
+            .variables()
+            .rename_environment(self.collection.clone(), id, name);
+        self.change_environments(call, cx, |this, renamed, cx| {
+            if let Some(found) = this.environments.iter_mut().find(|found| found.id == renamed.id) {
+                *found = renamed;
+            }
+            cx.notify();
+        });
+    }
+
+    /// #61: an environment and the variables in it, of every category.
+    pub fn delete_environment(&mut self, id: EnvironmentId, cx: &mut Context<Self>) {
+        let call = self
+            .storage
+            .variables()
+            .delete_environment(self.collection.clone(), id.clone());
+        self.change_environments(call, cx, move |this, (), cx| {
+            this.environments.retain(|environment| environment.id != id);
+            this.variables
+                .retain(|variable| variable.environment.as_ref() != Some(&id));
+            if this.layer.as_ref() == Some(&id) {
+                this.layer = None;
+            }
+            cx.notify();
+        });
     }
 
     pub fn load(&self) -> &Load {
@@ -123,7 +256,7 @@ impl VariablesState {
         cx.notify();
     }
 
-    /// A blank, enabled variable at the end.
+    /// A blank, enabled variable at the end of the layer shown.
     pub fn add(&mut self, cx: &mut Context<Self>) {
         let call = self.storage.variables().create(NewVariable {
             collection: self.collection.clone(),
@@ -131,7 +264,7 @@ impl VariablesState {
             name: String::new(),
             value: String::new(),
             enabled: true,
-            environment: None,
+            environment: self.layer.clone(),
         });
         run_store(cx, call, |this, result, cx| match result {
             Ok(variable) => {
@@ -229,7 +362,7 @@ impl VariablesState {
 mod tests {
     use super::*;
     use cyberapi_store::{MemoryStore, NewCollection};
-    use gpui_kit::{AppContext as _, TestAppContext};
+    use gpui_kit::TestAppContext;
 
     #[gpui_kit::test]
     async fn rows_are_variables_saved_as_they_change(cx: &mut TestAppContext) {
@@ -249,6 +382,7 @@ mod tests {
                 WeakEntity::new_invalid(),
                 collection.clone(),
                 VariableCategory::Environment,
+                None,
                 cx,
             )
         });
@@ -290,5 +424,55 @@ mod tests {
         state.update(cx, |state, cx| state.delete(&id, cx));
         cx.run_until_parked();
         assert!(stored(cx).is_empty());
+    }
+
+    /// #61: a layer at a time; what is added goes into the layer shown, and
+    /// an environment deleted takes its variables.
+    #[gpui_kit::test]
+    async fn environments_are_layers_of_their_own(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = storage
+            .collections()
+            .create(NewCollection {
+                name: "p".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("create")
+            .id;
+        let state = cx.new(|cx| {
+            VariablesState::new(
+                storage.clone(),
+                WeakEntity::new_invalid(),
+                collection.clone(),
+                VariableCategory::Custom,
+                None,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.add(cx));
+        state.update(cx, |state, cx| state.create_environment("dev".into(), cx));
+        cx.run_until_parked();
+        let dev = state.read_with(cx, |state, _| {
+            assert_eq!(state.environments().len(), 1);
+            state.layer().cloned().expect("the new one shown")
+        });
+        state.update(cx, |state, cx| state.add(cx));
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            let shown: Vec<_> = state.shown().map(|variable| variable.environment.clone()).collect();
+            assert_eq!(shown, [Some(dev.clone())], "dev's layer has dev's alone");
+            assert_eq!(state.variables().len(), 2);
+        });
+        state.update(cx, |state, cx| state.delete_environment(dev.clone(), cx));
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert!(state.environments().is_empty());
+            assert_eq!(state.layer(), None, "back to the shared layer");
+            assert_eq!(state.variables().len(), 1);
+        });
+        let stored = pollster::block_on(storage.variables().list(collection, VariableCategory::Custom)).expect("list");
+        assert_eq!(stored.len(), 1, "dev's went with it");
     }
 }

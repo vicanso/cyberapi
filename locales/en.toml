@@ -372,6 +372,17 @@ add = "Add"
 empty = "Nothing here yet."
 read_only = "You can see these but not change them: you view this project."
 
+layer = "Environment:"
+shared = "Shared"
+shared_hint = "Every environment's; in one, its variables of the same name come first."
+environment_hint = "Used in the environment “%{name}” only, over the shared ones of the same name."
+new_environment = "New environment"
+environment_name = "Environment name"
+rename_environment = "Rename"
+delete_environment = "Delete environment"
+delete_environment_title = "Delete the environment “%{name}”?"
+delete_environment_hint = "Its variables of every kind — environment variables, custom variables, global headers — go with it; the shared ones stay."
+stood_in_for = "Shared ones of the same name this environment stands in for:"
 [cookies]
 search = "Search names, domains or values"
 no_match = "No cookie has “%{keyword}”"
@@ -754,3 +765,8 @@ headers_hint = "Every API in this folder, and in the folders in it, sends these;
 menu = "Project auth…"
 title = "Project auth"
 hint = "How the project's APIs and folders sign in when they inherit and no folder above them says."
+
+[environments]
+none = "No environment"
+switch_tooltip = "The environment you send in: its variables come before the shared ones. It is yours alone."
+manage = "Manage environments…"

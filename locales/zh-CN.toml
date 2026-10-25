@@ -371,6 +371,17 @@ value = "值"
 add = "添加"
 empty = "还没有内容。"
 read_only = "你是这个项目的查看者，只能查看，不能修改。"
+layer = "环境："
+shared = "共用"
+shared_hint = "所有环境共用的变量；选了环境时，环境里同名的变量优先。"
+environment_hint = "只在环境“%{name}”里使用，优先于同名的共用变量。"
+new_environment = "新建环境"
+environment_name = "环境名称"
+rename_environment = "重命名"
+delete_environment = "删除环境"
+delete_environment_title = "删除环境“%{name}”？"
+delete_environment_hint = "环境里的各类变量（环境变量、自定义变量、全局请求头）会一起删除，共用的变量不受影响。"
+stood_in_for = "在这个环境里不再使用的同名共用变量："
 
 [cookies]
 search = "搜索名称、域名或值"
@@ -754,3 +765,8 @@ headers_hint = "这个目录及其子目录里的每个接口都会发送这些�
 menu = "项目认证…"
 title = "项目认证"
 hint = "项目里选“继承”、且上层目录没有设置认证的接口和目录使用这里的认证。"
+
+[environments]
+none = "不使用环境"
+switch_tooltip = "当前环境：发送时这个环境里的变量优先于共用的。只对你自己生效。"
+manage = "管理环境…"

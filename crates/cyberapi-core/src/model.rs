@@ -415,6 +415,8 @@ pub enum VariableCategory {
 }
 
 impl VariableCategory {
+    pub const ALL: [Self; 3] = [Self::Environment, Self::Custom, Self::GlobalRequestHeader];
+
     /// The `variables.category` column.
     pub fn as_str(&self) -> &'static str {
         match self {
