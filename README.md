@@ -69,6 +69,10 @@ The data lives in `CyberAPI` under the platform's data directory: `~/Library/App
 
 The web version is the same app compiled to WebAssembly and served by `cyberapi-bridge`, one binary that also keeps the accounts and projects in PostgreSQL or MySQL and sends the page's requests. It is an image on Docker Hub for linux/amd64 and linux/arm64, [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web) (`latest`, each version, and `nightly` from `main`), and a tarball on each release.
 
+<p align="center">
+  <img src="docs/images/architecture.svg" width="100%" alt="The CyberAPI UI and the HTTP engine are code written once and compiled into more than one program. The desktop app is one native process holding both: it sends in-process and keeps projects in a local SQLite file. The web version runs the same UI as WebAssembly in a browser tab and calls cyberapi-bridge over HTTPS; the bridge sends with the same engine and keeps the team's projects, accounts and histories in PostgreSQL or MySQL. The desktop app signs in to the same bridge, keeps offline copies of the team's projects and syncs them; MCP clients read them through the bridge.">
+</p>
+
 ```bash
 docker run -p 7380:7380 \
   -e CYBERAPI_BRIDGE_STORE=postgres://user:password@host:5432/cyberapi \

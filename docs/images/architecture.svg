@@ -1,0 +1,253 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" viewBox="0 0 960 640" role="img" aria-labelledby="cyberapi-architecture-title cyberapi-architecture-desc">
+  <title id="cyberapi-architecture-title">The code and the data CyberAPI shares between the desktop app and the web version</title>
+  <desc id="cyberapi-architecture-desc">The CyberAPI UI and the HTTP engine are code written once and compiled into more than one program. The desktop app is one native process holding the UI and the engine: the UI sends through the engine in-process and keeps projects in a local SQLite file. In the web version the same UI runs as WebAssembly in a browser tab and calls cyberapi-bridge over HTTPS; the bridge sends the requests with the same HTTP engine and keeps the team's projects, accounts and histories in PostgreSQL or MySQL. The desktop app can sign in to the same bridge: it keeps an offline copy of the team's projects in its SQLite file and syncs it when you choose. MCP clients such as Claude Code and Cursor read the same projects through the bridge. The desktop app and the bridge each send to your APIs — REST, GraphQL, gRPC, event streams — on their own.</desc>
+  <defs>
+    <marker id="cyberapi-architecture-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto-start-reverse">
+      <polygon points="0 0, 8 3, 0 6" fill="#8b98a8"/>
+    </marker>
+    <style>
+      .name{font:600 16px Inter, 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;fill:#e8edf4}
+      .hero{font:600 20px Inter, 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;fill:#e8edf4}
+      .sub{font:400 12px 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;fill:#8b98a8}
+      .label,.eyebrow,.zone,.tag,.datatag,.band{font:500 12px 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;fill:#8b98a8;letter-spacing:.06em}
+      .eyebrow,.zone,.tag,.datatag,.band{letter-spacing:.14em}
+      .tag{fill:#7aa8e8}
+      .datatag{fill:#56d364}
+      .title{font:600 24px Inter, 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;fill:#e8edf4;letter-spacing:-.01em}
+      .wire{fill:none;stroke:#8b98a8;stroke-width:1.5}
+      .token path{fill:none;stroke-linecap:round}
+      .tail{stroke:#4d8ff2;stroke-width:3}
+      .head{stroke:#e3edff;stroke-width:5}
+      .flow-a-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-a-0 8s linear infinite}
+      .flow-a-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-a-1 8s linear infinite}
+      .flow-a-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-a-2 8s linear infinite}
+      .flow-a-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-a-3 8s linear infinite}
+      .flow-ra-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-ra-0 8s linear infinite}
+      .flow-ra-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-ra-1 8s linear infinite}
+      .flow-ra-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-ra-2 8s linear infinite}
+      .flow-ra-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-ra-3 8s linear infinite}
+      .flow-st-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-st-0 8s linear infinite}
+      .flow-st-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-st-1 8s linear infinite}
+      .flow-st-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-st-2 8s linear infinite}
+      .flow-st-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-st-3 8s linear infinite}
+      .flow-b1-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-b1-0 8s linear infinite}
+      .flow-b1-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-b1-1 8s linear infinite}
+      .flow-b1-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-b1-2 8s linear infinite}
+      .flow-b1-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-b1-3 8s linear infinite}
+      .flow-b2-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-b2-0 8s linear infinite}
+      .flow-b2-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-b2-1 8s linear infinite}
+      .flow-b2-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-b2-2 8s linear infinite}
+      .flow-b2-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-b2-3 8s linear infinite}
+      .flow-rb-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-rb-0 8s linear infinite}
+      .flow-rb-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-rb-1 8s linear infinite}
+      .flow-rb-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-rb-2 8s linear infinite}
+      .flow-rb-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-rb-3 8s linear infinite}
+      .flow-db-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-db-0 8s linear infinite}
+      .flow-db-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-db-1 8s linear infinite}
+      .flow-db-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-db-2 8s linear infinite}
+      .flow-db-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-db-3 8s linear infinite}
+      .flow-sy-0{stroke-dasharray:0.1px 2000px;stroke-dashoffset:8px;animation:flow-sy-0 8s linear infinite}
+      .flow-sy-1{stroke-dasharray:80px 2000px;stroke-dashoffset:88px;animation:flow-sy-1 8s linear infinite}
+      .flow-sy-2{stroke-dasharray:48px 2000px;stroke-dashoffset:56px;animation:flow-sy-2 8s linear infinite}
+      .flow-sy-3{stroke-dasharray:20px 2000px;stroke-dashoffset:28px;animation:flow-sy-3 8s linear infinite}
+      @keyframes flow-a-0{0%{stroke-dashoffset:8px}30%,100%{stroke-dashoffset:-460px}}
+      @keyframes flow-a-1{0%{stroke-dashoffset:88px}30%,100%{stroke-dashoffset:-380px}}
+      @keyframes flow-a-2{0%{stroke-dashoffset:56px}30%,100%{stroke-dashoffset:-412px}}
+      @keyframes flow-a-3{0%{stroke-dashoffset:28px}30%,100%{stroke-dashoffset:-440px}}
+      @keyframes flow-ra-0{0%,26%{stroke-dashoffset:8px}36%,100%{stroke-dashoffset:-160px}}
+      @keyframes flow-ra-1{0%,26%{stroke-dashoffset:88px}36%,100%{stroke-dashoffset:-80px}}
+      @keyframes flow-ra-2{0%,26%{stroke-dashoffset:56px}36%,100%{stroke-dashoffset:-112px}}
+      @keyframes flow-ra-3{0%,26%{stroke-dashoffset:28px}36%,100%{stroke-dashoffset:-140px}}
+      @keyframes flow-st-0{0%,36%{stroke-dashoffset:8px}46%,100%{stroke-dashoffset:-252px}}
+      @keyframes flow-st-1{0%,36%{stroke-dashoffset:88px}46%,100%{stroke-dashoffset:-172px}}
+      @keyframes flow-st-2{0%,36%{stroke-dashoffset:56px}46%,100%{stroke-dashoffset:-204px}}
+      @keyframes flow-st-3{0%,36%{stroke-dashoffset:28px}46%,100%{stroke-dashoffset:-232px}}
+      @keyframes flow-b1-0{0%,48%{stroke-dashoffset:8px}60%,100%{stroke-dashoffset:-252px}}
+      @keyframes flow-b1-1{0%,48%{stroke-dashoffset:88px}60%,100%{stroke-dashoffset:-172px}}
+      @keyframes flow-b1-2{0%,48%{stroke-dashoffset:56px}60%,100%{stroke-dashoffset:-204px}}
+      @keyframes flow-b1-3{0%,48%{stroke-dashoffset:28px}60%,100%{stroke-dashoffset:-232px}}
+      @keyframes flow-b2-0{0%,57%{stroke-dashoffset:8px}65%,100%{stroke-dashoffset:-160px}}
+      @keyframes flow-b2-1{0%,57%{stroke-dashoffset:88px}65%,100%{stroke-dashoffset:-80px}}
+      @keyframes flow-b2-2{0%,57%{stroke-dashoffset:56px}65%,100%{stroke-dashoffset:-112px}}
+      @keyframes flow-b2-3{0%,57%{stroke-dashoffset:28px}65%,100%{stroke-dashoffset:-140px}}
+      @keyframes flow-rb-0{0%,62%{stroke-dashoffset:8px}72%,100%{stroke-dashoffset:-160px}}
+      @keyframes flow-rb-1{0%,62%{stroke-dashoffset:88px}72%,100%{stroke-dashoffset:-80px}}
+      @keyframes flow-rb-2{0%,62%{stroke-dashoffset:56px}72%,100%{stroke-dashoffset:-112px}}
+      @keyframes flow-rb-3{0%,62%{stroke-dashoffset:28px}72%,100%{stroke-dashoffset:-140px}}
+      @keyframes flow-db-0{0%,72%{stroke-dashoffset:8px}80%,100%{stroke-dashoffset:-176px}}
+      @keyframes flow-db-1{0%,72%{stroke-dashoffset:88px}80%,100%{stroke-dashoffset:-96px}}
+      @keyframes flow-db-2{0%,72%{stroke-dashoffset:56px}80%,100%{stroke-dashoffset:-128px}}
+      @keyframes flow-db-3{0%,72%{stroke-dashoffset:28px}80%,100%{stroke-dashoffset:-156px}}
+      @keyframes flow-sy-0{0%,84%{stroke-dashoffset:8px}94%,100%{stroke-dashoffset:-140px}}
+      @keyframes flow-sy-1{0%,84%{stroke-dashoffset:88px}94%,100%{stroke-dashoffset:-60px}}
+      @keyframes flow-sy-2{0%,84%{stroke-dashoffset:56px}94%,100%{stroke-dashoffset:-92px}}
+      @keyframes flow-sy-3{0%,84%{stroke-dashoffset:28px}94%,100%{stroke-dashoffset:-120px}}
+      @media (prefers-reduced-motion: reduce){.token{display:none}}
+      @media print{.token{display:none}}
+    </style>
+  </defs>
+
+  <!-- Card -->
+  <rect x="0.5" y="0.5" width="959" height="639" rx="16" fill="#0c0f14" stroke="rgba(255,255,255,0.08)"/>
+
+  <!-- Header -->
+  <text class="eyebrow" x="40" y="56">CODE &amp; DATA SHARING</text>
+  <text class="sub" x="920" y="56" text-anchor="end">github.com/vicanso/cyberapi</text>
+  <text class="title" x="40" y="92">Two ways to run CyberAPI: the same code, the same projects</text>
+
+  <!-- What runs: one dashed outline per process -->
+  <g>
+      <rect x="40" y="136" width="672" height="152" rx="12" fill="rgba(255,255,255,0.015)" stroke="rgba(232,237,244,0.30)" stroke-dasharray="5 4"/>
+      <rect x="48" y="128" width="292" height="16" fill="#0c0f14"/>
+      <text class="band" x="56" y="140">DESKTOP APP · ONE NATIVE BINARY</text>
+      <rect x="40" y="304" width="276" height="152" rx="12" fill="rgba(255,255,255,0.015)" stroke="rgba(232,237,244,0.30)" stroke-dasharray="5 4"/>
+      <rect x="48" y="448" width="240" height="16" fill="#0c0f14"/>
+      <text class="band" x="56" y="460">BROWSER TAB · WEBASSEMBLY</text>
+      <rect x="340" y="304" width="372" height="152" rx="12" fill="rgba(255,255,255,0.015)" stroke="rgba(232,237,244,0.30)" stroke-dasharray="5 4"/>
+      <rect x="444" y="448" width="264" height="16" fill="#0c0f14"/>
+      <text class="band" x="452" y="460">CYBERAPI-BRIDGE · HTTP SERVER</text>
+  </g>
+
+  <!-- Wires, then the tokens that travel along them, then the code and the data on top -->
+  <g aria-label="A request's path: in-process inside the desktop app, kept in its SQLite file; over HTTPS from the browser tab to cyberapi-bridge, kept in PostgreSQL or MySQL; HTTP from each program to your APIs; the desktop's copy synced with the bridge; MCP clients reading through the bridge">
+      <path class="wire" d="M188,176 H560" marker-end="url(#cyberapi-architecture-arrow)"/>
+      <rect x="222" y="164" width="96" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="270" y="176" text-anchor="middle">IN-PROCESS</text>
+      <path class="wire" d="M188,240 H352" marker-end="url(#cyberapi-architecture-arrow)"/>
+      <rect x="244" y="228" width="52" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="270" y="240" text-anchor="middle">STORE</text>
+      <path class="wire" d="M696,176 H768" marker-end="url(#cyberapi-architecture-arrow)"/>
+      <rect x="712" y="164" width="40" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="732" y="176" text-anchor="middle">HTTP</text>
+      <path class="wire" d="M188,372 H352" marker-end="url(#cyberapi-architecture-arrow)"/>
+      <rect x="244" y="360" width="52" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="270" y="372" text-anchor="middle">HTTPS</text>
+      <path class="wire" d="M488,372 H560" marker-end="url(#cyberapi-architecture-arrow)"/>
+      <path class="wire" d="M696,372 H768" marker-end="url(#cyberapi-architecture-arrow)"/>
+      <rect x="712" y="360" width="40" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="732" y="372" text-anchor="middle">HTTP</text>
+      <path class="wire" d="M420,280 V332" marker-start="url(#cyberapi-architecture-arrow)" marker-end="url(#cyberapi-architecture-arrow)"/>
+      <rect x="430" y="288" width="124" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="436" y="300">SIGN IN · SYNC</text>
+      <path class="wire" d="M440,412 V500" marker-end="url(#cyberapi-architecture-arrow)"/>
+      <rect x="446" y="474" width="32" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="450" y="486">SQL</text>
+      <path class="wire" d="M316,538 H380 V412" marker-end="url(#cyberapi-architecture-arrow)"/>
+      <rect x="328" y="526" width="40" height="16" rx="2" fill="#0c0f14"/>
+      <text class="label" x="348" y="538" text-anchor="middle">MCP</text>
+  </g>
+  <g>
+      <g class="token" aria-hidden="true" focusable="false">
+        <path class="tail flow-a-1" d="M188,176 H560" opacity="0.2"/>
+        <path class="tail flow-a-2" d="M188,176 H560" opacity="0.45"/>
+        <path class="tail flow-a-3" d="M188,176 H560" opacity="0.9"/>
+        <path class="head flow-a-0" d="M188,176 H560"/>
+      </g>
+      <g class="token" aria-hidden="true" focusable="false">
+        <path class="tail flow-ra-1" d="M696,176 H768" opacity="0.2"/>
+        <path class="tail flow-ra-2" d="M696,176 H768" opacity="0.45"/>
+        <path class="tail flow-ra-3" d="M696,176 H768" opacity="0.9"/>
+        <path class="head flow-ra-0" d="M696,176 H768"/>
+      </g>
+      <g class="token" aria-hidden="true" focusable="false">
+        <path class="tail flow-st-1" d="M188,240 H352" opacity="0.2"/>
+        <path class="tail flow-st-2" d="M188,240 H352" opacity="0.45"/>
+        <path class="tail flow-st-3" d="M188,240 H352" opacity="0.9"/>
+        <path class="head flow-st-0" d="M188,240 H352"/>
+      </g>
+      <g class="token" aria-hidden="true" focusable="false">
+        <path class="tail flow-b1-1" d="M188,372 H352" opacity="0.2"/>
+        <path class="tail flow-b1-2" d="M188,372 H352" opacity="0.45"/>
+        <path class="tail flow-b1-3" d="M188,372 H352" opacity="0.9"/>
+        <path class="head flow-b1-0" d="M188,372 H352"/>
+      </g>
+      <g class="token" aria-hidden="true" focusable="false">
+        <path class="tail flow-b2-1" d="M488,372 H560" opacity="0.2"/>
+        <path class="tail flow-b2-2" d="M488,372 H560" opacity="0.45"/>
+        <path class="tail flow-b2-3" d="M488,372 H560" opacity="0.9"/>
+        <path class="head flow-b2-0" d="M488,372 H560"/>
+      </g>
+      <g class="token" aria-hidden="true" focusable="false">
+        <path class="tail flow-rb-1" d="M696,372 H768" opacity="0.2"/>
+        <path class="tail flow-rb-2" d="M696,372 H768" opacity="0.45"/>
+        <path class="tail flow-rb-3" d="M696,372 H768" opacity="0.9"/>
+        <path class="head flow-rb-0" d="M696,372 H768"/>
+      </g>
+      <g class="token" aria-hidden="true" focusable="false">
+        <path class="tail flow-db-1" d="M440,412 V500" opacity="0.2"/>
+        <path class="tail flow-db-2" d="M440,412 V500" opacity="0.45"/>
+        <path class="tail flow-db-3" d="M440,412 V500" opacity="0.9"/>
+        <path class="head flow-db-0" d="M440,412 V500"/>
+      </g>
+      <g class="token" aria-hidden="true" focusable="false">
+        <path class="tail flow-sy-1" d="M420,280 V332" opacity="0.2"/>
+        <path class="tail flow-sy-2" d="M420,280 V332" opacity="0.45"/>
+        <path class="tail flow-sy-3" d="M420,280 V332" opacity="0.9"/>
+        <path class="head flow-sy-0" d="M420,280 V332"/>
+      </g>
+  </g>
+
+  <g>
+      <!-- Shared code -->
+      <rect x="52" y="148" width="136" height="296" rx="8" fill="#0c0f14"/>
+      <rect x="52" y="148" width="136" height="296" rx="8" fill="rgba(31,111,235,0.14)" stroke="#1f6feb" stroke-width="1.5"/>
+      <text class="tag" x="120" y="268" text-anchor="middle">SHARED CODE</text>
+      <text class="hero" x="120" y="300" text-anchor="middle">CyberAPI UI</text>
+      <text class="sub" x="120" y="324" text-anchor="middle">views · state</text>
+      <text class="sub" x="120" y="344" text-anchor="middle">send · templates</text>
+      <text class="sub" x="120" y="364" text-anchor="middle">Rust · GPUI</text>
+      <rect x="560" y="148" width="136" height="296" rx="8" fill="#0c0f14"/>
+      <rect x="560" y="148" width="136" height="296" rx="8" fill="rgba(31,111,235,0.14)" stroke="#1f6feb" stroke-width="1.5"/>
+      <text class="tag" x="628" y="268" text-anchor="middle">SHARED CODE</text>
+      <text class="hero" x="628" y="300" text-anchor="middle">HTTP engine</text>
+      <text class="sub" x="628" y="324" text-anchor="middle">DNS · TCP · TLS</text>
+      <text class="sub" x="628" y="344" text-anchor="middle">HTTP/2 · gRPC</text>
+      <text class="sub" x="628" y="364" text-anchor="middle">timing · streams</text>
+
+      <!-- The bridge's own code -->
+      <rect x="352" y="332" width="136" height="80" rx="8" fill="#0c0f14"/>
+      <rect x="352" y="332" width="136" height="80" rx="8" fill="#141a22" stroke="rgba(232,237,244,0.32)" stroke-width="1"/>
+      <text class="name" x="420" y="360" text-anchor="middle">HTTP API</text>
+      <text class="sub" x="420" y="382" text-anchor="middle">store · send</text>
+      <text class="sub" x="420" y="400" text-anchor="middle">accounts · MCP</text>
+
+      <!-- Where projects are kept -->
+      <rect x="352" y="200" width="136" height="80" rx="8" fill="#0c0f14"/>
+      <rect x="352" y="200" width="136" height="80" rx="8" fill="rgba(46,160,67,0.14)" stroke="#2ea043" stroke-width="1.5"/>
+      <text class="datatag" x="420" y="222" text-anchor="middle">LOCAL DATA</text>
+      <text class="name" x="420" y="246" text-anchor="middle">SQLite file</text>
+      <text class="sub" x="420" y="266" text-anchor="middle">own + team copies</text>
+      <rect x="404" y="500" width="308" height="76" rx="8" fill="#0c0f14"/>
+      <rect x="404" y="500" width="308" height="76" rx="8" fill="rgba(46,160,67,0.14)" stroke="#2ea043" stroke-width="1.5"/>
+      <text class="datatag" x="420" y="524">SHARED DATA</text>
+      <text class="name" x="420" y="548">PostgreSQL · MySQL</text>
+      <text class="sub" x="420" y="566">team projects · accounts · history</text>
+
+      <!-- Outside: MCP clients, your APIs -->
+      <rect x="52" y="500" width="264" height="76" rx="8" fill="#0c0f14"/>
+      <rect x="52" y="500" width="264" height="76" rx="8" fill="rgba(232,237,244,0.05)" stroke="rgba(139,152,168,0.55)" stroke-width="1"/>
+      <text class="zone" x="64" y="524">MCP CLIENTS</text>
+      <text class="name" x="64" y="548">Claude Code · Cursor</text>
+      <text class="sub" x="64" y="566">read with an account's token</text>
+      <rect x="768" y="136" width="152" height="320" rx="8" fill="#0c0f14"/>
+      <rect x="768" y="136" width="152" height="320" rx="8" fill="rgba(232,237,244,0.05)" stroke="rgba(139,152,168,0.55)" stroke-width="1"/>
+      <text class="zone" x="780" y="164">YOUR APIS</text>
+      <circle cx="796" cy="223" r="6" fill="#8b98a8"/>
+      <text class="name" x="816" y="228">REST</text>
+      <path d="M790,263 L796,253 L802,263 Z" fill="#8b98a8"/>
+      <text class="name" x="816" y="268">GraphQL</text>
+      <rect x="790" y="297" width="12" height="12" rx="2" fill="#8b98a8"/>
+      <text class="name" x="816" y="308">gRPC</text>
+      <path d="M789,348 H795 M797,348 H799 M801,348 H803" stroke="#8b98a8" stroke-width="3" fill="none"/>
+      <text class="name" x="816" y="353">SSE</text>
+  </g>
+
+  <!-- Legend -->
+  <rect x="40" y="602" width="12" height="12" rx="2" fill="rgba(31,111,235,0.14)" stroke="#1f6feb"/>
+  <text class="label" x="60" y="612">THE SAME CODE, COMPILED INTO EACH</text>
+  <rect x="336" y="602" width="20" height="12" rx="3" fill="none" stroke="rgba(232,237,244,0.30)" stroke-dasharray="5 4"/>
+  <text class="label" x="364" y="612">ONE RUNNING PROCESS</text>
+  <rect x="560" y="602" width="12" height="12" rx="2" fill="rgba(46,160,67,0.14)" stroke="#2ea043"/>
+  <text class="label" x="580" y="612">WHERE PROJECTS ARE KEPT</text>
+</svg>

@@ -69,6 +69,10 @@ macOS 应用与之前的 Tauri 版同名、同标识符，安装后会替换旧�
 
 网页版就是同一个应用编译成 WebAssembly，由 `cyberapi-bridge` 提供。这一个程序同时把账号和项目存进 PostgreSQL 或 MySQL，并替页面发送请求。Docker Hub 上有 linux/amd64 和 linux/arm64 的镜像 [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web)（`latest`、各个版本号，以及 `main` 的 `nightly`），每个版本的 Release 里也有压缩包。
 
+<p align="center">
+  <img src="docs/images/architecture.svg" width="100%" alt="CyberAPI 的界面和 HTTP 引擎是同一份代码，编译进不止一个程序。桌面版是一个原生进程，两者都在其中：在进程内发送，项目存在本机的 SQLite 文件里。网页版把同一套界面以 WebAssembly 跑在浏览器标签页里，通过 HTTPS 访问 cyberapi-bridge；bridge 用同一个引擎发送，把团队的项目、账号和历史存在 PostgreSQL 或 MySQL 里。桌面版登录同一个 bridge 后在本机保存团队项目的离线副本并同步；MCP 客户端通过 bridge 读取这些项目。">
+</p>
+
 ```bash
 docker run -p 7380:7380 \
   -e CYBERAPI_BRIDGE_STORE=postgres://user:password@host:5432/cyberapi \
