@@ -191,10 +191,63 @@ pub fn response_errors(body: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// An error a response places in the query (#70): what it says, and where
+/// — the line and the column, from 1.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ErrorPlace {
+    pub message: String,
+    pub line: usize,
+    pub column: usize,
+}
+
+/// Every place the response's `errors` name in the query.
+pub fn response_error_places(body: &[u8]) -> Vec<ErrorPlace> {
+    let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else {
+        return Vec::new();
+    };
+    let Some(Value::Array(errors)) = fields.get("errors") else {
+        return Vec::new();
+    };
+    errors
+        .iter()
+        .flat_map(|error| {
+            let message = error.get("message").and_then(Value::as_str).unwrap_or("error");
+            error
+                .get("locations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(move |place| {
+                    let at = |key: &str| place.get(key).and_then(Value::as_u64).filter(|at| *at > 0);
+                    Some(ErrorPlace {
+                        message: message.to_string(),
+                        line: at("line")? as usize,
+                        column: at("column")? as usize,
+                    })
+                })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_errors_locations_place_it_in_the_query() {
+        let body = json!({"errors": [
+            {"message": "Cannot query field \"boom\"", "locations": [{"line": 2, "column": 5}, {"line": 3, "column": 1}]},
+            {"message": "no place"},
+            {"message": "bad place", "locations": [{"line": 0, "column": 4}, {"line": "2"}]}
+        ]})
+        .to_string();
+        let places = response_error_places(body.as_bytes());
+        let at: Vec<(usize, usize)> = places.iter().map(|place| (place.line, place.column)).collect();
+        assert_eq!(at, [(2, 5), (3, 1)]);
+        assert_eq!(places[0].message, "Cannot query field \"boom\"");
+        assert!(response_error_places(b"not json").is_empty());
+    }
 
     #[test]
     fn the_body_reads_back_what_it_keeps() {

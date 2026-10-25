@@ -12,7 +12,7 @@ use crate::views::json_tree::{JsonTree, json_view_switch};
 use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::open_variables_dialog;
 use crate::views::template_hints::{self, HintSource};
-use cyberapi_core::graphql::GraphQlBody;
+use cyberapi_core::graphql::{self, GraphQlBody};
 use cyberapi_core::grpc::{FROM_REFLECTION, GrpcBody};
 use cyberapi_core::import::{request_from_curl, split_url};
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
@@ -69,6 +69,9 @@ pub struct RequestEditor {
     /// A GraphQL body's query, variables and operation, edited apart and
     /// kept together (`cyberapi_core::graphql::GraphQlBody`).
     graphql: GraphQlFields,
+    /// The response whose GraphQL errors the query marks, and the query it
+    /// was sent with (#70).
+    marked: Option<(String, String)>,
     /// A gRPC call's message (`cyberapi_core::grpc::GrpcBody`); the rest of
     /// the call is the API state's.
     grpc_message: Entity<EditorState>,
@@ -284,6 +287,7 @@ impl RequestEditor {
         let mut subscriptions = vec![
             cx.observe(&api, |this, _, cx| {
                 this.follow_sending(cx);
+                this.mark_graphql_errors(cx);
                 cx.notify();
             }),
             cx.observe(&workspace, |_, _, cx| cx.notify()),
@@ -397,6 +401,7 @@ impl RequestEditor {
             uri,
             body,
             graphql,
+            marked: None,
             grpc_message,
             form,
             query,
@@ -485,6 +490,7 @@ impl RequestEditor {
             cx.subscribe_in(&fields.query, window, |this, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.save_graphql(cx);
+                    this.mark_graphql_errors(cx);
                 }
             }),
             cx.subscribe_in(&fields.variables, window, |this, _, event: &InputEvent, _, cx| {
@@ -780,6 +786,59 @@ impl RequestEditor {
         self.graphql = graphql_fields(&request, &self.api, &self.hints, window, cx);
         let watching = Self::watch_graphql(&self.graphql, window, cx);
         self._subscriptions.extend(watching);
+        self.marked = None;
+        self.mark_graphql_errors(cx);
+    }
+
+    /// #70: where the shown response's errors are, marked in the query it
+    /// was sent with — while the query is that one still: once it changes,
+    /// the places are someone else's.
+    fn mark_graphql_errors(&mut self, cx: &mut Context<Self>) {
+        let query = self.graphql.query.read(cx).value().to_string();
+        let api = self.api.read(cx);
+        let found = api
+            .shown_response()
+            .filter(|_| api.request().content_type == ContentType::GraphQl)
+            .filter(|response| {
+                response.request.content_type == ContentType::GraphQl
+                    && GraphQlBody::read(&response.request.body).query == query
+            })
+            .map(|response| (response.id.clone(), graphql::response_error_places(&response.body)));
+        let key = found.as_ref().map(|(id, _)| (id.clone(), query.clone()));
+        if key == self.marked {
+            return;
+        }
+        self.marked = key;
+        let places = found.map(|(_, places)| places).unwrap_or_default();
+        let marks: Vec<gpui_kit::base::input::Diagnostic> = places
+            .into_iter()
+            .map(|place| {
+                // The word the place starts, or its one character.
+                let line = query.lines().nth(place.line - 1).unwrap_or_default();
+                let start = place.column - 1;
+                let word = line
+                    .chars()
+                    .skip(start)
+                    .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+                    .count()
+                    .max(1);
+                let at =
+                    |column: usize| gpui_kit::component::input::Position::new((place.line - 1) as u32, column as u32);
+                gpui_kit::base::input::Diagnostic {
+                    range: at(start)..at(start + word),
+                    severity: gpui_kit::base::input::DiagnosticSeverity::Error,
+                    message: place.message.into(),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        self.graphql.query.update(cx, |editor, cx| {
+            if let Some(set) = editor.diagnostics_mut() {
+                set.clear();
+                set.extend(marks);
+            }
+            cx.notify();
+        });
     }
 
     /// F7.10: the request came back from the history; every field reads it.
