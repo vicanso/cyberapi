@@ -1,5 +1,102 @@
 # Changelog
 
+## [0.3.0](https://github.com/vicanso/cyberapi/compare/v0.2.1..v0.3.0) - 2026-10-25
+
+### ⛰️  Features
+
+- *(account)* An MCP Tokens dialog — issue a token with a lifetime and leave to send, copy it and the Claude Code line once, revoke after asking - ([50df22c](https://github.com/vicanso/cyberapi/commit/50df22c0e6492217fa27bb05aeef915a583d5dac))
+- *(auth)* A folder's settings dialog sets its auth and headers, a project auth dialog the project's, and an API that inherits says what it signs in with and where from (#66, batch 4 step 4, the dialogs) - ([cce2ba0](https://github.com/vicanso/cyberapi/commit/cce2ba0793a12f8aeb7444d6825298413357829b))
+- *(auth)* Folders and projects set auth for their APIs, and folders' headers too, kept beside the tree in every store, synced, backed up and exported; an API that inherits signs in as the nearest folder that says, else the project (#66, batch 4 step 4, storage and sending) - ([420b28d](https://github.com/vicanso/cyberapi/commit/420b28dff18ba0f197bbe67bcbb8769910425aea))
+- *(auth)* An API signs in with Basic, a bearer token or an API key in a header or the query, or inherits, its values templates and its secrets masked; the old Basic list is read as Basic and no longer written (#66, batch 4 step 3) - ([7235d85](https://github.com/vicanso/cyberapi/commit/7235d8555dca83cf6bfb5d8472e24322028227f2))
+- *(bridge)* An MCP server at /v1/mcp — an account's token reads its projects, APIs, variables and history with secrets masked, and sends only when issued to - ([92588b3](https://github.com/vicanso/cyberapi/commit/92588b3fb5b3e4ce7bd5dcdf763ff8e08b53a091))
+- *(bridge)* Requests reach private networks by default, never the bridge's own host or link-local, with --public-only for the strict policy, and a refusal names the address - ([e49bc32](https://github.com/vicanso/cyberapi/commit/e49bc32ae6a055c9193856c30c31bfd0a49db0e5))
+- *(bridge)* --base-path mounts the page and the API under a prefix with the cookie kept to it, and a sign-in is kept 30 days unless unticked - ([aa394d4](https://github.com/vicanso/cyberapi/commit/aa394d46cff283e2987d3802454cd5242d1b7049))
+- *(build)* A nightly is versioned as the next patch's pre-release with its day and commit, and every build reports its commit ([#54](https://github.com/vicanso/cyberapi/issues/54)) - ([397b989](https://github.com/vicanso/cyberapi/commit/397b98968c21c0033ef28ac0474b2630ce9f236f))
+- *(code)* A request copies as HTTPie, JavaScript fetch, Python requests or Go net/http code as well as cURL, from the response's and the tree's menus ([#69](https://github.com/vicanso/cyberapi/issues/69)) - ([98a24a1](https://github.com/vicanso/cyberapi/commit/98a24a1701834f771a353ac28c7d42ca8792fe3f))
+- *(core)* The rules of the update check: latest.json, which version is newer, this machine's package, its sum - ([5c4eb70](https://github.com/vicanso/cyberapi/commit/5c4eb70f72e5732832c4b0eb5567fb9958405787))
+- *(editor)* The request column's width presets are one menu beside the tabs, saying the share it is at, so the five tabs fit a narrow column - ([59d9660](https://github.com/vicanso/cyberapi/commit/59d9660287a588334fa9d5f953b7485765483fa7))
+- *(editor)* A GraphQL endpoint's schema, fetched by introspection, completes the query's fields, arguments and enum values - ([5b73f0b](https://github.com/vicanso/cyberapi/commit/5b73f0b62b3d95c64c9d2572f3708e470fff92b5))
+- *(editor)* A GraphQL body — query, variables and operation, sent as JSON by a POST and as parameters by a GET, the query highlighted, a response's errors shown - ([7ed449c](https://github.com/vicanso/cyberapi/commit/7ed449cb48ca1d9b523724fad4869f3f9dbd3a66))
+- *(editor)* A query typed or pasted into the URI moves to the Query list as the field is committed ([#50](https://github.com/vicanso/cyberapi/issues/50)) - ([137a858](https://github.com/vicanso/cyberapi/commit/137a858a722338d9575f65a58c56884aecf30b4e))
+- *(environments)* Switch environments beside the project's name, and keep each one's variables in its own layer of the variables dialog, where environments are made, renamed and deleted; a {{NAME}} typed at the URL's start moves to its picker (#61, batch 4 step 6, the interface) - ([c330561](https://github.com/vicanso/cyberapi/commit/c3305610b49125415ee9f08db915407b92fd0155))
+- *(environments)* A project's named environments, each with variables of its own over the shared ones, kept in every store, synced, backed up and read by MCP; a send in one takes its variables first (#61, batch 4 step 5, storage and rules) - ([c82de97](https://github.com/vicanso/cyberapi/commit/c82de9785dc76fdaadef2a6ae6363d05c4f292cf))
+- *(graphql)* The schema chip opens the schema to browse — types, fields, arguments and what they are for — a field clicked going into the query ([#70](https://github.com/vicanso/cyberapi/issues/70)) - ([38e7c25](https://github.com/vicanso/cyberapi/commit/38e7c25c4b24768a73ab3d64532ac45490224ba2))
+- *(graphql)* A response's errors are marked in the query where their locations point, while the query is the one sent ([#70](https://github.com/vicanso/cyberapi/issues/70)) - ([4c148ad](https://github.com/vicanso/cyberapi/commit/4c148ad2fa8ef00ed15bb63af0e903cf1b5a9c09))
+- *(graphql)* Format indents the query too, a field a line, its comments kept, and leaves a query not complete as it is, saying why ([#70](https://github.com/vicanso/cyberapi/issues/70)) - ([7ba0e05](https://github.com/vicanso/cyberapi/commit/7ba0e053e725cae04f53b47abdcf4e899c657dad))
+- *(graphql)* A subscription asks for an event stream, which it then shows as it comes - ([abefb38](https://github.com/vicanso/cyberapi/commit/abefb382e643cf3ac8dbb32903d6f564bfc485e1))
+- *(grpc)* The address field asks for host:port, and a call's response has no Cookies tab and calls its headers metadata ([#73](https://github.com/vicanso/cyberapi/issues/73)) - ([b486805](https://github.com/vicanso/cyberapi/commit/b486805fb815550846c62cef17ae634788c82275))
+- *(grpc)* Server-streaming calls — the replies show as they come, each with its time, until the stream ends or is stopped, and are kept a line each - ([77305d5](https://github.com/vicanso/cyberapi/commit/77305d530bcb68469d3c059759ec2ed14053fa7b))
+- *(grpc)* Unary gRPC calls — methods from server reflection or .proto files, a JSON message encoded with the definitions the API keeps, the reply and its status read back - ([fd13488](https://github.com/vicanso/cyberapi/commit/fd134880347c3808ce50f48dbba6b81d0d5b6e5e))
+- *(history)* Each entry shows the method and path it was sent to, and the menu says picking one puts its request back ([#68](https://github.com/vicanso/cyberapi/issues/68)) - ([46b885b](https://github.com/vicanso/cyberapi/commit/46b885b666d431004b7b63822d1aa09038167e24))
+- *(http)* The desktop's requests go through an HTTP or SOCKS5 proxy, set in the settings or taken from the environment; the bridge goes straight to every server ([#60](https://github.com/vicanso/cyberapi/issues/60)) - ([03da11a](https://github.com/vicanso/cyberapi/commit/03da11a5641c5b866cccd70f188ca48254054cf2))
+- *(http)* Zstd bodies are decoded and asked for, and a body encoded several times is decoded layer by layer - ([afc1328](https://github.com/vicanso/cyberapi/commit/afc1328827dc9fceffbb8be23792144c1b545577))
+- *(http)* The trailers after a response body are kept, where a gRPC call's status is - ([7208032](https://github.com/vicanso/cyberapi/commit/720803262635b9abbb6b31ac92ae3d0759153f3f))
+- *(import)* Swagger and OpenAPI documents written in YAML import as their JSON would, and a YAML one on the clipboard fills the dialog ([#59](https://github.com/vicanso/cyberapi/issues/59)) - ([9192d62](https://github.com/vicanso/cyberapi/commit/9192d62cbc90c3d44bc6a108a3bdd68a228af3fd))
+- *(import)* The projects page imports a collection as a new project, named after it, which takes it in once open ([#65](https://github.com/vicanso/cyberapi/issues/65)) - ([aeed208](https://github.com/vicanso/cyberapi/commit/aeed208ee214c155ca3d3095fbe89eec0d1373bf))
+- *(import)* Postman's and Insomnia's GraphQL requests come in as GraphQL bodies - ([79f4bfa](https://github.com/vicanso/cyberapi/commit/79f4bfa58116da14e0c31d609abfb18af37c06c4))
+- *(keys)* Cmd/Ctrl-F finds an API and Cmd/Ctrl-L goes to the address in a project, and the tree deletes with Delete and duplicates with Cmd/Ctrl-D ([#64](https://github.com/vicanso/cyberapi/issues/64)) - ([65dd6dd](https://github.com/vicanso/cyberapi/commit/65dd6dd9f1e6f0155055f7da68d99e4fb6ff44c9))
+- *(release)* A version's CHANGELOG section is its release's text, and the update dialog shows it without the heading its title repeats - ([bb65106](https://github.com/vicanso/cyberapi/commit/bb651060623af986532e2decad6e2b1444781627))
+- *(request)* An API can set its own timeouts, HTTP version, redirects and certificate checks in a Settings tab, each left alone following the settings; a 302 not followed opens it (#71, batch 4 step 2) - ([5916e78](https://github.com/vicanso/cyberapi/commit/5916e78b61711af82759c89490a2f1023b9c9e61))
+- *(request)* A DELETE has a Body tab and sends its body, and a cURL command's body its method does not send is kept and said ([#62](https://github.com/vicanso/cyberapi/issues/62)) - ([8013268](https://github.com/vicanso/cyberapi/commit/801326856c9b3f54245500e130d067338c1a753a))
+- *(response)* Details shows the request as it went out — every header said where it came from, the engine's too, and the body — its secrets masked till shown ([#58](https://github.com/vicanso/cyberapi/issues/58)) - ([13fc381](https://github.com/vicanso/cyberapi/commit/13fc381a8d80af41375cd0e252326c8d88f6ce41))
+- *(response)* A JSON response narrows to what a JSONPath matches, in Pretty and Tree, the path kept per API ([#63](https://github.com/vicanso/cyberapi/issues/63)) - ([45415d1](https://github.com/vicanso/cyberapi/commit/45415d11c5b0c21579ff518cd3c21fa3b9a3e7c7))
+- *(response)* An image can be fitted or zoomed, shows its format and size and has open and save; other bytes show as hex - ([b383545](https://github.com/vicanso/cyberapi/commit/b38354502c53008fdb6fe3827e406d3c2ec3820c))
+- *(response)* A body typed as no more than bytes is told an image or a PDF by its first bytes, and is saved and opened as one - ([84e6d1c](https://github.com/vicanso/cyberapi/commit/84e6d1c715ad2c6f36cc7f65527217a6365ea10d))
+- *(response)* JSON opens raw by default, beside pretty and tree, and a line too long to wrap scrolls sideways ([#51](https://github.com/vicanso/cyberapi/issues/51)) - ([cf2d908](https://github.com/vicanso/cyberapi/commit/cf2d9086c75f600ca23c2ab16706194ea52b656b))
+- *(sse)* The events list has an ID column when the stream gives ids, and the picked event shows its id and the reconnection time it asked for ([#72](https://github.com/vicanso/cyberapi/issues/72)) - ([2c1da8c](https://github.com/vicanso/cyberapi/commit/2c1da8c840d6c5b9bc2d465d03c1601c925dcdc1))
+- *(sse)* An event stream shows as it comes — each event with its time, type and data — until the server ends it or the reader stops it, and is kept; through the bridge too - ([aea82b3](https://github.com/vicanso/cyberapi/commit/aea82b32f0d50a9bc8d11c40425ad06191eb28cb))
+- *(store)* MCP tokens of an account — issued once with a name, a lifetime and whether they may send, kept as a hash, revoked by their owner - ([8787200](https://github.com/vicanso/cyberapi/commit/87872006015c0b914813577092babdf167f40830))
+- *(sync)* Clients name the shape they keep projects in, and a bridge refuses changes to projects from an older one; requests keep the fields a newer version wrote (batch 4, step 1) - ([c134894](https://github.com/vicanso/cyberapi/commit/c1348940f9e232212f14f9e71f6e8183d674cee2))
+- *(sync)* A server project whose server cannot be reached says so where its sync button is, in the title bar and on its card, and the server is asked again until it answers - ([1d38dc3](https://github.com/vicanso/cyberapi/commit/1d38dc3034fe373a6d37de833a95c4df5984a24a))
+- *(template)* Uuid, random, randomString, now, hmacSha256 and urlEncode, each send drawing its own random values ([#67](https://github.com/vicanso/cyberapi/issues/67)) - ([d1b3849](https://github.com/vicanso/cyberapi/commit/d1b38490e931026f339f8ac2028dbfdfbc7ce51b))
+- *(update)* A chip in the title bar for a newer release, its dialog, Check for Updates in the menu and the settings, and the switch for the check at start - ([6f1391a](https://github.com/vicanso/cyberapi/commit/6f1391a4bb1cae878f96b9f95492c2209c61823e))
+- *(update)* The desktop checks for a newer release, downloads its package, checks the sum and installs it — on macOS in place - ([a804cc2](https://github.com/vicanso/cyberapi/commit/a804cc201173c6d35977ee8d4445a44f145f8ebd))
+
+### 🐛 Bug Fixes
+
+- *(dialog)* A field at the top or bottom of a dialog shows its whole focus ring, not one cut off at the body's edge - ([f143ffe](https://github.com/vicanso/cyberapi/commit/f143ffe43bc3c42bb15513265380447d96c08659))
+- *(editor)* Server reflection and Fetch schema use the address still being typed, and ask for one when there is none ([#56](https://github.com/vicanso/cyberapi/issues/56)) - ([162379f](https://github.com/vicanso/cyberapi/commit/162379f999a0d8ae9655b6743280b3859e67ed6c))
+- *(editor)* A cURL command typed in the URL field and sent with Enter goes to its own URL, not as the URL ([#55](https://github.com/vicanso/cyberapi/issues/55)) - ([f56f6a2](https://github.com/vicanso/cyberapi/commit/f56f6a2e1bb7bd3a02efa6338f12b58c8f4773c2))
+- *(import)* A clipboard or a text that starts with Chinese no longer crashes the import dialog - ([286d87b](https://github.com/vicanso/cyberapi/commit/286d87bfe62f1bda508f4b3a7efbd6c45f0c7ba7))
+- *(response)* The tree reads the whole JSON body, not the first megabyte the text views show, and says when a body is too large for one or not JSON ([#57](https://github.com/vicanso/cyberapi/issues/57)) - ([66fc301](https://github.com/vicanso/cyberapi/commit/66fc301e7d5dcee7ed12ef3d4a64363535151da8))
+- *(send)* A global header without a name or a value is not sent, and the dialog says so ([#50](https://github.com/vicanso/cyberapi/issues/50)) - ([f02add2](https://github.com/vicanso/cyberapi/commit/f02add2ec5245065b1464e7ccd08d66ea7c25353))
+- *(send)* A URI whose environment variable is not enabled says so by name, not as a broken URL ([#50](https://github.com/vicanso/cyberapi/issues/50)) - ([be8bcbd](https://github.com/vicanso/cyberapi/commit/be8bcbdc8042b5e39d6884114d9afe97f201e5f0))
+- *(server)* A server project's kept copy opens within two seconds when the bridge does not answer, at once when it is known to be out of reach - ([5110afb](https://github.com/vicanso/cyberapi/commit/5110afbd55fcfc1e265d7b2c1d15f6706b8700d9))
+- *(server)* A project opens at once after the start, without waiting for the bridge to answer about the kept session - ([2d5f743](https://github.com/vicanso/cyberapi/commit/2d5f7436169620d95b46eeb3685f40c5617b5072))
+- *(server)* A team made on the desktop is a new project's choice at once, not after a restart - ([cee91c7](https://github.com/vicanso/cyberapi/commit/cee91c7686969a59c3d015cea745db137b59930b))
+- *(sse)* An event stream whose server says its encoding is none (GraphQL Yoga) shows as it comes - ([49093e8](https://github.com/vicanso/cyberapi/commit/49093e80e4c7eb4b5bf7f50b01babcf765ebf033))
+- *(sync)* A server out of reach is asked again 10 s after, then twice as long after each failure up to five minutes; the desktop polls an open server project every 30 s - ([da74aa0](https://github.com/vicanso/cyberapi/commit/da74aa0f2a740c00238b70e1ccc282c0993c517c))
+- *(tree)* A project opened again shows the API it was left on, scrolled into view however far down the tree - ([db4eb43](https://github.com/vicanso/cyberapi/commit/db4eb436360f9267476e75b7abdb3936da54e624))
+- *(web)* An unsynced API's responses stay while the project is open and go into the history with the sync; the note says why one is not kept (#52, #53) - ([120c533](https://github.com/vicanso/cyberapi/commit/120c533ca6af8ffc04d5556b1ea4ecc1c86867ee))
+
+### 📚 Documentation
+
+- *(deploy)* AI assistants over MCP — tokens, what the tools read and send, what is masked, in both languages - ([158f416](https://github.com/vicanso/cyberapi/commit/158f416560ce96cd2f44ff0137e570a031ee9588))
+- *(deploy)* What a release does not have yet is marked with the version it comes in, and a version bump moves the examples along ([#54](https://github.com/vicanso/cyberapi/issues/54)) - ([1f45283](https://github.com/vicanso/cyberapi/commit/1f452836bd3b57dcb9cec833588a8d1af45b2531))
+- *(readme)* The feature list catches up with what the app does, in both languages - ([164a0d6](https://github.com/vicanso/cyberapi/commit/164a0d66e766286786f3950a872e4a4af5f97ccd))
+- A short feature list on the front page, the whole one in docs/FEATURES.md - ([2bed1fb](https://github.com/vicanso/cyberapi/commit/2bed1fb896a12d9868e9b91dc473f3614faeb52f))
+- Bring the design docs up to the folder settings, auth and named environments - ([84fd7c6](https://github.com/vicanso/cyberapi/commit/84fd7c6c0a5b527031e1d72ab3a47562d4555086))
+- A diagram of the code and the data the desktop app and the web version share - ([fcd8633](https://github.com/vicanso/cyberapi/commit/fcd8633adeef1f33d9aefff4ebece2016565d5b5))
+- Batch 4 is done - ([372be4c](https://github.com/vicanso/cyberapi/commit/372be4cd9d779a628f98092c03843d39160eedc0))
+- #61a is done - ([bc1c0f9](https://github.com/vicanso/cyberapi/commit/bc1c0f9dc02244e3e18c71e97d04b53c248d7a27))
+- #66 is done - ([a753518](https://github.com/vicanso/cyberapi/commit/a7535186f9bf639a711440049c53ee4404b1e9e5))
+- #66a is done - ([73eff61](https://github.com/vicanso/cyberapi/commit/73eff610fc84be65626943d677c8c9b14098a2b0))
+- #71 is done, and batch 4 no longer keeps released clients in step beyond its first step - ([f932b00](https://github.com/vicanso/cyberapi/commit/f932b0052c4bf47b9a4f026204a724694b0899db))
+- Batch 4's questions are settled as suggested, and its first step is done - ([5119d6a](https://github.com/vicanso/cyberapi/commit/5119d6a2d138be8b2ed5723264e1286b106158e5))
+- The design of batch 4 — per-API settings, auth types and inheritance, named environments — with the questions to settle first (#71, #66, #61) - ([a823b00](https://github.com/vicanso/cyberapi/commit/a823b00fedd4468dbf256809e234043394f487cb))
+- Batch 3 of the issue plan is done — #70 and #60 - ([b9cf661](https://github.com/vicanso/cyberapi/commit/b9cf6611a24f52cc799f1d910ebcf834a490731f))
+- Batch 2 of the issue plan is done — #63, #58 and #69 - ([4addaa1](https://github.com/vicanso/cyberapi/commit/4addaa1ea8ad9a166c062a38a852e2fbfb3f7cc8))
+- Batch 1 of the issue plan is done — #67, #65 and #59, a URL import left for later - ([b4ed785](https://github.com/vicanso/cyberapi/commit/b4ed785fabb773d36067260bfbff1d8c778e7031))
+- The plan for the issues from #55 on — what is done, the search button held back, and the four batches still to do - ([b374d3a](https://github.com/vicanso/cyberapi/commit/b374d3a1c766b4857ad30b191c739627e812b578))
+- GRPC server streaming and GraphQL subscriptions over event streams, in both READMEs and CLAUDE.md - ([feb76a1](https://github.com/vicanso/cyberapi/commit/feb76a1d2414a917b9c797bbc1c6c739cbe605f9))
+- Server-sent events, in both READMEs, both deployment guides and CLAUDE.md - ([b57517d](https://github.com/vicanso/cyberapi/commit/b57517d4171bdf3042d571464ed49bb7efbe4e65))
+- GRPC calls, in both READMEs and CLAUDE.md - ([7528d2b](https://github.com/vicanso/cyberapi/commit/7528d2b1660230504cc2f7610f198f6b48b8a2a6))
+- GraphQL bodies and schema completion, in both READMEs and CLAUDE.md - ([72bca40](https://github.com/vicanso/cyberapi/commit/72bca4024997cd244b7c91579a6f511148c22a49))
+
+### 🧪 Testing
+
+- *(http)* An event stream's arrivals are checked to rise, not to be 100 ms apart, which a busy CI machine does not see - ([0adbde8](https://github.com/vicanso/cyberapi/commit/0adbde8906ea6f56ce5f482dcb67e895a1f1e9a0))
+
 ## [0.2.2](https://github.com/vicanso/cyberapi/compare/v0.2.1..v0.2.2) - 2026-10-25
 
 ### ⛰️  Features
