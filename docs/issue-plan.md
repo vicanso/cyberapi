@@ -1,6 +1,6 @@
 # Issue #55 起的处理计划
 
-> 状态：A、B 两组和 C 组第 1 批已完成（2026-10-25），第 2–4 批待做，按批次顺序进行。每个 issue 单独提交，提交信息带 issue 编号。
+> 状态：A、B 两组和 C 组第 1、2 批已完成（2026-10-25），第 3、4 批待做，按批次顺序进行。每个 issue 单独提交，提交信息带 issue 编号。
 
 2026-10-25 把 [vicanso/cyberapi](https://github.com/vicanso/cyberapi/issues) #55 起的 issue 分了组：A 是 bug，B 是改动小、马上能做的优化，C 是要单独规划的功能。
 
@@ -19,6 +19,9 @@
 | #67 | 模板函数 `uuid`、`random`、`randomString`、`now`、`hmacSha256`、`urlEncode` | d1b3849 |
 | #65 | 首页（含空状态）“导入…”：导入的内容新建为项目，名称取集合自己的名字，项目打开、树加载完后导入 | aeed208 |
 | #59 | YAML 写的 Swagger / OpenAPI 照 JSON 导入；剪贴板里的这种 YAML 也会预填（从 URL 导入推后） | 9192d62 |
+| #63 | JSON 响应在 Pretty / Tree 视图用 JSONPath 过滤，开关在响应状态行，条件按接口记住 | 45415d1 |
+| #58 | Details 显示实际发出的请求：每个请求头及其来源（含引擎加的），请求体，密钥打码可切换 | 13fc381 |
+| #69 | 复制为 cURL、HTTPie、JavaScript fetch、Python requests、Go net/http（响应的 `>_` 菜单和接口树子菜单） | 98a24a1 |
 
 ## 搁置：#63 的可见搜索按钮
 
