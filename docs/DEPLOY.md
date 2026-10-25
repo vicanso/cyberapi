@@ -171,6 +171,8 @@ server {
 }
 ```
 
+**Event streams** (*0.2.2*). An API whose answer is an event stream (`text/event-stream`) is passed to the page as it comes, on `POST /v1/send/stream`. The bridge marks that answer `X-Accel-Buffering: no`, so nginx passes it on unbuffered; another proxy must not buffer responses on that path either (Caddy and Traefik stream by default). The stream ends when the reader stops it, when nothing comes for the request's read timeout, or at 64 MB; while it lasts it is one of the account's 16 requests in flight, and the proxy's read timeout applies to the gaps between its pieces.
+
 **Under a sub-path** (*0.2.2*). To live at `https://example.com/cyberapi/` beside other applications, start the bridge with `--base-path /cyberapi` (or `CYBERAPI_BRIDGE_BASE_PATH=/cyberapi`) and let the proxy pass the path on as it is:
 
 ```nginx

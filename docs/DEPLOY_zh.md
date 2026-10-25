@@ -171,6 +171,8 @@ server {
 }
 ```
 
+**事件流**（*0.2.2*）。响应是事件流（`text/event-stream`）的接口，由 `POST /v1/send/stream` 边收边转给页面。bridge 给这个响应加了 `X-Accel-Buffering: no`，nginx 会不缓冲地转发；其他代理也不能缓冲这个路径的响应（Caddy 和 Traefik 默认就是流式转发）。流在读者停止、超过请求的读取超时没有新数据、或达到 64 MB 时结束；持续期间占用该账号同时进行的 16 个请求之一，代理的读超时作用于两段数据之间的间隔。
+
 **放在子路径下**（*0.2.2*）。要和其他应用共用一个域名、放在 `https://example.com/cyberapi/` 下，用 `--base-path /cyberapi`（或 `CYBERAPI_BRIDGE_BASE_PATH=/cyberapi`）启动 bridge，代理把路径原样转发：
 
 ```nginx
