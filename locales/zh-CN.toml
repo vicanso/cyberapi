@@ -129,6 +129,7 @@ config_copied = "接口配置已复制到剪贴板，可以通过“导入”粘
 
 [editor]
 uri_placeholder = "输入地址，或粘贴 cURL 命令"
+grpc_uri_placeholder = "host:port 或 grpcs://host:port"
 environment = "环境"
 graphql_variables = "变量（JSON）"
 graphql_operation = "操作名（可选）"

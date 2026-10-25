@@ -129,6 +129,7 @@ config_copied = "The API's config is on the clipboard; Import reads it back."
 
 [editor]
 uri_placeholder = "Enter a URL, or paste a cURL command"
+grpc_uri_placeholder = "host:port or grpcs://host:port"
 environment = "Env"
 graphql_variables = "Variables (JSON)"
 graphql_operation = "Operation name (optional)"

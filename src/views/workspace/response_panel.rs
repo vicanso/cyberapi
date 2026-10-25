@@ -60,6 +60,16 @@ const TABS: [ResponseTab; 4] = [
     ResponseTab::Cookies,
     ResponseTab::Info,
 ];
+/// A gRPC call's: no cookies, metadata for headers (#73).
+const GRPC_TABS: [ResponseTab; 3] = [ResponseTab::Body, ResponseTab::Headers, ResponseTab::Info];
+
+fn tabs_of(response: &HttpResponse) -> &'static [ResponseTab] {
+    if response.request.method == HttpMethod::Grpc {
+        &GRPC_TABS
+    } else {
+        &TABS
+    }
+}
 
 pub struct ResponsePanel {
     api: Entity<ApiState>,
@@ -437,20 +447,39 @@ impl ResponsePanel {
             .into_any_element()
     }
 
+    /// The tab shown: Body when the one picked is not one this response has.
+    fn tab_for(&self, response: &HttpResponse) -> ResponseTab {
+        if tabs_of(response).contains(&self.tab) {
+            self.tab
+        } else {
+            ResponseTab::Body
+        }
+    }
+
     fn render_tabs(&self, response: &HttpResponse, cx: &mut Context<Self>) -> AnyElement {
+        let grpc = response.request.method == HttpMethod::Grpc;
         let label = |tab: &ResponseTab| match tab {
             ResponseTab::Body => t!("response.body").to_string(),
-            ResponseTab::Headers => format!("{} ({})", t!("response.headers"), response.display_headers().len()),
+            ResponseTab::Headers => {
+                let name = if grpc {
+                    t!("editor.grpc_metadata")
+                } else {
+                    t!("response.headers")
+                };
+                format!("{} ({})", name, response.display_headers().len())
+            }
             ResponseTab::Cookies => format!("{} ({})", t!("response.cookies"), response.cookies().len()),
             ResponseTab::Info => t!("response.info").to_string(),
         };
-        let copies = self.tab == ResponseTab::Body
+        let tabs = tabs_of(response);
+        let shown = self.tab_for(response);
+        let copies = shown == ResponseTab::Body
             && response.error.is_none()
             && response.body_omitted.is_none()
             && !response.body.is_empty()
             && matches!(response.body_kind(), BodyKind::Json | BodyKind::Text);
         // F7.4: a picture, or its bytes; and the file, opened or kept.
-        let pictured = self.tab == ResponseTab::Body
+        let pictured = shown == ResponseTab::Body
             && response.error.is_none()
             && response.body_omitted.is_none()
             && self.image.is_some();
@@ -458,8 +487,8 @@ impl ResponsePanel {
             .underline()
             .small()
             .px_2()
-            .selected_index(TABS.iter().position(|tab| *tab == self.tab).unwrap_or(0))
-            .children(TABS.iter().map(|tab| Tab::new().label(label(tab))))
+            .selected_index(tabs.iter().position(|tab| *tab == shown).unwrap_or(0))
+            .children(tabs.iter().map(|tab| Tab::new().label(label(tab))))
             .when(copies, |bar| {
                 let page = this_build::opens_html() && response.content_type().to_ascii_lowercase().contains("html");
                 let stream = shows_events(response);
@@ -585,8 +614,8 @@ impl ResponsePanel {
                         ),
                 )
             })
-            .on_click(cx.listener(|this, index: &usize, _, cx| {
-                if let Some(tab) = TABS.get(*index) {
+            .on_click(cx.listener(move |this, index: &usize, _, cx| {
+                if let Some(tab) = tabs.get(*index) {
                     this.tab = *tab;
                     cx.notify();
                 }
@@ -1306,7 +1335,7 @@ impl Render for ResponsePanel {
             // An event stream as it comes.
             _ if live => self.events.clone().into_any_element(),
             Some(response) => {
-                let content = match self.tab {
+                let content = match self.tab_for(response) {
                     ResponseTab::Body => self.render_cut_body(response, cx),
                     ResponseTab::Headers => Self::render_headers(
                         "response-headers",

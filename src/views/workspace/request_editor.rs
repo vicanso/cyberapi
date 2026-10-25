@@ -212,6 +212,16 @@ fn graphql_fields(
     }
 }
 
+/// What the address field says while empty: a gRPC call's address is
+/// `host:port` more often than a URL, and it takes no cURL command (#73).
+fn uri_placeholder(method: HttpMethod) -> String {
+    match method {
+        HttpMethod::Grpc => t!("editor.grpc_uri_placeholder"),
+        _ => t!("editor.uri_placeholder"),
+    }
+    .to_string()
+}
+
 impl RequestEditor {
     pub fn new(
         workspace: Entity<WorkspaceState>,
@@ -222,7 +232,7 @@ impl RequestEditor {
         let request = api.read(cx).request().clone();
         let uri = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(t!("editor.uri_placeholder").to_string())
+                .placeholder(uri_placeholder(request.method))
                 .default_value(split_env_prefix(&request.uri).1.to_string())
         });
         let hints = HintSource::new(&workspace);
@@ -768,7 +778,10 @@ impl RequestEditor {
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let request = self.api.read(cx).request().clone();
         let rest = split_env_prefix(&request.uri).1.to_string();
-        self.uri.update(cx, |input, cx| input.set_value(rest, window, cx));
+        self.uri.update(cx, |input, cx| {
+            input.set_value(rest, window, cx);
+            input.set_placeholder(uri_placeholder(request.method), window, cx);
+        });
         self.body = body_state(&request, &self.hints, window, cx);
         self._subscriptions.push(Self::watch_body(&self.body, window, cx));
         self._subscriptions
@@ -1050,9 +1063,12 @@ impl RequestEditor {
                             .text_color(method_color(method, cx))
                             .child(method.as_str())
                     });
-                    menu.item(item.checked(method == current).on_click(move |_, _, cx| {
+                    menu.item(item.checked(method == current).on_click(move |_, window, cx| {
                         let _ = this.update(cx, |this, cx| {
                             this.api.update(cx, |api, cx| api.set_method(method, cx));
+                            this.uri.update(cx, |input, cx| {
+                                input.set_placeholder(uri_placeholder(method), window, cx)
+                            });
                         });
                     }))
                 })
