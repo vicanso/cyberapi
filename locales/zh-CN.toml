@@ -520,7 +520,7 @@ search_projects = "搜索项目"
 
 [sync]
 unreachable = "连不上服务器"
-unreachable_hint = "连不上服务器：%{reason}。修改都保存在本机，恢复连接后可以同步；每 10 秒自动重试。"
+unreachable_hint = "连不上服务器：%{reason}。修改都保存在本机，恢复连接后可以同步。会自动重试，连不上的时间越长重试间隔越长（最长 5 分钟）。"
 unsynced = "未同步"
 unsynced_hint = "这些修改只保存在本地，同步后才会上传到服务器。"
 unsynced_behind = "未同步 · 服务器有更新"

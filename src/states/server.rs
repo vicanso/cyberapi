@@ -56,6 +56,9 @@ pub struct ServerState {
     /// The kept session asked about again: the bridge could not be
     /// reached, and the network may come back.
     _retry: Option<Task<()>>,
+    /// How many times in a row it could not be: each retry waits longer
+    /// (`pacing::retry_after`).
+    failures: u32,
 }
 
 impl EventEmitter<ServerEvent> for ServerState {}
@@ -73,6 +76,7 @@ impl ServerState {
             copies,
             bound: None,
             _retry: None,
+            failures: 0,
         };
         state.check(cx);
         state.reload_copies(cx);
@@ -228,6 +232,10 @@ impl ServerState {
         cx.spawn(async move |this, cx| {
             let answer = cx.background_spawn(async move { session_me(&transport).await }).await;
             let _ = this.update(cx, |this, cx| {
+                this.failures = match answer {
+                    Err(_) => this.failures.saturating_add(1),
+                    Ok(_) => 0,
+                };
                 this.status = match answer {
                     Ok(Some(me)) => {
                         let account = Some(me.account.id.as_str().to_string());
@@ -261,6 +269,7 @@ impl ServerState {
         match (unreachable, &self.status) {
             (Some(reason), ServerStatus::SignedIn(_)) => {
                 self.status = ServerStatus::Unreachable(reason.to_string());
+                self.failures = 1;
                 self.retry_later(cx);
                 cx.notify();
             }
@@ -269,15 +278,13 @@ impl ServerState {
         }
     }
 
-    /// The bridge out of reach is asked again a beat later, and on until it
-    /// answers: the network back, who is signed in and their projects are
-    /// known again without a restart.
+    /// The bridge out of reach is asked again a while later, longer after
+    /// each failure, and on until it answers: the network back, who is
+    /// signed in and their projects are known again without a restart.
     fn retry_later(&mut self, cx: &mut Context<Self>) {
-        let Some(every) = crate::pacing::SERVER_POLL else {
-            return;
-        };
+        let wait = crate::pacing::retry_after(self.failures);
         self._retry = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(every).await;
+            cx.background_executor().timer(wait).await;
             let _ = this.update(cx, |this, cx| {
                 // Signed in or out meanwhile: nothing to ask again.
                 if matches!(this.status, ServerStatus::Unreachable(_)) {

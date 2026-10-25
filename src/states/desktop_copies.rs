@@ -410,6 +410,81 @@ async fn an_unreachable_bridge_is_said_so_and_asked_again(cx: &mut TestAppContex
     assert!(on_card(cx).is_none());
 }
 
+/// A bridge that stays out of reach is asked again ten seconds after,
+/// then twice as long after each failure; once it answers, the waits start
+/// over.
+#[gpui_kit::test]
+async fn a_bridge_out_of_reach_is_asked_less_and_less_often(cx: &mut TestAppContext) {
+    use std::time::Duration;
+    let machine = Machine::signed_in(cx);
+    machine.bridge.online.store(false, Ordering::SeqCst);
+    machine.server.update(cx, |state, cx| state.check(cx));
+    cx.run_until_parked();
+    let calls = || machine.bridge.calls.load(Ordering::SeqCst);
+    let mut asked = vec![];
+    let mut before = calls();
+    // Ten seconds at a time, up to 70: asked at 10, 30 and 70.
+    for _ in 0..7 {
+        cx.executor().advance_clock(Duration::from_secs(10));
+        cx.run_until_parked();
+        asked.push(calls() - before);
+        before = calls();
+    }
+    assert_eq!(asked, [1, 0, 1, 0, 0, 0, 1]);
+
+    // Back: the next ask finds it, and a later failure waits ten seconds again.
+    machine.bridge.online.store(true, Ordering::SeqCst);
+    cx.executor().advance_clock(Duration::from_secs(80));
+    cx.run_until_parked();
+    assert!(
+        machine
+            .server
+            .read_with(cx, |state, _| matches!(state.status(), ServerStatus::SignedIn(_)))
+    );
+    machine.bridge.online.store(false, Ordering::SeqCst);
+    machine.server.update(cx, |state, cx| state.check(cx));
+    cx.run_until_parked();
+    let before = calls();
+    cx.executor().advance_clock(Duration::from_secs(10));
+    cx.run_until_parked();
+    assert_eq!(calls() - before, 1);
+}
+
+/// An open server project's poll waits as long between failures, and
+/// goes back to its beat once the server answers.
+#[gpui_kit::test]
+async fn an_open_projects_poll_backs_off_while_its_server_is_out_of_reach(cx: &mut TestAppContext) {
+    use std::time::Duration;
+    let machine = Machine::signed_in(cx);
+    let theirs = machine.on_server("orders").await;
+    machine.dashboard(cx);
+    machine.bridge.online.store(false, Ordering::SeqCst);
+    let (_workspace, _) = machine.open(theirs.clone(), cx);
+    let calls = || machine.bridge.calls.load(Ordering::SeqCst);
+    let mut asked = vec![];
+    let mut before = calls();
+    for _ in 0..7 {
+        cx.executor().advance_clock(Duration::from_secs(10));
+        cx.run_until_parked();
+        asked.push(calls() - before);
+        before = calls();
+    }
+    assert_eq!(
+        asked,
+        [1, 0, 1, 0, 0, 0, 1],
+        "10 s, then 20, then 40 after the failed opening"
+    );
+
+    machine.bridge.online.store(true, Ordering::SeqCst);
+    cx.executor().advance_clock(Duration::from_secs(80));
+    cx.run_until_parked();
+    let beat = crate::pacing::SERVER_POLL.expect("the desktop polls a copy's server");
+    let before = calls();
+    cx.executor().advance_clock(beat);
+    cx.run_until_parked();
+    assert_eq!(calls() - before, 1, "back to its beat");
+}
+
 #[gpui_kit::test]
 async fn this_machines_projects_ask_the_server_nothing(cx: &mut TestAppContext) {
     let machine = Machine::signed_in(cx);

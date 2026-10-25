@@ -17,11 +17,33 @@ pub const REVISION_POLL: Option<Duration> = Some(Duration::from_secs(10));
 
 /// How often an open server project — the page's, or the desktop's copy of
 /// one — asks the server whether another reader changed it
-/// (`docs/server-sync.md` §3.1). The desktop's own projects never ask.
+/// (`docs/server-sync.md` §3.1). The desktop's own projects never ask. It
+/// only shows others' changes sooner: a sync checks the server's revision
+/// itself. Teammates editing in their pages see each other's sooner.
 #[cfg(not(target_family = "wasm"))]
-pub const SERVER_POLL: Option<Duration> = Some(Duration::from_secs(10));
+pub const SERVER_POLL: Option<Duration> = Some(Duration::from_secs(30));
 #[cfg(target_family = "wasm")]
 pub const SERVER_POLL: Option<Duration> = Some(Duration::from_secs(10));
+
+/// After the server could not be reached, it is asked again this long
+/// after, then twice as long after each failure, up to [`RETRY_LONGEST`]:
+/// a network that stays down is not asked every beat.
+#[cfg(not(target_family = "wasm"))]
+pub const RETRY_FIRST: Duration = Duration::from_secs(10);
+#[cfg(target_family = "wasm")]
+pub const RETRY_FIRST: Duration = Duration::from_secs(10);
+
+#[cfg(not(target_family = "wasm"))]
+pub const RETRY_LONGEST: Duration = Duration::from_secs(5 * 60);
+#[cfg(target_family = "wasm")]
+pub const RETRY_LONGEST: Duration = Duration::from_secs(5 * 60);
+
+/// How long after the `failures`th failure in a row (from 1) the server is
+/// asked again: 10 s, 20 s, 40 s… up to five minutes.
+pub fn retry_after(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    RETRY_FIRST.saturating_mul(1 << doublings).min(RETRY_LONGEST)
+}
 
 /// How long opening a server project waits for the server before working
 /// on what this machine kept of it, the poll catching up after: the
@@ -48,4 +70,17 @@ pub fn page_hidden() -> bool {
 /// The browser page's `visibilitychange`, handed in by `cyberapi-web`.
 pub fn set_page_visible(visible: bool) {
     PAGE_HIDDEN.store(!visible, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retries_wait_twice_as_long_each_time_up_to_five_minutes() {
+        let waits: Vec<u64> = (1..=8).map(|failures| retry_after(failures).as_secs()).collect();
+        assert_eq!(waits, [10, 20, 40, 80, 160, 300, 300, 300]);
+        assert_eq!(retry_after(0).as_secs(), 10);
+        assert_eq!(retry_after(u32::MAX).as_secs(), 300);
+    }
 }

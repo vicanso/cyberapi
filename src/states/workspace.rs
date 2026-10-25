@@ -89,6 +89,9 @@ struct CopyState {
     /// Why the server could not be reached, the last it was asked: the
     /// network or the bridge failed. Any answer from it clears this.
     unreachable: Option<String>,
+    /// How many times in a row it could not be: the poll waits longer
+    /// after each (`pacing::retry_after`).
+    failures: u32,
     /// A push waiting for the writes on their way: over the server's
     /// whatever it has, or only at the copy's base.
     push: Option<bool>,
@@ -137,6 +140,10 @@ pub struct WorkspaceState {
     /// machine's, whose changes are written at once.
     copy: Option<CopyState>,
     _poll: Option<Task<()>>,
+    /// A server project's beat, its poll started once the opening heard
+    /// from the server or failed to: a first ask after a failed opening
+    /// waits as one after any failure.
+    poll_every: Option<Duration>,
 }
 
 impl EventEmitter<WorkspaceEvent> for WorkspaceState {}
@@ -169,6 +176,7 @@ impl WorkspaceState {
         poll: Option<Duration>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let is_copy = copy.is_some();
         let copy = copy.map(|(server, (copy, mut news))| {
             sender.storage = copy.storage(&server);
             let news = cx.spawn(async move |this, cx| {
@@ -186,6 +194,7 @@ impl WorkspaceState {
                 told_not_kept: false,
                 busy: false,
                 unreachable: None,
+                failures: 0,
                 push: None,
                 _news: news,
             }
@@ -210,7 +219,8 @@ impl WorkspaceState {
             schemas: HashMap::new(),
             grpc: HashMap::new(),
             copy,
-            _poll: poll.map(|every| Self::poll(every, cx)),
+            _poll: poll.filter(|_| !is_copy).map(|every| Self::poll(every, cx)),
+            poll_every: poll,
         };
         state.reload(cx);
         state
@@ -220,7 +230,10 @@ impl WorkspaceState {
         cx.spawn(async move |this, cx| {
             let mut beats = 0u32;
             loop {
-                cx.background_executor().timer(every).await;
+                let Ok(wait) = this.update(cx, |this, _| this.poll_wait(every)) else {
+                    return;
+                };
+                cx.background_executor().timer(wait).await;
                 beats = beats.wrapping_add(1);
                 if pacing::page_hidden() && !beats.is_multiple_of(pacing::HIDDEN_EVERY) {
                     continue;
@@ -320,6 +333,11 @@ impl WorkspaceState {
         cx: &mut Context<Self>,
     ) {
         self.heard_from_server(on_server.as_ref().err(), cx);
+        if self._poll.is_none()
+            && let Some(every) = self.poll_every
+        {
+            self._poll = Some(Self::poll(every, cx));
+        }
         // The reader's place in it is the server's to say.
         if let Ok((found, _)) = &on_server {
             self.collection.role = found.role;
@@ -692,9 +710,22 @@ impl WorkspaceState {
             let reason = unreachable.clone();
             server.update(cx, |server, cx| server.heard(reason.as_deref(), cx));
         }
+        copy.failures = match unreachable {
+            Some(_) => copy.failures.saturating_add(1),
+            None => 0,
+        };
         if copy.unreachable != unreachable {
             copy.unreachable = unreachable;
             cx.notify();
+        }
+    }
+
+    /// How long the poll waits before it asks: a beat, or — the server out
+    /// of reach — longer after each failure, up to five minutes.
+    fn poll_wait(&self, every: Duration) -> Duration {
+        match self.copy.as_ref().map_or(0, |copy| copy.failures) {
+            0 => every,
+            failures => pacing::retry_after(failures),
         }
     }
 

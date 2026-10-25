@@ -520,7 +520,7 @@ search_projects = "Search the projects"
 
 [sync]
 unreachable = "Server unreachable"
-unreachable_hint = "The server cannot be reached: %{reason}. Changes are kept on this machine and can be synced once it is back; it is tried again every 10 seconds."
+unreachable_hint = "The server cannot be reached: %{reason}. Changes are kept on this machine and can be synced once it is back. It is tried again by itself, less often the longer it stays out of reach (at most every five minutes)."
 unsynced = "Not synced"
 unsynced_hint = "These changes are kept here only. Sync to put them on the server."
 unsynced_behind = "Not synced · server changed"
