@@ -442,6 +442,13 @@ async fn requests_are_saved(storage: &Storage) {
             accept_invalid_certs: None,
             http_version: Some(HttpVersion::Http2),
         },
+        // What its answers are checked against (A1).
+        assertions: vec![cyberapi_core::assertions::Assertion {
+            subject: cyberapi_core::assertions::Subject::Json,
+            target: "$.token".into(),
+            op: cyberapi_core::assertions::Op::Exists,
+            ..Default::default()
+        }],
         // What a newer version keeps in a request comes back as it went
         // (`docs/batch4-design.md` §2.1).
         extra: HttpRequest::from_json_lenient(r#"{"laterField": {"kept": [1, "two"]}}"#).extra,

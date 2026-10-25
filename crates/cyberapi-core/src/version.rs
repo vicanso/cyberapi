@@ -27,7 +27,9 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 ///    `ProjectConfig.settings`).
 /// 5: named environments and the variables in them (#61,
 ///    `ProjectConfig.environments`, `Variable.environment`).
-pub const MODEL: u32 = 5;
+/// 6: what an API's answers are checked against (A1,
+///    `HttpRequest.assertions`).
+pub const MODEL: u32 = 6;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

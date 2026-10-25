@@ -1816,6 +1816,7 @@ dependencies = [
  "prost",
  "prost-reflect",
  "prost-types",
+ "regex",
  "serde",
  "serde-saphyr 2.0.0",
  "serde_json",

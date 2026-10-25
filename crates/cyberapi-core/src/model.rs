@@ -133,6 +133,9 @@ pub struct HttpRequest {
     /// What this API overrides of the settings' sending (#71).
     #[serde(skip_serializing_if = "RequestSettings::is_empty")]
     pub settings: RequestSettings,
+    /// What its answers are checked against (A1).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assertions: Vec<crate::assertions::Assertion>,
     /// What a newer version keeps in a request that this one does not
     /// read, written back as it came (`docs/batch4-design.md` §2.1): a
     /// request saved here keeps it.
@@ -157,6 +160,7 @@ struct StoredRequest {
     /// a request lost.
     authentication: Option<serde_json::Value>,
     settings: RequestSettings,
+    assertions: Vec<crate::assertions::Assertion>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -176,6 +180,7 @@ impl From<StoredRequest> for HttpRequest {
             headers: stored.headers,
             auth,
             settings: stored.settings,
+            assertions: stored.assertions,
             extra: stored.extra,
         }
     }
