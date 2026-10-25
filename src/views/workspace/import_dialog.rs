@@ -7,7 +7,7 @@ use crate::this_build;
 use crate::views::name_dialog::ok_button;
 use cyberapi_core::ItemId;
 use cyberapi_core::import::{self, Format, ImportBundle};
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent, Paste};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
@@ -27,11 +27,27 @@ const HELD_ABOVE: usize = 256 * 1024;
 /// How much of a held text the editor shows.
 const HELD_SHOWN: usize = 64 * 1024;
 
+/// B3: the text, when it is an address to fetch what to import from: one
+/// http or https URL, nothing around it.
+fn address(text: &str) -> Option<&str> {
+    let trimmed = text.trim();
+    let scheme = |prefix: &str| {
+        trimmed
+            .get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+    };
+    ((scheme("http://") || scheme("https://")) && !trimmed.contains(char::is_whitespace)).then_some(trimmed)
+}
+
 /// F10.1: what the clipboard holds, when it looks like something to import
-/// — JSON, formatted, a cURL command, or an OpenAPI or Swagger document in
-/// YAML (#59), as it is; nothing otherwise.
+/// — JSON, formatted, a cURL command, an OpenAPI or Swagger document in
+/// YAML (#59), or an address to fetch one from (B3), as it is; nothing
+/// otherwise.
 fn importable(text: &str) -> String {
     let trimmed = text.trim();
+    if let Some(address) = address(trimmed) {
+        return address.to_string();
+    }
     // `get`, not a slice: four bytes may end inside a character.
     if trimmed.get(..4).is_some_and(|start| start.eq_ignore_ascii_case("curl")) {
         return trimmed.to_string();
@@ -144,8 +160,12 @@ struct ImportView {
     /// What the text would import, worked out off the main thread whenever
     /// it changes.
     found: Option<Found>,
-    /// A picked file that could not be read.
+    /// A picked file that could not be read, or an address that gave
+    /// nothing.
     error: Option<String>,
+    /// B3: the text is an address, to fetch what to import from.
+    address: Option<String>,
+    fetching: Option<Task<()>>,
     highlighted: &'static str,
     /// The latest `describe`; a newer one drops it.
     describing: Task<()>,
@@ -174,6 +194,8 @@ impl ImportView {
             held: None,
             found: None,
             error: None,
+            address: None,
+            fetching: None,
             highlighted: "json",
             describing: Task::ready(()),
             _changes: changes,
@@ -220,6 +242,15 @@ impl ImportView {
         }
         if text.trim().is_empty() {
             self.found = None;
+            self.address = None;
+            self.describing = Task::ready(());
+            cx.notify();
+            return;
+        }
+        // An address imports nothing itself: what it holds does, fetched.
+        self.address = address(&text).map(str::to_string);
+        if self.address.is_some() {
+            self.found = Some(Ok(t!("import.fetch_hint").to_string()));
             self.describing = Task::ready(());
             cx.notify();
             return;
@@ -263,6 +294,30 @@ impl ImportView {
             });
         })
         .detach();
+    }
+
+    /// B3: what the address holds, in its place.
+    fn fetch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(url) = self.address.clone() else { return };
+        if self.fetching.is_some() {
+            return;
+        }
+        let fetched = crate::states::AppStore::global(cx).fetch_text(url, cx);
+        self.error = None;
+        self.fetching = Some(cx.spawn_in(window, async move |this, cx| {
+            let fetched = fetched.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.fetching = None;
+                match fetched {
+                    Ok(text) => this.fill(text, window, cx),
+                    Err(why) => {
+                        this.error = Some(t!("import.fetch_failed", why = why).to_string());
+                        cx.notify();
+                    }
+                }
+            });
+        }));
+        cx.notify();
     }
 
     fn pick(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -339,6 +394,16 @@ impl Render for ImportView {
                     .child(
                         h_flex()
                             .gap_2()
+                            .when(self.address.is_some(), |this| {
+                                this.child(
+                                    Button::new("import-fetch")
+                                        .primary()
+                                        .small()
+                                        .loading(self.fetching.is_some())
+                                        .label(t!("import.fetch").to_string())
+                                        .on_click(cx.listener(|this, _, window, cx| this.fetch(window, cx))),
+                                )
+                            })
                             .when(self.held.is_some(), |this| {
                                 this.child(
                                     Button::new("import-clear")
@@ -425,6 +490,113 @@ mod tests {
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{AnyWindowHandle, ClipboardItem, Focusable as _, TestAppContext, size};
+    use std::sync::Arc;
+
+    /// Answers `/spec` with a collection, anything else with a 404.
+    struct Specs;
+
+    impl cyberapi_http::HttpEngine for Specs {
+        fn send(&self, request: cyberapi_http::PreparedRequest) -> cyberapi_http::SendFuture {
+            let found = request.url.ends_with("/spec");
+            Box::pin(async move {
+                Ok(cyberapi_core::response::Exchange {
+                    status: if found { 200 } else { 404 },
+                    body: if found {
+                        big_collection(2).into_bytes()
+                    } else {
+                        Vec::new()
+                    },
+                    ..Default::default()
+                })
+            })
+        }
+    }
+
+    /// An import view in a window, the app's state behind it; and how to
+    /// paste into its editor.
+    fn opened(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<ImportView>) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::states::AppStore::init(
+                cyberapi_store::MemoryStore::new().storage(),
+                Arc::new(Specs),
+                Default::default(),
+                crate::Extras::default(),
+                cx,
+            );
+        });
+        let mut view = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(720.), px(480.)), |window, cx| {
+                let import = cx.new(|cx| ImportView::new(window, cx));
+                view = Some(import.clone());
+                Root::new(import, window, cx)
+            })
+            .into();
+        (window, view.expect("built"))
+    }
+
+    fn paste_into(window: AnyWindowHandle, view: &Entity<ImportView>, text: &str, cx: &mut TestAppContext) {
+        cx.write_to_clipboard(ClipboardItem::new_string(text.into()));
+        cx.update_window(window, |_, window, cx| {
+            view.read(cx).editor.read(cx).focus_handle(cx).focus(window, cx);
+            window.render_frame(cx);
+            window.press("secondary-v", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+    }
+
+    /// B3: an address says what Fetch does, and Fetch puts what it holds in
+    /// its place; one that gives nothing says why.
+    #[gpui_kit::test]
+    async fn an_address_is_fetched(cx: &mut TestAppContext) {
+        let (window, view) = opened(cx);
+        paste_into(window, &view, "https://specs.test/spec", cx);
+        cx.read(|cx| {
+            let view = view.read(cx);
+            assert_eq!(view.address.as_deref(), Some("https://specs.test/spec"));
+            assert_eq!(view.found, Some(Ok(t!("import.fetch_hint").to_string())));
+        });
+        let fetch = |cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| {
+                view.update(cx, |view, cx| view.fetch(window, cx))
+            })
+            .expect("the window is open");
+            cx.run_until_parked();
+        };
+        fetch(cx);
+        cx.read(|cx| {
+            let view = view.read(cx);
+            assert_eq!(view.text(cx).as_ref(), big_collection(2));
+            assert!(view.address.is_none());
+            assert!(
+                matches!(&view.found, Some(Ok(found)) if found.contains("Postman")),
+                "{:?}",
+                view.found
+            );
+        });
+
+        cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| view.fill(String::new(), window, cx))
+        })
+        .expect("the window is open");
+        paste_into(window, &view, "https://specs.test/gone", cx);
+        fetch(cx);
+        cx.read(|cx| {
+            let view = view.read(cx);
+            assert_eq!(
+                view.text(cx).as_ref(),
+                "https://specs.test/gone",
+                "what was there stays"
+            );
+            assert!(
+                view.error.as_deref().is_some_and(|error| error.contains("404")),
+                "{:?}",
+                view.error
+            );
+        });
+    }
 
     /// F10.1: a command or a JSON document fills the dialog; anything else
     /// leaves it empty for the reader.
@@ -442,6 +614,15 @@ mod tests {
         // A character of several bytes across the fourth: no panic.
         assert_eq!(importable("新建接口"), "");
         assert_eq!(importable("cu新"), "");
+        // B3: an address, to fetch from.
+        assert_eq!(
+            importable(" https://a.test/openapi.yaml\n"),
+            "https://a.test/openapi.yaml"
+        );
+        assert_eq!(importable("HTTP://a.test/x"), "HTTP://a.test/x");
+        assert_eq!(importable("see https://a.test"), "");
+        assert_eq!(importable("https://a.test/a b"), "");
+        assert_eq!(importable("ftp://a.test/x"), "");
     }
 
     /// A document too big to show whole is kept as it came, not indented

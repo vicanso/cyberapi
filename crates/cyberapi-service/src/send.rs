@@ -279,6 +279,50 @@ pub async fn introspect(sender: Sender, collection: CollectionId, request: HttpR
     }
 }
 
+/// B3: what `url` answers to a GET, as text, for an import: with the
+/// settings' timeouts, certificate check and proxy, redirects followed
+/// whatever the settings say, no cookies, nothing kept. `Err` says why there
+/// is none: no address, a failure, an answer that is no 2xx, or one too big
+/// to read whole.
+pub async fn fetch_text(sender: Sender, url: String) -> Result<String, String> {
+    let url = url.trim().to_string();
+    if !matches!(url::Url::parse(&url), Ok(parsed) if matches!(parsed.scheme(), "http" | "https")) {
+        return Err(format!("{url} is no http or https address"));
+    }
+    let mut prepared = PreparedRequest {
+        method: HttpMethod::Get,
+        url,
+        headers: vec![
+            ("User-Agent".into(), sender.user_agent.clone()),
+            ("Accept".into(), "*/*".into()),
+        ],
+        timeouts: sender.timeouts.effective(),
+        accept_invalid_certs: sender.sending.accept_invalid_certs,
+        http_version: sender.sending.http_version,
+        proxy: sender.sending.proxy.clone(),
+        ..Default::default()
+    };
+    for _ in 0..=MAX_REDIRECTS {
+        let exchange = sender
+            .engine
+            .send(prepared.clone())
+            .await
+            .map_err(|error| error.to_string())?;
+        if let Some(next) = redirect::next(&prepared, exchange.status, &exchange.headers) {
+            prepared = next;
+            continue;
+        }
+        if !(200..300).contains(&exchange.status) {
+            return Err(format!("{} answered {}", prepared.url, exchange.status));
+        }
+        if exchange.truncated {
+            return Err(format!("{} is larger than can be read", prepared.url));
+        }
+        return Ok(String::from_utf8_lossy(&exchange.body).into_owned());
+    }
+    Err(format!("stopped after {MAX_REDIRECTS} redirects"))
+}
+
 /// F7.8 / #69: `request` as code — a cURL command, or the code of
 /// another client — prepared as sending would prepare it. An `openFile` in
 /// it is not asked: its parameter stands.
@@ -1371,6 +1415,38 @@ mod tests {
         let sent = setup.engine.sent.lock().expect("sent").clone();
         let cookies: Vec<_> = sent[2..].iter().map(|request| request.header("cookie")).collect();
         assert_eq!(cookies, vec![Some("mine=1"), Some("mine=1"), Some("b=2")]);
+    }
+
+    /// B3: an import's text fetched: redirects followed whatever the
+    /// settings say, nothing kept; why when there is none.
+    #[test]
+    fn a_fetch_follows_redirects_and_keeps_nothing() {
+        let setup = setup(ok(200, "openapi: 3.0.0"));
+        route(&setup, "https://specs.test/latest", redirect("/v2.yaml", None));
+        let fetch = |url: &str| pollster::block_on(fetch_text(setup.sender.clone(), url.into()));
+        assert_eq!(fetch(" https://specs.test/latest ").as_deref(), Ok("openapi: 3.0.0"));
+        let sent = setup.engine.sent.lock().expect("sent").clone();
+        assert_eq!(
+            sent.iter().map(|request| request.url.as_str()).collect::<Vec<_>>(),
+            ["https://specs.test/latest", "https://specs.test/v2.yaml"]
+        );
+        assert_eq!(sent[0].header("user-agent"), Some("CyberAPI/test"));
+        assert_eq!(sent[0].header("cookie"), None);
+        assert!(
+            pollster::block_on(setup.storage.cookies().list())
+                .expect("cookies")
+                .is_empty()
+        );
+        route(&setup, "https://specs.test/gone", ok(404, "no").expect("an answer"));
+        assert_eq!(
+            fetch("https://specs.test/gone"),
+            Err("https://specs.test/gone answered 404".into())
+        );
+        assert!(fetch("specs.test/v2.yaml").is_err(), "no address");
+        assert!(fetch("file:///etc/passwd").is_err(), "no http address");
+        route(&setup, "https://specs.test/a", redirect("/b", None));
+        route(&setup, "https://specs.test/b", redirect("/a", None));
+        assert_eq!(fetch("https://specs.test/a"), Err("stopped after 10 redirects".into()));
     }
 
     #[test]

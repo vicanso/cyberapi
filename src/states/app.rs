@@ -129,6 +129,13 @@ impl AppStore {
         self.signs_in().then(|| self.state.read(cx).pin_scope())
     }
 
+    /// B3: the text at `url`, for an import, fetched as the app sends — a
+    /// page's through its bridge. The views ask it here: they reach no
+    /// engine themselves.
+    pub fn fetch_text(&self, url: String, cx: &App) -> Task<Result<String, String>> {
+        cx.background_spawn(cyberapi_service::fetch_text(self.sender(cx), url))
+    }
+
     /// What sending needs, with the reader's settings as they are now.
     pub fn sender(&self, cx: &App) -> Sender {
         Sender {
