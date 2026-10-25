@@ -18,7 +18,7 @@ use cyberapi_core::import::{request_from_curl, split_url};
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
 use cyberapi_core::prefs::RequestTab;
 use cyberapi_core::send::{self, form_fields, unsent_body};
-use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::ANIMATION_DURATION;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
@@ -27,8 +27,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _,
-    h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -1386,25 +1385,41 @@ impl RequestEditor {
         };
         let workspace = self.workspace.downgrade();
         let owned: Vec<RequestTab> = tabs.to_vec();
-        // F4.14: the column at 30%, 50% or 70% of what the tree leaves.
-        // One outline group, the chosen share painted pressed.
+        // F4.14: the column at 30%, 50% or 70% of what the tree leaves. One
+        // button saying the share it is at, the presets in its menu: the
+        // tabs beside it keep the room.
         let share = AppStore::global(cx).state().read(cx).prefs().columns.editor_ratio;
-        let presets = ButtonGroup::new("editor-share")
-            .compact()
-            .small()
-            .outline()
-            .children(EDITOR_SHARES.iter().enumerate().map(|(index, preset)| {
-                let preset = *preset;
-                Button::new(("editor-share", index))
-                    .label(format!("{:.0}%", preset * 100.))
-                    .selected((share - preset).abs() < 0.01)
-                    .tooltip(t!("editor.share_tooltip", share = format!("{:.0}%", preset * 100.)).to_string())
-            }))
-            .on_click(cx.listener(|_, picks: &Vec<usize>, _, cx| {
-                if let Some(&preset) = picks.first().and_then(|index| EDITOR_SHARES.get(*index)) {
-                    cx.emit(RequestEditorEvent::EditorShare(preset));
-                }
-            }));
+        let percent = |share: f32| format!("{:.0}%", share * 100.);
+        let editor = cx.entity().downgrade();
+        let share_menu = move |menu: gpui_kit::component::menu::PopupMenu,
+                               _: &mut Window,
+                               _: &mut Context<gpui_kit::component::menu::PopupMenu>| {
+            EDITOR_SHARES.iter().fold(menu, |menu, preset| {
+                let (editor, preset) = (editor.clone(), *preset);
+                menu.item(
+                    PopupMenuItem::new(percent(preset))
+                        .checked((share - preset).abs() < 0.01)
+                        .on_click(move |_, _, cx| {
+                            let _ = editor.update(cx, |_, cx| cx.emit(RequestEditorEvent::EditorShare(preset)));
+                        }),
+                )
+            })
+        };
+        let muted = cx.theme().muted_foreground;
+        let presets = Button::new("editor-share")
+            .ghost()
+            .xsmall()
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(percent(share))
+                    .child(Icon::new(IconName::ChevronDown).xsmall()),
+            )
+            .tooltip(t!("editor.share_tooltip", share = percent(share)).to_string())
+            .dropdown_menu_with_anchor(Anchor::TopRight, share_menu);
         TabBar::new("request-tabs")
             .underline()
             .small()
