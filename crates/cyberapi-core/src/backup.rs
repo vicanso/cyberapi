@@ -1,9 +1,13 @@
 //! The desktop's backup (M13): every project, folder, API and variable as
 //! the old app's backup held them — one JSON file per table, rows as its
 //! columns — so either app restores the other's. The top-level orders ride
-//! along in a file the old app does not know (and ignores).
+//! along in a file the old app does not know (and ignores), and a folder's
+//! or a project's settings (#66) in a `settings` column of its row, which
+//! the old app ignores too.
 
-use crate::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory, legacy};
+use crate::model::{
+    ApiCategory, ApiSetting, Collection, Folder, HttpRequest, ProjectSettings, Variable, VariableCategory, legacy,
+};
 use crate::{CollectionId, ItemId, Timestamp, VariableId};
 use serde_json::{Value, json};
 use snafu::Snafu;
@@ -22,6 +26,8 @@ pub struct Backup {
     pub apis: Vec<ApiSetting>,
     pub variables: Vec<Variable>,
     pub top_orders: Vec<(CollectionId, Vec<ItemId>)>,
+    /// The projects that set something for their APIs (#66).
+    pub project_settings: Vec<(CollectionId, ProjectSettings)>,
 }
 
 #[derive(Debug, Snafu, PartialEq, Eq)]
@@ -50,6 +56,19 @@ fn time(row: &Value, key: &str) -> Timestamp {
     Timestamp::parse_lenient(&text(row, key))
 }
 
+/// A `settings` column: JSON text, none when it is missing or unreadable.
+fn settings<T: serde::de::DeserializeOwned + Default>(row: &Value) -> T {
+    serde_json::from_str(&text(row, "settings")).unwrap_or_default()
+}
+
+/// A row with a `settings` column when there is something to keep.
+fn with_settings(mut row: Value, settings: Option<String>) -> Value {
+    if let (Some(settings), Value::Object(fields)) = (settings, &mut row) {
+        fields.insert("settings".into(), Value::String(settings));
+    }
+    row
+}
+
 fn rows(file: &str, bytes: Option<Vec<u8>>) -> Result<Vec<Value>, BackupError> {
     let bytes = bytes.ok_or_else(|| BackupError::Missing { file: file.into() })?;
     serde_json::from_slice(&bytes).map_err(|error| BackupError::Unreadable {
@@ -65,20 +84,28 @@ impl Backup {
             .collections
             .iter()
             .map(|c| {
-                json!({
+                let settings = self
+                    .project_settings
+                    .iter()
+                    .find(|(id, settings)| id == &c.id && !settings.is_empty())
+                    .and_then(|(_, settings)| serde_json::to_string(settings).ok());
+                let row = json!({
                     "id": c.id, "name": c.name, "description": c.description,
                     "created_at": c.created_at.to_rfc3339(), "updated_at": c.updated_at.to_rfc3339(),
-                })
+                });
+                with_settings(row, settings)
             })
             .collect();
         let folders: Vec<Value> = self
             .folders
             .iter()
             .map(|f| {
-                json!({
+                let row = json!({
                     "id": f.id, "collection": f.collection, "children": legacy::join_id_list(&f.children),
                     "name": f.name, "created_at": f.created_at.to_rfc3339(), "updated_at": f.updated_at.to_rfc3339(),
-                })
+                });
+                let settings = (!f.settings.is_empty()).then(|| serde_json::to_string(&f.settings).ok());
+                with_settings(row, settings.flatten())
             })
             .collect();
         let apis: Vec<Value> = self
@@ -123,7 +150,8 @@ impl Backup {
     /// A backup from its files: the four tables must be there; the
     /// top-level orders may not (an old app's backup).
     pub fn from_files(mut read: impl FnMut(&str) -> Option<Vec<u8>>) -> Result<Self, BackupError> {
-        let collections = rows(COLLECTIONS_FILE, read(COLLECTIONS_FILE))?
+        let collection_rows = rows(COLLECTIONS_FILE, read(COLLECTIONS_FILE))?;
+        let collections = collection_rows
             .iter()
             .map(|row| Collection {
                 id: CollectionId::new(text(row, "id")),
@@ -134,6 +162,11 @@ impl Backup {
                 ..Default::default()
             })
             .collect();
+        let project_settings = collection_rows
+            .iter()
+            .map(|row| (CollectionId::new(text(row, "id")), settings::<ProjectSettings>(row)))
+            .filter(|(_, settings)| !settings.is_empty())
+            .collect();
         let folders = rows(FOLDERS_FILE, read(FOLDERS_FILE))?
             .iter()
             .map(|row| Folder {
@@ -141,6 +174,7 @@ impl Backup {
                 collection: CollectionId::new(text(row, "collection")),
                 name: text(row, "name"),
                 children: legacy::parse_id_list(&text(row, "children")),
+                settings: settings(row),
                 created_at: time(row, "created_at"),
                 updated_at: time(row, "updated_at"),
             })
@@ -190,6 +224,7 @@ impl Backup {
             apis,
             variables,
             top_orders,
+            project_settings,
         })
     }
 }
@@ -197,7 +232,8 @@ impl Backup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::HttpMethod;
+    use crate::auth::Auth;
+    use crate::model::{FolderSettings, HttpMethod};
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
 
@@ -220,6 +256,10 @@ mod tests {
                 collection: "c".into(),
                 name: "users".into(),
                 children: vec!["a".into()],
+                settings: FolderSettings {
+                    auth: Auth::Bearer { token: "t".into() },
+                    headers: vec![],
+                },
                 created_at: at(),
                 updated_at: at(),
             }],
@@ -247,6 +287,15 @@ mod tests {
                 updated_at: at(),
             }],
             top_orders: vec![("c".into(), vec!["f".into()])],
+            project_settings: vec![(
+                "c".into(),
+                ProjectSettings {
+                    auth: Auth::Basic {
+                        username: "u".into(),
+                        password: "p".into(),
+                    },
+                },
+            )],
         }
     }
 

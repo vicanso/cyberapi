@@ -138,6 +138,8 @@ impl AppStore {
             user_agent: this_build::user_agent(),
             timeouts: self.state.read(cx).prefs().timeouts,
             sending: self.state.read(cx).prefs().sending.clone(),
+            // Each API's own, filled where it is sent (#66).
+            inherited: Default::default(),
         }
     }
 

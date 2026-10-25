@@ -24,7 +24,10 @@ use cyberapi_core::ItemId;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::import::{ImportBundle, ImportItem};
-use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpMethod, Variable, VariableCategory};
+use cyberapi_core::inherit::{self, Inherited};
+use cyberapi_core::model::{
+    ApiSetting, Collection, Folder, FolderSettings, HttpMethod, ProjectSettings, Variable, VariableCategory,
+};
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
 use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, Step};
 use cyberapi_core::template_hints;
@@ -774,6 +777,22 @@ impl WorkspaceState {
         &self.global_headers
     }
 
+    /// #66: what an API or a folder takes from the folders above it and the
+    /// project.
+    pub fn inherited(&self, item: &ItemId) -> Inherited {
+        inherit::inherited(&self.data, item)
+    }
+
+    /// #66: a folder, with what it sets.
+    pub fn folder(&self, id: &ItemId) -> Option<&Folder> {
+        self.data.folders.iter().find(|folder| &folder.id == id)
+    }
+
+    /// #66: what the project sets for its APIs.
+    pub fn project_settings(&self) -> &ProjectSettings {
+        &self.data.settings
+    }
+
     /// M6: what a template's `{{` offers: the enabled custom variables and
     /// the APIs, the ones near the opened API first. `files`: whether this
     /// build reads files.
@@ -1227,6 +1246,40 @@ impl WorkspaceState {
         });
     }
 
+    /// #66: what a folder sets for the APIs in it.
+    pub fn set_folder_settings(&mut self, id: ItemId, settings: FolderSettings, cx: &mut Context<Self>) {
+        let call = self
+            .sender
+            .storage
+            .tree()
+            .set_folder_settings(self.collection.id.clone(), id, settings);
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(folder) => {
+                if let Some(found) = this.data.folders.iter_mut().find(|found| found.id == folder.id) {
+                    *found = folder;
+                }
+                cx.notify();
+            }
+            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+        });
+    }
+
+    /// #66: what the project sets for its APIs.
+    pub fn set_project_settings(&mut self, settings: ProjectSettings, cx: &mut Context<Self>) {
+        let call = self
+            .sender
+            .storage
+            .tree()
+            .set_project_settings(self.collection.id.clone(), settings.clone());
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(()) => {
+                this.data.settings = settings;
+                cx.notify();
+            }
+            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+        });
+    }
+
     /// F3.7. The server's items stay out of the reader's own folders
     /// (server-sync §3.4), where a sync would leave them out.
     pub fn move_item(&mut self, id: ItemId, to: Placement, cx: &mut Context<Self>) {
@@ -1391,12 +1444,11 @@ impl WorkspaceState {
         let Some(api) = self.data.apis.iter().find(|api| &api.id == id) else {
             return;
         };
-        let call = cyberapi_service::code(
-            self.sender.clone(),
-            self.collection.id.clone(),
-            api.request.clone(),
-            target,
-        );
+        let sender = Sender {
+            inherited: self.inherited(id),
+            ..self.sender.clone()
+        };
+        let call = cyberapi_service::code(sender, self.collection.id.clone(), api.request.clone(), target);
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(call).await;
             let _ = this.update(cx, |_, cx| match result {
@@ -1522,6 +1574,7 @@ mod tests {
             user_agent: "CyberAPI/test".into(),
             timeouts: Timeouts::default(),
             sending: SendPrefs::default(),
+            inherited: Default::default(),
         }
     }
 
@@ -1599,7 +1652,7 @@ mod tests {
         };
         assert_eq!(names(&state, cx), (vec!["dev".into()], vec!["X-Sign".into()]));
         let needs = state.read_with(cx, |state, _| {
-            cyberapi_core::send::needs(&HttpRequest::default(), state.global_headers())
+            cyberapi_core::send::needs(&HttpRequest::default(), state.global_headers(), &Default::default())
         });
         assert!(needs.picks_file);
 

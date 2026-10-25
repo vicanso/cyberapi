@@ -816,6 +816,7 @@ mod tests {
             user_agent: "CyberAPI/test".into(),
             timeouts: Timeouts::default(),
             sending: SendPrefs::default(),
+            inherited: Default::default(),
         };
         let state = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
         let window = cx.open_window(size(px(800.), px(600.)), |window, cx| {

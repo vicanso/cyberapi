@@ -111,6 +111,21 @@ const MIGRATIONS: &[&[&str]] = &[
             base INTEGER,
             unsynced INTEGER NOT NULL DEFAULT 0
         )"],
+    // 6: what folders and projects set for their APIs (#66,
+    // `docs/batch4-design.md` §2.2), beside the old app's tables rather
+    // than in them. Only those that set something have a row.
+    &[
+        "CREATE TABLE IF NOT EXISTS folder_settings (
+            folder TEXT PRIMARY KEY NOT NULL,
+            collection TEXT NOT NULL,
+            settings TEXT NOT NULL
+        )",
+        "CREATE INDEX IF NOT EXISTS folder_settings_collection ON folder_settings (collection)",
+        "CREATE TABLE IF NOT EXISTS project_settings (
+            collection TEXT PRIMARY KEY NOT NULL,
+            settings TEXT NOT NULL
+        )",
+    ],
 ];
 
 /// The schema version this build writes.

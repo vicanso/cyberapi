@@ -13,7 +13,7 @@ pub use drop::DropPosition;
 pub use edit::{Placement, Removal, TreeChange, TreeError};
 
 use crate::ItemId;
-use crate::model::{ApiSetting, Folder, HttpMethod, split_env_prefix};
+use crate::model::{ApiSetting, Folder, HttpMethod, ProjectSettings, split_env_prefix};
 use crate::search::matches_text_or_pinyin;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -26,6 +26,9 @@ pub struct TreeData {
     pub apis: Vec<ApiSetting>,
     /// The order of the top level. An item missing from it comes first.
     pub top_order: Vec<ItemId>,
+    /// What the project sets for its APIs (#66), read with its tree.
+    #[serde(default)]
+    pub settings: ProjectSettings,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -486,6 +489,7 @@ pub(crate) mod fixture {
                 api("health", "health", HttpMethod::Get, "/health"),
             ],
             top_order: ids(&["users", "orders", "health"]),
+            ..Default::default()
         }
     }
 }

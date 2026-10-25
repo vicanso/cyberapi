@@ -1,11 +1,12 @@
 //! CyberAPI's own export (F10.3 / M11): a JSON array of folder and API
 //! records as the old app held them — a folder's `children` comma-separated,
 //! an API's request a JSON string in `setting`. Both apps read what the
-//! other writes.
+//! other writes; a folder's settings (#66) are this app's alone, in
+//! `settings`, which the old app passes over.
 
 use super::{ImportBundle, ImportItem};
 use crate::ItemId;
-use crate::model::{ApiSetting, Folder, HttpRequest, legacy};
+use crate::model::{ApiSetting, Folder, FolderSettings, HttpRequest, legacy};
 use crate::tree::TreeData;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,6 +27,9 @@ struct Record {
     setting: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     children: Option<String>,
+    /// A folder's, when it sets something.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    settings: Option<FolderSettings>,
     #[serde(default)]
     created_at: String,
     #[serde(default)]
@@ -88,6 +92,7 @@ pub(super) fn parse_value(json: &Value) -> ImportBundle {
         Some(ImportItem::Folder {
             name: record.name.clone(),
             children,
+            settings: record.settings.clone().unwrap_or_default(),
         })
     }
 
@@ -111,6 +116,7 @@ fn folder_record(folder: &Folder) -> Record {
         category: None,
         setting: None,
         children: Some(folder.children.iter().map(ItemId::as_str).collect::<Vec<_>>().join(",")),
+        settings: (!folder.settings.is_empty()).then(|| folder.settings.clone()),
         created_at: folder.created_at.to_rfc3339(),
         updated_at: folder.updated_at.to_rfc3339(),
     }
@@ -124,6 +130,7 @@ fn api_record(api: &ApiSetting) -> Record {
         category: Some("http".into()),
         setting: Some(api.request.to_json()),
         children: None,
+        settings: None,
         created_at: api.created_at.to_rfc3339(),
         updated_at: api.updated_at.to_rfc3339(),
     }
@@ -193,6 +200,7 @@ mod tests {
             collection: CollectionId::from("c"),
             name: name.into(),
             children: children.iter().map(|id| ItemId::from(*id)).collect(),
+            settings: Default::default(),
             created_at: Timestamp::parse_lenient("2024-01-01T00:00:00Z"),
             updated_at: Timestamp::parse_lenient("2024-01-01T00:00:00Z"),
         }
@@ -220,7 +228,7 @@ mod tests {
                 api("a2", "ban", "/ban"),
                 api("a3", "health", "/health"),
             ],
-            top_order: vec![],
+            ..Default::default()
         }
     }
 
@@ -229,7 +237,7 @@ mod tests {
             .iter()
             .map(|item| match item {
                 ImportItem::Api { name, .. } => name.clone(),
-                ImportItem::Folder { name, children } => format!("{name}[{}]", names(children).join(",")),
+                ImportItem::Folder { name, children, .. } => format!("{name}[{}]", names(children).join(",")),
             })
             .collect()
     }

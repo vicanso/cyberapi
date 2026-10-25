@@ -12,7 +12,10 @@ use chrono::Utc;
 use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
 use cyberapi_core::import::{ImportItem, assign_ids};
-use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
+use cyberapi_core::model::{
+    ApiCategory, ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
+    VariableCategory,
+};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
@@ -40,6 +43,8 @@ struct State {
     folders: Vec<Folder>,
     apis: Vec<ApiSetting>,
     top_orders: HashMap<CollectionId, Vec<ItemId>>,
+    /// What each project sets for its APIs (#66); none is no entry.
+    project_settings: HashMap<CollectionId, ProjectSettings>,
     variables: Vec<Variable>,
     app: AppPrefs,
     workspaces: HashMap<CollectionId, WorkspacePrefs>,
@@ -103,7 +108,8 @@ impl MemoryStore {
                 collection: id.clone(),
                 ..variable
             }));
-        state.top_orders.insert(id, config.top_order);
+        state.top_orders.insert(id.clone(), config.top_order);
+        state.project_settings.insert(id, config.settings);
         state.collections.push(Collection {
             name: config.name,
             description: config.description,
@@ -180,6 +186,7 @@ impl State {
                 folders: tree.folders,
                 apis: tree.apis,
                 top_order: tree.top_order,
+                settings: tree.settings,
                 variables: self
                     .variables
                     .iter()
@@ -241,6 +248,7 @@ impl State {
         self.variables.retain(|variable| variable.collection != collection);
         self.variables.extend(config.variables);
         self.top_orders.insert(collection.clone(), config.top_order);
+        self.project_settings.insert(collection.clone(), config.settings);
         let found = self.collection_mut(&collection)?;
         found.name = config.name;
         found.description = config.description;
@@ -259,6 +267,7 @@ impl State {
                 .collect(),
             apis: self.apis.iter().filter(|api| &api.collection == id).cloned().collect(),
             top_order: self.top_orders.get(id).cloned().unwrap_or_default(),
+            settings: self.project_settings.get(id).cloned().unwrap_or_default(),
         }
     }
 
@@ -346,6 +355,7 @@ impl CollectionStore for MemoryStore {
             state.apis.retain(|api| api.collection != id);
             state.variables.retain(|variable| variable.collection != id);
             state.top_orders.remove(&id);
+            state.project_settings.remove(&id);
             state.workspaces.remove(&id);
             state.responses.retain(|response| response.collection != id);
             state.copies.retain(|binding| binding.collection != id);
@@ -377,6 +387,7 @@ impl TreeStore for MemoryStore {
                 collection: collection.clone(),
                 name,
                 children: Vec::new(),
+                settings: Default::default(),
                 created_at: now,
                 updated_at: now,
             };
@@ -454,6 +465,35 @@ impl TreeStore for MemoryStore {
         })
     }
 
+    fn set_folder_settings(
+        &self,
+        collection: CollectionId,
+        folder: ItemId,
+        settings: FolderSettings,
+    ) -> StoreFuture<Folder> {
+        self.run(move |state, now| {
+            state.collection(&collection)?;
+            let found = state
+                .folders
+                .iter_mut()
+                .find(|found| found.collection == collection && found.id == folder)
+                .ok_or_else(|| StoreError::not_found(Entity::Item, &folder))?;
+            found.settings = settings;
+            found.updated_at = now;
+            let saved = found.clone();
+            state.touch(&collection, now)?;
+            Ok(saved)
+        })
+    }
+
+    fn set_project_settings(&self, collection: CollectionId, settings: ProjectSettings) -> StoreFuture<()> {
+        self.run(move |state, now| {
+            state.collection(&collection)?;
+            state.project_settings.insert(collection.clone(), settings);
+            state.touch(&collection, now)
+        })
+    }
+
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange> {
         self.run(move |state, now| {
             state.collection(&collection)?;
@@ -479,11 +519,12 @@ impl TreeStore for MemoryStore {
             let folders: Vec<Folder> = assigned
                 .folders
                 .into_iter()
-                .map(|(id, name, children)| Folder {
+                .map(|(id, name, children, settings)| Folder {
                     id,
                     collection: collection.clone(),
                     name,
                     children,
+                    settings,
                     created_at: now,
                     updated_at: now,
                 })
@@ -773,6 +814,17 @@ impl BackupStore for MemoryStore {
                             .map(|order| (collection.id.clone(), order.clone()))
                     })
                     .collect(),
+                project_settings: state
+                    .collections
+                    .iter()
+                    .filter_map(|collection| {
+                        state
+                            .project_settings
+                            .get(&collection.id)
+                            .filter(|settings| !settings.is_empty())
+                            .map(|settings| (collection.id.clone(), settings.clone()))
+                    })
+                    .collect(),
             })
         })
     }
@@ -784,6 +836,7 @@ impl BackupStore for MemoryStore {
             state.apis = backup.apis;
             state.variables = backup.variables;
             state.top_orders = backup.top_orders.into_iter().collect();
+            state.project_settings = backup.project_settings.into_iter().collect();
             state.responses.clear();
             Ok(())
         })
@@ -846,6 +899,7 @@ impl crate::conformance::Probe for MemoryStore {
                         .filter(|variable| variable.collection == collection)
                         .count()
                     + usize::from(state.top_orders.contains_key(&collection))
+                    + usize::from(state.project_settings.contains_key(&collection))
                     + usize::from(state.workspaces.contains_key(&collection))
                     + state
                         .responses

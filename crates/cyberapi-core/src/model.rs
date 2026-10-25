@@ -49,8 +49,45 @@ pub struct Folder {
     pub collection: CollectionId,
     pub name: String,
     pub children: Vec<ItemId>,
+    /// What it sets for the APIs in it (#66), kept apart from the old
+    /// app's columns.
+    #[serde(default, skip_serializing_if = "FolderSettings::is_empty")]
+    pub settings: FolderSettings,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+}
+
+/// What a folder sets for every API in it, at any depth (#66): how they
+/// sign in, unless one says otherwise, and headers they all send.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FolderSettings {
+    #[serde(skip_serializing_if = "Auth::is_inherit")]
+    pub auth: Auth,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<KvParam>,
+}
+
+impl FolderSettings {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// What a project sets for every API in it (#66): how they sign in, unless
+/// a folder or the API says otherwise. Its headers are its global headers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProjectSettings {
+    /// Inheriting here, with nothing above, is none.
+    #[serde(skip_serializing_if = "Auth::is_inherit")]
+    pub auth: Auth,
+}
+
+impl ProjectSettings {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// What kind of request an API holds. Only HTTP exists; the column was left

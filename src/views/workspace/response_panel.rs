@@ -1540,6 +1540,7 @@ fn header_source(from: HeaderSource) -> String {
         HeaderSource::Request => t!("response.from_request"),
         HeaderSource::Global => t!("response.from_global"),
         HeaderSource::Auth => t!("response.from_auth"),
+        HeaderSource::Folder => t!("response.from_folder"),
         HeaderSource::Cookie => t!("response.from_cookie"),
         HeaderSource::Body => t!("response.from_body"),
         HeaderSource::Default => t!("response.from_default"),

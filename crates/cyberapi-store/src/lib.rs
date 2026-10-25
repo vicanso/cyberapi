@@ -33,7 +33,9 @@ use cyberapi_core::directory::{
     AccountInfo, Grant, Invite, IssuedMcpToken, McpToken, Me, Member, NewInvite, NewMcpToken, Team, TeamPlace,
 };
 use cyberapi_core::import::ImportItem;
-use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
+use cyberapi_core::model::{
+    ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable, VariableCategory,
+};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
@@ -146,6 +148,16 @@ pub trait TreeStore: Send + Sync {
     fn rename(&self, collection: CollectionId, item: ItemId, name: String) -> StoreFuture<()>;
     /// Replaces an API's request (F4.11).
     fn save_request(&self, collection: CollectionId, api: ItemId, request: HttpRequest) -> StoreFuture<ApiSetting>;
+    /// Replaces what a folder sets for the APIs in it (#66); answers the
+    /// folder as it is now.
+    fn set_folder_settings(
+        &self,
+        collection: CollectionId,
+        folder: ItemId,
+        settings: FolderSettings,
+    ) -> StoreFuture<Folder>;
+    /// Replaces what the project sets for its APIs (#66).
+    fn set_project_settings(&self, collection: CollectionId, settings: ProjectSettings) -> StoreFuture<()>;
     /// Moves an item (F3.7); answers what changed.
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange>;
     /// Adds imported folders and APIs (F10.4) at the end of `parent`, or of

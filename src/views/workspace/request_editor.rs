@@ -1057,10 +1057,11 @@ impl RequestEditor {
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush(cx);
         let api = self.api.read(cx);
-        let headers = self.workspace.read(cx).global_headers();
+        let workspace = self.workspace.read(cx);
+        let inherited = workspace.inherited(api.api());
         let picks_file = api.sending_since().is_none()
             && this_build::reads_files()
-            && send::needs(api.request(), headers).picks_file;
+            && send::needs(api.request(), workspace.global_headers(), &inherited).picks_file;
         if !picks_file {
             self.api.update(cx, |api, cx| api.send_or_cancel(None, cx));
             return;

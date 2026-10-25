@@ -5,7 +5,7 @@
 //! cannot be marked: leaving it out of a push would delete it for everyone.
 
 use crate::ItemId;
-use crate::model::{ApiSetting, Folder, HttpRequest, VariableCategory};
+use crate::model::{ApiSetting, Folder, FolderSettings, HttpRequest, ProjectSettings, VariableCategory};
 use crate::sync::ProjectConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -288,8 +288,8 @@ impl LocalItems {
 }
 
 /// What a reader can change of a configuration: names, places, requests,
-/// variables — not when each was last written, which moves with what is
-/// around it.
+/// variables, settings — not when each was last written, which moves with
+/// what is around it.
 #[derive(Serialize)]
 struct Content<'a> {
     name: &'a str,
@@ -298,6 +298,12 @@ struct Content<'a> {
     apis: Vec<(&'a ItemId, &'a str, &'a HttpRequest)>,
     top_order: &'a [ItemId],
     variables: Vec<(&'a str, VariableCategory, &'a str, &'a str, bool)>,
+    /// Folders' and the project's settings (#66), left out when there are
+    /// none: a project without them digests as it did before.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    folder_settings: Vec<(&'a ItemId, &'a FolderSettings)>,
+    #[serde(skip_serializing_if = "ProjectSettings::is_empty")]
+    settings: &'a ProjectSettings,
 }
 
 /// A stable digest of `config`'s content, in any order its parts were read.
@@ -328,6 +334,13 @@ pub fn fingerprint(config: &ProjectConfig) -> u64 {
         })
         .collect();
     variables.sort_by(|a, b| a.0.cmp(b.0));
+    let mut folder_settings: Vec<_> = config
+        .folders
+        .iter()
+        .filter(|folder| !folder.settings.is_empty())
+        .map(|folder| (&folder.id, &folder.settings))
+        .collect();
+    folder_settings.sort_by(|a, b| a.0.cmp(b.0));
     let content = Content {
         name: &config.name,
         description: &config.description,
@@ -335,6 +348,8 @@ pub fn fingerprint(config: &ProjectConfig) -> u64 {
         apis,
         top_order: &config.top_order,
         variables,
+        folder_settings,
+        settings: &config.settings,
     };
     let bytes = serde_json::to_vec(&content).unwrap_or_default();
     // FNV-1a: the same digest in every build and every version of Rust.
@@ -507,6 +522,26 @@ mod tests {
         );
         local.moving(&config.folders, &"note".into(), None);
         assert!(!local.roots.contains(&"note".into()), "a synced one stays synced");
+    }
+
+    /// #66: a change to a folder's or the project's settings is a change.
+    #[test]
+    fn settings_are_part_of_the_digest() {
+        let config = copy();
+        let plain = fingerprint(&config);
+        let mut folder = config.clone();
+        folder.folders[0].settings.headers.push(crate::model::KvParam {
+            key: "X".into(),
+            value: "1".into(),
+            enabled: true,
+        });
+        let mut project = config.clone();
+        project.settings.auth = crate::auth::Auth::Bearer { token: "t".into() };
+        assert_ne!(fingerprint(&folder), plain);
+        assert_ne!(fingerprint(&project), plain);
+        assert_ne!(fingerprint(&folder), fingerprint(&project));
+        folder.folders[0].settings = FolderSettings::default();
+        assert_eq!(fingerprint(&folder), plain, "none again is as it was");
     }
 
     #[test]

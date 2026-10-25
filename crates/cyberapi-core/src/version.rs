@@ -23,7 +23,9 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 /// 2: an API's own sending settings (#71, `HttpRequest.settings`).
 /// 3: an API signs in as one of several kinds (#66, `HttpRequest.auth`,
 ///    kept as `authentication`; the old Basic list is read, not written).
-pub const MODEL: u32 = 3;
+/// 4: what folders and projects set for their APIs (#66, `Folder.settings`,
+///    `ProjectConfig.settings`).
+pub const MODEL: u32 = 4;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

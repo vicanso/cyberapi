@@ -19,6 +19,7 @@
 use crate::auth::Signed;
 use crate::graphql::GraphQlBody;
 use crate::grpc::{self, GrpcBody};
+use crate::inherit::Inherited;
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam, Variable, VariableCategory, split_env_prefix};
 use crate::prefs::{HttpVersion, Timeouts};
 use crate::proxy::ProxyPrefs;
@@ -101,6 +102,8 @@ pub struct Context<'a> {
     pub proxy: &'a ProxyPrefs,
     /// Separates multipart fields; random, from the caller.
     pub boundary: &'a str,
+    /// What the API takes from its folders and project (#66).
+    pub inherited: &'a Inherited,
 }
 
 fn enabled(variables: &[Variable], category: VariableCategory) -> impl Iterator<Item = &Variable> {
@@ -136,6 +139,7 @@ pub const ACCEPT_ENCODING: &str = "gzip, deflate, br, zstd";
 pub fn sent_request(
     prepared: &PreparedRequest,
     request: &HttpRequest,
+    inherited: &Inherited,
     globals: &[String],
     jar: bool,
     version: &str,
@@ -149,12 +153,17 @@ pub fn sent_request(
             HeaderSource::Cookie
         } else if named(&request.headers, name) {
             HeaderSource::Request
-        } else if request
-            .auth
+        } else if inherited
+            .auth(&request.auth)
             .header_name(takes_query(request))
             .is_some_and(|signed| signed.eq_ignore_ascii_case(name))
         {
             HeaderSource::Auth
+        } else if inherited
+            .sent_headers()
+            .any(|kv| kv.key.trim().eq_ignore_ascii_case(name))
+        {
+            HeaderSource::Folder
         } else if globals.iter().any(|global| global.eq_ignore_ascii_case(name)) {
             HeaderSource::Global
         } else if name.eq_ignore_ascii_case("content-type") {
@@ -240,8 +249,13 @@ pub fn fill_values(request: &HttpRequest, variables: &[Variable]) -> HttpRequest
 }
 
 /// The texts whose template functions run: the body, or its form values;
-/// query and header values (not keys, not the URI); the global headers.
-fn templated_texts<'a>(request: &'a HttpRequest, variables: &'a [Variable]) -> Vec<std::borrow::Cow<'a, str>> {
+/// query and header values (not keys, not the URI); the global headers,
+/// the folders' and the auth it signs in with (#66).
+fn templated_texts<'a>(
+    request: &'a HttpRequest,
+    variables: &'a [Variable],
+    inherited: &'a Inherited,
+) -> Vec<std::borrow::Cow<'a, str>> {
     let mut texts: Vec<std::borrow::Cow<'a, str>> = Vec::new();
     let grpc = request.method == HttpMethod::Grpc;
     if grpc {
@@ -269,14 +283,15 @@ fn templated_texts<'a>(request: &'a HttpRequest, variables: &'a [Variable]) -> V
             .map(|kv| kv.value.as_str().into()),
     );
     texts.extend(global_headers(variables).map(|v| v.value.as_str().into()));
-    texts.extend(request.auth.templates().into_iter().map(Into::into));
+    texts.extend(inherited.sent_headers().map(|kv| kv.value.as_str().into()));
+    texts.extend(inherited.auth(&request.auth).templates().into_iter().map(Into::into));
     texts
 }
 
 /// What the request's template functions need gathered before [`prepare`].
-pub fn needs(request: &HttpRequest, variables: &[Variable]) -> Needs {
+pub fn needs(request: &HttpRequest, variables: &[Variable], inherited: &Inherited) -> Needs {
     let mut needs = Needs::default();
-    for text in templated_texts(request, variables) {
+    for text in templated_texts(request, variables, inherited) {
         needs.add(template::needs(&text));
     }
     needs
@@ -453,15 +468,19 @@ fn takes_query(request: &HttpRequest) -> bool {
 }
 
 /// The headers every request sends, each replacing a same-named one
-/// before it (#3): the User-Agent, the project's global headers, its auth
-/// (#66), the request's own.
+/// before it (#3): the User-Agent, the project's global headers, its
+/// folders' (the outermost's first), its auth (#66), the request's own.
 fn sent_headers(request: &HttpRequest, cx: &Context<'_>) -> Result<Headers, PrepareError> {
     let mut headers = Headers::default();
     headers.set("User-Agent", cx.user_agent);
     for variable in global_headers(cx.variables) {
         headers.set(variable.name.trim(), &rendered(&variable.value, cx)?);
     }
-    if let Some(Signed::Header { name, value }) = request.auth.sign(takes_query(request), |text| rendered(text, cx))? {
+    for kv in cx.inherited.sent_headers() {
+        headers.set(kv.key.trim(), &rendered(&kv.value, cx)?);
+    }
+    let auth = cx.inherited.auth(&request.auth);
+    if let Some(Signed::Header { name, value }) = auth.sign(takes_query(request), |text| rendered(text, cx))? {
         headers.set(&name, &value);
     }
     for kv in request
@@ -531,7 +550,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         url.query_pairs_mut().append_pair(&kv.key, &render(&kv.value)?);
     }
     // An API key in the query (#66), unless the request names it itself.
-    if let Some(Signed::Query { name, value }) = request.auth.sign(true, render)?
+    if let Some(Signed::Query { name, value }) = cx.inherited.auth(&request.auth).sign(true, render)?
         && !url.query_pairs().any(|(key, _)| key == name)
     {
         url.query_pairs_mut().append_pair(&name, &value);
@@ -738,6 +757,14 @@ mod tests {
     }
 
     fn prepare_with(request: &HttpRequest, variables: &[Variable]) -> Result<PreparedRequest, PrepareError> {
+        prepare_inheriting(request, variables, &Inherited::default())
+    }
+
+    fn prepare_inheriting(
+        request: &HttpRequest,
+        variables: &[Variable],
+        inherited: &Inherited,
+    ) -> Result<PreparedRequest, PrepareError> {
         prepare(
             request,
             &Context {
@@ -753,6 +780,7 @@ mod tests {
                 http_version: HttpVersion::Auto,
                 proxy: &ProxyPrefs::default(),
                 boundary: "XYZ",
+                inherited,
             },
         )
     }
@@ -878,6 +906,59 @@ mod tests {
 
     /// #66: a token or a key is a template; a key goes in the header or
     /// the query it names, the request's own of the same name winning.
+    /// #66: the folders' headers go after the global ones and before the
+    /// request's own; inheriting signs in as above it.
+    #[test]
+    fn an_api_takes_its_folders_headers_and_auth() {
+        let variables = [variable(
+            VariableCategory::GlobalRequestHeader,
+            "X-Team",
+            "global",
+            true,
+        )];
+        let inherited = Inherited {
+            headers: vec![
+                kv("X-Team", "outer"),
+                kv("X-Team", "inner"),
+                kv("X-Folder", "{{ts()}}"),
+                KvParam {
+                    key: "X-Off".into(),
+                    value: "1".into(),
+                    enabled: false,
+                },
+                kv("Authorization", "Basic folder-header"),
+            ],
+            auth: Auth::Bearer {
+                token: "f{{ts()}}".into(),
+            },
+            ..Default::default()
+        };
+        let request = HttpRequest {
+            uri: "http://a.test".into(),
+            headers: vec![kv("X-Folder", "mine")],
+            ..Default::default()
+        };
+        let prepared = prepare_inheriting(&request, &variables, &inherited).expect("prepare");
+        assert_eq!(prepared.header("x-team"), Some("inner"));
+        assert_eq!(prepared.header("x-folder"), Some("mine"), "the request's own wins");
+        assert_eq!(prepared.header("x-off"), None);
+        assert_eq!(
+            prepared.header("authorization"),
+            Some("Bearer f7"),
+            "auth over a folder's header"
+        );
+        let own = HttpRequest {
+            auth: Auth::None,
+            ..request
+        };
+        let prepared = prepare_inheriting(&own, &variables, &inherited).expect("prepare");
+        assert_eq!(
+            prepared.header("authorization"),
+            Some("Basic folder-header"),
+            "none of its own: the folder's header stays"
+        );
+    }
+
     #[test]
     fn auth_signs_with_its_templates_rendered() {
         let bearer = HttpRequest {
@@ -955,6 +1036,7 @@ mod tests {
             headers: vec![
                 ("User-Agent".into(), "CyberAPI/test".into()),
                 ("X-Tenant".into(), "t1".into()),
+                ("X-Folder".into(), "f".into()),
                 ("Authorization".into(), "Basic dTpw".into()),
                 ("X-Trace".into(), "4f1e".into()),
                 ("Content-Type".into(), "application/json".into()),
@@ -963,7 +1045,11 @@ mod tests {
             body: b"{\"a\": 1}".to_vec(),
             ..Default::default()
         };
-        let sent = sent_request(&prepared, &request, &["x-tenant".into()], true, "HTTP/1.1");
+        let inherited = Inherited {
+            headers: vec![kv("x-folder", "f")],
+            ..Default::default()
+        };
+        let sent = sent_request(&prepared, &request, &inherited, &["x-tenant".into()], true, "HTTP/1.1");
         let seen: Vec<(&str, &str, HeaderSource)> = sent
             .headers
             .iter()
@@ -976,6 +1062,7 @@ mod tests {
                 ("Accept-Encoding", ACCEPT_ENCODING, HeaderSource::Default),
                 ("User-Agent", "CyberAPI/test", HeaderSource::Default),
                 ("X-Tenant", "t1", HeaderSource::Global),
+                ("X-Folder", "f", HeaderSource::Folder),
                 ("Authorization", "Basic dTpw", HeaderSource::Auth),
                 ("X-Trace", "4f1e", HeaderSource::Request),
                 ("Content-Type", "application/json", HeaderSource::Body),
@@ -995,7 +1082,7 @@ mod tests {
             body: vec![0, 0, 0, 0, 3, 0xff, 0xfe, 1],
             ..prepared.clone()
         };
-        let sent = sent_request(&binary, &request, &[], false, "HTTP/2");
+        let sent = sent_request(&binary, &request, &inherited, &[], false, "HTTP/2");
         assert!(sent.headers.iter().all(|header| header.name != "Host"));
         assert_eq!(
             sent.headers
@@ -1010,7 +1097,7 @@ mod tests {
             body: "é".repeat(SENT_BODY_LIMIT).into_bytes(),
             ..prepared
         };
-        let sent = sent_request(&long, &request, &[], false, "HTTP/1.1");
+        let sent = sent_request(&long, &request, &inherited, &[], false, "HTTP/1.1");
         assert_eq!(sent.body.map(|body| body.len()), Some(SENT_BODY_LIMIT));
         assert_eq!(sent.body_size, 2 * SENT_BODY_LIMIT as u64);
     }
@@ -1193,6 +1280,7 @@ mod tests {
                     http_version: HttpVersion::Auto,
                     proxy: &ProxyPrefs::default(),
                     boundary: "B",
+                    inherited: &Inherited::default(),
                 }
             ),
             Err(PrepareError::Template {
@@ -1235,7 +1323,10 @@ mod tests {
         assert_eq!(prepared.header("te"), Some("trailers"));
         assert_eq!(prepared.header("authorization"), Some("Bearer t"));
         assert_eq!(prepared.body, [0, 0, 0, 0, 3, 0x0a, 1, b'7'], "the template ran");
-        assert_eq!(needs(&request, &variables).responses, Vec::<String>::new());
+        assert_eq!(
+            needs(&request, &variables, &Inherited::default()).responses,
+            Vec::<String>::new()
+        );
 
         let unknown = HttpRequest {
             body: GrpcBody {
@@ -1269,8 +1360,12 @@ mod tests {
             },
             ..Default::default()
         };
-        let needs = needs(&request, &variables);
-        assert_eq!(needs.responses, ["b", "q", "g", "t"]);
+        let inherited = Inherited {
+            headers: vec![kv("F", "{{get(f, a)}}")],
+            ..Default::default()
+        };
+        let needs = needs(&request, &variables, &inherited);
+        assert_eq!(needs.responses, ["b", "q", "g", "f", "t"]);
         assert!(needs.picks_file);
     }
 

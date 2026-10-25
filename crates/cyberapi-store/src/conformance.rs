@@ -15,7 +15,8 @@ use cyberapi_core::collection::SortOrder;
 use cyberapi_core::cookie::Cookie;
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::{
-    ApiCategory, ApiSetting, Collection, ContentType, Folder, HttpMethod, HttpRequest, KvParam, VariableCategory,
+    ApiCategory, ApiSetting, Collection, ContentType, Folder, FolderSettings, HttpMethod, HttpRequest, KvParam,
+    ProjectSettings, VariableCategory,
 };
 use cyberapi_core::prefs::{AppPrefs, HttpVersion, RequestSettings, ThemeMode, Timeouts, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse, HttpStats};
@@ -43,6 +44,8 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     bad_parents_are_refused(storage).await;
     items_are_renamed(storage).await;
     requests_are_saved(storage).await;
+    settings_are_kept(storage).await;
+    deleting_a_folder_takes_its_settings(storage, probe).await;
     moves_follow_the_plan(storage).await;
     deleting_a_folder_takes_its_content(storage).await;
     projects_do_not_see_each_other(storage).await;
@@ -239,12 +242,23 @@ async fn deleting_a_collection_takes_its_content(storage: &Storage, probe: &dyn 
         .add(response(&doomed, &login.item.id, 0))
         .await
         .expect("add a response");
+    let tree = storage.tree();
+    let none = || FolderSettings {
+        auth: Auth::None,
+        ..Default::default()
+    };
+    tree.set_folder_settings(doomed.id.clone(), users.item.id.clone(), none())
+        .await
+        .expect("a folder's settings");
+    tree.set_project_settings(doomed.id.clone(), ProjectSettings { auth: Auth::None })
+        .await
+        .expect("the project's settings");
     let kept_rows = probe.rows_of(kept.id.clone()).await.expect("probe");
     // The project row, the folder, the API, the variable, the workspace
-    // state, the response — and the top-level order wherever the backend
-    // keeps one.
+    // state, the response, the project's settings — and the top-level order
+    // and the folder's settings wherever the backend keeps them apart.
     assert!(
-        probe.rows_of(doomed.id.clone()).await.expect("probe") >= 6,
+        probe.rows_of(doomed.id.clone()).await.expect("probe") >= 7,
         "the probe sees the project's rows"
     );
 
@@ -429,6 +443,117 @@ async fn requests_are_saved(storage: &Storage) {
             .save_request(collection.id.clone(), users.item.id, request)
             .await,
         Entity::Api,
+    );
+}
+
+/// #66: what a folder and the project set for their APIs, read back with
+/// the tree and the configuration; none again is none.
+async fn settings_are_kept(storage: &Storage) {
+    let collection = new_collection(storage, "settings").await;
+    let users = folder(storage, &collection, None, "users").await;
+    let admin = folder(storage, &collection, Some(&users.item.id), "admin").await;
+    let tree = storage.tree();
+    let settings = FolderSettings {
+        auth: Auth::Bearer {
+            token: "{{value(token)}}".into(),
+        },
+        headers: vec![KvParam {
+            key: "X-Team".into(),
+            value: "users".into(),
+            enabled: true,
+        }],
+    };
+    let set = tree
+        .set_folder_settings(collection.id.clone(), users.item.id.clone(), settings.clone())
+        .await
+        .expect("set a folder's");
+    assert_eq!(set.settings, settings);
+    assert_eq!((set.id.clone(), set.name.as_str()), (users.item.id.clone(), "users"));
+    assert!(set.updated_at >= users.item.updated_at);
+    let project = ProjectSettings {
+        auth: Auth::Basic {
+            username: "me".into(),
+            password: "pw".into(),
+        },
+    };
+    tree.set_project_settings(collection.id.clone(), project.clone())
+        .await
+        .expect("set the project's");
+    let loaded = load(storage, &collection).await;
+    let found = |data: &TreeData, id: &ItemId| {
+        data.folders
+            .iter()
+            .find(|folder| &folder.id == id)
+            .cloned()
+            .expect("the folder")
+    };
+    assert_eq!(found(&loaded, &users.item.id), set, "the folder as answered");
+    assert!(found(&loaded, &admin.item.id).settings.is_empty(), "only that folder's");
+    assert_eq!(loaded.settings, project);
+    let read = tree.config(collection.id.clone()).await.expect("config");
+    assert_eq!(read.config.tree(), loaded, "the configuration has them too");
+
+    tree.set_folder_settings(collection.id.clone(), users.item.id.clone(), FolderSettings::default())
+        .await
+        .expect("none again");
+    tree.set_project_settings(collection.id.clone(), ProjectSettings::default())
+        .await
+        .expect("none again");
+    let loaded = load(storage, &collection).await;
+    assert!(found(&loaded, &users.item.id).settings.is_empty());
+    assert!(loaded.settings.is_empty());
+
+    let api = api(storage, &collection, None, "an API").await;
+    not_found(
+        tree.set_folder_settings(collection.id.clone(), api.item.id, settings.clone())
+            .await,
+        Entity::Item,
+    );
+    not_found(
+        tree.set_folder_settings(collection.id.clone(), ItemId::from(MISSING), settings.clone())
+            .await,
+        Entity::Item,
+    );
+    not_found(
+        tree.set_folder_settings(CollectionId::new(MISSING), users.item.id, settings)
+            .await,
+        Entity::Collection,
+    );
+    not_found(
+        tree.set_project_settings(CollectionId::new(MISSING), project).await,
+        Entity::Collection,
+    );
+}
+
+/// #66: a folder's settings go with it, wherever a backend keeps them.
+async fn deleting_a_folder_takes_its_settings(storage: &Storage, probe: &dyn Probe) {
+    let collection = new_collection(storage, "settings go").await;
+    let users = folder(storage, &collection, None, "users").await;
+    let admin = folder(storage, &collection, Some(&users.item.id), "admin").await;
+    let before = probe.rows_of(collection.id.clone()).await.expect("probe");
+    for id in [&users.item.id, &admin.item.id] {
+        storage
+            .tree()
+            .set_folder_settings(
+                collection.id.clone(),
+                id.clone(),
+                FolderSettings {
+                    auth: Auth::None,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("settings");
+    }
+    storage
+        .tree()
+        .delete(collection.id.clone(), users.item.id)
+        .await
+        .expect("delete");
+    assert_eq!(
+        probe.rows_of(collection.id.clone()).await.expect("probe"),
+        before - 2,
+        "the two folders go, and nothing of their settings stays"
     );
 }
 
@@ -722,6 +847,21 @@ async fn shared_changes_move_the_revision(storage: &Storage) {
     .await
     .expect("import");
     last = moved(storage, id, last, "an import").await;
+    tree.set_folder_settings(
+        id.clone(),
+        users.item.id.clone(),
+        FolderSettings {
+            auth: Auth::None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("a folder's settings");
+    last = moved(storage, id, last, "a folder's settings").await;
+    tree.set_project_settings(id.clone(), ProjectSettings { auth: Auth::None })
+        .await
+        .expect("the project's settings");
+    last = moved(storage, id, last, "the project's settings").await;
     tree.delete(id.clone(), users.item.id).await.expect("delete");
     last = moved(storage, id, last, "a deletion").await;
 
@@ -1137,6 +1277,10 @@ fn bundle() -> Vec<ImportItem> {
     vec![
         ImportItem::Folder {
             name: "orders".into(),
+            settings: FolderSettings {
+                auth: Auth::None,
+                ..Default::default()
+            },
             children: vec![
                 ImportItem::Api {
                     name: "create".into(),
@@ -1149,6 +1293,7 @@ fn bundle() -> Vec<ImportItem> {
                 },
                 ImportItem::Folder {
                     name: "admin".into(),
+                    settings: FolderSettings::default(),
                     children: vec![ImportItem::Api {
                         name: "purge".into(),
                         request: Box::new(HttpRequest {
@@ -1212,6 +1357,7 @@ async fn imports_get_new_ids_at_the_end(storage: &Storage) {
         .find(|folder| folder.name == "orders")
         .expect("orders");
     assert_eq!(names(&orders.children, &loaded), ["create", "admin"]);
+    assert_eq!(orders.settings.auth, Auth::None, "a folder brings its settings (#66)");
     let create = loaded.apis.iter().find(|api| api.name == "create").expect("create");
     assert_eq!(
         (create.request.method, create.request.uri.as_str()),
@@ -1346,6 +1492,24 @@ pub async fn backup(storage: &Storage, backups: &dyn crate::BackupStore) {
         .add(response(&kept, &login.item.id, 1))
         .await
         .expect("a response");
+    // What the folder and the project set (#66) is backed up with them.
+    storage
+        .tree()
+        .set_folder_settings(
+            kept.id.clone(),
+            users.item.id.clone(),
+            FolderSettings {
+                auth: Auth::Bearer { token: "t".into() },
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("a folder's settings");
+    storage
+        .tree()
+        .set_project_settings(kept.id.clone(), ProjectSettings { auth: Auth::None })
+        .await
+        .expect("the project's settings");
     let snapshot = backups.snapshot().await.expect("snapshot");
     let before_list = storage.collections().list().await.expect("list");
     let before_tree = load(storage, &kept).await;
@@ -1364,6 +1528,10 @@ pub async fn backup(storage: &Storage, backups: &dyn crate::BackupStore) {
     backups.restore(snapshot.clone()).await.expect("restore");
     assert_eq!(storage.collections().list().await.expect("list"), before_list);
     assert_eq!(load(storage, &kept).await, before_tree);
+    assert!(
+        !before_tree.settings.is_empty() && before_tree.folders.iter().all(|folder| !folder.settings.is_empty()),
+        "the settings came back"
+    );
     assert_eq!(
         storage
             .variables()
@@ -1494,6 +1662,9 @@ async fn configs_replace_at_their_base(storage: &Storage) {
     });
     wanted.folders[0].name = "people".into();
     wanted.folders[0].children = vec![made.clone(), login.item.id.clone()];
+    // What the folder and the project set (#66) comes as given too.
+    wanted.folders[0].settings.auth = Auth::Bearer { token: "t".into() };
+    wanted.settings.auth = Auth::None;
     wanted.top_order = vec![users.item.id.clone()];
     wanted.variables[0].value = "https://b.test".into();
     let mut second = wanted.variables[0].clone();
@@ -1554,6 +1725,8 @@ async fn configs_replace_at_their_base(storage: &Storage) {
     let mut mine = wanted.clone();
     mine.apis.retain(|found| found.id == made);
     mine.folders[0].children = vec![made.clone()];
+    mine.folders[0].settings = FolderSettings::default();
+    mine.settings = ProjectSettings::default();
     let forced = storage
         .tree()
         .replace(collection.id.clone(), mine.clone(), None)
@@ -1668,6 +1841,12 @@ pub async fn copies(storage: &Storage, copies: &dyn crate::ServerCopyStore) {
         .config;
     storage.collections().delete(server.id.clone()).await.expect("gone");
     config.name = "the server's".into();
+    config.folders[0].settings.headers = vec![KvParam {
+        key: "X-Team".into(),
+        value: "users".into(),
+        enabled: true,
+    }];
+    config.settings.auth = Auth::Bearer { token: "t".into() };
     config.description = "theirs".into();
     let copy = Collection {
         name: config.name.clone(),

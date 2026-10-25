@@ -663,6 +663,10 @@ impl ApiState {
             self.sender.timeouts = prefs.timeouts;
             self.sender.sending = prefs.sending.clone();
         }
+        // #66: what the API takes from its folders and project now.
+        if let Some(workspace) = self.workspace.upgrade() {
+            self.sender.inherited = workspace.read(cx).inherited(&self.api);
+        }
         self.sender.clone()
     }
 

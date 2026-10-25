@@ -4,7 +4,7 @@
 
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::directory::{MCP_TOKEN_PREFIX, NewMcpToken, TeamPlace};
-use cyberapi_core::model::{HttpRequest, VariableCategory};
+use cyberapi_core::model::{HttpRequest, ProjectSettings, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, ThemeMode, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::{AccountId, CollectionId};
@@ -166,6 +166,14 @@ async fn rules(variable: &str) {
         .expect("a viewer keeps her own workspace state");
     forbidden(
         carol.tree().create_api(id.clone(), None, "x".into()).await,
+        CollectionRole::Editor,
+    );
+    // Nor what the project sets for its APIs (#66).
+    forbidden(
+        carol
+            .tree()
+            .set_project_settings(id.clone(), ProjectSettings::default())
+            .await,
         CollectionRole::Editor,
     );
     forbidden(

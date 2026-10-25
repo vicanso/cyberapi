@@ -271,7 +271,11 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
     }
     let items = folders
         .into_iter()
-        .map(|(name, children)| ImportItem::Folder { name, children })
+        .map(|(name, children)| ImportItem::Folder {
+            name,
+            children,
+            settings: Default::default(),
+        })
         .chain(untagged)
         .collect();
     ImportBundle {
@@ -315,7 +319,7 @@ mod tests {
             bundle.environment,
             [("PetStore".to_string(), "https://pets.test/v2".to_string())]
         );
-        let ImportItem::Folder { name, children } = &bundle.items[0] else {
+        let ImportItem::Folder { name, children, .. } = &bundle.items[0] else {
             panic!("a folder per tag");
         };
         assert_eq!(name, "pet");

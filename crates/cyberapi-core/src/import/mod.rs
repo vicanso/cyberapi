@@ -20,7 +20,7 @@ mod postman;
 pub use own::{api_config, export, parse_own};
 
 use crate::ItemId;
-use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam};
+use crate::model::{ContentType, FolderSettings, HttpMethod, HttpRequest, KvParam};
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 
@@ -31,12 +31,13 @@ pub enum ImportItem {
     Folder {
         name: String,
         children: Vec<ImportItem>,
+        /// What it sets for the APIs in it (#66): only this app's own
+        /// exports say.
+        #[serde(default, skip_serializing_if = "FolderSettings::is_empty")]
+        settings: FolderSettings,
     },
     /// Boxed: a request is several times the size of a folder.
-    Api {
-        name: String,
-        request: Box<HttpRequest>,
-    },
+    Api { name: String, request: Box<HttpRequest> },
 }
 
 /// What an import adds to a project.
@@ -54,8 +55,9 @@ pub struct ImportBundle {
 /// Ids given to a bundle's items, depth first, and the records to write.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Assigned {
-    /// Each folder with its children's new ids, parents before children.
-    pub folders: Vec<(ItemId, String, Vec<ItemId>)>,
+    /// Each folder with its children's new ids and its settings, parents
+    /// before children.
+    pub folders: Vec<(ItemId, String, Vec<ItemId>, FolderSettings)>,
     pub apis: Vec<(ItemId, String, HttpRequest)>,
     /// The new ids of the bundle's top level, in order.
     pub top: Vec<ItemId>,
@@ -69,9 +71,14 @@ pub fn assign_ids(items: &[ImportItem], new_id: &mut dyn FnMut() -> ItemId) -> A
             let id = new_id();
             match item {
                 ImportItem::Api { name, request } => out.apis.push((id.clone(), name.clone(), (**request).clone())),
-                ImportItem::Folder { name, children } => {
+                ImportItem::Folder {
+                    name,
+                    children,
+                    settings,
+                } => {
                     let at = out.folders.len();
-                    out.folders.push((id.clone(), name.clone(), Vec::new()));
+                    out.folders
+                        .push((id.clone(), name.clone(), Vec::new(), settings.clone()));
                     let children = walk(children, new_id, out);
                     out.folders[at].2 = children;
                 }
@@ -407,6 +414,7 @@ paths:
         let items = vec![
             ImportItem::Folder {
                 name: "a".into(),
+                settings: Default::default(),
                 children: vec![
                     ImportItem::Api {
                         name: "x".into(),
@@ -415,6 +423,7 @@ paths:
                     ImportItem::Folder {
                         name: "b".into(),
                         children: vec![],
+                        settings: Default::default(),
                     },
                 ],
             },
@@ -435,9 +444,10 @@ paths:
                 (
                     "n1".into(),
                     "a".to_string(),
-                    vec![ItemId::from("n2"), ItemId::from("n3")]
+                    vec![ItemId::from("n2"), ItemId::from("n3")],
+                    FolderSettings::default()
                 ),
-                ("n3".into(), "b".to_string(), vec![]),
+                ("n3".into(), "b".to_string(), vec![], FolderSettings::default()),
             ]
         );
         assert_eq!(

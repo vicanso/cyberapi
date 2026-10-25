@@ -19,7 +19,8 @@ use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
 use cyberapi_core::import::{ImportItem, assign_ids};
 use cyberapi_core::model::{
-    ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory, legacy as columns,
+    ApiCategory, ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
+    VariableCategory, legacy as columns,
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
@@ -34,7 +35,7 @@ use cyberapi_store::{
 };
 use rows::{API_COLUMNS, COLLECTION_COLUMNS, FOLDER_COLUMNS, VARIABLE_COLUMNS};
 use serde::de::DeserializeOwned;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
@@ -197,13 +198,19 @@ async fn touch(conn: &Connection, id: &CollectionId, now: Timestamp) -> Result<(
 /// The project's tree in store order: the order rows were inserted, which is
 /// the order the old app read them in.
 async fn tree_data(conn: &Connection, id: &CollectionId) -> Result<TreeData, StoreError> {
-    let folders = query_all(
+    let mut folders = query_all(
         conn,
         &format!("SELECT {FOLDER_COLUMNS} FROM api_folders WHERE collection = ?1 ORDER BY rowid"),
         (id.as_str(),),
         rows::folder,
     )
     .await?;
+    let mut settings = folder_settings(conn, Some(id)).await?;
+    for folder in &mut folders {
+        if let Some(own) = settings.remove(folder.id.as_str()) {
+            folder.settings = own;
+        }
+    }
     let apis = query_all(
         conn,
         &format!("SELECT {API_COLUMNS} FROM api_settings WHERE collection = ?1 ORDER BY rowid"),
@@ -219,11 +226,100 @@ async fn tree_data(conn: &Connection, id: &CollectionId) -> Result<TreeData, Sto
     )
     .await?
     .unwrap_or_default();
+    let settings = query_one(
+        conn,
+        "SELECT settings FROM project_settings WHERE collection = ?1",
+        (id.as_str(),),
+        |row| settings_of(&rows::text(row, 0)),
+    )
+    .await?
+    .unwrap_or_default();
     Ok(TreeData {
         folders,
         apis,
         top_order,
+        settings,
     })
+}
+
+/// A `settings` column (#66); one that cannot be read is none, as an
+/// unreadable request is an empty one.
+fn settings_of<T: DeserializeOwned + Default>(text: &str) -> T {
+    serde_json::from_str(text).unwrap_or_default()
+}
+
+/// The folders' settings by folder id: one project's, or every one's.
+async fn folder_settings(
+    conn: &Connection,
+    collection: Option<&CollectionId>,
+) -> Result<HashMap<String, FolderSettings>, StoreError> {
+    let read = |row: &Row| (rows::text(row, 0), settings_of(&rows::text(row, 1)));
+    let found = match collection {
+        Some(id) => {
+            query_all(
+                conn,
+                "SELECT folder, settings FROM folder_settings WHERE collection = ?1",
+                (id.as_str(),),
+                read,
+            )
+            .await?
+        }
+        None => query_all(conn, "SELECT folder, settings FROM folder_settings", (), read).await?,
+    };
+    Ok(found.into_iter().collect())
+}
+
+/// What a folder sets (#66): a row while it sets something, none after.
+async fn write_folder_settings(
+    conn: &Connection,
+    collection: &CollectionId,
+    folder: &ItemId,
+    settings: &FolderSettings,
+) -> Result<(), StoreError> {
+    if settings.is_empty() {
+        execute(
+            conn,
+            "DELETE FROM folder_settings WHERE folder = ?1",
+            (folder.as_str(),),
+        )
+        .await?;
+    } else {
+        let json = serde_json::to_string(settings).map_err(backend)?;
+        execute(
+            conn,
+            "INSERT INTO folder_settings (folder, collection, settings) VALUES (?1, ?2, ?3)
+             ON CONFLICT (folder) DO UPDATE SET collection = excluded.collection, settings = excluded.settings",
+            (folder.as_str(), collection.as_str(), json),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// What a project sets (#66), as [`write_folder_settings`].
+async fn write_project_settings(
+    conn: &Connection,
+    collection: &CollectionId,
+    settings: &ProjectSettings,
+) -> Result<(), StoreError> {
+    if settings.is_empty() {
+        execute(
+            conn,
+            "DELETE FROM project_settings WHERE collection = ?1",
+            (collection.as_str(),),
+        )
+        .await?;
+    } else {
+        let json = serde_json::to_string(settings).map_err(backend)?;
+        execute(
+            conn,
+            "INSERT INTO project_settings (collection, settings) VALUES (?1, ?2)
+             ON CONFLICT (collection) DO UPDATE SET settings = excluded.settings",
+            (collection.as_str(), json),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Writes the lists a plan changed.
@@ -332,6 +428,7 @@ async fn replace_project(
     }
     for sql in [
         "DELETE FROM api_folders WHERE collection = ?1",
+        "DELETE FROM folder_settings WHERE collection = ?1",
         "DELETE FROM api_settings WHERE collection = ?1",
         "DELETE FROM variables WHERE collection = ?1",
     ] {
@@ -352,7 +449,9 @@ async fn replace_project(
             ),
         )
         .await?;
+        write_folder_settings(conn, collection, &folder.id, &folder.settings).await?;
     }
+    write_project_settings(conn, collection, &config.settings).await?;
     for api in &config.apis {
         execute(
             conn,
@@ -503,6 +602,8 @@ impl CollectionStore for TursoStore {
             require_collection(&tx, &id).await?;
             for sql in [
                 "DELETE FROM api_folders WHERE collection = ?1",
+                "DELETE FROM folder_settings WHERE collection = ?1",
+                "DELETE FROM project_settings WHERE collection = ?1",
                 "DELETE FROM api_settings WHERE collection = ?1",
                 "DELETE FROM variables WHERE collection = ?1",
                 "DELETE FROM top_orders WHERE collection = ?1",
@@ -545,6 +646,7 @@ impl TreeStore for TursoStore {
                 collection: collection.clone(),
                 name,
                 children: Vec::new(),
+                settings: Default::default(),
                 created_at: now,
                 updated_at: now,
             };
@@ -666,6 +768,51 @@ impl TreeStore for TursoStore {
         })
     }
 
+    fn set_folder_settings(
+        &self,
+        collection: CollectionId,
+        folder: ItemId,
+        settings: FolderSettings,
+    ) -> StoreFuture<Folder> {
+        self.run(move |inner, now| async move {
+            let mut conn = inner.conn.lock().await;
+            let tx = conn.transaction().await.map_err(backend)?;
+            require_collection(&tx, &collection).await?;
+            let found = execute(
+                &tx,
+                "UPDATE api_folders SET updated_at = ?1 WHERE id = ?2 AND collection = ?3",
+                (now.to_rfc3339(), folder.as_str(), collection.as_str()),
+            )
+            .await?;
+            if found == 0 {
+                return Err(StoreError::not_found(Entity::Item, &folder));
+            }
+            write_folder_settings(&tx, &collection, &folder, &settings).await?;
+            let saved = query_one(
+                &tx,
+                &format!("SELECT {FOLDER_COLUMNS} FROM api_folders WHERE id = ?1"),
+                (folder.as_str(),),
+                rows::folder,
+            )
+            .await?
+            .ok_or_else(|| StoreError::not_found(Entity::Item, &folder))?;
+            touch(&tx, &collection, now).await?;
+            tx.commit().await.map_err(backend)?;
+            Ok(Folder { settings, ..saved })
+        })
+    }
+
+    fn set_project_settings(&self, collection: CollectionId, settings: ProjectSettings) -> StoreFuture<()> {
+        self.run(move |inner, now| async move {
+            let mut conn = inner.conn.lock().await;
+            let tx = conn.transaction().await.map_err(backend)?;
+            require_collection(&tx, &collection).await?;
+            write_project_settings(&tx, &collection, &settings).await?;
+            touch(&tx, &collection, now).await?;
+            tx.commit().await.map_err(backend)
+        })
+    }
+
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange> {
         self.run(move |inner, now| async move {
             let mut conn = inner.conn.lock().await;
@@ -697,15 +844,17 @@ impl TreeStore for TursoStore {
                 change,
                 ..Default::default()
             };
-            for (id, name, children) in assigned.folders {
+            for (id, name, children, settings) in assigned.folders {
                 let folder = Folder {
                     id,
                     collection: collection.clone(),
                     name,
                     children,
+                    settings,
                     created_at: now,
                     updated_at: now,
                 };
+                write_folder_settings(&tx, &collection, &folder.id, &folder.settings).await?;
                 execute(
                     &tx,
                     "INSERT INTO api_folders (id, collection, children, name, created_at, updated_at)
@@ -762,12 +911,12 @@ impl TreeStore for TursoStore {
             require_collection(&tx, &collection).await?;
             let removal = tree_data(&tx, &collection).await?.plan_remove(&item)?;
             for id in &removal.folders {
-                execute(
-                    &tx,
+                for sql in [
                     "DELETE FROM api_folders WHERE id = ?1 AND collection = ?2",
-                    (id.as_str(), collection.as_str()),
-                )
-                .await?;
+                    "DELETE FROM folder_settings WHERE folder = ?1 AND collection = ?2",
+                ] {
+                    execute(&tx, sql, (id.as_str(), collection.as_str())).await?;
+                }
             }
             for id in &removal.apis {
                 for sql in [
@@ -805,6 +954,7 @@ impl TreeStore for TursoStore {
                     apis: tree.apis,
                     top_order: tree.top_order,
                     variables: variables.into_iter().flatten().collect(),
+                    settings: tree.settings,
                 },
             })
         })
@@ -1185,11 +1335,24 @@ impl BackupStore for TursoStore {
                 rows::collection,
             )
             .await?;
-            let folders = query_all(
+            let mut folders = query_all(
                 &conn,
                 &format!("SELECT {FOLDER_COLUMNS} FROM api_folders ORDER BY rowid"),
                 (),
                 rows::folder,
+            )
+            .await?;
+            let mut settings = folder_settings(&conn, None).await?;
+            for folder in &mut folders {
+                if let Some(own) = settings.remove(folder.id.as_str()) {
+                    folder.settings = own;
+                }
+            }
+            let project_settings = query_all(
+                &conn,
+                "SELECT collection, settings FROM project_settings ORDER BY rowid",
+                (),
+                |row| (CollectionId::new(rows::text(row, 0)), settings_of(&rows::text(row, 1))),
             )
             .await?;
             let apis = query_all(
@@ -1227,6 +1390,7 @@ impl BackupStore for TursoStore {
                 apis,
                 variables,
                 top_orders,
+                project_settings,
             })
         })
     }
@@ -1238,6 +1402,8 @@ impl BackupStore for TursoStore {
             for table in [
                 "api_collections",
                 "api_folders",
+                "folder_settings",
+                "project_settings",
                 "api_settings",
                 "variables",
                 "top_orders",
@@ -1276,6 +1442,10 @@ impl BackupStore for TursoStore {
                     ),
                 )
                 .await?;
+                write_folder_settings(&tx, &f.collection, &f.id, &f.settings).await?;
+            }
+            for (collection, settings) in &backup.project_settings {
+                write_project_settings(&tx, collection, settings).await?;
             }
             for a in &backup.apis {
                 execute(
@@ -1401,6 +1571,14 @@ impl cyberapi_store::conformance::Probe for TursoStore {
                 ),
                 ("SELECT count(*) FROM variables WHERE collection = ?1", id.to_string()),
                 ("SELECT count(*) FROM top_orders WHERE collection = ?1", id.to_string()),
+                (
+                    "SELECT count(*) FROM folder_settings WHERE collection = ?1",
+                    id.to_string(),
+                ),
+                (
+                    "SELECT count(*) FROM project_settings WHERE collection = ?1",
+                    id.to_string(),
+                ),
                 ("SELECT count(*) FROM responses WHERE collection = ?1", id.to_string()),
                 (
                     "SELECT count(*) FROM prefs WHERE scope = ?1",

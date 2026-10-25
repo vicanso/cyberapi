@@ -117,6 +117,7 @@ fn children(resources: &[Value], parent: &str) -> Vec<ImportItem> {
             "request_group" => Some(ImportItem::Folder {
                 name: text(resource, "name").to_string(),
                 children: children(resources, text(resource, "_id")),
+                settings: Default::default(),
             }),
             _ => None,
         })
@@ -198,7 +199,7 @@ mod tests {
                 ("port".to_string(), "8080".to_string())
             ]
         );
-        let ImportItem::Folder { name, children } = &bundle.items[0] else {
+        let ImportItem::Folder { name, children, .. } = &bundle.items[0] else {
             panic!("a folder first: {:?}", bundle.items);
         };
         assert_eq!(name, "users");

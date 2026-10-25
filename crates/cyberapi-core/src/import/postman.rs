@@ -45,6 +45,7 @@ fn item(value: &Value) -> Option<ImportItem> {
         return Some(ImportItem::Folder {
             name: name.to_string(),
             children,
+            settings: Default::default(),
         });
     };
     // A request may be just its URL.
@@ -213,7 +214,7 @@ mod tests {
             bundle.environment,
             [("host".to_string(), "https://shop.test".to_string())]
         );
-        let ImportItem::Folder { name, children } = &bundle.items[0] else {
+        let ImportItem::Folder { name, children, .. } = &bundle.items[0] else {
             panic!("a folder");
         };
         assert_eq!(name, "users");

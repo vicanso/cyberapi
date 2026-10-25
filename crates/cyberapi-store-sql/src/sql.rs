@@ -242,6 +242,28 @@ pub const FOLDER_DELETE: &str = "DELETE FROM folders WHERE id = $1 AND collectio
 pub const API_DELETE: &str = "DELETE FROM apis WHERE id = $1 AND collection = $2";
 pub const API_COUNTS: &str = "SELECT collection, COUNT(*) FROM apis GROUP BY collection";
 
+// What folders and projects set (#66): a row only while they set something;
+// a folder's goes with it (ON DELETE CASCADE).
+pub const FOLDER_GET: &str = "SELECT id, collection, children, name, created_at, updated_at \
+    FROM folders WHERE id = $1 AND collection = $2";
+pub const FOLDER_TOUCH: &str = "UPDATE folders SET updated_at = $1 WHERE id = $2 AND collection = $3";
+pub const FOLDER_SETTINGS_OF: &str = "SELECT folder, settings FROM folder_settings WHERE collection = $1";
+pub const FOLDER_SETTINGS_UPSERT: Pair = Pair {
+    pg: "INSERT INTO folder_settings (folder, collection, settings) VALUES ($1, $2, $3) \
+         ON CONFLICT (folder) DO UPDATE SET collection = EXCLUDED.collection, settings = EXCLUDED.settings",
+    my: "INSERT INTO folder_settings (folder, collection, settings) VALUES (?, ?, ?) AS new \
+         ON DUPLICATE KEY UPDATE collection = new.collection, settings = new.settings",
+};
+pub const FOLDER_SETTINGS_DELETE: &str = "DELETE FROM folder_settings WHERE folder = $1";
+pub const PROJECT_SETTINGS_OF: &str = "SELECT settings FROM project_settings WHERE collection = $1";
+pub const PROJECT_SETTINGS_UPSERT: Pair = Pair {
+    pg: "INSERT INTO project_settings (collection, settings) VALUES ($1, $2) \
+         ON CONFLICT (collection) DO UPDATE SET settings = EXCLUDED.settings",
+    my: "INSERT INTO project_settings (collection, settings) VALUES (?, ?) AS new \
+         ON DUPLICATE KEY UPDATE settings = new.settings",
+};
+pub const PROJECT_SETTINGS_DELETE: &str = "DELETE FROM project_settings WHERE collection = $1";
+
 // A whole configuration put in place of a project's (server-sync §3.3).
 // Folders and variables are written again; an API that stays is rewritten
 // in its row, which its responses hang from.
@@ -313,7 +335,7 @@ pub const COOKIES_CLEAR: &str = "DELETE FROM cookies WHERE account = $1";
 // ---- the conformance probe -------------------------------------------------------
 
 #[cfg(any(test, feature = "conformance"))]
-pub const PROBE_COUNTS: [&str; 8] = [
+pub const PROBE_COUNTS: [&str; 10] = [
     "SELECT COUNT(*) FROM collections WHERE id = $1",
     "SELECT COUNT(*) FROM folders WHERE collection = $1",
     "SELECT COUNT(*) FROM apis WHERE collection = $1",
@@ -321,6 +343,8 @@ pub const PROBE_COUNTS: [&str; 8] = [
     "SELECT COUNT(*) FROM top_orders WHERE collection = $1",
     "SELECT COUNT(*) FROM collection_grants WHERE collection = $1",
     "SELECT COUNT(*) FROM responses WHERE collection = $1",
+    "SELECT COUNT(*) FROM folder_settings WHERE collection = $1",
+    "SELECT COUNT(*) FROM project_settings WHERE collection = $1",
     // Last: bound to the workspace scope, not the id.
     "SELECT COUNT(*) FROM prefs WHERE scope = $1",
 ];
@@ -393,6 +417,12 @@ mod tests {
         VARIABLES_ALL_OF,
         API_GET,
         API_COUNTS,
+        FOLDER_GET,
+        FOLDER_TOUCH,
+        FOLDER_SETTINGS_OF,
+        FOLDER_SETTINGS_DELETE,
+        PROJECT_SETTINGS_OF,
+        PROJECT_SETTINGS_DELETE,
         TOP_ORDER_OF,
         FOLDER_INSERT,
         API_INSERT,
@@ -452,7 +482,15 @@ mod tests {
             let expected: Vec<usize> = (1..=found.len()).collect();
             assert_eq!(found, expected, "{statement}");
         }
-        for pair in [MEMBER_UPSERT, GRANT_UPSERT, TOP_ORDER_UPSERT, PREF_UPSERT, SETUP_CLAIM] {
+        for pair in [
+            MEMBER_UPSERT,
+            GRANT_UPSERT,
+            TOP_ORDER_UPSERT,
+            PREF_UPSERT,
+            SETUP_CLAIM,
+            FOLDER_SETTINGS_UPSERT,
+            PROJECT_SETTINGS_UPSERT,
+        ] {
             assert_eq!(placeholders(pair.pg).len(), pair.my.matches('?').count(), "{}", pair.pg);
         }
     }

@@ -26,6 +26,7 @@ use cyberapi_core::auth::{Auth, KeyPlace};
 use cyberapi_core::directory::McpToken;
 use cyberapi_core::graphql::GraphQlBody;
 use cyberapi_core::grpc::GrpcBody;
+use cyberapi_core::inherit::{AuthSource, Inherited, inherited};
 use cyberapi_core::mcp::{
     MAX_RESULT_BYTES, MAX_TEXT_CHARS, cut, find_api, listing, masked, masked_body, masked_params,
 };
@@ -346,7 +347,9 @@ async fn project(storage: &Storage, arguments: &Json) -> Result<Collection, Stri
 }
 
 /// The project and the API `arguments` name.
-async fn api(storage: &Storage, arguments: &Json) -> Result<(Collection, ApiSetting, String), String> {
+/// The API an assistant names, where it is, and what it takes from its
+/// folders and project (#66).
+async fn api(storage: &Storage, arguments: &Json) -> Result<(Collection, ApiSetting, String, Inherited), String> {
     let collection = project(storage, arguments).await?;
     let data = storage.tree().load(collection.id.clone()).await.map_err(failed)?;
     let api = find_api(&data, argument(arguments, "api")?)?.clone();
@@ -355,7 +358,8 @@ async fn api(storage: &Storage, arguments: &Json) -> Result<(Collection, ApiSett
         .find(|line| line.id == api.id)
         .map(|line| line.path)
         .unwrap_or_else(|| api.name.clone());
-    Ok((collection, api, path))
+    let inherited = inherited(&data, &api.id);
+    Ok((collection, api, path, inherited))
 }
 
 async fn list_projects(bridge: &Bridge, account: &Account, storage: &Storage) -> Result<Json, String> {
@@ -421,8 +425,7 @@ fn params_json(params: &[KvParam]) -> Json {
 }
 
 /// How an API signs in (#66), its secrets masked; null when it does not
-/// itself — inheriting signs in with nothing until folders and projects
-/// can have one.
+/// (none, or inheriting where nothing above sets one).
 fn auth_json(auth: &Auth) -> Json {
     match auth {
         Auth::Inherit | Auth::None => Json::Null,
@@ -443,9 +446,16 @@ fn auth_json(auth: &Auth) -> Json {
 }
 
 async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let (_, api, path) = api(storage, arguments).await?;
+    let (_, api, path, inherited) = api(storage, arguments).await?;
     let request = &api.request;
-    let auth = auth_json(&request.auth);
+    // How it signs in as sent: its own, or what it inherits, and from where.
+    let auth = auth_json(inherited.auth(&request.auth));
+    let auth_from = match (&auth, request.auth.is_inherit(), &inherited.from) {
+        (Json::Null, ..) => Json::Null,
+        (_, false, _) => json!("api"),
+        (_, true, AuthSource::Folder { name, .. }) => json!(format!("folder {name}")),
+        (_, true, AuthSource::Project) => json!("project"),
+    };
     let body = match request.content_type {
         // A gRPC call: its method and message; its definitions (base64
         // descriptors) say nothing an assistant reads.
@@ -480,7 +490,9 @@ async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
         "url": request.uri,
         "query": params_json(&request.query),
         "headers": params_json(&request.headers),
+        "folderHeaders": params_json(&inherited.headers),
         "auth": auth,
+        "authFrom": auth_from,
         "contentType": request.content_type.as_str(),
         "body": body,
     }))
@@ -547,7 +559,7 @@ fn response_json(response: &HttpResponse) -> Json {
 }
 
 async fn get_history(storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let (collection, api, _) = api(storage, arguments).await?;
+    let (collection, api, ..) = api(storage, arguments).await?;
     let limit = arguments
         .get("limit")
         .and_then(Json::as_u64)
@@ -559,7 +571,7 @@ async fn get_history(storage: &Storage, arguments: &Json) -> Result<Json, String
 }
 
 async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let (collection, api, _) = api(storage, arguments).await?;
+    let (collection, api, _, inherited) = api(storage, arguments).await?;
     if collection.role < CollectionRole::Editor {
         return Err(format!(
             "sending needs an editor's role in {:?}; this account views it",
@@ -580,6 +592,7 @@ async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, argumen
         user_agent: format!("CyberAPI/{} (mcp)", version::VERSION),
         timeouts: prefs.timeouts,
         sending: prefs.sending,
+        inherited,
     };
     let response = cyberapi_service::send(sender, collection.id, api.id, api.request, None)
         .await

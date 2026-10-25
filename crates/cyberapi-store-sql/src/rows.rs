@@ -37,6 +37,8 @@ pub fn folder(row: &AnyRow) -> Result<Folder, StoreError> {
         collection: CollectionId::new(text(row, 1)?),
         children: serde_json::from_str(&text(row, 2)?).unwrap_or_default(),
         name: text(row, 3)?,
+        // Kept apart (#66): the tree reads them.
+        settings: Default::default(),
         created_at: time(row, 4)?,
         updated_at: time(row, 5)?,
     })

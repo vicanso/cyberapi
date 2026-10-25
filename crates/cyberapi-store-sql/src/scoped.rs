@@ -11,7 +11,10 @@ use crate::{SqlStore, db, new_id, now, rows};
 use cyberapi_core::access::{CollectionRole, TeamRole, effective_role};
 use cyberapi_core::cookie::Cookie;
 use cyberapi_core::import::{ImportItem, assign_ids};
-use cyberapi_core::model::{ApiCategory, ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
+use cyberapi_core::model::{
+    ApiCategory, ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
+    VariableCategory,
+};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, ProjectConfig};
@@ -28,6 +31,12 @@ use sqlx::any::AnyRow;
 use sqlx::{AnyConnection, AnyPool, Row as _};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
+
+/// A `settings` column (#66); one that cannot be read is none, as an
+/// unreadable request is an empty one.
+fn settings_of<T: DeserializeOwned + Default>(text: &str) -> T {
+    serde_json::from_str(text).unwrap_or_default()
+}
 
 pub(crate) fn workspace_scope(collection: &CollectionId) -> String {
     format!("workspace/{collection}")
@@ -157,7 +166,7 @@ impl Scoped {
 
     async fn tree_data(&self, conn: &mut AnyConnection, collection: &CollectionId) -> Result<TreeData, StoreError> {
         let id = collection.as_str().to_string();
-        let folders = sqlx::query(self.dialect.sql(sql::FOLDERS_OF))
+        let mut folders: Vec<Folder> = sqlx::query(self.dialect.sql(sql::FOLDERS_OF))
             .bind(id.clone())
             .fetch_all(&mut *conn)
             .await
@@ -165,6 +174,29 @@ impl Scoped {
             .iter()
             .map(rows::folder)
             .collect::<Result<_, _>>()?;
+        // What the folders set (#66), kept beside them.
+        let mut settings: HashMap<String, FolderSettings> = sqlx::query(self.dialect.sql(sql::FOLDER_SETTINGS_OF))
+            .bind(id.clone())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(db)?
+            .iter()
+            .map(|row| Ok((rows::text(row, 0)?, settings_of(&rows::text(row, 1)?))))
+            .collect::<Result<_, StoreError>>()?;
+        for folder in &mut folders {
+            if let Some(own) = settings.remove(folder.id.as_str()) {
+                folder.settings = own;
+            }
+        }
+        let project = sqlx::query(self.dialect.sql(sql::PROJECT_SETTINGS_OF))
+            .bind(id.clone())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(db)?
+            .map(|row| rows::text(&row, 0))
+            .transpose()?
+            .map(|text| settings_of(&text))
+            .unwrap_or_default();
         let apis = sqlx::query(self.dialect.sql(sql::APIS_OF))
             .bind(id.clone())
             .fetch_all(&mut *conn)
@@ -186,7 +218,58 @@ impl Scoped {
             folders,
             apis,
             top_order,
+            settings: project,
         })
+    }
+
+    /// What a folder sets (#66): a row while it sets something, none after.
+    async fn write_folder_settings(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+        folder: &ItemId,
+        settings: &FolderSettings,
+    ) -> Result<(), StoreError> {
+        if settings.is_empty() {
+            sqlx::query(self.dialect.sql(sql::FOLDER_SETTINGS_DELETE))
+                .bind(folder.as_str().to_string())
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+        } else {
+            sqlx::query(self.dialect.pick(&sql::FOLDER_SETTINGS_UPSERT))
+                .bind(folder.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .bind(serde_json::to_string(settings).map_err(db)?)
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+        }
+        Ok(())
+    }
+
+    /// What a project sets (#66), as [`Self::write_folder_settings`].
+    async fn write_project_settings(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+        settings: &ProjectSettings,
+    ) -> Result<(), StoreError> {
+        if settings.is_empty() {
+            sqlx::query(self.dialect.sql(sql::PROJECT_SETTINGS_DELETE))
+                .bind(collection.as_str().to_string())
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+        } else {
+            sqlx::query(self.dialect.pick(&sql::PROJECT_SETTINGS_UPSERT))
+                .bind(collection.as_str().to_string())
+                .bind(serde_json::to_string(settings).map_err(db)?)
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+        }
+        Ok(())
     }
 
     async fn write_change(
@@ -464,6 +547,7 @@ impl TreeStore for Scoped {
                     collection: owner,
                     name,
                     children: Vec::new(),
+                    settings: Default::default(),
                     created_at: at,
                     updated_at: at,
                 })
@@ -564,6 +648,50 @@ impl TreeStore for Scoped {
         })
     }
 
+    fn set_folder_settings(
+        &self,
+        collection: CollectionId,
+        folder: ItemId,
+        settings: FolderSettings,
+    ) -> StoreFuture<Folder> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            let touched = sqlx::query(this.dialect.sql(sql::FOLDER_TOUCH))
+                .bind(now().to_rfc3339())
+                .bind(folder.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            if touched.rows_affected() == 0 {
+                return Err(StoreError::not_found(Entity::Item, &folder));
+            }
+            this.write_folder_settings(&mut tx, &collection, &folder, &settings)
+                .await?;
+            let row = sqlx::query(this.dialect.sql(sql::FOLDER_GET))
+                .bind(folder.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+            let found = rows::folder(&row)?;
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)?;
+            Ok(Folder { settings, ..found })
+        })
+    }
+
+    fn set_project_settings(&self, collection: CollectionId, settings: ProjectSettings) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let mut tx = this.pool.begin().await.map_err(db)?;
+            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            this.write_project_settings(&mut tx, &collection, &settings).await?;
+            this.touch(&mut tx, &collection).await?;
+            tx.commit().await.map_err(db)
+        })
+    }
+
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange> {
         self.run(|this| async move {
             let mut tx = this.pool.begin().await.map_err(db)?;
@@ -597,7 +725,7 @@ impl TreeStore for Scoped {
                 change,
                 ..Default::default()
             };
-            for (id, name, children) in assigned.folders {
+            for (id, name, children, settings) in assigned.folders {
                 sqlx::query(this.dialect.sql(sql::FOLDER_INSERT))
                     .bind(id.as_str().to_string())
                     .bind(collection.as_str().to_string())
@@ -608,11 +736,13 @@ impl TreeStore for Scoped {
                     .execute(&mut *tx)
                     .await
                     .map_err(db)?;
+                this.write_folder_settings(&mut tx, &collection, &id, &settings).await?;
                 imported.folders.push(Folder {
                     id,
                     collection: collection.clone(),
                     name,
                     children,
+                    settings,
                     created_at: at,
                     updated_at: at,
                 });
@@ -695,6 +825,7 @@ impl TreeStore for Scoped {
                     apis: tree.apis,
                     top_order: tree.top_order,
                     variables,
+                    settings: tree.settings,
                 },
             })
         })
@@ -782,7 +913,12 @@ impl TreeStore for Scoped {
                     .execute(&mut *tx)
                     .await
                     .map_err(db)?;
+                // The rows of before went with their folders.
+                this.write_folder_settings(&mut tx, &collection, &folder.id, &folder.settings)
+                    .await?;
             }
+            this.write_project_settings(&mut tx, &collection, &config.settings)
+                .await?;
             for api in &config.apis {
                 if had.contains(api.id.as_str()) {
                     sqlx::query(this.dialect.sql(sql::API_REWRITE))

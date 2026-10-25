@@ -202,8 +202,10 @@ pub enum HeaderSource {
     Request,
     /// The project's global request headers.
     Global,
-    /// How the request signs in (#66).
+    /// How the request signs in, its own or inherited (#66).
     Auth,
+    /// A folder the API is in (#66).
+    Folder,
     /// The cookie jar.
     Cookie,
     /// The body's type.

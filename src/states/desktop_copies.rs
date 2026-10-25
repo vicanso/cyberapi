@@ -203,6 +203,7 @@ impl Machine {
             user_agent: "CyberAPI/test".into(),
             timeouts: Timeouts::default(),
             sending: SendPrefs::default(),
+            inherited: Default::default(),
         }
     }
 

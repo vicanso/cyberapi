@@ -21,7 +21,9 @@ use crate::drafts_local::{self, Draft};
 use crate::{local_items, pins_local};
 use cyberapi_core::import::ImportItem;
 use cyberapi_core::local_only::{LocalItems, fingerprint, ids};
-use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
+use cyberapi_core::model::{
+    ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable, VariableCategory,
+};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::sync::{ConfigAt, CopyBinding, Moment, ProjectConfig, Step, step};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
@@ -589,6 +591,19 @@ impl TreeStore for CopyStore {
 
     fn save_request(&self, collection: CollectionId, api: ItemId, request: HttpRequest) -> StoreFuture<ApiSetting> {
         self.write(self.0.tree().save_request(collection, api, request), true)
+    }
+
+    fn set_folder_settings(
+        &self,
+        collection: CollectionId,
+        folder: ItemId,
+        settings: FolderSettings,
+    ) -> StoreFuture<Folder> {
+        self.write(self.0.tree().set_folder_settings(collection, folder, settings), true)
+    }
+
+    fn set_project_settings(&self, collection: CollectionId, settings: ProjectSettings) -> StoreFuture<()> {
+        self.write(self.0.tree().set_project_settings(collection, settings), true)
     }
 
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange> {

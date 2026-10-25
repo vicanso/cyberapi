@@ -29,7 +29,9 @@ use cyberapi_core::directory::{
     AccountInfo, Grant, Invite, IssuedMcpToken, McpToken, Me, Member, NewInvite, NewMcpToken, Team, TeamPlace,
 };
 use cyberapi_core::import::ImportItem;
-use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpRequest, Variable, VariableCategory};
+use cyberapi_core::model::{
+    ApiSetting, Collection, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable, VariableCategory,
+};
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::response::{StreamEnd, StreamInfo};
@@ -154,6 +156,15 @@ pub enum Call {
         collection: CollectionId,
         api: ItemId,
         request: HttpRequest,
+    },
+    TreeSetFolderSettings {
+        collection: CollectionId,
+        folder: ItemId,
+        settings: FolderSettings,
+    },
+    TreeSetProjectSettings {
+        collection: CollectionId,
+        settings: ProjectSettings,
     },
     TreeMove {
         collection: CollectionId,
@@ -303,6 +314,8 @@ impl Call {
             | Self::TreeCreateApi { .. }
             | Self::TreeRename { .. }
             | Self::TreeSaveRequest { .. }
+            | Self::TreeSetFolderSettings { .. }
+            | Self::TreeSetProjectSettings { .. }
             | Self::TreeMove { .. }
             | Self::TreeImport { .. }
             | Self::TreeDelete { .. }
@@ -405,6 +418,14 @@ pub async fn dispatch(storage: &Storage, directory: &dyn DirectoryStore, call: C
             api,
             request,
         } => reply(tree.save_request(collection, api, request).await),
+        Call::TreeSetFolderSettings {
+            collection,
+            folder,
+            settings,
+        } => reply(tree.set_folder_settings(collection, folder, settings).await),
+        Call::TreeSetProjectSettings { collection, settings } => {
+            reply(tree.set_project_settings(collection, settings).await)
+        }
         Call::TreeMove { collection, item, to } => reply(tree.move_item(collection, item, to).await),
         Call::TreeImport {
             collection,
@@ -689,6 +710,21 @@ impl TreeStore for BridgeStore {
             api,
             request,
         })
+    }
+    fn set_folder_settings(
+        &self,
+        collection: CollectionId,
+        folder: ItemId,
+        settings: FolderSettings,
+    ) -> StoreFuture<Folder> {
+        self.call(Call::TreeSetFolderSettings {
+            collection,
+            folder,
+            settings,
+        })
+    }
+    fn set_project_settings(&self, collection: CollectionId, settings: ProjectSettings) -> StoreFuture<()> {
+        self.call(Call::TreeSetProjectSettings { collection, settings })
     }
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange> {
         self.call(Call::TreeMove { collection, item, to })

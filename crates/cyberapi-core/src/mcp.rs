@@ -274,6 +274,7 @@ mod tests {
                 collection: CollectionId::new("c"),
                 name: "users".into(),
                 children: vec![ItemId::new("a2"), ItemId::new("a3")],
+                settings: Default::default(),
                 created_at: at,
                 updated_at: at,
             }],
@@ -283,6 +284,7 @@ mod tests {
                 api("a3", "login", "{{HOST}}/users/login2"),
             ],
             top_order: vec![ItemId::new("f"), ItemId::new("a1")],
+            ..Default::default()
         }
     }
 

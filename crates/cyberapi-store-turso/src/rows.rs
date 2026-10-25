@@ -77,6 +77,8 @@ pub fn folder(row: &Row) -> Folder {
         collection: CollectionId::new(text(row, 1)),
         children: legacy::parse_id_list(&text(row, 2)),
         name: text(row, 3),
+        // Kept apart (#66): `tree_data` reads them.
+        settings: Default::default(),
         created_at: time(row, 4),
         updated_at: time(row, 5),
     }

@@ -21,6 +21,7 @@ use cyberapi_core::cookie::{cookie_header, parse_set_cookie};
 use cyberapi_core::graphql::GraphQlBody;
 use cyberapi_core::graphql_schema::{INTROSPECTION_QUERY, Schema};
 use cyberapi_core::grpc::{Definitions, GrpcBody, GrpcStatus, reflection};
+use cyberapi_core::inherit::Inherited;
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, Variable, VariableCategory};
 use cyberapi_core::prefs::{SendPrefs, Timeouts};
 use cyberapi_core::redirect::{self, MAX_REDIRECTS};
@@ -59,6 +60,11 @@ pub struct Sender {
     pub user_agent: String,
     pub timeouts: Timeouts,
     pub sending: SendPrefs,
+    /// What the API sent takes from its folders and its project (#66). The
+    /// caller fills it from the tree it holds (`inherit::inherited`):
+    /// reading the tree here for every send would cost the page a trip to
+    /// the bridge.
+    pub inherited: Inherited,
 }
 
 impl Sender {
@@ -163,7 +169,7 @@ pub async fn send_watched(
         .map(|exchange| exchange.stats.version.as_str())
         .unwrap_or_default();
     let jar = sent.header("cookie").is_some() && sent.header("cookie") != own_cookie.as_deref();
-    let sent_request = send::sent_request(&sent, &request, &globals, jar, version);
+    let sent_request = send::sent_request(&sent, &request, &sender.inherited, &globals, jar, version);
     let sent_to = sent.url;
     let response = match answered {
         Ok(exchange) => {
@@ -464,7 +470,7 @@ async fn prepare(
         );
     }
 
-    let needs = send::needs(request, &variables);
+    let needs = send::needs(request, &variables, &sender.inherited);
     let responses = if needs.responses.is_empty() {
         Vec::new()
     } else {
@@ -506,6 +512,7 @@ async fn prepare(
         http_version: sender.sending.http_version,
         proxy: &sender.sending.proxy,
         boundary: &boundary,
+        inherited: &sender.inherited,
     };
     let prepared = match grpc_call {
         Some((path, body)) => send::grpc_call(request, &cx, path, body),
@@ -594,6 +601,7 @@ mod tests {
             user_agent: "CyberAPI/test".into(),
             timeouts: Timeouts::default(),
             sending: SendPrefs::default(),
+            inherited: Inherited::default(),
         };
         Setup {
             storage,
@@ -1157,6 +1165,63 @@ mod tests {
             curl.contains(" -L") && curl.contains(" -k") && curl.contains("--http1.1"),
             "{curl}"
         );
+    }
+
+    /// #66: what the API takes from its folders and project goes out with
+    /// it, and the history says where each header came from.
+    #[test]
+    fn an_api_sends_what_it_inherits() {
+        let mut setup = setup(Ok(Exchange {
+            status: 200,
+            ..Default::default()
+        }));
+        setup.sender.inherited = Inherited {
+            headers: vec![KvParam {
+                key: "X-Team".into(),
+                value: "users".into(),
+                enabled: true,
+            }],
+            auth: cyberapi_core::auth::Auth::Bearer { token: "t0".into() },
+            ..Default::default()
+        };
+        let api = new_api(&setup, "me");
+        let request = HttpRequest {
+            uri: "https://api.test/me".into(),
+            ..Default::default()
+        };
+        let answer = pollster::block_on(send(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            api,
+            request.clone(),
+            None,
+        ))
+        .expect("sent");
+        let sent = setup.engine.sent.lock().expect("sent")[0].clone();
+        assert_eq!(sent.header("x-team"), Some("users"));
+        assert_eq!(sent.header("authorization"), Some("Bearer t0"));
+        let from = |name: &str| {
+            answer
+                .sent
+                .as_ref()
+                .and_then(|sent| {
+                    sent.headers
+                        .iter()
+                        .find(|header| header.name.eq_ignore_ascii_case(name))
+                })
+                .map(|header| header.from)
+        };
+        assert_eq!(from("x-team"), Some(HeaderSource::Folder));
+        assert_eq!(from("authorization"), Some(HeaderSource::Auth));
+        // Its code too.
+        let curl = pollster::block_on(code(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            request,
+            CodeTarget::Curl,
+        ))
+        .expect("code");
+        assert!(curl.contains("X-Team: users") && curl.contains("Bearer t0"), "{curl}");
     }
 
     #[test]
