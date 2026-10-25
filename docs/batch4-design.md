@@ -1,6 +1,6 @@
 # 第 4 批设计：接口级设置、认证类型与继承、命名环境
 
-> 状态：草案，待确认（2026-10-25）。对应 [vicanso/cyberapi](https://github.com/vicanso/cyberapi/issues) #71、#66、#61，见 [issue-plan.md](./issue-plan.md) 第 4 批。确认前不动代码；第 7 节是需要决定的问题。
+> 状态：第 7 节按建议定了（2026-10-25），第 6 节第 1 步已完成。对应 [vicanso/cyberapi](https://github.com/vicanso/cyberapi/issues) #71、#66、#61，见 [issue-plan.md](./issue-plan.md) 第 4 批。第 7 节是当时要决定的问题，都按建议定了。
 
 三个 issue 都要改项目的数据：#71 和 #66 改接口保存的请求，#66 还要让目录和项目带设置，#61 给变量加上“属于哪个环境”。它们共用一套兼容和存储的做法，所以放在一起设计。
 
