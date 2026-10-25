@@ -34,6 +34,9 @@ const ACCOUNT: &str = "alice-id";
 struct Bridge {
     server: MemoryStore,
     online: AtomicBool,
+    /// Reached, but never answering: a bridge behind a network that drops
+    /// what is sent to it.
+    silent: AtomicBool,
     calls: AtomicUsize,
 }
 
@@ -60,6 +63,9 @@ impl Bridge {
 impl HttpEngine for Bridge {
     fn send(&self, request: PreparedRequest) -> SendFuture {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.silent.load(Ordering::SeqCst) {
+            return Box::pin(std::future::pending());
+        }
         if !self.online.load(Ordering::SeqCst) {
             return Box::pin(async {
                 Err(SendError::Connect {
@@ -171,6 +177,7 @@ impl Machine {
         let bridge = Arc::new(Bridge {
             server: MemoryStore::new(),
             online: AtomicBool::new(true),
+            silent: AtomicBool::new(false),
             calls: AtomicUsize::new(0),
         });
         let local = MemoryStore::new();
@@ -324,6 +331,28 @@ async fn the_accounts_server_projects_are_copied_and_synced(cx: &mut TestAppCont
     assert!(!binding.unsynced);
     let revision = pollster::block_on(machine.bridge.server.storage().collections().get(theirs.id.clone()));
     assert_eq!(binding.base, Some(revision.expect("on the server").revision));
+}
+
+/// A bridge that does not answer holds a kept copy shut only a moment: it
+/// opens as it does offline, and the poll catches up once the bridge
+/// answers.
+#[gpui_kit::test]
+async fn a_silent_bridge_holds_a_kept_copy_shut_only_a_moment(cx: &mut TestAppContext) {
+    let machine = Machine::signed_in(cx);
+    let theirs = machine.on_server("orders").await;
+    machine.dashboard(cx);
+
+    machine.bridge.silent.store(true, Ordering::SeqCst);
+    let (workspace, told) = machine.open(theirs.clone(), cx);
+    let not_pulled = |told: &Rc<RefCell<Vec<String>>>| told.borrow().iter().any(|event| event.starts_with("NotPulled"));
+    assert!(!not_pulled(&told), "waiting for the bridge");
+    let wait = crate::pacing::COPY_OPEN_WAIT.expect("the desktop waits a while");
+    cx.executor().advance_clock(wait);
+    cx.run_until_parked();
+    assert!(not_pulled(&told), "opened without it");
+    workspace.update(cx, |state, cx| state.create_api(None, "meanwhile".into(), cx));
+    cx.run_until_parked();
+    assert_eq!(api_names(&machine.local.storage(), &theirs.id), ["meanwhile"]);
 }
 
 #[gpui_kit::test]

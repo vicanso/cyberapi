@@ -17,7 +17,7 @@
 //! draft's.
 
 use super::copy::{self, Kept, Pushed, ServerCopy};
-use super::{ApiState, AppStore, GrpcDefinitions, Load, run_serial, run_store};
+use super::{ApiState, AppStore, GrpcDefinitions, Load, ServerStatus, run_serial, run_store};
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::ItemId;
@@ -270,13 +270,34 @@ impl WorkspaceState {
     fn open_copy(&mut self, cx: &mut Context<Self>) {
         let Some(copy) = &self.copy else { return };
         let (server, id, kept) = (copy.server.clone(), self.collection.id.clone(), copy.copy.kept());
+        // A kept copy opens without the server once it has been waited for
+        // long enough — at once, the server known to be out of reach — as
+        // when the server could not be reached.
+        let patience = pacing::COPY_OPEN_WAIT.map(|wait| {
+            let unreachable = cx
+                .try_global::<AppStore>()
+                .and_then(|store| store.server())
+                .is_some_and(|server| matches!(server.read(cx).status(), ServerStatus::Unreachable(_)));
+            let wait = if unreachable { Duration::ZERO } else { wait };
+            (wait, cx.background_executor().timer(wait))
+        });
         let call: StoreFuture<Opened> = Box::pin(async move {
             let kept = kept.await?;
-            let on_server = async {
+            let on_server = Box::pin(async {
                 let found = server.collections().get(id.clone()).await?;
                 Ok((found, server.tree().config(id).await?))
+            });
+            let on_server = match patience {
+                Some((wait, timer)) if kept.is_some() => match futures::future::select(on_server, timer).await {
+                    futures::future::Either::Left((answer, _)) => answer,
+                    futures::future::Either::Right(_) => Err(StoreError::backend(format!(
+                        "the server did not answer within {} s",
+                        wait.as_secs()
+                    ))),
+                },
+                _ => on_server.await,
             };
-            Ok((kept, on_server.await))
+            Ok((kept, on_server))
         });
         run_serial(cx, &self.gate, call, |this, result, cx| match result {
             Ok((kept, on_server)) => this.copy_opened(kept, on_server, cx),

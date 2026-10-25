@@ -23,6 +23,16 @@ pub const SERVER_POLL: Option<Duration> = Some(Duration::from_secs(10));
 #[cfg(target_family = "wasm")]
 pub const SERVER_POLL: Option<Duration> = Some(Duration::from_secs(10));
 
+/// How long opening a server project waits for the server before working
+/// on what this machine kept of it, the poll catching up after: the
+/// desktop keeps a copy, and a bridge out of reach held the project shut
+/// until the connection timed out. A page waits for its own server, which
+/// it cannot work without.
+#[cfg(not(target_family = "wasm"))]
+pub const COPY_OPEN_WAIT: Option<Duration> = Some(Duration::from_secs(2));
+#[cfg(target_family = "wasm")]
+pub const COPY_OPEN_WAIT: Option<Duration> = None;
+
 /// While the page is in a background tab, only one beat in this many asks:
 /// a minute apart, and back to every beat as soon as the tab shows.
 pub const HIDDEN_EVERY: u32 = 6;
