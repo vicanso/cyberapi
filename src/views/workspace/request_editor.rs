@@ -818,6 +818,10 @@ impl RequestEditor {
             return false;
         };
         self.api.update(cx, |api, cx| api.replace_request(request, cx));
+        // The fields read the request now, not once the event is handled:
+        // Enter sends at once, and sending first saves what the fields hold
+        // — the URL field still the command (#55).
+        self.reload(window, cx);
         window.push_notification(Notification::success(t!("editor.curl_filled").to_string()), cx);
         true
     }
