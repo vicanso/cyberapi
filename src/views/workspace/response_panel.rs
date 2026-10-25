@@ -1844,6 +1844,9 @@ impl Render for ResponsePanel {
                 v_flex()
                     .flex_1()
                     .min_h_0()
+                    // The last answer, while the next is on its way, is no
+                    // longer this request's (#43): faded until it comes.
+                    .when(sending, |this| this.opacity(0.45))
                     .child(self.render_tabs(response, cx))
                     .child(div().flex_1().min_h_0().child(content))
                     .into_any_element()
