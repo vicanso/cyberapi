@@ -10,6 +10,7 @@ pub mod cookie;
 pub mod curl;
 pub mod directory;
 pub mod format;
+pub mod graphql;
 mod id;
 pub mod import;
 pub mod json_view;

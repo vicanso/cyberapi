@@ -7,7 +7,9 @@ use crate::json_view_local::JsonView;
 use crate::states::{ApiState, AppStore};
 use crate::this_build;
 use crate::views::json_tree::{JsonTree, response_view_switch};
+use cyberapi_core::graphql;
 use cyberapi_core::media::{self, HEX_LIMIT, ImageType};
+use cyberapi_core::model::ContentType;
 use cyberapi_core::response::{
     BodyKind, DISPLAY_LIMIT, HttpResponse, RESPONSE_LIMIT, StatusLevel, clip_text, format_duration, format_size,
     status_level, status_text, unwrappable_line,
@@ -547,12 +549,31 @@ impl ResponsePanel {
             };
             note(text.to_string(), Vec::new(), cx)
         });
-        if redirect.is_none() && cut.is_none() && unkept.is_none() {
+        // A GraphQL answer says it failed in its `errors`, often with a 200.
+        let graphql = (response.request.content_type == ContentType::GraphQl)
+            .then(|| graphql::response_errors(&response.body))
+            .filter(|errors| !errors.is_empty())
+            .map(|errors| {
+                let shown: Vec<&str> = errors.iter().take(3).map(String::as_str).collect();
+                let text = crate::i18n::counted("response.graphql_errors", errors.len());
+                let danger = cx.theme().danger;
+                v_flex()
+                    .px_3()
+                    .py_2()
+                    .gap_0p5()
+                    .text_sm()
+                    .text_color(danger)
+                    .child(text)
+                    .children(shown.into_iter().map(|error| div().text_xs().child(error.to_string())))
+                    .into_any_element()
+            });
+        if redirect.is_none() && cut.is_none() && unkept.is_none() && graphql.is_none() {
             return body;
         }
         v_flex()
             .size_full()
             .children(unkept)
+            .children(graphql)
             .children(redirect)
             .children(cut)
             .child(div().flex_1().min_h_0().child(body))

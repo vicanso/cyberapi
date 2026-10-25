@@ -22,6 +22,8 @@ mod pins_local;
 mod root;
 mod server_local;
 pub mod states;
+#[cfg(not(target_family = "wasm"))]
+mod syntax;
 mod this_build;
 #[cfg(not(target_family = "wasm"))]
 mod update_install;
@@ -101,6 +103,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     gpui_kit::application().with_assets(assets::Assets).run(move |cx| {
         // Must come before anything that uses a component.
         gpui_kit::init(cx);
+        syntax::register_languages();
         match opened {
             Ok((storage, store, prefs)) => {
                 let extras = Extras {

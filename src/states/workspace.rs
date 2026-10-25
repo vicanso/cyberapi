@@ -754,17 +754,17 @@ impl WorkspaceState {
     /// F4.12: the tab the selected API's editor shows.
     pub fn tab(&self, cx: &gpui_kit::App) -> Option<RequestTab> {
         let api = self.api.as_ref()?.read(cx);
-        Some(self.prefs.tab(api.api(), api.request().method))
+        Some(self.prefs.tab(api.api(), api.request().has_body_tab()))
     }
 
     pub fn set_tab(&mut self, tab: RequestTab, cx: &mut Context<Self>) {
         let Some(api) = self.api.as_ref() else { return };
-        let (id, method) = {
+        let (id, body) = {
             let api = api.read(cx);
-            (api.api().clone(), api.request().method)
+            (api.api().clone(), api.request().has_body_tab())
         };
-        if self.prefs.tab(&id, method) != tab {
-            self.prefs.set_tab(&id, method, tab);
+        if self.prefs.tab(&id, body) != tab {
+            self.prefs.set_tab(&id, body, tab);
             self.save_prefs(cx);
             cx.notify();
         }

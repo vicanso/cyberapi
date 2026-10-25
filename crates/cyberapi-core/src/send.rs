@@ -12,6 +12,7 @@
 //! The engine is `cyberapi-http`'s; in the browser build the prepared
 //! request crosses the bridge as JSON.
 
+use crate::graphql::GraphQlBody;
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam, Variable, VariableCategory, split_env_prefix};
 use crate::prefs::{HttpVersion, Timeouts};
 use crate::template::{self, FileReader, Inputs, Needs, TemplateError};
@@ -59,6 +60,10 @@ pub enum PrepareError {
     /// has that name (#50): said as that, not as the URL it leaves behind.
     #[snafu(display("there is no enabled environment variable {name}"))]
     Environment { name: String },
+    /// A GraphQL body's variables, once their templates ran, are not a
+    /// JSON object.
+    #[snafu(display("the GraphQL variables cannot be read: {message}"))]
+    GraphQlVariables { message: String },
 }
 
 /// What [`prepare`] takes besides the request.
@@ -122,7 +127,12 @@ pub fn fill_values(request: &HttpRequest, variables: &[Variable]) -> HttpRequest
 /// query and header values (not keys, not the URI); the global headers.
 fn templated_texts<'a>(request: &'a HttpRequest, variables: &'a [Variable]) -> Vec<std::borrow::Cow<'a, str>> {
     let mut texts: Vec<std::borrow::Cow<'a, str>> = Vec::new();
-    if request.method.has_body() {
+    if request.content_type == ContentType::GraphQl {
+        // A GET sends it too, as parameters.
+        let graphql = GraphQlBody::read(&request.body);
+        texts.push(graphql.query.into());
+        texts.push(graphql.variables.into());
+    } else if request.method.has_body() {
         if request.content_type.is_key_value() {
             texts.extend(form_fields(&request.body).into_iter().map(|kv| kv.value.into()));
         } else {
@@ -300,6 +310,23 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
     for kv in request.query.iter().filter(|kv| kv.enabled) {
         url.query_pairs_mut().append_pair(&kv.key, &render(&kv.value)?);
     }
+    // GraphQL over HTTP: a GET asks with parameters, a POST with a body.
+    let graphql = (request.content_type == ContentType::GraphQl)
+        .then(|| -> Result<GraphQlBody, PrepareError> {
+            let stored = GraphQlBody::read(&request.body);
+            Ok(GraphQlBody {
+                query: render(&stored.query)?,
+                variables: render(&stored.variables)?,
+                operation_name: stored.operation_name,
+            })
+        })
+        .transpose()?;
+    let graphql_failed = |message: String| PrepareError::GraphQlVariables { message };
+    if let Some(graphql) = graphql.as_ref().filter(|_| !request.method.has_body()) {
+        for (key, value) in graphql.query_params().map_err(graphql_failed)? {
+            url.query_pairs_mut().append_pair(&key, &value);
+        }
+    }
 
     let mut headers = Headers::default();
     headers.set("User-Agent", cx.user_agent);
@@ -337,6 +364,18 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
             ContentType::Multipart => {
                 body = multipart(&request.body, cx, &render)?;
                 format!("multipart/form-data; boundary={}", cx.boundary)
+            }
+            ContentType::GraphQl => {
+                let payload = graphql
+                    .as_ref()
+                    .map(GraphQlBody::payload)
+                    .transpose()
+                    .map_err(graphql_failed)?;
+                body = payload
+                    .map(|payload| payload.to_string())
+                    .unwrap_or_default()
+                    .into_bytes();
+                ContentType::Json.as_str().to_string()
             }
             _ => {
                 body = render(&strip_json_comments(&request.body))?.into_bytes();
@@ -639,6 +678,54 @@ mod tests {
         request.headers = vec![kv("Content-Type", "application/vnd.api+json")];
         let prepared = prepare_with(&request, &[]).expect("prepare");
         assert_eq!(prepared.header("Content-Type"), Some("application/vnd.api+json"));
+    }
+
+    #[test]
+    fn a_graphql_post_sends_json_and_a_get_sends_parameters() {
+        let body = crate::graphql::GraphQlBody {
+            query: "query User($id: ID!) { user(id: $id) { name } }".into(),
+            variables: "{\n    // the stamp\n    \"id\": \"{{ts()}}\"\n}".into(),
+            operation_name: "User".into(),
+        };
+        let mut request = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "http://a.test/graphql".into(),
+            content_type: ContentType::GraphQl,
+            body: body.to_body(),
+            ..Default::default()
+        };
+        let prepared = prepare_with(&request, &[]).expect("prepare");
+        let sent: serde_json::Value = serde_json::from_slice(&prepared.body).expect("JSON");
+        assert_eq!(
+            sent,
+            serde_json::json!({
+                "query": "query User($id: ID!) { user(id: $id) { name } }",
+                "variables": {"id": "7"},
+                "operationName": "User"
+            }),
+            "templates run, comments go"
+        );
+        assert_eq!(prepared.header("content-type"), Some("application/json"));
+
+        request.method = HttpMethod::Get;
+        let prepared = prepare_with(&request, &[]).expect("prepare");
+        assert!(prepared.body.is_empty());
+        let url = url::Url::parse(&prepared.url).expect("a URL");
+        let params: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+        assert_eq!(params[1], ("variables".to_string(), r#"{"id":"7"}"#.to_string()));
+        assert_eq!(params[2], ("operationName".to_string(), "User".to_string()));
+
+        request.method = HttpMethod::Post;
+        request.body = crate::graphql::GraphQlBody {
+            query: "{ a }".into(),
+            variables: "{ broken".into(),
+            ..Default::default()
+        }
+        .to_body();
+        assert!(matches!(
+            prepare_with(&request, &[]),
+            Err(PrepareError::GraphQlVariables { .. })
+        ));
     }
 
     #[test]

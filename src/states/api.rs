@@ -38,6 +38,9 @@ fn not_sent(failure: SendFailure) -> ApiEvent {
         SendFailure::Prepare {
             source: PrepareError::Environment { name },
         } => ApiEvent::NoEnvironment(name),
+        SendFailure::Prepare {
+            source: PrepareError::GraphQlVariables { message },
+        } => ApiEvent::GraphQlVariables(message),
         other => ApiEvent::NotSent(other.to_string()),
     }
 }
@@ -51,6 +54,9 @@ pub enum ApiEvent {
     /// Nothing was sent: the URI starts with an environment variable no
     /// enabled one is named as (#50). Its name, for the view to say.
     NoEnvironment(String),
+    /// Nothing was sent: a GraphQL body's variables are not a JSON object
+    /// once their templates ran. Why, for the view to say.
+    GraphQlVariables(String),
     /// The request was replaced from the history (F7.10): the editor's
     /// fields read it again.
     RequestReplaced,

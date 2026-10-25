@@ -64,7 +64,7 @@ pub fn curl(
         let text = String::from_utf8_lossy(&prepared.body);
         let body = serde_json::from_str::<serde_json::Value>(&text)
             .ok()
-            .filter(|_| request.content_type == ContentType::Json)
+            .filter(|_| matches!(request.content_type, ContentType::Json | ContentType::GraphQl))
             .map(|json| json.to_string())
             .unwrap_or_else(|| text.into_owned());
         parts.push(format!("-d {}", quote(&body)));

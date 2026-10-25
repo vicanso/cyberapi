@@ -11,6 +11,7 @@ use crate::views::json_tree::{JsonTree, json_view_switch};
 use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::open_variables_dialog;
 use crate::views::template_hints::{self, HintSource};
+use cyberapi_core::graphql::GraphQlBody;
 use cyberapi_core::import::{request_from_curl, split_url};
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
 use cyberapi_core::prefs::RequestTab;
@@ -29,7 +30,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Task, Window, div, px, rems,
+    ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Task, Window, div, px, relative, rems,
 };
 use rust_i18n::t;
 use std::time::Duration;
@@ -62,6 +63,9 @@ pub struct RequestEditor {
     api: Entity<ApiState>,
     uri: Entity<InputState>,
     body: Entity<EditorState>,
+    /// A GraphQL body's query, variables and operation, edited apart and
+    /// kept together (`cyberapi_core::graphql::GraphQlBody`).
+    graphql: GraphQlFields,
     form: Entity<KvEditor>,
     query: Entity<KvEditor>,
     headers: Entity<KvEditor>,
@@ -114,6 +118,63 @@ fn body_state(
     })
 }
 
+/// What the body type menu calls a content type: its MIME type, or GraphQL
+/// by name, since a GraphQL body is sent as JSON.
+fn content_type_label(content_type: ContentType) -> &'static str {
+    match content_type {
+        ContentType::GraphQl => "GraphQL",
+        other => other.as_str(),
+    }
+}
+
+/// The fields of a GraphQL body.
+struct GraphQlFields {
+    query: Entity<EditorState>,
+    variables: Entity<EditorState>,
+    operation: Entity<InputState>,
+}
+
+/// A GraphQL body's fields, filled from `request` when it is one. The
+/// query is highlighted as GraphQL and the variables as JSON where the
+/// grammars are compiled in; both offer the template hints.
+fn graphql_fields(
+    request: &HttpRequest,
+    hints: &HintSource,
+    window: &mut Window,
+    cx: &mut Context<RequestEditor>,
+) -> GraphQlFields {
+    let body = if request.content_type == ContentType::GraphQl {
+        GraphQlBody::read(&request.body)
+    } else {
+        GraphQlBody::default()
+    };
+    let wrap = AppStore::global(cx).state().read(cx).prefs().text.wrap;
+    let mut editor = |language: &'static str, text: String, cx: &mut Context<RequestEditor>| {
+        cx.new(|cx| {
+            let mut editor = EditorState::new(window, cx)
+                .language(language)
+                .line_number(true)
+                .soft_wrap(wrap)
+                .tab_size(crate::views::json_tab())
+                .default_value(text);
+            template_hints::complete_in(&mut editor, hints);
+            editor
+        })
+    };
+    let query = editor("graphql", body.query, cx);
+    let variables = editor("json", body.variables, cx);
+    let operation = cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder(t!("editor.graphql_operation").to_string())
+            .default_value(body.operation_name)
+    });
+    GraphQlFields {
+        query,
+        variables,
+        operation,
+    }
+}
+
 impl RequestEditor {
     pub fn new(
         workspace: Entity<WorkspaceState>,
@@ -129,6 +190,7 @@ impl RequestEditor {
         });
         let hints = HintSource::new(&workspace);
         let body = body_state(&request, &hints, window, cx);
+        let graphql = graphql_fields(&request, &hints, window, cx);
         // Values that are templates offer the hints; Basic auth's are not.
         let kv = |list, options, hints: Option<&HintSource>, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
@@ -186,6 +248,10 @@ impl RequestEditor {
                     let message = t!("editor.environment_missing", name = name).to_string();
                     window.push_notification(Notification::error(message), cx);
                 }
+                ApiEvent::GraphQlVariables(reason) => {
+                    let message = t!("editor.graphql_variables_broken", reason = reason).to_string();
+                    window.push_notification(Notification::error(message), cx);
+                }
                 ApiEvent::Curl(command) => {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(command.clone()));
                     window.push_notification(Notification::success(t!("response.curl_copied").to_string()), cx);
@@ -239,13 +305,16 @@ impl RequestEditor {
         ];
         subscriptions.push(Self::watch_body(&body, window, cx));
         subscriptions.extend(template_hints::watch(&body, window, cx));
+        subscriptions.extend(Self::watch_graphql(&graphql, window, cx));
         let app = AppStore::global(cx).state().clone();
         let wrap = app.read(cx).prefs().text.wrap;
         subscriptions.push(cx.observe_in(&app, window, |this, app, window, cx| {
             let wrap = app.read(cx).prefs().text.wrap;
             if wrap != this.wrap {
                 this.wrap = wrap;
-                this.body.update(cx, |body, cx| body.set_soft_wrap(wrap, window, cx));
+                for editor in [&this.body, &this.graphql.query, &this.graphql.variables] {
+                    editor.update(cx, |editor, cx| editor.set_soft_wrap(wrap, window, cx));
+                }
             }
             this.sync_body_tree_if_shown(cx);
             cx.notify();
@@ -256,6 +325,7 @@ impl RequestEditor {
             api,
             uri,
             body,
+            graphql,
             form,
             query,
             headers,
@@ -327,6 +397,57 @@ impl RequestEditor {
         })
     }
 
+    /// A GraphQL body's fields, kept together as the body whenever one of
+    /// them changes.
+    fn watch_graphql(fields: &GraphQlFields, window: &mut Window, cx: &mut Context<Self>) -> Vec<Subscription> {
+        let mut watching = vec![
+            cx.subscribe_in(&fields.query, window, |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.save_graphql(cx);
+                }
+            }),
+            cx.subscribe_in(&fields.variables, window, |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.save_graphql(cx);
+                }
+            }),
+            cx.subscribe_in(&fields.operation, window, |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.save_graphql(cx);
+                }
+            }),
+        ];
+        watching.extend(template_hints::watch(&fields.query, window, cx));
+        watching.extend(template_hints::watch(&fields.variables, window, cx));
+        watching
+    }
+
+    /// The GraphQL fields as the body they make.
+    fn graphql_body(&self, cx: &App) -> String {
+        GraphQlBody {
+            query: self.graphql.query.read(cx).value().to_string(),
+            variables: self.graphql.variables.read(cx).value().to_string(),
+            operation_name: self.graphql.operation.read(cx).value().trim().to_string(),
+        }
+        .to_body()
+    }
+
+    fn save_graphql(&mut self, cx: &mut Context<Self>) {
+        if self.api.read(cx).request().content_type != ContentType::GraphQl {
+            return;
+        }
+        let body = self.graphql_body(cx);
+        self.api.update(cx, |api, cx| api.set_body(body, cx));
+    }
+
+    /// The GraphQL fields made again from the request.
+    fn rebuild_graphql(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let request = self.api.read(cx).request().clone();
+        self.graphql = graphql_fields(&request, &self.hints, window, cx);
+        let watching = Self::watch_graphql(&self.graphql, window, cx);
+        self._subscriptions.extend(watching);
+    }
+
     /// F7.10: the request came back from the history; every field reads it.
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let request = self.api.read(cx).request().clone();
@@ -336,6 +457,7 @@ impl RequestEditor {
         self._subscriptions.push(Self::watch_body(&self.body, window, cx));
         self._subscriptions
             .extend(template_hints::watch(&self.body, window, cx));
+        self.rebuild_graphql(window, cx);
         self.form
             .update(cx, |form, cx| form.set_list(&form_fields(&request.body), window, cx));
         self.query.update(cx, |kv, cx| kv.set_list(&request.query, window, cx));
@@ -357,7 +479,11 @@ impl RequestEditor {
             self.auth.read(cx).list(cx),
         );
         let content_type = self.api.read(cx).request().content_type;
-        let body = (!content_type.is_key_value()).then(|| self.body.read(cx).value().to_string());
+        let body = match content_type {
+            ContentType::GraphQl => Some(self.graphql_body(cx)),
+            _ if content_type.is_key_value() => None,
+            _ => Some(self.body.read(cx).value().to_string()),
+        };
         let form = content_type.is_key_value().then(|| self.form.read(cx).list(cx));
         self.api.update(cx, |api, cx| {
             api.set_query(query, cx);
@@ -463,6 +589,7 @@ impl RequestEditor {
         self._subscriptions.push(Self::watch_body(&self.body, window, cx));
         self._subscriptions
             .extend(template_hints::watch(&self.body, window, cx));
+        self.rebuild_graphql(window, cx);
         self.check_json(cx);
         self.sync_body_tree_if_shown(cx);
         let hints = self.hints.clone();
@@ -782,7 +909,7 @@ impl RequestEditor {
 
     fn render_tabs(&self, tab: RequestTab, cx: &mut Context<Self>) -> impl IntoElement {
         let request = self.api.read(cx).request().clone();
-        let tabs = RequestTab::for_method(request.method);
+        let tabs = RequestTab::for_request(request.has_body_tab());
         // F4.13: how many entries are sent. A `//` line stays in the list and
         // is not counted (#43).
         let count = |list: &[cyberapi_core::model::KvParam]| list.iter().filter(|row| row.enabled).count();
@@ -841,6 +968,65 @@ impl RequestEditor {
             })
     }
 
+    /// A GraphQL body: the query over the variables, with the operation to
+    /// run beside the variables' title.
+    fn render_graphql(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (muted, border) = (theme.muted_foreground, theme.border);
+        let editor = |state: &Entity<EditorState>| {
+            div()
+                .absolute()
+                .inset_0()
+                .child(Editor::new(state).w_full().h_full().bordered(false))
+        };
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .child(div().flex_1().min_h_0().relative().child(editor(&self.graphql.query)))
+            .child(
+                h_flex()
+                    .px_2()
+                    .py_1()
+                    .gap_2()
+                    .items_center()
+                    .border_t_1()
+                    .border_color(border)
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(t!("editor.graphql_variables").to_string()),
+                    )
+                    .child(div().w(px(180.)).child(Input::new(&self.graphql.operation).xsmall())),
+            )
+            .child(
+                div()
+                    .h(relative(0.35))
+                    .flex_none()
+                    .relative()
+                    .child(editor(&self.graphql.variables)),
+            )
+            .into_any_element()
+    }
+
+    /// The GraphQL variables indented, as the JSON body's Format does.
+    fn format_variables(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.graphql.variables.read(cx).value().to_string();
+        match send::format_json(&text) {
+            Ok(pretty) => {
+                self.graphql
+                    .variables
+                    .update(cx, |editor, cx| editor.set_value(pretty, window, cx));
+                self.save_graphql(cx);
+            }
+            Err(problem) => {
+                let message = t!("editor.graphql_variables_broken", reason = problem).to_string();
+                window.push_notification(Notification::error(message), cx);
+            }
+        }
+    }
+
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let request = self.api.read(cx).request().clone();
         let this = cx.entity().downgrade();
@@ -851,7 +1037,7 @@ impl RequestEditor {
             ContentType::ALL.iter().fold(menu, |menu, content_type| {
                 let (this, content_type) = (this.clone(), *content_type);
                 menu.item(
-                    PopupMenuItem::new(content_type.as_str())
+                    PopupMenuItem::new(content_type_label(content_type))
                         .checked(content_type == current)
                         .on_click(move |_, window, cx| {
                             let _ = this.update(cx, |this, cx| this.set_content_type(content_type, window, cx));
@@ -872,7 +1058,7 @@ impl RequestEditor {
                         h_flex()
                             .gap_1()
                             .items_center()
-                            .child(request.content_type.as_str())
+                            .child(content_type_label(request.content_type))
                             .child(
                                 Icon::new(IconName::ChevronDown)
                                     .xsmall()
@@ -922,7 +1108,19 @@ impl RequestEditor {
                         ),
                 )
             });
-        let content: AnyElement = if request.content_type.is_key_value() {
+        let toolbar = toolbar.when(request.content_type == ContentType::GraphQl, |this| {
+            this.child(
+                Button::new("body-format-variables")
+                    .ghost()
+                    .xsmall()
+                    .icon(gpui_kit::assets::IconName::WandSparkles)
+                    .label(t!("editor.format_variables").to_string())
+                    .on_click(cx.listener(|this, _, window, cx| this.format_variables(window, cx))),
+            )
+        });
+        let content: AnyElement = if request.content_type == ContentType::GraphQl {
+            self.render_graphql(cx)
+        } else if request.content_type.is_key_value() {
             div()
                 .id("request-form")
                 .flex_1()

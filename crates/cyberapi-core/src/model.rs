@@ -92,6 +92,12 @@ pub struct HttpRequest {
 }
 
 impl HttpRequest {
+    /// Whether the editor has a Body tab for it (F4.12): a method that sends
+    /// one, or a GraphQL query, which a GET sends as parameters.
+    pub fn has_body_tab(&self) -> bool {
+        self.method.has_body() || self.content_type == ContentType::GraphQl
+    }
+
     /// Reads `api_settings.setting`. What cannot be read is an empty request
     /// rather than an error (F4.1): one damaged row must not hide a project.
     pub fn from_json_lenient(text: &str) -> Self {
@@ -237,11 +243,21 @@ pub enum ContentType {
     Multipart,
     Xml,
     Plain,
+    /// A GraphQL request: the body keeps a [`crate::graphql::GraphQlBody`],
+    /// sent as JSON (a POST) or as query parameters (a GET).
+    GraphQl,
 }
 
 impl ContentType {
     /// The choices the editor offers, in its order.
-    pub const ALL: [Self; 5] = [Self::Json, Self::Form, Self::Multipart, Self::Xml, Self::Plain];
+    pub const ALL: [Self; 6] = [
+        Self::Json,
+        Self::Form,
+        Self::Multipart,
+        Self::Xml,
+        Self::Plain,
+        Self::GraphQl,
+    ];
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -250,6 +266,8 @@ impl ContentType {
             Self::Multipart => "multipart/form-data",
             Self::Xml => "application/xml",
             Self::Plain => "text/plain",
+            // What is stored; the request goes as `application/json`.
+            Self::GraphQl => "application/graphql",
         }
     }
 
@@ -259,6 +277,7 @@ impl ContentType {
             "multipart/form-data" => Self::Multipart,
             "application/xml" => Self::Xml,
             "text/plain" => Self::Plain,
+            "application/graphql" => Self::GraphQl,
             _ => Self::Json,
         }
     }

@@ -145,6 +145,11 @@ directories = { workspace = true }
 # changes. The browser build keeps the default engine, whose web platform
 # `cyberapi-web` builds by name; this table is not read for wasm.
 gpui-kit = { workspace = true, features = ["tree-sitter", "tree-sitter-html", "gpui-fast"] }
+# GraphQL's grammar for the GraphQL body's query, registered with highlights
+# of our own (`src/syntax.rs`): gpui-kit's `tree-sitter-graphql` feature
+# brings the grammar with an empty highlight query.
+tree-sitter = "0.26.13"
+tree-sitter-graphql = "0.1.0"
 # The OS version, for the about section and the User-Agent (F1.7, F5.4).
 os_info = { version = "3.15.0", default-features = false }
 # Blocks on the store's first answers before the first window opens.

@@ -23,6 +23,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use cyberapi_core::access::CollectionRole;
 use cyberapi_core::directory::McpToken;
+use cyberapi_core::graphql::GraphQlBody;
 use cyberapi_core::mcp::{
     MAX_RESULT_BYTES, MAX_TEXT_CHARS, cut, find_api, listing, masked, masked_body, masked_params,
 };
@@ -429,6 +430,14 @@ async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
         ContentType::Form | ContentType::Multipart => {
             let fields: Vec<KvParam> = serde_json::from_str(&request.body).unwrap_or_default();
             params_json(&fields)
+        }
+        ContentType::GraphQl => {
+            let graphql = GraphQlBody::read(&request.body);
+            json!({
+                "query": cut(&graphql.query, MAX_TEXT_CHARS),
+                "variables": cut(&masked_body(&graphql.variables), MAX_TEXT_CHARS),
+                "operationName": graphql.operation_name,
+            })
         }
         _ => Json::String(cut(&masked_body(&request.body), MAX_TEXT_CHARS)),
     };
