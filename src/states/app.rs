@@ -7,6 +7,7 @@ use crate::{Extras, this_build};
 use async_lock::Mutex;
 use cyberapi_core::collection::SortOrder;
 use cyberapi_core::directory::Me;
+use cyberapi_core::import::ImportBundle;
 use cyberapi_core::model::Collection;
 use cyberapi_core::prefs::{AppPrefs, ColumnWidths, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
 #[cfg(not(target_family = "wasm"))]
@@ -49,6 +50,7 @@ impl AppStore {
             json_view: crate::json_view_local::get(&crate::pins_local::scope(None)),
             me: None,
             opening: None,
+            importing: None,
             save_task: None,
             saves: Arc::default(),
         });
@@ -190,6 +192,8 @@ pub struct AppState {
     /// A project to open once it is known who is signed in: their drafts
     /// are what it opens over.
     opening: Option<Collection>,
+    /// What to import into a project made from it, once that opens (#65).
+    importing: Option<(CollectionId, Arc<ImportBundle>)>,
     /// A save waiting for a drag or a resize to settle.
     save_task: Option<Task<()>>,
     /// The saves of the settings, one at a time in the order made: each
@@ -283,6 +287,23 @@ impl AppState {
         self.remember_page(Some(collection.id.clone()), cx);
         self.route = Route::Workspace(collection);
         cx.notify();
+    }
+
+    /// #65: a project just made from an import, opened to take it in.
+    pub fn open_importing(&mut self, collection: Collection, import: Arc<ImportBundle>, cx: &mut Context<Self>) {
+        self.importing = Some((collection.id.clone(), import));
+        self.open_collection(collection, cx);
+    }
+
+    /// What to import into `id` as it opens, once.
+    pub fn take_import(&mut self, id: &CollectionId) -> Option<Arc<ImportBundle>> {
+        match self.importing.take() {
+            Some((importing, import)) if importing == *id => Some(import),
+            other => {
+                self.importing = other;
+                None
+            }
+        }
     }
 
     /// The project asked for before who is signed in was known, now that
@@ -706,6 +727,24 @@ mod tests {
             state
         });
         (state, events)
+    }
+
+    /// #65: a project made from an import opens, and only it takes the
+    /// import, once.
+    #[gpui_kit::test]
+    async fn a_project_made_from_an_import_takes_it_once(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let shop = create(&store, "shop");
+        let other = create(&store, "other");
+        let (state, _) = launch(&store, cx);
+        let bundle = Arc::new(cyberapi_core::import::curl_command("curl https://a.test/orders").expect("a command"));
+        state.update(cx, |state, cx| state.open_importing(shop.clone(), bundle.clone(), cx));
+        state.update(cx, |state, _| {
+            assert_eq!(state.route(), &Route::Workspace(shop.clone()));
+            assert_eq!(state.take_import(&other.id), None, "another project's");
+            assert_eq!(state.take_import(&shop.id), Some(bundle));
+            assert_eq!(state.take_import(&shop.id), None, "once");
+        });
     }
 
     /// F1.1 / F1.9: the project open at the last exit opens again; one that

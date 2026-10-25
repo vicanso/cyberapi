@@ -14,6 +14,7 @@ use cyberapi_core::access::CollectionRole;
 use cyberapi_core::collection::{SortOrder, group_names, group_of, grouped};
 use cyberapi_core::directory::Team;
 use cyberapi_core::format::{Ago, ago};
+use cyberapi_core::import::ImportBundle;
 use cyberapi_core::model::Collection;
 use cyberapi_core::{CollectionId, TeamId, Timestamp};
 use cyberapi_store::{CollectionEdit, NewCollection};
@@ -115,10 +116,14 @@ impl DashboardView {
                     let app = AppStore::global(cx).state().clone();
                     app.update(cx, |app, cx| app.forget_project(id, cx));
                 }
-                // A new project is made to be worked in: it opens.
-                DashboardEvent::Created(collection) => {
+                // A new project is made to be worked in: it opens, and takes
+                // in what it was made from (#65).
+                DashboardEvent::Created(collection, import) => {
                     let app = AppStore::global(cx).state().clone();
-                    app.update(cx, |app, cx| app.open_collection(collection.clone(), cx));
+                    app.update(cx, |app, cx| match import {
+                        Some(import) => app.open_importing(collection.clone(), import.clone(), cx),
+                        None => app.open_collection(collection.clone(), cx),
+                    });
                 }
                 DashboardEvent::Unsynced => {
                     window.push_notification(Notification::info(t!("sync.first_change").to_string()), cx);
@@ -183,21 +188,61 @@ impl DashboardView {
     }
 
     /// The form for a new project, or for changing `existing` (F2.2 / F2.3).
+    /// #65: paste or pick a collection, then name the project it makes.
+    fn open_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+        let then = move |bundle: ImportBundle, window: &mut Window, cx: &mut App| {
+            // Once the import dialog has closed: a page draws one dialog.
+            let view = view.clone();
+            window.defer(cx, move |window, cx| {
+                let _ = view.update(cx, |this, cx| this.open_editor_for(None, Some(bundle), window, cx));
+            });
+        };
+        super::workspace::open_import_project_dialog(then, window, cx);
+    }
+
     fn open_editor(&mut self, existing: Option<Collection>, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_editor_for(existing, None, window, cx);
+    }
+
+    /// F2.2 / F2.3; a new project made from `import` is named after it.
+    fn open_editor_for(
+        &mut self,
+        existing: Option<Collection>,
+        import: Option<ImportBundle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let default_name = match (&existing, &import) {
+            (Some(collection), _) => collection.name.clone(),
+            (None, Some(import)) => import.name.clone().unwrap_or_default(),
+            (None, None) => String::new(),
+        };
         let name = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("dashboard.name_placeholder").to_string())
-                .default_value(existing.as_ref().map(|c| c.name.clone()).unwrap_or_default())
+                .default_value(default_name)
         });
         let description = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("common.optional").to_string())
                 .default_value(existing.as_ref().map(|c| c.description.clone()).unwrap_or_default())
         });
-        let (title, ok_label) = match existing {
-            Some(_) => (t!("dashboard.edit_title"), t!("common.save")),
-            None => (t!("dashboard.create_title"), t!("common.create")),
+        let (title, ok_label) = match (&existing, &import) {
+            (Some(_), _) => (t!("dashboard.edit_title"), t!("common.save")),
+            (None, Some(_)) => (t!("dashboard.import_title"), t!("common.create")),
+            (None, None) => (t!("dashboard.create_title"), t!("common.create")),
         };
+        // What the project will hold, said under its fields.
+        let holds = import.as_ref().map(|import| {
+            let (apis, folders) = import.counts();
+            t!(
+                "dashboard.import_holds",
+                apis = i18n::counted("workspace.api", apis),
+                folders = i18n::counted("import.folder", folders)
+            )
+            .to_string()
+        });
         let (title, ok_label): (SharedString, SharedString) = (title.to_string().into(), ok_label.to_string().into());
         let state = self.state.clone();
         let name_missing = Rc::new(Cell::new(false));
@@ -212,13 +257,14 @@ impl DashboardView {
                 name.focus_handle(cx).focus(window, cx);
             }
             let on_ok = {
-                let (name, description, state, existing, name_missing, team) = (
+                let (name, description, state, existing, name_missing, team, import) = (
                     name.clone(),
                     description.clone(),
                     state.clone(),
                     existing.clone(),
                     name_missing.clone(),
                     team.clone(),
+                    import.clone(),
                 );
                 move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
                     let name_value = name.read(cx).value().trim().to_string();
@@ -243,6 +289,7 @@ impl DashboardView {
                                 description: description_value,
                                 owner: team.borrow().clone(),
                             },
+                            import.clone(),
                             cx,
                         ),
                     });
@@ -269,6 +316,9 @@ impl DashboardView {
                         ))
                         .when_some(creating.then(|| team_field(&team, cx)).flatten(), |this, field| {
                             this.child(field)
+                        })
+                        .when_some(holds.clone(), |this, holds| {
+                            this.child(div().text_sm().text_color(cx.theme().muted_foreground).child(holds))
                         }),
                 ))
                 .footer(
@@ -450,6 +500,14 @@ impl DashboardView {
             )
             .child(div().flex_1())
             .child(
+                Button::new("dashboard-import")
+                    .outline()
+                    .small()
+                    .icon(Icons::Import)
+                    .label(t!("import.title").to_string())
+                    .on_click(cx.listener(|this, _, window, cx| this.open_import(window, cx))),
+            )
+            .child(
                 Button::new("dashboard-new")
                     .primary()
                     .small()
@@ -601,30 +659,35 @@ impl DashboardView {
                 IconName::CircleX,
                 t!("dashboard.load_failed").to_string(),
                 i18n::store_error(&error),
-                Some(
+                vec![
                     Button::new("dashboard-retry")
                         .outline()
                         .label(t!("common.retry").to_string())
                         .on_click(cx.listener(|this, _, _, cx| this.state.update(cx, |state, cx| state.reload(cx)))),
-                ),
+                ],
             ),
             _ if total == 0 => notice(
                 IconName::FolderOpen,
                 t!("dashboard.empty_title").to_string(),
                 t!("dashboard.empty_description").to_string(),
-                Some(
+                vec![
                     Button::new("dashboard-empty-new")
                         .primary()
                         .icon(IconName::Plus)
                         .label(t!("dashboard.new").to_string())
                         .on_click(cx.listener(|this, _, window, cx| this.open_editor(None, window, cx))),
-                ),
+                    Button::new("dashboard-empty-import")
+                        .outline()
+                        .icon(Icons::Import)
+                        .label(t!("import.title").to_string())
+                        .on_click(cx.listener(|this, _, window, cx| this.open_import(window, cx))),
+                ],
             ),
             _ if groups.is_empty() => notice(
                 IconName::Search,
                 t!("dashboard.no_match", keyword = keyword.trim()).to_string(),
                 String::new(),
-                None,
+                Vec::new(),
             ),
             _ => {
                 let now = Timestamp::new(chrono::Local::now().fixed_offset());
@@ -933,7 +996,7 @@ fn field(label: String, input: impl IntoElement, error: Option<String>, cx: &App
 }
 
 /// A centred state of the whole list: empty, failed, nothing found.
-fn notice(icon: IconName, title: String, description: String, action: Option<Button>) -> AnyElement {
+fn notice(icon: IconName, title: String, description: String, actions: Vec<Button>) -> AnyElement {
     v_flex()
         .flex_1()
         .justify_center()
@@ -952,7 +1015,9 @@ fn notice(icon: IconName, title: String, description: String, action: Option<But
                             header.description(EmptyDescription::new().child(description))
                         }),
                 )
-                .when_some(action, |empty, action| empty.content(EmptyContent::new().child(action))),
+                .when(!actions.is_empty(), |empty| {
+                    empty.content(EmptyContent::new().child(h_flex().gap_2().children(actions)))
+                }),
         )
         .into_any_element()
 }

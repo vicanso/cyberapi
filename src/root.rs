@@ -257,7 +257,16 @@ impl CyberApi {
             // A new list each visit: what changed in a project shows in its
             // "last modified" on the way back.
             Route::Dashboard => Page::Dashboard(cx.new(|cx| DashboardView::new(window, cx))),
-            Route::Workspace(collection) => Page::Workspace(cx.new(|cx| WorkspaceView::new(collection, window, cx))),
+            Route::Workspace(collection) => {
+                // A project made from an import takes it in as it opens (#65).
+                let state = AppStore::global(cx).state().clone();
+                let import = state.update(cx, |state, _| state.take_import(&collection.id));
+                let view = cx.new(|cx| WorkspaceView::new(collection, window, cx));
+                if let Some(import) = import {
+                    view.update(cx, |view, cx| view.import_when_loaded(import, cx));
+                }
+                Page::Workspace(view)
+            }
         }
     }
 

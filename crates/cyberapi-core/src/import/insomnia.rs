@@ -153,7 +153,11 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
             })
         })
         .collect();
-    ImportBundle { items, environment }
+    ImportBundle {
+        items,
+        environment,
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]

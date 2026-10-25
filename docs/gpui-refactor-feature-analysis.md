@@ -581,7 +581,7 @@ Sending --异常--> Idle + 错误提示
 
 #### F10.1 入口与输入 [S + St]
 
-- 入口：树头部（导入到项目根）、目录菜单（导入到该目录）。
+- 入口：树头部（导入到项目根）、目录菜单（导入到该目录）。重写版在首页（含空状态）加了“导入…”（#65）：读出内容后接着打开新建项目的弹窗，名称预填集合自己的名字（Postman `info.name`、OpenAPI / Swagger `info.title`、Insomnia 工作区名，`ImportBundle.name`），并说明将有多少接口和目录；项目建好、打开并加载完树后再导入到顶层（`WorkspaceState::import_when_loaded`；导入的内容经 `AppState::open_importing` / `take_import` 交给打开的工作区）。服务器项目同在工作区里导入一样，导入的内容是未同步的修改。
 - 打开导入窗口时读取剪贴板，内容像 JSON（首尾为 `{}` / `[]`）时自动格式化后预填。
 - 两种输入：①文本（JSON 或 cURL）；②选择文件（读取为文本）。
 

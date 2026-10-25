@@ -16,7 +16,7 @@ use crate::i18n;
 use crate::states::{ApiState, AppStore, ServerCopy, WorkspaceEvent, WorkspaceState};
 use crate::views::name_dialog::open_name_dialog;
 use crate::views::sync_dialog::open_conflict_dialog;
-use cyberapi_core::import::ImportItem;
+use cyberapi_core::import::{ImportBundle, ImportItem};
 use cyberapi_core::model::{Collection, HttpMethod};
 use cyberapi_core::prefs::ColumnWidths;
 use cyberapi_core::send::unsent_body;
@@ -197,7 +197,7 @@ fn new_item(
     );
 }
 
-pub use import_dialog::open_import_dialog;
+pub use import_dialog::{open_import_dialog, open_import_project_dialog};
 
 /// F10.5: the cURL command on the clipboard as a new API in `parent`, opened.
 /// The clipboard is read here, when the reader pastes or picks the menu
@@ -385,6 +385,11 @@ impl WorkspaceView {
     pub fn new(collection: Collection, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = cx.new(|cx| open_workspace(collection, cx));
         Self::with_state(state, window, cx)
+    }
+
+    /// #65: what the project was made from, imported once it has loaded.
+    pub fn import_when_loaded(&mut self, import: std::sync::Arc<ImportBundle>, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.import_when_loaded(import, cx));
     }
 
     /// The page drawn again around a project already open: what it holds

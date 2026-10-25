@@ -40,6 +40,8 @@ pub struct ImportBundle {
     pub items: Vec<ImportItem>,
     /// Environment variables, name and value.
     pub environment: Vec<(String, String)>,
+    /// What the document calls itself, for a project made from it (#65).
+    pub name: Option<String>,
 }
 
 /// Ids given to a bundle's items, depth first, and the records to write.
@@ -139,6 +141,7 @@ pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportE
 /// F10.1–F10.3: whatever was pasted or picked.
 pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     let (format, json) = detect(text)?;
+    let name = json.as_ref().and_then(|json| json_name(format, json));
     let bundle = match (format, json) {
         (Format::Curl, _) => curl::parse(text)?,
         (Format::Postman, Some(json)) => postman::parse(&json),
@@ -150,7 +153,27 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     if bundle.items.is_empty() && bundle.environment.is_empty() {
         return EmptySnafu.fail();
     }
-    Ok(bundle)
+    Ok(ImportBundle { name, ..bundle })
+}
+
+/// A collection's own name: Postman's `info.name`, an OpenAPI or Swagger
+/// document's `info.title`, an Insomnia export's workspace's name.
+fn json_name(format: Format, json: &serde_json::Value) -> Option<String> {
+    fn text(value: Option<&serde_json::Value>) -> Option<&str> {
+        value.and_then(serde_json::Value::as_str).map(str::trim)
+    }
+    let name = match format {
+        Format::Postman => text(json.pointer("/info/name")),
+        Format::Swagger | Format::OpenApi => text(json.pointer("/info/title")),
+        Format::Insomnia => json
+            .get("resources")
+            .and_then(serde_json::Value::as_array)?
+            .iter()
+            .find(|resource| text(resource.get("_type")) == Some("workspace"))
+            .and_then(|workspace| text(workspace.get("name"))),
+        Format::Curl | Format::CyberApi => None,
+    };
+    name.filter(|name| !name.is_empty()).map(str::to_string)
 }
 
 /// The request of a cURL command pasted where a URI goes: the editor fills
@@ -288,6 +311,34 @@ mod tests {
         assert!(matches!(format("新建接口"), Err(ImportError::Unreadable { .. })));
         assert!(matches!(format("cu新"), Err(ImportError::Unreadable { .. })));
         assert_eq!(parse("[]"), Err(ImportError::Empty));
+    }
+
+    #[test]
+    fn a_collection_names_the_project_made_from_it() {
+        let name = |text: &str| parse(text).expect("parse").name;
+        let api = r#"{"name": "a", "request": {"method": "GET", "url": "http://a.test"}}"#;
+        assert_eq!(
+            name(&format!(r#"{{"info": {{"name": " Shop "}}, "item": [{api}]}}"#)),
+            Some("Shop".into())
+        );
+        let paths = r#""paths": {"/a": {"get": {"summary": "a"}}}"#;
+        assert_eq!(
+            name(&format!(
+                r#"{{"openapi": "3.0.1", "info": {{"title": "Pets"}}, {paths}}}"#
+            )),
+            Some("Pets".into())
+        );
+        assert_eq!(
+            name(&format!(r#"{{"swagger": "2.0", "info": {{"title": ""}}, {paths}}}"#)),
+            None,
+            "an empty name is none"
+        );
+        let insomnia = r#"{"resources": [
+            {"_type": "workspace", "_id": "wrk_1", "name": "Billing"},
+            {"_type": "request", "_id": "req_1", "parentId": "wrk_1", "name": "a", "method": "GET", "url": "http://a.test"}
+        ]}"#;
+        assert_eq!(name(insomnia), Some("Billing".into()));
+        assert_eq!(name("curl http://a.test/x"), None);
     }
 
     #[test]

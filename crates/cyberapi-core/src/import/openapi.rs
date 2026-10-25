@@ -271,6 +271,7 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
     ImportBundle {
         items,
         environment: server.into_iter().collect(),
+        ..Default::default()
     }
 }
 

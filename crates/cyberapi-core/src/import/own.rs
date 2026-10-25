@@ -97,7 +97,7 @@ pub(super) fn parse_value(json: &Value) -> ImportBundle {
         .collect();
     ImportBundle {
         items,
-        environment: Vec::new(),
+        ..Default::default()
     }
 }
 

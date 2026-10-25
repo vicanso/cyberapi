@@ -105,6 +105,9 @@ pub struct WorkspaceState {
     tree: Tree,
     prefs: WorkspacePrefs,
     load: Load,
+    /// What to import once the tree has loaded: a project made from an
+    /// import (#65).
+    waiting_import: Option<Arc<ImportBundle>>,
     keyword: String,
     /// The tree's changes, one at a time.
     gate: Arc<Mutex<()>>,
@@ -206,6 +209,7 @@ impl WorkspaceState {
             tree: Tree::default(),
             prefs: WorkspacePrefs::default(),
             load: Load::Loading,
+            waiting_import: None,
             keyword: String::new(),
             gate: Arc::default(),
             saves: Arc::default(),
@@ -999,6 +1003,9 @@ impl WorkspaceState {
                 Ok(data) => {
                     this.set_data(data, cx);
                     this.load = Load::Loaded;
+                    if let Some(import) = this.waiting_import.take() {
+                        this.import(None, Arc::unwrap_or_clone(import), cx);
+                    }
                 }
                 Err(error) => this.load = Load::Failed(error),
             }
@@ -1269,6 +1276,16 @@ impl WorkspaceState {
     /// F10.4: the bundle under `parent` (the top level when `None`), and its
     /// environment variables — those with a name or a value. One API alone
     /// (a cURL command, F10.5) is opened.
+    /// #65: `import` on the top level, as soon as the tree has loaded — a
+    /// server project's copy loads only once it is open.
+    pub fn import_when_loaded(&mut self, import: Arc<ImportBundle>, cx: &mut Context<Self>) {
+        if self.load == Load::Loaded {
+            self.import(None, Arc::unwrap_or_clone(import), cx);
+        } else {
+            self.waiting_import = Some(import);
+        }
+    }
+
     pub fn import(&mut self, parent: Option<ItemId>, bundle: ImportBundle, cx: &mut Context<Self>) {
         let call = self
             .sender
@@ -1710,6 +1727,38 @@ mod tests {
                 (HttpMethod::Put, "https://a.test/v1/users/login")
             );
         });
+    }
+
+    /// #65: a project made from an import takes it in once its tree has
+    /// loaded — given before, it waits; given after, it goes in at once.
+    #[gpui_kit::test]
+    async fn an_import_given_while_loading_waits_for_the_tree(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let bundle = cyberapi_core::import::parse(
+            r#"{"info": {"name": "Shop"}, "item": [{"name": "orders", "item": [
+                {"name": "list", "request": {"method": "GET", "url": "https://a.test/orders"}}
+            ]}]}"#,
+        )
+        .expect("a collection");
+        let state = cx.new(|cx| WorkspaceState::new(sender(&storage, true), collection.clone(), cx));
+        state.update(cx, |state, cx| {
+            assert_ne!(state.load, Load::Loaded, "still loading");
+            state.import_when_loaded(Arc::new(bundle.clone()), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(row_names(&state, cx), ["orders"]);
+        find(&state, "list", cx);
+
+        let other = open(&storage, project(&storage).await, cx);
+        other.update(cx, |state, cx| state.import_when_loaded(Arc::new(bundle), cx));
+        cx.run_until_parked();
+        assert_eq!(row_names(&other, cx), ["orders"]);
+        find(&other, "list", cx);
+        // Once: loading again reads what was written, not a second import.
+        state.update(cx, |state, cx| state.reload(cx));
+        cx.run_until_parked();
+        assert_eq!(row_names(&state, cx), ["orders"]);
     }
 
     /// Each change saves the whole state; the last one made is the one kept,

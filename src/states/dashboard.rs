@@ -16,6 +16,7 @@ use super::copy::{self, Pushed};
 use super::{Load, ServerState, ServerStatus, run_store};
 use crate::drafts_local::{self, Draft};
 use crate::{local_items, pins_local};
+use cyberapi_core::import::ImportBundle;
 use cyberapi_core::model::Collection;
 use cyberapi_core::sync::{self, CopyBinding, Moment, ProjectConfig, Step};
 use cyberapi_core::{AccountId, CollectionId};
@@ -25,6 +26,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tracing::warn;
 
+/// A project just made, and what to import into it.
+type Made = (Collection, Option<Arc<ImportBundle>>);
+
 /// What the view should tell the reader about.
 #[derive(Clone, Debug)]
 pub enum DashboardEvent {
@@ -32,8 +36,9 @@ pub enum DashboardEvent {
     Failed(StoreError),
     /// A project is gone, and with it the reader's state of it.
     Deleted(CollectionId),
-    /// A project the reader made, to be opened.
-    Created(Collection),
+    /// A project the reader made, to be opened — and what to import into
+    /// it once it is (#65).
+    Created(Collection, Option<Arc<ImportBundle>>),
     /// A change now waits here for the reader to sync it.
     Unsynced,
     /// This browser could not keep a change: a refresh loses it.
@@ -379,15 +384,15 @@ impl DashboardState {
     }
 
     /// Copies `projects` here as the server has them; `then` hears of the
-    /// first, made.
-    fn pull(&mut self, desktop: Desktop, projects: Vec<Collection>, then: Option<Collection>, cx: &mut Context<Self>) {
+    /// first, made, with what to import into it.
+    fn pull(&mut self, desktop: Desktop, projects: Vec<Collection>, then: Option<Made>, cx: &mut Context<Self>) {
         let local = self.storage.clone();
         run_store(cx, pull_copies(desktop, local, projects), move |this, result, cx| {
             match result {
                 Ok(bound) => {
                     this.note_bound(bound, cx);
-                    if let Some(collection) = then {
-                        cx.emit(DashboardEvent::Created(collection));
+                    if let Some((collection, import)) = then {
+                        cx.emit(DashboardEvent::Created(collection, import));
                     }
                 }
                 Err(error) => cx.emit(DashboardEvent::Failed(error)),
@@ -412,25 +417,26 @@ impl DashboardState {
 
     /// F2.2: on the desktop signed in, a team's project is made on the
     /// server and copied here (server-sync §2); without a team, it is this
-    /// machine's.
-    pub fn create(&mut self, input: NewCollection, cx: &mut Context<Self>) {
+    /// machine's. `import` goes into it once it opens (#65).
+    pub fn create(&mut self, input: NewCollection, import: Option<ImportBundle>, cx: &mut Context<Self>) {
+        let import = import.map(Arc::new);
         if let Some(desktop) = self.desktop.clone()
             && input.owner.is_some()
         {
             let call = desktop.server.collections().create(input);
             return run_store(cx, call, move |this, result, cx| match result {
-                Ok(made) => this.pull(desktop, vec![made.clone()], Some(made), cx),
+                Ok(made) => this.pull(desktop, vec![made.clone()], Some((made, import)), cx),
                 Err(error) => cx.emit(DashboardEvent::Failed(error)),
             });
         }
         run_store(
             cx,
             self.storage.collections().create(input),
-            |this, result, cx| match result {
+            move |this, result, cx| match result {
                 Ok(collection) => {
                     this.listed.push(collection.clone());
                     this.show();
-                    cx.emit(DashboardEvent::Created(collection));
+                    cx.emit(DashboardEvent::Created(collection, import));
                     cx.notify();
                 }
                 Err(error) => cx.emit(DashboardEvent::Failed(error)),
@@ -704,6 +710,8 @@ mod tests {
     use cyberapi_core::access::CollectionRole;
     use cyberapi_store::MemoryStore;
     use gpui_kit::{AppContext as _, Entity, TestAppContext};
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     const READER: &str = "bob";
 
@@ -729,6 +737,41 @@ mod tests {
             name: name.into(),
             description: "d".into(),
         }
+    }
+
+    /// #65: a project made from an import is told with what to import.
+    #[gpui_kit::test]
+    async fn a_project_made_from_an_import_carries_it(cx: &mut TestAppContext) {
+        let local = MemoryStore::new().storage();
+        let state = cx.new(|cx| DashboardState::new(local, None, None, cx));
+        cx.run_until_parked();
+        let made: Rc<RefCell<Vec<Made>>> = Rc::default();
+        let seen = made.clone();
+        cx.update(|cx| {
+            cx.subscribe(&state, move |_, event, _| {
+                if let DashboardEvent::Created(collection, import) = event {
+                    seen.borrow_mut().push((collection.clone(), import.clone()));
+                }
+            })
+            .detach();
+        });
+        let bundle = cyberapi_core::import::curl_command("curl https://a.test/orders").expect("a command");
+        let input = |name: &str| NewCollection {
+            name: name.into(),
+            ..Default::default()
+        };
+        state.update(cx, |state, cx| state.create(input("shop"), Some(bundle.clone()), cx));
+        state.update(cx, |state, cx| state.create(input("blank"), None, cx));
+        cx.run_until_parked();
+        let made = made.borrow();
+        assert_eq!(made.len(), 2);
+        assert_eq!(made[0].0.name, "shop");
+        assert_eq!(made[0].1.as_deref(), Some(&bundle));
+        assert_eq!(made[1].0.name, "blank");
+        assert!(made[1].1.is_none());
+        let mut listed = names(&state, cx);
+        listed.sort();
+        assert_eq!(listed, ["blank", "shop"]);
     }
 
     /// Server-sync §2–4: a server project's name is part of what syncs.

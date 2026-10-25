@@ -1,11 +1,12 @@
 //! Importing into a project (M10): paste or pick the text, see what it is,
-//! import it under a folder or on the top level.
+//! import it under a folder or on the top level — or, from the projects
+//! page, as a new project (#65).
 
 use crate::states::WorkspaceState;
 use crate::this_build;
 use crate::views::name_dialog::ok_button;
 use cyberapi_core::ItemId;
-use cyberapi_core::import::{self, Format};
+use cyberapi_core::import::{self, Format, ImportBundle};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::input::{Editor, EditorState};
@@ -88,6 +89,25 @@ pub fn open_import_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let import = move |bundle, _: &mut Window, cx: &mut App| {
+        let _ = state.update(cx, |state, cx| state.import(parent.clone(), bundle, cx));
+    };
+    open(t!("import.dialog_title").to_string(), Rc::new(import), window, cx);
+}
+
+/// #65: what is imported becomes a new project; `import` names and makes it.
+pub fn open_import_project_dialog(
+    import: impl Fn(ImportBundle, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open(t!("import.project_title").to_string(), Rc::new(import), window, cx);
+}
+
+/// What the dialog does with the bundle the text holds.
+type OnImport = Rc<dyn Fn(ImportBundle, &mut Window, &mut App)>;
+
+fn open(title: String, import: OnImport, window: &mut Window, cx: &mut App) {
     // F10.1: the clipboard, read because the reader asked to import, and
     // asked for now, while that click still counts as theirs: a page may
     // read it only then, through the browser, which may ask the reader
@@ -141,12 +161,12 @@ pub fn open_import_dialog(
             preview.1.clone()
         };
         let submit = {
-            let (editor, state, parent) = (editor.clone(), state.clone(), parent.clone());
-            move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
+            let (editor, import) = (editor.clone(), import.clone());
+            move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
                 let text = editor.read(cx).value().to_string();
                 match import::parse(&text) {
                     Ok(bundle) => {
-                        let _ = state.update(cx, |state, cx| state.import(parent.clone(), bundle, cx));
+                        import(bundle, window, cx);
                         true
                     }
                     // Why shows under the text already (`describe`).
@@ -186,7 +206,7 @@ pub fn open_import_dialog(
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
         dialog
-            .title(t!("import.dialog_title").to_string())
+            .title(title.clone())
             .w(px(720.))
             .child(crate::views::dialog_body(
                 v_flex()

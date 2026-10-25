@@ -32,7 +32,7 @@ gpui-kit 0.8.0 编辑器自带的查找栏在输入时会全选已输入的内�
 - `urlEncode` 复用 `send` 里的 `encode_uri_component`；HMAC 用纯 Rust 的 `hmac` crate（能编译到 wasm）。
 - #48 之后未知函数会报错，新函数名不能和旧版写法冲突。
 
-### #65 首页直接导入成新项目
+### #65 首页直接导入成新项目（已完成）
 
 首页（含空状态）在“新建项目”旁加“导入…”，用导入内容新建一个项目，名称取集合自己的名字（Postman `info.name`、OpenAPI `info.title`、Insomnia 工作区名），取不到时让读者填。
 

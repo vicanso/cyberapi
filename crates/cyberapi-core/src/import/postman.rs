@@ -163,6 +163,7 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
                     .collect()
             })
             .unwrap_or_default(),
+        ..Default::default()
     }
 }
 

@@ -238,7 +238,7 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
                 auth,
             },
         }],
-        environment: Vec::new(),
+        ..Default::default()
     })
 }
 
