@@ -16,6 +16,7 @@
 //! server for the definitions its calls are encoded with.
 
 use cyberapi_core::Timestamp;
+use cyberapi_core::code::CodeTarget;
 use cyberapi_core::cookie::{cookie_header, parse_set_cookie};
 use cyberapi_core::graphql::GraphQlBody;
 use cyberapi_core::graphql_schema::{INTROSPECTION_QUERY, Schema};
@@ -252,17 +253,23 @@ pub async fn introspect(sender: Sender, collection: CollectionId, request: HttpR
     }
 }
 
-/// F7.8: the cURL command of `request`, prepared as sending would prepare
-/// it. An `openFile` in it is not asked: its parameter stands.
-pub async fn curl(sender: Sender, collection: CollectionId, request: HttpRequest) -> Result<String, SendFailure> {
+/// F7.8 / #69: `request` as code — a cURL command, or the code of
+/// another client — prepared as sending would prepare it. An `openFile` in
+/// it is not asked: its parameter stands.
+pub async fn code(
+    sender: Sender,
+    collection: CollectionId,
+    request: HttpRequest,
+    target: CodeTarget,
+) -> Result<String, SendFailure> {
     let (mut prepared, _) = prepare(&sender, &collection, &request, None, None).await?;
     if prepared.header("cookie").is_none() {
         add_cookies(&sender, &mut prepared).await?;
     }
-    Ok(cyberapi_core::curl::curl(
+    Ok(cyberapi_core::code::code(
+        target,
         &prepared,
         &request,
-        &[],
         sender.sending.follow_redirects,
     ))
 }
@@ -1165,19 +1172,28 @@ mod tests {
     fn curl_is_what_sending_would_send() {
         let setup = setup(ok(200, "{}"));
         variable(&setup, VariableCategory::Environment, "HOST", "https://api.test");
-        let command = pollster::block_on(curl(
-            setup.sender.clone(),
-            setup.collection.clone(),
-            HttpRequest {
-                uri: "{{HOST}}/me".into(),
-                query: vec![kv("v", "{{md5(a)}}")],
-                ..Default::default()
-            },
-        ))
-        .expect("a command");
+        let request = HttpRequest {
+            uri: "{{HOST}}/me".into(),
+            query: vec![kv("v", "{{md5(a)}}")],
+            ..Default::default()
+        };
+        let as_code = |target| {
+            pollster::block_on(code(
+                setup.sender.clone(),
+                setup.collection.clone(),
+                request.clone(),
+                target,
+            ))
+            .expect("code")
+        };
         assert_eq!(
-            command,
+            as_code(CodeTarget::Curl),
             "curl -v -XGET -H 'User-Agent: CyberAPI/test' 'https://api.test/me?v=0cc175b9c0f1b6a831c399e269772661'"
+        );
+        // #69: another client's code, prepared the same way.
+        assert_eq!(
+            as_code(CodeTarget::Httpie),
+            "http --verbose GET 'https://api.test/me?v=0cc175b9c0f1b6a831c399e269772661' 'User-Agent:CyberAPI/test'"
         );
         assert!(setup.engine.sent.lock().expect("sent").is_empty(), "nothing is sent");
     }

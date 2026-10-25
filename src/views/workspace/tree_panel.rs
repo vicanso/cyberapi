@@ -12,6 +12,8 @@ use crate::states::{Load, WorkspaceState};
 use crate::this_build;
 use crate::views::marked::marked;
 use cyberapi_core::ItemId;
+use cyberapi_core::code::CodeTarget;
+use cyberapi_core::model::HttpMethod;
 use cyberapi_core::tree::{DropPosition, ItemKind, Placement, Row};
 use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -738,8 +740,18 @@ impl TreePanel {
                 this.cursor = Some(id.clone());
                 this.click(&id, kind, event.click_count(), editable, &name, window, cx);
             }))
-            .context_menu(move |menu, _, cx| {
-                item_menu(menu, &view, &menu_state, &menu_id, &menu_name, kind, editable, cx)
+            .context_menu(move |menu, window, cx| {
+                item_menu(
+                    menu,
+                    &view,
+                    &menu_state,
+                    &menu_id,
+                    &menu_name,
+                    kind,
+                    editable,
+                    window,
+                    cx,
+                )
             })
             .into_any_element()
     }
@@ -941,7 +953,8 @@ fn item_menu(
     name: &str,
     kind: ItemKind,
     editable: bool,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     let pinned = state.upgrade().is_some_and(|state| state.read(cx).is_pinned(id));
     let menu = match kind {
@@ -1011,13 +1024,38 @@ fn item_menu(
                         }
                     }),
             )
-            .item(
-                PopupMenuItem::new(t!("response.copy_curl").to_string())
-                    .icon(Icons::Terminal)
-                    .on_click(move |_, _, cx| {
-                        let _ = curl_state.update(cx, |state, cx| state.copy_curl(&curl_id, cx));
-                    }),
-            )
+            .map(|menu| {
+                // A gRPC call is a grpcurl command; any other request is
+                // offered in every client's code (#69).
+                let grpc = curl_state
+                    .upgrade()
+                    .and_then(|state| state.read(cx).api_method(&curl_id))
+                    == Some(HttpMethod::Grpc);
+                if grpc {
+                    return menu.item(
+                        PopupMenuItem::new(t!("response.copy_grpcurl").to_string())
+                            .icon(Icons::Terminal)
+                            .on_click(move |_, _, cx| {
+                                let _ =
+                                    curl_state.update(cx, |state, cx| state.copy_code(&curl_id, CodeTarget::Curl, cx));
+                            }),
+                    );
+                }
+                menu.submenu_with_icon(
+                    Some(Icon::new(Icons::Terminal)),
+                    t!("response.copy_as").to_string(),
+                    window,
+                    cx,
+                    move |menu, _, _| {
+                        CodeTarget::ALL.into_iter().fold(menu, |menu, target| {
+                            let (state, id) = (curl_state.clone(), curl_id.clone());
+                            menu.item(PopupMenuItem::new(target.label()).on_click(move |_, _, cx| {
+                                let _ = state.update(cx, |state, cx| state.copy_code(&id, target, cx));
+                            }))
+                        })
+                    },
+                )
+            })
             .item(
                 PopupMenuItem::new(label.to_string())
                     .icon(pin_icon)

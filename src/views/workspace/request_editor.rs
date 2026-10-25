@@ -300,9 +300,9 @@ impl RequestEditor {
                     let message = t!("editor.graphql_variables_broken", reason = reason).to_string();
                     window.push_notification(Notification::error(message), cx);
                 }
-                ApiEvent::Curl(command) => {
-                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(command.clone()));
-                    window.push_notification(Notification::success(crate::views::copied_command(command)), cx);
+                ApiEvent::Code(target, code) => {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(code.clone()));
+                    window.push_notification(Notification::success(crate::views::copied_code(*target, code)), cx);
                 }
                 ApiEvent::Saved(path) => {
                     window.push_notification(Notification::success(t!("export.saved", path = path).to_string()), cx);

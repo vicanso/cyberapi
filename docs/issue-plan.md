@@ -67,7 +67,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 - `Authorization`、`Cookie`、API key 默认打码，点一下显示；body 的保存上限同 `HISTORY_BODY_LIMIT`。
 - 网页版经 bridge 发送，`PreparedRequest` 在页面里就有，两端一样。
 
-### #69 复制为代码
+### #69 复制为代码（已完成）
 
 `>_` 按钮和树的菜单从“复制 cURL”改为“复制为”菜单：cURL（默认）、HTTPie、JavaScript `fetch`、Python `requests`、Go `net/http`。
 

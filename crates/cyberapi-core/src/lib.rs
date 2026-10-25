@@ -5,6 +5,7 @@
 
 pub mod access;
 pub mod backup;
+pub mod code;
 pub mod collection;
 pub mod cookie;
 pub mod curl;

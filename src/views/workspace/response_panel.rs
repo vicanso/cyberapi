@@ -8,6 +8,7 @@ use crate::json_view_local::JsonView;
 use crate::states::{ApiState, AppStore, WorkspaceState};
 use crate::this_build;
 use crate::views::json_tree::{JsonTree, response_view_switch};
+use cyberapi_core::code::CodeTarget;
 use cyberapi_core::graphql;
 use cyberapi_core::grpc::GrpcStatus;
 use cyberapi_core::media::{self, HEX_LIMIT, ImageType};
@@ -652,18 +653,28 @@ impl ResponsePanel {
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_filter(window, cx))),
                 )
             })
-            .child(
-                Button::new("response-curl")
+            .child({
+                let button = Button::new("response-curl")
                     .ghost()
                     .small()
-                    .icon(gpui_kit::assets::IconName::Terminal)
-                    .tooltip(if self.api.read(cx).request().method == HttpMethod::Grpc {
-                        t!("response.copy_grpcurl").to_string()
-                    } else {
-                        t!("response.copy_curl").to_string()
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| this.api.update(cx, |api, cx| api.copy_curl(cx)))),
-            )
+                    .icon(gpui_kit::assets::IconName::Terminal);
+                // A gRPC call is a grpcurl command; any other request is
+                // offered in every client's code (#69).
+                if self.api.read(cx).request().method == HttpMethod::Grpc {
+                    button
+                        .tooltip(t!("response.copy_grpcurl").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.api.update(cx, |api, cx| api.copy_code(CodeTarget::Curl, cx))
+                        }))
+                        .into_any_element()
+                } else {
+                    let api = self.api.downgrade();
+                    button
+                        .tooltip(t!("response.copy_as").to_string())
+                        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| code_menu(menu, &api))
+                        .into_any_element()
+                }
+            })
             .child(
                 Button::new("response-history")
                     .ghost()
@@ -1488,6 +1499,16 @@ impl ResponsePanel {
             })
             .into_any_element()
     }
+}
+
+/// #69: an item for each client a request is copied as, cURL first.
+fn code_menu(menu: PopupMenu, api: &gpui_kit::WeakEntity<ApiState>) -> PopupMenu {
+    CodeTarget::ALL.into_iter().fold(menu, |menu, target| {
+        let api = api.clone();
+        menu.item(PopupMenuItem::new(target.label()).on_click(move |_, _, cx| {
+            let _ = api.update(cx, |api, cx| api.copy_code(target, cx));
+        }))
+    })
 }
 
 /// Where a sent header came from, as its row says it.

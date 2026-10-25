@@ -423,9 +423,9 @@ impl WorkspaceView {
                 WorkspaceEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);
                 }
-                WorkspaceEvent::Curl(command) => {
-                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(command.clone()));
-                    window.push_notification(Notification::success(crate::views::copied_command(command)), cx);
+                WorkspaceEvent::Code(target, code) => {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(code.clone()));
+                    window.push_notification(Notification::success(crate::views::copied_code(*target, code)), cx);
                 }
                 WorkspaceEvent::CurlFailed(message) => {
                     window.push_notification(Notification::error(message.clone()), cx);

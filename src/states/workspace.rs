@@ -21,9 +21,10 @@ use super::{ApiState, AppStore, GrpcDefinitions, Load, ServerStatus, run_serial,
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::ItemId;
+use cyberapi_core::code::CodeTarget;
 use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::import::{ImportBundle, ImportItem};
-use cyberapi_core::model::{ApiSetting, Collection, Folder, Variable, VariableCategory};
+use cyberapi_core::model::{ApiSetting, Collection, Folder, HttpMethod, Variable, VariableCategory};
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
 use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, Step};
 use cyberapi_core::template_hints;
@@ -45,8 +46,9 @@ pub enum WorkspaceEvent {
     Failed(StoreError),
     /// An import was written: how many APIs and folders.
     Imported { apis: usize, folders: usize },
-    /// F3.9: an API's cURL command, for the clipboard.
-    Curl(String),
+    /// F3.9 / #69: an API as code, for the clipboard: what it is written
+    /// as, and the code.
+    Code(CodeTarget, String),
     /// The command could not be made: why.
     CurlFailed(String),
     /// The reader's first change this opening: it waits in this browser
@@ -1371,17 +1373,31 @@ impl WorkspaceState {
         Some(cyberapi_core::import::api_config(api))
     }
 
-    /// F3.9 / F7.8: the API's cURL command, prepared as sending would
+    /// The method of the API `id`.
+    pub fn api_method(&self, id: &ItemId) -> Option<HttpMethod> {
+        self.data
+            .apis
+            .iter()
+            .find(|api| &api.id == id)
+            .map(|api| api.request.method)
+    }
+
+    /// F3.9 / F7.8 / #69: the API as code, prepared as sending would
     /// prepare its stored request.
-    pub fn copy_curl(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+    pub fn copy_code(&mut self, id: &ItemId, target: CodeTarget, cx: &mut Context<Self>) {
         let Some(api) = self.data.apis.iter().find(|api| &api.id == id) else {
             return;
         };
-        let call = cyberapi_service::curl(self.sender.clone(), self.collection.id.clone(), api.request.clone());
+        let call = cyberapi_service::code(
+            self.sender.clone(),
+            self.collection.id.clone(),
+            api.request.clone(),
+            target,
+        );
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(call).await;
             let _ = this.update(cx, |_, cx| match result {
-                Ok(command) => cx.emit(WorkspaceEvent::Curl(command)),
+                Ok(code) => cx.emit(WorkspaceEvent::Code(target, code)),
                 Err(failure) => cx.emit(WorkspaceEvent::CurlFailed(failure.to_string())),
             });
         })

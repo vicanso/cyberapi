@@ -547,6 +547,7 @@ Sending --异常--> Idle + 错误提示
 | F7.11 | 清空历史 | 清空当前接口的历史 | `http_response.ts:220` | S |
 | F7.12 | 切换接口时加载 | 选中接口时显示它的最近一次响应，没有则显示空白 | `views/Collection.tsx:63` | S |
 | F7.14 | 实际发出的请求（新增，#58） | Details 里列出最后一跳实际发出的请求：每个请求头（含引擎加的 `Host`（HTTP/1.1）、`Accept-Encoding`、`Content-Length`）及其来源（请求、全局请求头、认证、Cookie、请求体类型、默认），模板求值后的请求体（只存开头 16 KB，不是文本时只写大小）；像密钥的值打码，可切换显示。随响应存进历史（`HttpResponse.sent`，旧条目没有），由 `cyberapi_core::send::sent_request` 生成 | — | D + S + V |
+| F7.15 | 复制为代码（新增，#69） | `>_` 按钮和接口树的“复制为代码”子菜单：cURL、HTTPie、JavaScript fetch、Python requests、Go net/http，都由 `cyberapi_core::code` 从同一个 `PreparedRequest` 生成（与 cURL 一样带上 Cookie、跟随重定向和忽略证书的设置；multipart 按各库的写法，文件字段读本地路径）；gRPC 接口仍只有 grpcurl | — | D + V |
 | F7.13 | JSONPath 过滤（新增，#63） | JSON 响应在 Pretty / Tree 视图下可用 JSONPath（RFC 9535，可省略 `$`）只显示匹配的部分（匹配值的列表），写明几个结果，路径读不通时说原因并显示完整响应体；复制按钮复制过滤结果；过滤条件按接口记在读者自己的 prefs（`WorkspacePrefs.filters`），不进同步和备份 | — | D + V |
 
 ### M8 变量（环境变量 / 自定义变量 / 全局请求头）

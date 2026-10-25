@@ -24,6 +24,7 @@
 
 use super::{Load, WorkspaceState, run_store};
 use crate::this_build;
+use cyberapi_core::code::CodeTarget;
 use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody, ReplyReader};
 use cyberapi_core::model::{ApiSetting, ContentType, HttpMethod, HttpRequest, KvParam};
@@ -77,8 +78,9 @@ pub enum ApiEvent {
     /// The request was replaced from the history (F7.10): the editor's
     /// fields read it again.
     RequestReplaced,
-    /// The cURL command asked for (F7.8), for the clipboard.
-    Curl(String),
+    /// The code asked for (F7.8, #69), for the clipboard: what it is
+    /// written as, and the code.
+    Code(CodeTarget, String),
     /// A body was saved in the downloads folder, there (F7.5).
     Saved(String),
     /// A body could not be saved, or opened outside the app: why.
@@ -823,13 +825,13 @@ impl ApiState {
             .example(&body.service, &body.method)
     }
 
-    /// F7.8: the command of the request as the editor holds it.
-    pub fn copy_curl(&mut self, cx: &mut Context<Self>) {
-        let call = cyberapi_service::curl(self.sender(cx), self.collection.clone(), self.request.clone());
+    /// F7.8 / #69: the request as the editor holds it, as code.
+    pub fn copy_code(&mut self, target: CodeTarget, cx: &mut Context<Self>) {
+        let call = cyberapi_service::code(self.sender(cx), self.collection.clone(), self.request.clone(), target);
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(call).await;
             let _ = this.update(cx, |_, cx| match result {
-                Ok(command) => cx.emit(ApiEvent::Curl(command)),
+                Ok(code) => cx.emit(ApiEvent::Code(target, code)),
                 Err(failure) => cx.emit(not_sent(failure)),
             });
         })

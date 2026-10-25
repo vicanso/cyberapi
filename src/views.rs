@@ -30,12 +30,16 @@ mod workspace;
 
 pub use access_dialog::open_access_dialog;
 
-/// What copying a request's command says: a gRPC call's is grpcurl's.
-pub fn copied_command(command: &str) -> String {
-    if command.starts_with("grpcurl ") {
+/// What copying a request as code says: a gRPC call's is grpcurl's
+/// whatever was asked for (#69).
+pub fn copied_code(target: cyberapi_core::code::CodeTarget, code: &str) -> String {
+    use cyberapi_core::code::CodeTarget;
+    if code.starts_with("grpcurl ") {
         rust_i18n::t!("response.grpcurl_copied").to_string()
-    } else {
+    } else if target == CodeTarget::Curl {
         rust_i18n::t!("response.curl_copied").to_string()
+    } else {
+        rust_i18n::t!("response.code_copied", what = target.label()).to_string()
     }
 }
 pub use accounts_dialog::open_accounts_dialog;
