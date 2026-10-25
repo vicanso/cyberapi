@@ -283,6 +283,91 @@ fn shown(dashboard: &Entity<DashboardState>, cx: &mut TestAppContext) -> Vec<Str
     })
 }
 
+/// G1: one of this machine's projects uploaded keeps its id on the server,
+/// with all it holds; here it is the account's copy from then on, its
+/// history still with it, and it is offered for upload no more.
+#[gpui_kit::test]
+async fn a_machines_project_is_uploaded_in_place(cx: &mut TestAppContext) {
+    let machine = Machine::signed_in(cx);
+    let local = machine.local.storage();
+    let mine = local
+        .collections()
+        .create(NewCollection {
+            name: "scratch".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("a project of this machine's");
+    let folder = local
+        .tree()
+        .create_folder(mine.id.clone(), None, "users".into())
+        .await
+        .expect("a folder");
+    let api = local
+        .tree()
+        .create_api(mine.id.clone(), Some(folder.item.id.clone()), "list".into())
+        .await
+        .expect("an API");
+    local
+        .history()
+        .add(cyberapi_core::response::HttpResponse {
+            api: api.item.id.clone(),
+            collection: mine.id.clone(),
+            status: Some(200),
+            ..Default::default()
+        })
+        .await
+        .expect("a response");
+    let dashboard = machine.dashboard(cx);
+    assert!(dashboard.read_with(cx, |state, _| state.uploads(&mine.id)));
+    let told: Rc<RefCell<Vec<String>>> = Rc::default();
+    let heard = told.clone();
+    cx.update(|cx| {
+        cx.subscribe(&dashboard, move |_, event: &super::DashboardEvent, _| {
+            heard.borrow_mut().push(format!("{event:?}"));
+        })
+        .detach();
+    });
+
+    dashboard.update(cx, |state, cx| state.upload(&mine.id, None, cx));
+    cx.run_until_parked();
+    assert!(
+        told.borrow().iter().any(|event| event.starts_with("Uploaded")),
+        "{told:?}"
+    );
+    let server = machine.bridge.server.storage();
+    let theirs = server
+        .tree()
+        .load(mine.id.clone())
+        .await
+        .expect("on the server, by its id");
+    assert_eq!(
+        theirs.apis.iter().map(|api| api.id.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&api.item.id)
+    );
+    assert_eq!(theirs.folders[0].children, std::slice::from_ref(&api.item.id));
+    let binding = machine.binding(&mine.id).expect("bound here");
+    assert!(!binding.unsynced);
+    assert_eq!(
+        binding.base,
+        Some(server.collections().get(mine.id.clone()).await.expect("get").revision)
+    );
+    assert!(
+        !dashboard.read_with(cx, |state, _| state.uploads(&mine.id)),
+        "a copy now"
+    );
+    let listed: Vec<String> = dashboard.read_with(cx, |state, _| {
+        state.collections().iter().map(|found| found.name.clone()).collect()
+    });
+    assert_eq!(listed, ["scratch"], "listed once, as the server's");
+    let kept = local
+        .history()
+        .list(mine.id.clone(), api.item.id.clone())
+        .await
+        .expect("history");
+    assert_eq!(kept.len(), 1, "its history stays with its id");
+}
+
 /// A project made on the server while the list shows comes in on the next
 /// beat, copied here, without leaving the page; at once when the reader
 /// asks. Out of reach, the list does not ask.

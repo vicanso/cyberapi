@@ -639,6 +639,11 @@ find_api = "搜索接口（回车打开第一个结果）"
 focus_url = "跳到地址栏"
 
 [sync]
+upload = "上传到服务器…"
+upload_title = "上传「%{name}」到服务器"
+upload_description = "项目会以同一个 id 建在服务器上，归属你选的团队，目录、接口、变量、环境和设置都会带上。本机这份变成它的副本，响应历史、固定的接口和你选的环境都保留。之后的修改和其他服务器项目一样，点“同步”上传。"
+upload_ok = "上传"
+uploaded = "「%{name}」已上传到服务器。"
 unreachable = "连不上服务器"
 unreachable_hint = "连不上服务器：%{reason}。修改都保存在本机，恢复连接后可以同步。会自动重试，连不上的时间越长重试间隔越长（最长 5 分钟）。"
 unsynced = "未同步"

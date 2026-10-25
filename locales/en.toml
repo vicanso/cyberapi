@@ -639,6 +639,11 @@ find_api = "Search the APIs (Enter opens the first found)"
 focus_url = "Go to the address"
 
 [sync]
+upload = "Upload to the server…"
+upload_title = "Upload %{name} to the server"
+upload_description = "The project goes to the server under the same id, with its folders, APIs, variables, environments and settings, for the team you choose. This one becomes its copy here: its responses, pins and the environment you chose stay. Later changes go up as any server project's do, with Sync."
+upload_ok = "Upload"
+uploaded = "%{name} is on the server now."
 unreachable = "Server unreachable"
 unreachable_hint = "The server cannot be reached: %{reason}. Changes are kept on this machine and can be synced once it is back. It is tried again by itself, less often the longer it stays out of reach (at most every five minutes)."
 unsynced = "Not synced"

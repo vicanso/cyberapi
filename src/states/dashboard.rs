@@ -19,7 +19,7 @@ use crate::{local_items, pins_local};
 use cyberapi_core::import::ImportBundle;
 use cyberapi_core::model::Collection;
 use cyberapi_core::sync::{self, CopyBinding, Moment, ProjectConfig, Step};
-use cyberapi_core::{AccountId, CollectionId};
+use cyberapi_core::{AccountId, CollectionId, TeamId};
 use cyberapi_store::{CollectionEdit, NewCollection, ServerCopyStore, Storage, StoreError, StoreFuture, rules};
 use gpui_kit::{Context, Entity, EventEmitter, Subscription, Task};
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,6 +47,9 @@ pub enum DashboardEvent {
     Synced(Collection),
     /// The server moved on since the changes' base: the reader chooses.
     Conflict(Collection),
+    /// One of this machine's projects is the server's now, and this its
+    /// copy (G1).
+    Uploaded(Collection),
 }
 
 /// The desktop's server, signed in, as the list needs it.
@@ -700,6 +703,42 @@ impl DashboardState {
         cx.notify();
     }
 
+    /// G1: whether `id` is one of this machine's own projects, which the
+    /// signed-in desktop, within reach of its server, may upload.
+    pub fn uploads(&self, id: &CollectionId) -> bool {
+        self.desktop.is_some()
+            && self.reached
+            && !self.bound.iter().any(|binding| &binding.collection == id)
+            && self.listed.iter().any(|collection| &collection.id == id)
+    }
+
+    /// G1: this machine's project `id` made the server's, under `owner`
+    /// (the account's own space for `None`), with its id and all it holds;
+    /// here it is the account's copy of it from then on.
+    pub fn upload(&mut self, id: &CollectionId, owner: Option<TeamId>, cx: &mut Context<Self>) {
+        let Some(desktop) = self.desktop.clone().filter(|_| self.uploads(id)) else {
+            return;
+        };
+        if !self.syncing.insert(id.clone()) {
+            return;
+        }
+        let call = upload_copy(desktop, self.storage.clone(), id.clone(), owner);
+        let id = id.clone();
+        run_store(cx, call, move |this, result, cx| {
+            this.syncing.remove(&id);
+            match result {
+                Ok((collection, binding)) => {
+                    this.note_bound(vec![binding], cx);
+                    cx.emit(DashboardEvent::Uploaded(collection));
+                    this.reload_listed(true, cx);
+                }
+                Err(error) => cx.emit(DashboardEvent::Failed(error)),
+            }
+            cx.notify();
+        });
+        cx.notify();
+    }
+
     /// Gives `id`'s unsynced changes up: a page's draft goes, and it opens
     /// as the server has it; the desktop's copy is pulled again — when the
     /// server can be reached, else it stays.
@@ -718,6 +757,64 @@ impl DashboardState {
         };
         self.pull(desktop, vec![collection], None, cx);
     }
+}
+
+/// G1: `id`, one of this machine's projects in `local`, made on the server
+/// under `owner` with the same id — so its history, pins and the reader's
+/// state stay with it — then given all it holds at once, and bound here as
+/// the account's copy at the server's revision. A server that makes it
+/// under another id is too old to keep ids: what it made goes again, as
+/// does the project when its content is refused.
+fn upload_copy(
+    desktop: Desktop,
+    local: Storage,
+    id: CollectionId,
+    owner: Option<TeamId>,
+) -> StoreFuture<(Collection, CopyBinding)> {
+    Box::pin(async move {
+        let config = local.tree().config(id.clone()).await?.config;
+        let made = desktop
+            .server
+            .collections()
+            .create(NewCollection {
+                id: Some(id.clone()),
+                name: config.name.clone(),
+                description: config.description.clone(),
+                owner,
+            })
+            .await?;
+        if made.id != id {
+            let _ = desktop.server.collections().delete(made.id).await;
+            return Err(StoreError::Backend {
+                message: "the server made the project under another id: update it to upload projects".into(),
+            });
+        }
+        let revision = match desktop
+            .server
+            .tree()
+            .replace(id.clone(), config.clone(), Some(made.revision))
+            .await
+        {
+            Ok(revision) => revision,
+            Err(error) => {
+                let _ = desktop.server.collections().delete(id.clone()).await;
+                return Err(error);
+            }
+        };
+        // As a pulled copy is: level with what the server has now.
+        let scope = desktop.scope();
+        let mut own = local_items::get(&scope, &id);
+        own.level_with(&own.syncable(&config));
+        local_items::set(&scope, &id, &own);
+        let binding = CopyBinding {
+            collection: id.clone(),
+            account: desktop.account.clone(),
+            base: Some(revision),
+            unsynced: false,
+        };
+        desktop.copies.bind(binding.clone()).await?;
+        Ok((Collection { revision, ..made }, binding))
+    })
 }
 
 /// The server's `projects` as copies here in `local`, level with it, the

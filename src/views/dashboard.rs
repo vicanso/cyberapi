@@ -131,6 +131,12 @@ impl DashboardView {
                 DashboardEvent::NotKept => {
                     window.push_notification(Notification::warning(t!("sync.not_kept").to_string()), cx);
                 }
+                DashboardEvent::Uploaded(collection) => {
+                    window.push_notification(
+                        Notification::success(t!("sync.uploaded", name = collection.name).to_string()),
+                        cx,
+                    );
+                }
                 DashboardEvent::Synced(collection) => {
                     window.push_notification(
                         Notification::success(t!("sync.synced_project", name = collection.name).to_string()),
@@ -359,6 +365,83 @@ impl DashboardView {
         );
     }
 
+    /// G1: where on the server one of this machine's projects goes — a team
+    /// of the account's, or its own space — before it goes there.
+    fn open_upload(&mut self, collection: Collection, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(server) = AppStore::global(cx).server() else {
+            return;
+        };
+        let ServerStatus::SignedIn(me) = server.read(cx).status() else {
+            return;
+        };
+        let teams = me.teams.clone();
+        // A team's first: uploading is mostly for the team.
+        let first = teams
+            .iter()
+            .find(|team| !team.personal)
+            .or(teams.first())
+            .map(|team| team.id.clone());
+        let Some(first) = first else { return };
+        let chosen: Rc<RefCell<TeamId>> = Rc::new(RefCell::new(first));
+        let state = self.state.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let name = |team: &Team| match team.personal {
+                true => format!("{} · {}", team.name, t!("teams.personal")),
+                false => team.name.clone(),
+            };
+            let picked = chosen.borrow().clone();
+            let label = teams
+                .iter()
+                .find(|team| team.id == picked)
+                .map(name)
+                .unwrap_or_default();
+            let options: Vec<(TeamId, String)> = teams.iter().map(|team| (team.id.clone(), name(team))).collect();
+            let choose = chosen.clone();
+            let submit = {
+                let (state, chosen, id) = (state.clone(), chosen.clone(), collection.id.clone());
+                move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
+                    let owner = chosen.borrow().clone();
+                    state.update(cx, |state, cx| state.upload(&id, Some(owner), cx));
+                    true
+                }
+            };
+            dialog
+                .title(t!("sync.upload_title", name = collection.name).to_string())
+                .w(px(480.))
+                .child(crate::views::dialog_body(
+                    v_flex()
+                        .gap_3()
+                        .child(div().text_sm().child(t!("sync.upload_description").to_string()))
+                        .child(
+                            v_flex()
+                                .gap_1p5()
+                                .child(div().text_sm().font_medium().child(t!("dashboard.team").to_string()))
+                                .child(h_flex().child(pick(
+                                    "upload-team",
+                                    label,
+                                    options,
+                                    Some(picked),
+                                    false,
+                                    move |id, window, _| {
+                                        *choose.borrow_mut() = id;
+                                        window.refresh();
+                                    },
+                                ))),
+                        ),
+                ))
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))
+                        .child(crate::views::name_dialog::ok_button(
+                            "upload-ok",
+                            t!("sync.upload_ok").to_string(),
+                            submit.clone(),
+                        )),
+                )
+                .on_ok(submit)
+        });
+    }
+
     /// A group of the reader's renamed — into another, merging them — or
     /// undone.
     fn open_rename_group(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -567,6 +650,7 @@ impl DashboardView {
             // Only a server's project is given to others.
             shares: collection.owner.is_some() && AppStore::global(cx).directory(cx).is_some(),
             unsynced: unsynced.is_some(),
+            uploads: self.state.read(cx).uploads(&collection.id),
         };
         // The same menu on a right click, as the tree's rows have theirs.
         let context_actions = actions.clone();
@@ -872,6 +956,8 @@ struct CardActions {
     shares: bool,
     /// The project has changes the server has not had.
     unsynced: bool,
+    /// G1: one of this machine's, which may go to the server.
+    uploads: bool,
 }
 
 /// A card's word that its changes are not on the server yet — and that the
@@ -928,8 +1014,21 @@ fn card_menu(menu: PopupMenu, actions: &CardActions) -> PopupMenu {
         manages,
         shares,
         unsynced,
+        uploads,
     } = actions;
     let mut menu = menu;
+    if *uploads {
+        let (uploaded, upload_view) = (collection.clone(), view.clone());
+        menu = menu
+            .item(
+                PopupMenuItem::new(t!("sync.upload").to_string())
+                    .icon(Icons::CloudUpload)
+                    .on_click(move |_, window, cx| {
+                        let _ = upload_view.update(cx, |this, cx| this.open_upload(uploaded.clone(), window, cx));
+                    }),
+            )
+            .separator();
+    }
     if *unsynced {
         let (synced, sync_view) = (collection.id.clone(), view.clone());
         let (discarded, discard_view) = (collection.clone(), view.clone());
