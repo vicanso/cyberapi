@@ -23,7 +23,7 @@ gpui-kit 0.8.0 编辑器自带的查找栏在输入时会全选已输入的内�
 
 ## 第 1 批：小而独立
 
-### #67 更多模板函数
+### #67 更多模板函数（已完成）
 
 加 `uuid()`、`random(min, max)`、`randomString(n)`、`now(format)`（ISO 8601 或自定义格式，UTC / 本地）、`hmacSha256(key, data)`、`urlEncode(text)`。
 

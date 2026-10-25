@@ -25,7 +25,7 @@ use cyberapi_core::prefs::{SendPrefs, Timeouts};
 use cyberapi_core::redirect::{self, MAX_REDIRECTS};
 use cyberapi_core::response::{Exchange, HttpResponse};
 use cyberapi_core::send::{self, PrepareError, PreparedRequest};
-use cyberapi_core::template::{FileReader, Inputs};
+use cyberapi_core::template::{Draws, FileReader, Inputs};
 use cyberapi_core::{CollectionId, ItemId};
 use cyberapi_http::{HttpEngine, SendError, Watch};
 use cyberapi_store::{Storage, StoreError};
@@ -442,11 +442,9 @@ async fn prepare(
             .await
             .map_err(store)?
     };
+    let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let inputs = Inputs {
-        now: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|since| since.as_secs() as i64)
-            .unwrap_or_default(),
+        now: since_epoch.as_secs() as i64,
         custom: variables
             .iter()
             .filter(|v| v.enabled && v.category == VariableCategory::Custom)
@@ -457,6 +455,9 @@ async fn prepare(
             .filter_map(|response| Some((response.api.to_string(), response.body_json()?)))
             .collect(),
         picked_file,
+        utc_offset: chrono::Local::now().offset().local_minus_utc(),
+        // The clock, should the system have no randomness to give.
+        draws: Draws::new(getrandom::u64().unwrap_or(since_epoch.as_nanos() as u64)),
     };
     let boundary = boundary();
     let cx = send::Context {

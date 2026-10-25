@@ -16,12 +16,20 @@
 //! other rule is not kept: an expression without parentheses (`{{name}}`)
 //! used to stop every expression after it from being read; it is now left
 //! as it is and the rest still run.
+//!
+//! Functions the old app did not have (#67): `uuid`, `random`,
+//! `randomString`, `now`, `hmacSha256`, `urlEncode`. Their randomness and
+//! the local time's offset come in [`Inputs`] too.
 
 use base64::Engine as _;
+use chrono::format::{Item, StrftimeItems};
+use hmac::{KeyInit as _, Mac as _};
 use md5::Digest as _;
 use serde_json::Value as Json;
 use snafu::Snafu;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// One `{{…}}` with a parameter list.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +71,13 @@ pub enum TemplateError {
     Unknown { name: String },
     #[snafu(display("{file} could not be read: {message}"))]
     ReadFile { file: String, message: String },
+    /// A function given what it cannot take: `random(a)`.
+    #[snafu(display("{name}({text}): {expected}"))]
+    Params {
+        name: String,
+        text: String,
+        expected: &'static str,
+    },
 }
 
 /// Reads a file for `readFile` / `readTextFile`, and a multipart field's
@@ -112,6 +127,45 @@ pub struct Inputs {
     pub responses: HashMap<String, Json>,
     /// The file the reader picked for `openFile`, if they picked one.
     pub picked_file: Option<String>,
+    /// The local time's offset from UTC, in seconds, for `now`.
+    pub utc_offset: i32,
+    /// What `uuid`, `random` and `randomString` draw from.
+    pub draws: Draws,
+}
+
+/// Random numbers from a seed the caller picks at random for each send:
+/// each draw is new, across every text of a request, and a fixed seed (a
+/// test's) gives the same ones each time.
+#[derive(Clone, Debug, Default)]
+pub struct Draws {
+    seed: u64,
+    taken: Arc<AtomicU64>,
+}
+
+impl Draws {
+    pub fn new(seed: u64) -> Self {
+        Self {
+            seed,
+            taken: Arc::default(),
+        }
+    }
+
+    /// SplitMix64 of the seed and how many draws came before.
+    fn next(&self) -> u64 {
+        let taken = self.taken.fetch_add(1, Ordering::Relaxed);
+        let mut z = self
+            .seed
+            .wrapping_add(taken.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// A whole number from `min` to `max`, both included.
+    fn between(&self, min: i64, max: i64) -> i64 {
+        let span = (i128::from(max) - i128::from(min) + 1) as u128;
+        (i128::from(min) + (u128::from(self.next()) % span) as i128) as i64
+    }
 }
 
 /// Every expression in `text`, in order.
@@ -239,6 +293,12 @@ pub fn evaluate(expr: &Expr, inputs: &Inputs, files: &dyn FileReader) -> Result<
                 None => value,
             },
             "timestamp" | "ts" => Value::Text(inputs.now.to_string()),
+            "uuid" => Value::Text(uuid(&inputs.draws)),
+            "random" => Value::Text(random(&value, &inputs.draws)?.to_string()),
+            "randomString" => Value::Text(random_string(&value, &inputs.draws)?),
+            "now" => Value::Text(now(&value, inputs)?),
+            "hmacSha256" => Value::Text(hmac_sha256(&value)?),
+            "urlEncode" => Value::Text(crate::send::encode_uri_component(&value.into_text())),
             "get" | "g" => {
                 let text = value.into_text();
                 let [api, path] = text.split(',').collect::<Vec<_>>()[..] else {
@@ -260,6 +320,125 @@ pub fn evaluate(expr: &Expr, inputs: &Inputs, files: &dyn FileReader) -> Result<
         };
     }
     Ok(value.into_text())
+}
+
+/// A chain's parameters, one by one: none for `f()`.
+fn params(value: &Value) -> Vec<String> {
+    match value {
+        Value::List(items) => items.clone(),
+        Value::Text(text) if text.is_empty() => Vec::new(),
+        other => vec![other.clone().into_text()],
+    }
+}
+
+fn params_error(name: &str, value: &Value, expected: &'static str) -> TemplateError {
+    TemplateError::Params {
+        name: name.to_string(),
+        text: params(value).join(", "),
+        expected,
+    }
+}
+
+/// A version 4 UUID.
+fn uuid(draws: &Draws) -> String {
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&draws.next().to_be_bytes());
+    bytes[8..].copy_from_slice(&draws.next().to_be_bytes());
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex = hex(&bytes);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
+/// `random()` is 0 to 100, `random(max)` 0 to `max`, `random(min, max)`
+/// `min` to `max`, both ends included.
+fn random(value: &Value, draws: &Draws) -> Result<i64, TemplateError> {
+    let numbers = params(value)
+        .iter()
+        .map(|param| param.parse::<i64>())
+        .collect::<Result<Vec<_>, _>>();
+    let (min, max) = match numbers.as_deref() {
+        Ok([]) => (0, 100),
+        Ok([max]) => (0, *max),
+        Ok([min, max]) => (*min, *max),
+        _ => (1, 0),
+    };
+    if min > max {
+        return Err(params_error("random", value, "whole numbers, min then max"));
+    }
+    Ok(draws.between(min, max))
+}
+
+const RANDOM_STRING: usize = 16;
+const RANDOM_STRING_LIMIT: usize = 1024;
+
+/// Letters and digits: 16 of them, or as many as asked, up to 1024.
+fn random_string(value: &Value, draws: &Draws) -> Result<String, TemplateError> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let length = match params(value).as_slice() {
+        [] => RANDOM_STRING,
+        [length] => length
+            .parse::<usize>()
+            .ok()
+            .filter(|length| *length <= RANDOM_STRING_LIMIT)
+            .ok_or_else(|| params_error("randomString", value, "a length up to 1024"))?,
+        _ => return Err(params_error("randomString", value, "a length up to 1024")),
+    };
+    Ok((0..length)
+        .map(|_| char::from(ALPHABET[(draws.next() % ALPHABET.len() as u64) as usize]))
+        .collect())
+}
+
+/// The time now: ISO 8601 (`2026-10-25T14:30:00+08:00`), or in a strftime
+/// format (`%Y-%m-%d %H:%M:%S`); local, or UTC when the last parameter is
+/// `utc`. `now(utc)` is ISO 8601 in UTC.
+fn now(value: &Value, inputs: &Inputs) -> Result<String, TemplateError> {
+    let mut params = params(value);
+    let utc = params.last().is_some_and(|last| last.eq_ignore_ascii_case("utc"));
+    if utc {
+        params.pop();
+    }
+    let format = match params.as_slice() {
+        [] => "",
+        [format] => format.as_str(),
+        _ => return Err(params_error("now", value, "a format, then utc or nothing")),
+    };
+    let offset = if utc { 0 } else { inputs.utc_offset };
+    let at = chrono::DateTime::from_timestamp(inputs.now, 0)
+        .unwrap_or_default()
+        .with_timezone(
+            &chrono::FixedOffset::east_opt(offset).unwrap_or(chrono::FixedOffset::east_opt(0).expect("UTC")),
+        );
+    if format.is_empty() || format.eq_ignore_ascii_case("iso") {
+        return Ok(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    }
+    let items: Vec<Item> = StrftimeItems::new(format).collect();
+    if items.contains(&Item::Error) {
+        return Err(params_error("now", value, "a strftime format such as %Y-%m-%d"));
+    }
+    Ok(at.format_with_items(items.into_iter()).to_string())
+}
+
+/// HMAC-SHA256 of the data under the key, in hex. The data is everything
+/// after the first parameter, commas and all.
+fn hmac_sha256(value: &Value) -> Result<String, TemplateError> {
+    let params = params(value);
+    let [key, data @ ..] = params.as_slice() else {
+        return Err(params_error("hmacSha256", value, "a key, then the data"));
+    };
+    if data.is_empty() {
+        return Err(params_error("hmacSha256", value, "a key, then the data"));
+    }
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes()).expect("HMAC takes a key of any length");
+    mac.update(data.join(",").as_bytes());
+    Ok(hex(&mac.finalize().into_bytes()))
 }
 
 fn read(value: &Value, files: &dyn FileReader) -> Result<Vec<u8>, TemplateError> {
@@ -322,6 +501,8 @@ mod tests {
                 serde_json::json!({"data": [{"name": "tree", "tags": {"a": 1}}]}),
             )]),
             picked_file: Some("/tmp/x.png".into()),
+            utc_offset: 8 * 3600,
+            draws: Draws::new(7),
         }
     }
 
@@ -382,11 +563,85 @@ mod tests {
     #[test]
     fn an_unknown_function_is_an_error_and_each_text_is_replaced_once() {
         assert_eq!(run("{{nope(x)}}"), Err(TemplateError::Unknown { name: "nope".into() }));
-        assert_eq!(run("{{uuid()}}"), Err(TemplateError::Unknown { name: "uuid".into() }));
+        assert_eq!(run("{{uuid1()}}"), Err(TemplateError::Unknown { name: "uuid1".into() }));
         // A known function whose variable is missing still passes the name
         // through: that is "not found", not "not a function".
         assert_eq!(run("{{value(missing)}}").as_deref(), Ok("missing"));
         assert_eq!(run("{{ts()}} {{ts()}}").as_deref(), Ok("1700000000 1700000000"));
+    }
+
+    #[test]
+    fn uuids_and_random_values_differ_each_time() {
+        let uuids = render("{{uuid()}} {{uuid()}}", &inputs(), &Files).expect("render");
+        let (a, b) = uuids.split_once(' ').expect("two");
+        assert_ne!(a, b);
+        for uuid in [a, b] {
+            let parts: Vec<&str> = uuid.split('-').collect();
+            assert_eq!(
+                parts.iter().map(|part| part.len()).collect::<Vec<_>>(),
+                [8, 4, 4, 4, 12]
+            );
+            assert!(parts[2].starts_with('4'), "version 4: {uuid}");
+            assert!("89ab".contains(&parts[3][..1]), "the RFC 4122 variant: {uuid}");
+        }
+        // The same seed, the same draws.
+        assert_eq!(
+            render("{{uuid()}}", &inputs(), &Files),
+            render("{{uuid()}}", &inputs(), &Files)
+        );
+
+        for _ in 0..200 {
+            let n: i64 = run("{{random(-2, 2)}}").expect("random").parse().expect("a number");
+            assert!((-2..=2).contains(&n));
+            let n: i64 = run("{{random(3)}}").expect("random").parse().expect("a number");
+            assert!((0..=3).contains(&n));
+        }
+        assert_eq!(run("{{random(5, 5)}}").as_deref(), Ok("5"));
+        assert!(run("{{random()}}").is_ok());
+        assert_eq!(
+            run("{{random(9, 1)}}"),
+            Err(TemplateError::Params {
+                name: "random".into(),
+                text: "9, 1".into(),
+                expected: "whole numbers, min then max",
+            })
+        );
+        assert!(run("{{random(a)}}").is_err());
+
+        let text = run("{{randomString()}}").expect("random string");
+        assert_eq!(text.len(), 16);
+        assert!(text.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_eq!(run("{{randomString(40)}}").expect("random string").len(), 40);
+        assert_eq!(run("{{randomString(0)}}").as_deref(), Ok(""));
+        assert!(run("{{randomString(5000)}}").is_err());
+    }
+
+    #[test]
+    fn now_is_iso_8601_or_formatted_local_or_utc() {
+        // 1_700_000_000 is 2023-11-14 22:13:20 UTC; the inputs are UTC+8.
+        assert_eq!(run("{{now()}}").as_deref(), Ok("2023-11-15T06:13:20+08:00"));
+        assert_eq!(run("{{now(utc)}}").as_deref(), Ok("2023-11-14T22:13:20Z"));
+        assert_eq!(run("{{now(%Y-%m-%d %H:%M:%S)}}").as_deref(), Ok("2023-11-15 06:13:20"));
+        assert_eq!(run("{{now('%Y%m%d', UTC)}}").as_deref(), Ok("20231114"));
+        assert_eq!(run("{{now(iso, utc)}}").as_deref(), Ok("2023-11-14T22:13:20Z"));
+        assert!(run("{{now(%Q)}}").is_err(), "not a format: an error, not a panic");
+        assert!(run("{{now(a, b, c)}}").is_err());
+    }
+
+    #[test]
+    fn hmac_and_url_encoding() {
+        // RFC 4231, test case 2.
+        assert_eq!(
+            run("{{hmacSha256(Jefe, what do ya want for nothing?)}}").as_deref(),
+            Ok("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+        );
+        // The data keeps its commas.
+        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(b"k").expect("key");
+        mac.update(b"a,b");
+        assert_eq!(run("{{hmacSha256(k, a,b)}}"), Ok(hex(&mac.finalize().into_bytes())));
+        assert!(run("{{hmacSha256(only-a-key)}}").is_err());
+        assert_eq!(run("{{urlEncode(a b&c=d/é)}}").as_deref(), Ok("a%20b%26c%3Dd%2F%C3%A9"));
+        assert_eq!(run("{{urlEncode.value(token)}}").as_deref(), Ok("t-1"));
     }
 
     #[test]

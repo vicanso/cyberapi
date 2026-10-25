@@ -49,13 +49,19 @@ const fn function(
 
 /// Every function [`crate::template::evaluate`] knows, the ones a request
 /// reaches for most first.
-pub const FUNCTIONS: [Function; 9] = [
+pub const FUNCTIONS: [Function; 15] = [
     function("value", None, true, false),
     function("get", Some("g"), true, false),
     function("timestamp", Some("ts"), false, false),
+    function("now", None, true, false),
+    function("uuid", None, false, false),
+    function("random", None, true, false),
+    function("randomString", None, true, false),
     function("base64", Some("b64"), true, false),
+    function("urlEncode", None, true, false),
     function("md5", None, true, false),
     function("sha256", None, true, false),
+    function("hmacSha256", None, true, false),
     function("readTextFile", Some("rtf"), true, true),
     function("readFile", Some("rf"), true, true),
     function("openFile", Some("of"), false, true),
@@ -500,7 +506,7 @@ mod tests {
         assert_eq!(labels("{{m|", &sources()), ["md5"], "a name's start only");
         assert_eq!(labels("{{RTF|", &sources()), ["readTextFile"], "by its alias, any case");
         assert_eq!(
-            labels("{{b64.r|", &sources()),
+            labels("{{b64.re|", &sources()),
             ["readTextFile", "readFile"],
             "in a chain"
         );
@@ -509,7 +515,7 @@ mod tests {
             files: false,
             ..sources()
         };
-        assert_eq!(labels("{{|", &page).len(), 6);
+        assert_eq!(labels("{{|", &page).len(), FUNCTIONS.len() - 3);
     }
 
     #[test]
