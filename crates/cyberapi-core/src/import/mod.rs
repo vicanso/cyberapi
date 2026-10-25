@@ -110,7 +110,7 @@ pub enum Format {
 
 #[derive(Debug, Snafu, PartialEq, Eq)]
 pub enum ImportError {
-    #[snafu(display("not a cURL command or JSON: {message}"))]
+    #[snafu(display("not a cURL command, JSON or YAML: {message}"))]
     Unreadable { message: String },
     #[snafu(display("the cURL command has no URL"))]
     NoUrl,
@@ -118,16 +118,15 @@ pub enum ImportError {
     Empty,
 }
 
-/// F10.2.
+/// F10.2. A document is JSON or, when it is not, YAML (#59): an OpenAPI
+/// document is as often written in one as in the other.
 pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportError> {
     let trimmed = text.trim_start();
     // `get`, not a slice: four bytes may end inside a character.
     if trimmed.get(..4).is_some_and(|start| start.eq_ignore_ascii_case("curl")) {
         return Ok((Format::Curl, None));
     }
-    let json: serde_json::Value = serde_json::from_str(text).map_err(|error| ImportError::Unreadable {
-        message: error.to_string(),
-    })?;
+    let json = document(text)?;
     let format = match &json {
         serde_json::Value::Object(map) if map.contains_key("swagger") => Format::Swagger,
         serde_json::Value::Object(map) if map.contains_key("openapi") => Format::OpenApi,
@@ -136,6 +135,25 @@ pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportE
         _ => Format::CyberApi,
     };
     Ok((format, Some(json)))
+}
+
+/// JSON, or YAML that holds a mapping or a list: plain text reads as YAML
+/// too, a single string, which is nothing to import. What looks like JSON
+/// says why it is not JSON.
+fn document(text: &str) -> Result<serde_json::Value, ImportError> {
+    let json_error = match serde_json::from_str(text) {
+        Ok(json) => return Ok(json),
+        Err(error) => error,
+    };
+    let unreadable = |message: String| ImportError::Unreadable { message };
+    if text.trim_start().starts_with(['{', '[']) {
+        return Err(unreadable(json_error.to_string()));
+    }
+    match serde_saphyr::from_str::<serde_json::Value>(text) {
+        Ok(yaml @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) => Ok(yaml),
+        Ok(_) => Err(unreadable(json_error.to_string())),
+        Err(error) => Err(unreadable(error.to_string())),
+    }
 }
 
 /// F10.1–F10.3: whatever was pasted or picked.
@@ -311,6 +329,42 @@ mod tests {
         assert!(matches!(format("新建接口"), Err(ImportError::Unreadable { .. })));
         assert!(matches!(format("cu新"), Err(ImportError::Unreadable { .. })));
         assert_eq!(parse("[]"), Err(ImportError::Empty));
+    }
+
+    #[test]
+    fn an_openapi_document_in_yaml_imports_as_its_json_would() {
+        let yaml = r#"
+openapi: 3.0.1
+info:
+  title: Pets
+paths:
+  /pets/{id}:
+    get:
+      summary: one pet
+      tags: [pets]
+      responses:
+        200:
+          description: ok
+  /stores:
+    post:
+      summary: a store
+"#;
+        let json = r#"{"openapi": "3.0.1", "info": {"title": "Pets"}, "paths": {
+            "/pets/{id}": {"get": {"summary": "one pet", "tags": ["pets"], "responses": {"200": {"description": "ok"}}}},
+            "/stores": {"post": {"summary": "a store"}}
+        }}"#;
+        assert_eq!(detect(yaml).map(|(format, _)| format), Ok(Format::OpenApi));
+        assert_eq!(parse(yaml), parse(json));
+        assert_eq!(parse(yaml).expect("parse").name.as_deref(), Some("Pets"));
+        // Plain text is a YAML string, which is nothing to import; what
+        // looks like JSON says why it is not.
+        assert!(matches!(detect("hello"), Err(ImportError::Unreadable { .. })));
+        let Err(ImportError::Unreadable { message }) = detect(r#"{"a": "#) else {
+            panic!("not JSON")
+        };
+        assert!(message.contains("EOF"), "{message}");
+        // YAML that does not read says why.
+        assert!(matches!(detect("a: [1, 2"), Err(ImportError::Unreadable { .. })));
     }
 
     #[test]

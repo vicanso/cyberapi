@@ -40,11 +40,11 @@ gpui-kit 0.8.0 编辑器自带的查找栏在输入时会全选已输入的内�
 - 新建项目走现有的新建流程：登录且选了团队时先在服务器创建再拉副本，然后按 `assign_ids` 写入。
 - 导入弹窗预填剪贴板的规则不变：只在读者点开的那次读。
 
-### #59 导入 YAML 的 OpenAPI
+### #59 导入 YAML 的 OpenAPI（YAML 已完成，从 URL 导入推后）
 
-`import::detect` 现在只用 `serde_json` 解析。加一个纯 Rust 的 YAML 解析（能编译到 wasm），先试 JSON（错误信息更准），不是 JSON 再按 YAML 读成 `serde_json::Value`，后面的格式识别不变。
+`import::detect` 先试 JSON（错误信息更准），不是 JSON 再用 `serde-saphyr` 按 YAML 读成 `serde_json::Value`，后面的格式识别不变。
 
-- 从 URL 导入是第二步：经 `HttpEngine` 取（桌面直连，网页经 bridge，受 `TargetPolicy` 限制），可以放到本批最后或推后。
+- 从 URL 导入推后：经 `HttpEngine` 取（桌面直连，网页经 bridge，受 `TargetPolicy` 限制），导入弹窗里文本是一个地址时提供“获取”。
 
 ## 第 2 批：看清发出去和收回来的
 

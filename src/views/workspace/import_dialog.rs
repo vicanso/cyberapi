@@ -20,7 +20,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// F10.1: what the clipboard holds, when it looks like something to import
-/// — JSON, formatted, or a cURL command; nothing otherwise.
+/// — JSON, formatted, a cURL command, or an OpenAPI or Swagger document in
+/// YAML (#59), as it is; nothing otherwise.
 fn importable(text: &str) -> String {
     let trimmed = text.trim();
     // `get`, not a slice: four bytes may end inside a character.
@@ -29,9 +30,15 @@ fn importable(text: &str) -> String {
     }
     let looks_json =
         (trimmed.starts_with('{') && trimmed.ends_with('}')) || (trimmed.starts_with('[') && trimmed.ends_with(']'));
+    if !looks_json {
+        return match import::detect(trimmed) {
+            Ok((Format::Swagger | Format::OpenApi, _)) => trimmed.to_string(),
+            _ => String::new(),
+        };
+    }
     match serde_json::from_str::<serde_json::Value>(trimmed) {
-        Ok(json) if looks_json => cyberapi_core::format::json(&json),
-        _ => String::new(),
+        Ok(json) => cyberapi_core::format::json(&json),
+        Err(_) => String::new(),
     }
 }
 
@@ -147,12 +154,9 @@ fn open(title: String, import: OnImport, window: &mut Window, cx: &mut App) {
             let mut preview = preview.borrow_mut();
             if preview.0 != text {
                 *preview = (text.clone(), describe(&text));
-                // A cURL command is no JSON to colour.
-                let curl = text
-                    .trim_start()
-                    .get(..4)
-                    .is_some_and(|start| start.eq_ignore_ascii_case("curl"));
-                let language = if curl { "text" } else { "json" };
+                // A cURL command, or YAML, is no JSON to colour.
+                let json = text.trim_start().starts_with(['{', '[']);
+                let language = if json { "json" } else { "text" };
                 if language != highlighted.get() {
                     highlighted.set(language);
                     editor.update(cx, |editor, cx| editor.set_highlighter(language, cx));
@@ -271,6 +275,10 @@ mod tests {
         assert_eq!(importable(r#"{"item":[]}"#), "{\n    \"item\": []\n}");
         assert_eq!(importable("hello"), "");
         assert_eq!(importable("{ not json }"), "");
+        // YAML only when it is an API description (#59).
+        let openapi = "openapi: 3.0.1\ninfo:\n  title: Pets\npaths: {}";
+        assert_eq!(importable(&format!("\n{openapi}\n")), openapi);
+        assert_eq!(importable("name: tree\nage: 3"), "");
         assert_eq!(importable(""), "");
         // A character of several bytes across the fourth: no panic.
         assert_eq!(importable("新建接口"), "");

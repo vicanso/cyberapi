@@ -592,6 +592,8 @@ Sending --异常--> Idle + 错误提示
 1. 文本以 `curl` 开头 → cURL
 2. 解析为 JSON 后：有 `swagger` 字段 → Swagger 2.0；有 `item` → Postman Collection；有 `resources` → Insomnia 导出；否则 → CyberAPI 自有格式。
 
+重写版（#59）：不是 JSON 时按 YAML 读（`serde-saphyr`，纯 Rust、不 panic，别名展开有上限），读成对象或列表才算，之后的识别同上；看起来像 JSON（以 `{` / `[` 开头）的文本只报 JSON 的错误。剪贴板预填（F10.1）也认 YAML 写的 OpenAPI / Swagger，原样填入。
+
 #### F10.3 各格式的转换规则 [D]
 
 | 格式 | 接口 | 目录 | 环境变量 | 未支持 / 限制 |

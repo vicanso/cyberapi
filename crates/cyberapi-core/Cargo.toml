@@ -23,6 +23,7 @@ prost = { workspace = true }
 prost-reflect = { workspace = true }
 prost-types = { workspace = true }
 serde = { workspace = true }
+serde-saphyr = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 snafu = { workspace = true }
