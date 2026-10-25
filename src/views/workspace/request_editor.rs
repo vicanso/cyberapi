@@ -1376,21 +1376,44 @@ impl RequestEditor {
             .into_any_element()
     }
 
-    /// The GraphQL variables indented, as the JSON body's Format does.
-    fn format_variables(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.graphql.variables.read(cx).value().to_string();
-        match send::format_json(&text) {
-            Ok(pretty) => {
+    /// The GraphQL query indented (#70), and its variables, as the JSON
+    /// body's Format does. A query not complete stays as it is, and says
+    /// why.
+    fn format_graphql(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.graphql.query.read(cx).value().to_string();
+        match cyberapi_core::graphql_format::format_query(&query) {
+            Ok(formatted) if formatted != query => {
                 self.graphql
-                    .variables
-                    .update(cx, |editor, cx| editor.set_value(pretty, window, cx));
-                self.save_graphql(cx);
+                    .query
+                    .update(cx, |editor, cx| editor.set_value(formatted, window, cx));
             }
-            Err(problem) => {
-                let message = t!("editor.graphql_variables_broken", reason = problem).to_string();
-                window.push_notification(Notification::error(message), cx);
+            Ok(_) => {}
+            Err(why) => {
+                use cyberapi_core::graphql_format::Unformatted;
+                let reason = match why {
+                    Unformatted::StringNotClosed => t!("editor.graphql_string_not_closed"),
+                    Unformatted::Brackets => t!("editor.graphql_brackets"),
+                    Unformatted::NotGraphQl(ch) => t!("editor.graphql_not_graphql", ch = ch),
+                };
+                let message = t!("editor.graphql_query_incomplete", reason = reason).to_string();
+                window.push_notification(Notification::warning(message), cx);
             }
         }
+        let text = self.graphql.variables.read(cx).value().to_string();
+        if !text.trim().is_empty() {
+            match send::format_json(&text) {
+                Ok(pretty) => {
+                    self.graphql
+                        .variables
+                        .update(cx, |editor, cx| editor.set_value(pretty, window, cx));
+                }
+                Err(problem) => {
+                    let message = t!("editor.graphql_variables_broken", reason = problem).to_string();
+                    window.push_notification(Notification::error(message), cx);
+                }
+            }
+        }
+        self.save_graphql(cx);
     }
 
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1489,12 +1512,13 @@ impl RequestEditor {
                 None => t!("editor.graphql_schema").to_string(),
             };
             this.child(
-                Button::new("body-format-variables")
+                Button::new("body-format-graphql")
                     .ghost()
                     .xsmall()
                     .icon(gpui_kit::assets::IconName::WandSparkles)
-                    .label(t!("editor.format_variables").to_string())
-                    .on_click(cx.listener(|this, _, window, cx| this.format_variables(window, cx))),
+                    .label(t!("editor.format").to_string())
+                    .tooltip(t!("editor.format_graphql_about").to_string())
+                    .on_click(cx.listener(|this, _, window, cx| this.format_graphql(window, cx))),
             )
             .child(
                 Button::new("body-graphql-schema")
