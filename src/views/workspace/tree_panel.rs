@@ -105,6 +105,14 @@ pub struct TreePanel {
     search: Entity<InputState>,
     renaming: Option<Renaming>,
     scroll: ScrollHandle,
+    /// A selection to scroll into view once its row is drawn: the API a
+    /// project opens again on (F3.8) — known only once its prefs are read,
+    /// maybe after the rows — or one opened from a pin. A row already in
+    /// view stays where it is.
+    reveal: Option<ItemId>,
+    /// The rows' list draws for the first time: its scroll handle takes a
+    /// request only once it has been laid out, so the next frame reveals.
+    reveal_next_frame: bool,
     /// The rows as last drawn; the pointer is read against them.
     drawn: Vec<Row>,
     drop_target: Option<DropTarget>,
@@ -130,7 +138,8 @@ impl TreePanel {
             cx.observe(&state, |this, state, cx| {
                 let selected = state.read(cx).selected().cloned();
                 if selected != this.seen_selection {
-                    this.seen_selection = selected;
+                    this.seen_selection = selected.clone();
+                    this.reveal = selected;
                     this.cursor = None;
                 }
                 cx.notify();
@@ -156,6 +165,8 @@ impl TreePanel {
             search,
             renaming: None,
             scroll: ScrollHandle::new(),
+            reveal: None,
+            reveal_next_frame: false,
             drawn: Vec::new(),
             drop_target: None,
             focus: cx.focus_handle(),
@@ -765,6 +776,19 @@ impl TreePanel {
                 Vec::new(),
             ),
             _ => {
+                if let Some(index) = self
+                    .reveal
+                    .as_ref()
+                    .and_then(|id| rows.iter().position(|row| &row.id == id))
+                {
+                    // The list drew before this frame: its handle can scroll.
+                    if self.drawn.is_empty() {
+                        self.reveal_next_frame = true;
+                    } else {
+                        self.reveal = None;
+                        self.scroll.scroll_to_item(index);
+                    }
+                }
                 let cursor = focused.then(|| self.cursor_at(&rows, cx)).flatten();
                 let local = self.state.read(cx).local_members();
                 let elements: Vec<AnyElement> = rows
@@ -1073,5 +1097,9 @@ impl Render for TreePanel {
             .on_action(cx.listener(|this, _: &NewFolder, window, cx| this.new_here(ItemKind::Folder, window, cx)))
             .child(self.render_header(cx))
             .child(self.render_body(focused, cx))
+            .when(std::mem::take(&mut self.reveal_next_frame), |this| {
+                cx.on_next_frame(window, |_, _, cx| cx.notify());
+                this
+            })
     }
 }
