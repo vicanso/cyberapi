@@ -9,15 +9,23 @@ use cyberapi_core::ItemId;
 use cyberapi_core::import::{self, Format, ImportBundle};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
-use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::input::{Editor, EditorState, InputEvent, Paste};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Entity, ParentElement as _, PathPromptOptions, Styled as _, WeakEntity, Window, div, px,
+    App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div, px,
 };
 use rust_i18n::t;
-use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+/// A text longer than this is not put in the editor whole. The editor lays
+/// out and colours everything it holds at once, on the main thread: a few
+/// megabytes kept the dialog blank for seconds. Such a text is held beside
+/// the editor and imported as it is; the editor shows its start.
+const HELD_ABOVE: usize = 256 * 1024;
+/// How much of a held text the editor shows.
+const HELD_SHOWN: usize = 64 * 1024;
 
 /// F10.1: what the clipboard holds, when it looks like something to import
 /// — JSON, formatted, a cURL command, or an OpenAPI or Swagger document in
@@ -36,10 +44,23 @@ fn importable(text: &str) -> String {
             _ => String::new(),
         };
     }
+    // Too big to show whole, so not worth indenting either: it would only
+    // grow, and stays as it came.
+    if trimmed.len() > HELD_ABOVE {
+        return match serde_json::from_str::<serde::de::IgnoredAny>(trimmed) {
+            Ok(_) => trimmed.to_string(),
+            Err(_) => String::new(),
+        };
+    }
     match serde_json::from_str::<serde_json::Value>(trimmed) {
         Ok(json) => cyberapi_core::format::json(&json),
         Err(_) => String::new(),
     }
+}
+
+/// The start of a held text, for the editor.
+fn shown_start(text: &str) -> &str {
+    &text[..text.floor_char_boundary(HELD_SHOWN)]
 }
 
 fn format_name(format: Format) -> &'static str {
@@ -114,60 +135,267 @@ pub fn open_import_project_dialog(
 /// What the dialog does with the bundle the text holds.
 type OnImport = Rc<dyn Fn(ImportBundle, &mut Window, &mut App)>;
 
+/// The dialog's text and what it would import.
+struct ImportView {
+    editor: Entity<EditorState>,
+    /// The whole text, when it is too big for the editor ([`HELD_ABOVE`]):
+    /// the editor shows its start, read-only.
+    held: Option<SharedString>,
+    /// What the text would import, worked out off the main thread whenever
+    /// it changes.
+    found: Option<Found>,
+    /// A picked file that could not be read.
+    error: Option<String>,
+    highlighted: &'static str,
+    /// The latest `describe`; a newer one drops it.
+    describing: Task<()>,
+    _changes: Subscription,
+}
+
+impl ImportView {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let editor = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("json")
+                .line_number(true)
+                .tab_size(crate::views::json_tab())
+                // Wrapping measures every line of the text at once.
+                .soft_wrap(false)
+                .placeholder(t!("import.placeholder").to_string())
+        });
+        let changes = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                let text = editor.read(cx).value();
+                this.describe(text, cx);
+            }
+        });
+        Self {
+            editor,
+            held: None,
+            found: None,
+            error: None,
+            highlighted: "json",
+            describing: Task::ready(()),
+            _changes: changes,
+        }
+    }
+
+    /// All the text, held or in the editor.
+    fn text(&self, cx: &App) -> SharedString {
+        self.held.clone().unwrap_or_else(|| self.editor.read(cx).value())
+    }
+
+    /// Puts `text` in place of what the dialog had: a big one is held, and
+    /// the editor shows its start.
+    fn fill(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        let held = text.len() > HELD_ABOVE;
+        let shown = if held {
+            shown_start(&text).to_string()
+        } else {
+            text.clone()
+        };
+        self.held = held.then(|| text.into());
+        self.editor.update(cx, |editor, cx| {
+            editor.set_readonly(held, cx);
+            editor.set_value(shown, window, cx);
+        });
+        // `set_value` says nothing of the change.
+        let text = self.text(cx);
+        self.describe(text, cx);
+    }
+
+    /// What `text` would import, worked out in the background: parsing a
+    /// big collection twice takes long enough to be felt.
+    fn describe(&mut self, text: SharedString, cx: &mut Context<Self>) {
+        // A cURL command, or YAML, is no JSON to colour.
+        let language = if text.trim_start().starts_with(['{', '[']) {
+            "json"
+        } else {
+            "text"
+        };
+        if language != self.highlighted {
+            self.highlighted = language;
+            self.editor
+                .update(cx, |editor, cx| editor.set_highlighter(language, cx));
+        }
+        if text.trim().is_empty() {
+            self.found = None;
+            self.describing = Task::ready(());
+            cx.notify();
+            return;
+        }
+        let found = cx.background_spawn(async move { describe(&text) });
+        self.describing = cx.spawn(async move |this, cx| {
+            let found = found.await;
+            let _ = this.update(cx, |this, cx| {
+                this.found = found;
+                cx.notify();
+            });
+        });
+    }
+
+    /// A paste the editor could not take quickly is held instead: a big
+    /// text, or anything while a text is held. A small one is the editor's
+    /// own paste.
+    fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        // The desktop answers at once.
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            if self.held.is_some() || text.len() > HELD_ABOVE {
+                cx.stop_propagation();
+                self.fill(text, window, cx);
+            }
+            return;
+        }
+        // A page's synchronous read is always empty. Asked now, while the
+        // paste still counts as the reader's, the editor's own paste could
+        // not tell a big text in time, so this one does both.
+        cx.stop_propagation();
+        let read = cx.read_from_clipboard_async();
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Some(item)) = read.await else { return };
+            let Some(text) = item.text() else { return };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.held.is_some() || text.len() > HELD_ABOVE {
+                    this.fill(text, window, cx);
+                } else {
+                    this.editor.update(cx, |editor, cx| editor.replace(text, window, cx));
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn pick(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let read = cx.background_spawn(async move { this_build::read_text(&path) }).await;
+            let _ = this.update_in(cx, |this, window, cx| match read {
+                Ok(text) => {
+                    this.error = None;
+                    this.fill(text, window, cx);
+                }
+                Err(message) => {
+                    this.error = Some(message);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+impl Render for ImportView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+        let held = self.held.as_ref().map(|text| {
+            t!(
+                "import.held",
+                size = cyberapi_core::response::format_size(text.len() as u64)
+            )
+            .to_string()
+        });
+        v_flex()
+            .gap_2()
+            .child(div().text_sm().text_color(muted).child(t!("import.hint").to_string()))
+            .child(
+                div()
+                    .h(px(320.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius)
+                    .relative()
+                    .capture_action(cx.listener(Self::paste))
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .child(Editor::new(&self.editor).w_full().h_full().bordered(false)),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        v_flex()
+                            .gap_0p5()
+                            .text_xs()
+                            .when_some(held, |this, held| this.child(div().text_color(muted).child(held)))
+                            .map(|this| match &self.found {
+                                Some(Ok(found)) => this.child(div().text_color(muted).child(found.clone())),
+                                Some(Err(why)) => this.child(div().text_color(danger).child(why.clone())),
+                                None => this,
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .when(self.held.is_some(), |this| {
+                                this.child(
+                                    Button::new("import-clear")
+                                        .outline()
+                                        .small()
+                                        .label(t!("import.clear").to_string())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.fill(String::new(), window, cx);
+                                        })),
+                                )
+                            })
+                            .when(this_build::reads_files(), |this| {
+                                this.child(
+                                    Button::new("import-file")
+                                        .outline()
+                                        .small()
+                                        .label(t!("import.choose_file").to_string())
+                                        .on_click(cx.listener(Self::pick)),
+                                )
+                            }),
+                    ),
+            )
+            .when_some(self.error.clone(), |this, message| {
+                this.child(div().text_sm().text_color(danger).child(message))
+            })
+    }
+}
+
 fn open(title: String, import: OnImport, window: &mut Window, cx: &mut App) {
     // F10.1: the clipboard, read because the reader asked to import, and
     // asked for now, while that click still counts as theirs: a page may
     // read it only then, through the browser, which may ask the reader
     // first. A page's synchronous read is always empty.
     let clipboard = cx.read_from_clipboard_async();
-    let editor: Entity<EditorState> = cx.new(|cx| {
-        EditorState::new(window, cx)
-            .language("json")
-            .line_number(true)
-            .tab_size(crate::views::json_tab())
-            .soft_wrap(true)
-            .placeholder(t!("import.placeholder").to_string())
-    });
-    let filling = editor.clone();
+    let view = cx.new(|cx| ImportView::new(window, cx));
+    let filling = view.downgrade();
     window
         .spawn(cx, async move |cx| {
             // Not readable, or turned down: the reader pastes or picks a file.
             let Ok(Some(item)) = clipboard.await else { return };
-            let text = importable(&item.text().unwrap_or_default());
+            let text = item.text().unwrap_or_default();
+            let text = cx.background_spawn(async move { importable(&text) }).await;
             let _ = cx.update(|window, cx| {
-                // What the reader typed or pasted meanwhile stays.
-                if !text.is_empty() && filling.read(cx).value().is_empty() {
-                    filling.update(cx, |editor, cx| editor.set_value(text, window, cx));
-                }
+                let _ = filling.update(cx, |view, cx| {
+                    // What the reader typed, pasted or picked meanwhile stays.
+                    if !text.is_empty() && view.text(cx).is_empty() {
+                        view.fill(text, window, cx);
+                    }
+                });
             });
         })
         .detach();
-    // A picked file that could not be read.
-    let error: Rc<RefCell<Option<String>>> = Rc::default();
-    // What the text would import, worked out again only when it changes.
-    let preview: Rc<RefCell<(String, Option<Found>)>> = Rc::default();
-    let highlighted = Rc::new(Cell::new("json"));
-    let reads_files = this_build::reads_files();
-    window.open_dialog(cx, move |dialog, _, cx| {
-        let text = editor.read(cx).value().to_string();
-        let found = {
-            let mut preview = preview.borrow_mut();
-            if preview.0 != text {
-                *preview = (text.clone(), describe(&text));
-                // A cURL command, or YAML, is no JSON to colour.
-                let json = text.trim_start().starts_with(['{', '[']);
-                let language = if json { "json" } else { "text" };
-                if language != highlighted.get() {
-                    highlighted.set(language);
-                    editor.update(cx, |editor, cx| editor.set_highlighter(language, cx));
-                }
-            }
-            preview.1.clone()
-        };
+    window.open_dialog(cx, move |dialog, _, _| {
         let submit = {
-            let (editor, import) = (editor.clone(), import.clone());
-            move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
-                let text = editor.read(cx).value().to_string();
+            let (view, import) = (view.clone(), import.clone());
+            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                let text = view.read(cx).text(cx);
                 match import::parse(&text) {
                     Ok(bundle) => {
                         import(bundle, window, cx);
@@ -178,82 +406,10 @@ fn open(title: String, import: OnImport, window: &mut Window, cx: &mut App) {
                 }
             }
         };
-        let pick = {
-            let (editor, error) = (editor.clone(), error.clone());
-            move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
-                let picked = cx.prompt_for_paths(PathPromptOptions {
-                    files: true,
-                    directories: false,
-                    multiple: false,
-                    prompt: None,
-                });
-                let (editor, error) = (editor.clone(), error.clone());
-                window
-                    .spawn(cx, async move |cx| {
-                        let Ok(Ok(Some(paths))) = picked.await else { return };
-                        let Some(path) = paths.into_iter().next() else { return };
-                        let read = cx.background_spawn(async move { this_build::read_text(&path) }).await;
-                        let _ = cx.update(|window, cx| match read {
-                            Ok(text) => {
-                                editor.update(cx, |editor, cx| editor.set_value(text, window, cx));
-                                *error.borrow_mut() = None;
-                            }
-                            Err(message) => {
-                                *error.borrow_mut() = Some(message);
-                                window.refresh();
-                            }
-                        });
-                    })
-                    .detach();
-            }
-        };
-        let muted = cx.theme().muted_foreground;
-        let danger = cx.theme().danger;
         dialog
             .title(title.clone())
             .w(px(720.))
-            .child(crate::views::dialog_body(
-                v_flex()
-                    .gap_2()
-                    .child(div().text_sm().text_color(muted).child(t!("import.hint").to_string()))
-                    .child(
-                        div()
-                            .h(px(320.))
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .rounded(cx.theme().radius)
-                            .relative()
-                            .child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .child(Editor::new(&editor).w_full().h_full().bordered(false)),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .justify_between()
-                            .child(div().text_xs().map(|this| match found {
-                                Some(Ok(found)) => this.text_color(muted).child(found),
-                                Some(Err(why)) => this.text_color(danger).child(why),
-                                None => this,
-                            }))
-                            .when(reads_files, |this| {
-                                this.child(
-                                    Button::new("import-file")
-                                        .outline()
-                                        .small()
-                                        .label(t!("import.choose_file").to_string())
-                                        .on_click(pick),
-                                )
-                            }),
-                    )
-                    .when_some(error.borrow().clone(), |this, message| {
-                        this.child(div().text_sm().text_color(danger).child(message))
-                    }),
-            ))
+            .child(crate::views::dialog_body(view.clone()))
             .footer(
                 DialogFooter::new()
                     .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))
@@ -266,6 +422,9 @@ fn open(title: String, import: OnImport, window: &mut Window, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::component::Root;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AnyWindowHandle, ClipboardItem, Focusable as _, TestAppContext, size};
 
     /// F10.1: a command or a JSON document fills the dialog; anything else
     /// leaves it empty for the reader.
@@ -283,5 +442,91 @@ mod tests {
         // A character of several bytes across the fourth: no panic.
         assert_eq!(importable("新建接口"), "");
         assert_eq!(importable("cu新"), "");
+    }
+
+    /// A document too big to show whole is kept as it came, not indented
+    /// to twice its size; one that is no JSON still fills nothing.
+    #[test]
+    fn a_big_document_stays_as_it_came() {
+        let big = format!(r#"{{"item":[{}]}}"#, vec![r#"{"name":"a"}"#; HELD_ABOVE / 10].join(","));
+        assert!(big.len() > HELD_ABOVE);
+        assert_eq!(importable(&format!(" {big}\n")), big);
+        let broken = format!("{}}}", &big[..big.len() - 2]);
+        assert_eq!(importable(&broken), "");
+    }
+
+    /// The editor shows the start of a held text, cut on a character.
+    #[test]
+    fn a_held_text_shows_its_start() {
+        let text = "新".repeat(HELD_SHOWN);
+        let shown = shown_start(&text);
+        assert!(shown.len() <= HELD_SHOWN && shown.len() > HELD_SHOWN - 3);
+        assert!(text.starts_with(shown));
+        assert_eq!(shown_start("short"), "short");
+    }
+
+    /// A Postman collection of `apis` requests, too big for the editor.
+    fn big_collection(apis: usize) -> String {
+        let items: Vec<String> = (0..apis)
+            .map(|n| {
+                format!(
+                    r#"{{"name":"api {n}","request":{{"method":"GET","url":{{"raw":"https://a.test/{n}/{}"}}}}}}"#,
+                    "x".repeat(80)
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"info":{{"name":"big","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"}},"item":[{}]}}"#,
+            items.join(",")
+        )
+    }
+
+    /// A big paste is held: the editor shows its start and what imports is
+    /// all of it. Anything pasted while a text is held takes its place, and
+    /// a small paste into the editor is still the editor's own.
+    #[gpui_kit::test]
+    async fn a_big_paste_is_held_beside_the_editor(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut view = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(720.), px(480.)), |window, cx| {
+                let import = cx.new(|cx| ImportView::new(window, cx));
+                view = Some(import.clone());
+                Root::new(import, window, cx)
+            })
+            .into();
+        let view = view.expect("built");
+        let paste = |text: &str, cx: &mut TestAppContext| {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.into()));
+            cx.update_window(window, |_, window, cx| {
+                view.read(cx).editor.read(cx).focus_handle(cx).focus(window, cx);
+                window.render_frame(cx);
+                window.press("secondary-v", cx);
+            })
+            .expect("the window is open");
+            cx.run_until_parked();
+        };
+        let big = big_collection(3000);
+        assert!(big.len() > HELD_ABOVE);
+        paste(&big, cx);
+        cx.read(|cx| {
+            let view = view.read(cx);
+            assert_eq!(view.text(cx).as_ref(), big, "the whole text imports");
+            let shown = view.editor.read(cx).value();
+            assert!(shown.len() <= HELD_SHOWN && big.starts_with(shown.as_ref()));
+            assert!(matches!(view.found, Some(Ok(_))), "described: {:?}", view.found);
+        });
+
+        paste("curl https://a.test", cx);
+        cx.read(|cx| {
+            let view = view.read(cx);
+            assert!(view.held.is_none());
+            assert_eq!(view.text(cx).as_ref(), "curl https://a.test");
+        });
+
+        // The caret is at the start of the text it replaced.
+        paste("curl https://b.test\n", cx);
+        let text = cx.read(|cx| view.read(cx).text(cx));
+        assert_eq!(text.as_ref(), "curl https://b.test\ncurl https://a.test");
     }
 }
