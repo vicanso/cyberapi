@@ -372,7 +372,7 @@ if parent == "":                                                       // 移动
 
 #### F3.10 目录菜单操作
 
-新建接口、新建目录、修改名称、导出该目录（F10.2）、导入到该目录（M9）、删除。
+新建接口、新建目录、修改名称、导出该目录（F10.2）、导入到该目录（M9）、删除。重写版另有“目录设置…”（F4.16，#66）。
 
 #### F3.11 树头部操作
 
@@ -388,24 +388,28 @@ if parent == "":                                                       // 移动
 
 来源：`helpers/hot_key.ts`，`APISettingTree/header.tsx:95`，`APISettingParams/uri.tsx:293`
 
+重写版按平台映射为 ⌘ / Ctrl：⌘/Ctrl-Enter 发送，⌘/Ctrl-N 新建接口，⌘/Ctrl-1…9 打开固定的接口；#64 加了 ⌘/Ctrl-F 搜索接口、⌘/Ctrl-L 跳到地址栏，树里方向键移动、Delete（Mac ⌘⌫）删除、⌘/Ctrl-D 复制。全部快捷键列在快捷键列表里。浏览器先占用的组合（Windows / Linux 的 Ctrl-N、Ctrl-1…9、Ctrl-L、Ctrl-D）在网页版不显示（`this_build::takes_new_keys` / `takes_browser_keys`）。
+
 ### M4 请求编辑
 
 | ID | 功能 | 规则 / 细节 | 现实现 | 层 |
 |---|---|---|---|---|
 | F4.1 | 加载请求配置 | 选中接口时把 `setting` 解析为 `HTTPRequest`，解析失败时使用空对象 | `stores/api_setting.ts:54` | S |
 | F4.2 | Method | 可选 GET / POST / PUT / PATCH / DELETE / OPTIONS / HEAD，默认 GET；修改后立即保存 | `APISettingParams/uri.tsx:187` | D + S |
-| F4.3 | URI 与环境变量前缀 | 保存格式为 `{{ENV}}` + 路径。编辑时拆成“环境变量选择器 + 路径输入框”（`cuttingURI`），保存时再拼回去；失焦时保存；会去掉首尾空格 | `uri.tsx:70`，`uri.tsx:122` | D + St |
-| F4.4 | 选择环境变量 | 下拉中只列出**启用**的环境变量（显示 `名称 \| 值`），另有“新增”（打开环境变量弹窗）和“清除当前” | `uri.tsx:202` | St |
+| F4.3 | URI 与环境变量前缀 | 保存格式为 `{{ENV}}` + 路径。编辑时拆成“环境变量选择器 + 路径输入框”（`cuttingURI`），保存时再拼回去；失焦时保存；会去掉首尾空格（重写版：路径开头手写的 `{{NAME}}` 在失焦或回车时移到选择器，#61b） | `uri.tsx:70`，`uri.tsx:122` | D + St |
+| F4.4 | 选择环境变量 | 下拉中只列出**启用**的环境变量（显示 `名称 \| 值`），另有“新增”（打开环境变量弹窗）和“清除当前”（重写版：按当前命名环境取值，F8.4） | `uri.tsx:202` | St |
 | F4.5 | 有 body 的 method | 只有 POST / PUT / PATCH 才显示 Body Tab，发送时也只有这三种会带 body（重写版加上 DELETE，批量删除常用；body 为空时不发 body 也不发 Content-Type，#62） | `req_params.tsx:99`，`http_request.ts:274` | D |
 | F4.6 | 切换 Content-Type | 可选 JSON（默认）/ Form / Multipart / XML / Plain。切换时**清空 body**，body 不为空时需要先确认 | `req_params.tsx:222` | S + St |
 | F4.7 | 文本 body 编辑 | JSON / XML / Plain 用文本编辑器编辑；JSON 可一键格式化；内容变化时去掉首尾空白后保存 | `req_params.tsx:199` | St |
 | F4.8 | Form / Multipart body | 以 KV 列表编辑；Multipart 的每一行可以选择文件，value 写为 `file://{绝对路径}`（文件对话框默认打开下载目录） | `req_params.tsx:572`，`ExKeyValue.tsx:153` | S + St |
-| F4.9 | Query / Header / Auth | 都用 KV 列表编辑；Auth 的 value 以密码形式显示；**只有第一条启用的 Auth 生效**，转换为 Basic Auth | `req_params.tsx:584` | St |
+| F4.9 | Query / Header / Auth | 都用 KV 列表编辑；Auth 的 value 以密码形式显示；**只有第一条启用的 Auth 生效**，转换为 Basic Auth。重写版（#66）：Auth 改为单独的认证——继承 / 无 / Basic / Bearer / API key（请求头或 query，gRPC 一律作元数据），值都可用模板函数，密钥打码；“继承”按树从近到远取第一个设了认证的目录，都没有就用项目的（F4.16）；旧的 Auth 列表第一条启用的读成 Basic，不再写回（`HttpRequest.auth`，存为 `authentication`） | `req_params.tsx:584` | St |
 | F4.10 | KV 列表的通用行为 | 末尾总有一个空行，聚焦即新增一行；每行可以启用 / 禁用、删除（需确认）；保存时过滤掉 key 和 value 都为空的行；输入防抖 200ms | `components/ExKeyValue.tsx` | St |
 | F4.11 | 自动保存 | URI / Method 立即保存；Body / Query / Header / Auth 防抖 300ms 后保存；保存前检查“修改发生时的接口 ID == 当前选中的 ID”，防止防抖期间切换接口导致写错 | `APISettingParams/index.tsx:98` | S + St |
 | F4.12 | 活动 Tab 记忆 | 每个接口记住最后打开的 Tab；如果是默认 Tab（有 body 的 method 默认 Body，否则默认 Query），存为空值；切换 method 时自动切到对应的默认 Tab | `req_params.tsx:183`，`req_params.tsx:299`，`req_params.tsx:533` | St |
 | F4.13 | 数量提示 | Query / Header / Auth / Form 的条目数显示在 Tab 上 | `req_params.tsx:111` | V |
 | F4.14 | 参数栏宽度预设 | 中栏宽度可快速设为 30% / 50% / 70%，合法范围为 0.2–0.8 | `stores/setting.ts:163` | St |
+| F4.15 | 接口的设置（新增，#71） | 请求编辑器的“设置”标签：超时、HTTP 版本、跟随重定向、校验证书，每项默认跟随全局设置（M14），只对这个接口生效，随项目同步；代理不在其中。没跟随的 3xx 响应的提示里可以直接打开它（`HttpRequest.settings`，`Sender::for_request` 叠在全局设置上） | — | D + S + V |
+| F4.16 | 目录和项目的设置（新增，#66） | 目录（右键菜单“目录设置…”）可设认证和请求头：请求头发给其中每个接口（含子目录里的），从外到内，排在全局请求头之后、认证和接口自己的之前，Details 里标“目录”；项目（设置菜单）可设认证。点“保存”才写入，随项目同步、备份、导出，MCP 读到的接口也带上（`inherit::inherited`，`FolderSettings` / `ProjectSettings`） | — | D + S + V |
 
 ### M5 请求发送管线（核心）
 
@@ -543,7 +547,7 @@ Sending --异常--> Idle + 错误提示
 | F7.7 | 请求信息 | 接口 ID（供 `get` 函数使用）、远端地址、TLS 套件、各阶段耗时 | `APIResponse/index.tsx:366` | V |
 | F7.8 | 生成 cURL | 打开时才生成：重新加载 Cookie → 对 `req` 注入环境变量和全局头 → 生成。格式为 `curl -v -X{M} -d '{body}' -H 'k: v' … '{url}'`：JSON body 压缩为一行，Form body 做 urlencode，Cookie 取 domain 是 host 子串的那些；超过 2KB 时直接写入剪贴板并给出提示 | `http_request.ts:68`，`APIResponse/index.tsx:228` | D + S |
 | F7.9 | 历史记录 | 每个接口最多保存 10 条（最新的在前，超出时删除最旧的）；每条包含完整的响应（含 body）和 `createdAt` | `http_response.ts:196` | S |
-| F7.10 | 选择历史 | 历史列表显示状态码、大小、时间；选中某条后：①响应面板显示这条响应；②请求编辑区**回填为这条响应对应的请求配置**（不会立即保存，之后任何修改都会把它整体保存下来，相当于“恢复”） | `APIResponse/list.tsx`，`APISettingParams/index.tsx:87` | S + St |
+| F7.10 | 选择历史 | 历史列表显示状态码、大小、时间；选中某条后：①响应面板显示这条响应；②请求编辑区**回填为这条响应对应的请求配置**（不会立即保存，之后任何修改都会把它整体保存下来，相当于“恢复”）。重写版每条另显示请求的方法和路径（#68） | `APIResponse/list.tsx`，`APISettingParams/index.tsx:87` | S + St |
 | F7.11 | 清空历史 | 清空当前接口的历史 | `http_response.ts:220` | S |
 | F7.12 | 切换接口时加载 | 选中接口时显示它的最近一次响应，没有则显示空白 | `views/Collection.tsx:63` | S |
 | F7.14 | 实际发出的请求（新增，#58） | Details 里列出最后一跳实际发出的请求：每个请求头（含引擎加的 `Host`（HTTP/1.1）、`Accept-Encoding`、`Content-Length`）及其来源（请求、全局请求头、认证、Cookie、请求体类型、默认），模板求值后的请求体（只存开头 16 KB，不是文本时只写大小）；像密钥的值打码，可切换显示。随响应存进历史（`HttpResponse.sent`，旧条目没有），由 `cyberapi_core::send::sent_request` 生成 | — | D + S + V |
@@ -565,6 +569,7 @@ Sending --异常--> Idle + 错误提示
 | F8.1 | 列表 | 按名称排序；进入项目时加载环境变量和全局请求头，自定义变量在打开弹窗时加载 | `stores/variable.ts:50` | S |
 | F8.2 | 新增 / 修改 / 删除 | 由 KV 编辑器的事件驱动：新增 → `add`，修改 → `update`（刷新 `updatedAt`），删除 → `remove`；**按列表下标对应到变量** | `views/VariableSetting.tsx:85` | S + St |
 | F8.3 | 启用 / 禁用 | `enabled` 为 `"1"` / `"0"` | — | D |
+| F8.4 | 命名环境（新增，#61） | 三类变量都分层：所有环境共用的一层，和每个命名环境（dev、staging、prod…）自己的一层。环境属于项目（有顺序，名称在项目里唯一、不分大小写，随项目同步和备份）；当前用哪个属于读者（`WorkspacePrefs.environment`），在标题栏项目名旁切换。发送时取当前环境里启用的同名变量（全局请求头的名字不分大小写），没有的再用共用的；没选环境时只用共用的，和以前一样。变量弹窗一次显示一层，选某个环境时灰着列出被它覆盖的共用变量；新建、重命名、删除（连同其中的变量）环境都在弹窗里。MCP 的 `send_api` 可以指定环境。规则在 `cyberapi_core::environments` | — | D + S + V |
 
 ### M9 Cookie 管理
 
@@ -661,6 +666,8 @@ Sending --异常--> Idle + 错误提示
 | F14.10 | HTTP 版本（新增） | 自动（默认）：HTTPS 经 ALPN 协商，服务器支持就用 HTTP/2，否则 HTTP/1.1，明文 HTTP 用 HTTP/1.1；仅 HTTP/1.1；仅 HTTP/2：TLS 协商不到 h2 即失败，明文走 h2c。实际版本显示在响应详情里，cURL 导出带上对应参数；响应体最多读 64 MB（解压后同样），超出截断并提示 | — | S + I |
 | F14.11 | 代理（新增，#60） | 桌面版：环境变量（默认，`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 和 `NO_PROXY`，大小写都认）/ 在设置里填写（`http://`、`socks5://`、`socks5h://`，可带账号；加不走代理的主机列表）/ 不使用。HTTP 代理收明文请求的绝对形式，HTTPS 和 h2c 走 `CONNECT` 隧道；SOCKS5 自己握手（`socks5h` 由代理解析主机名）。本机地址始终直连。规则在 `cyberapi_core::proxy`，握手在 `cyberapi-http` 的 `proxy.rs`；只有 `NativeEngine::with_proxies` 的引擎（桌面）走代理，bridge 的引擎始终直连，`PreparedRequest.proxy` 也不随页面的请求发给 bridge。Details 写明经过的代理，远端地址是代理的 | — | D + S |
 
+超时（F14.3）、跟随重定向（F14.8）、证书校验（F14.9）、HTTP 版本（F14.10）都可以由单个接口覆盖（F4.15，#71）；代理不行。
+
 ### M15 通用能力
 
 | ID | 功能 | 规则 | 现实现 | 层 |
@@ -671,6 +678,16 @@ Sending --异常--> Idle + 错误提示
 | F15.4 | 写入下载目录 | 目标文件已存在时依次尝试 `name-1.ext` … `name-9.ext`，都存在则报错 | `helpers/util.ts:205` | I |
 | F15.5 | JSON 格式化 | 整体解析失败时按行尝试（兼容 NDJSON） | `helpers/util.ts:149` | D |
 | F15.6 | 格式化工具 | 日期（今年显示 `MM-DD HH:mm`，否则显示 `YYYY-MM-DD`）、耗时（小于 1s 显示 ms，否则显示 s 并保留 2 位小数） | `helpers/util.ts:50`，`helpers/util.ts:131` | D |
+
+### M16 GraphQL、gRPC 与事件流（重写版新增）
+
+旧版只发普通 HTTP（`category` 预留了 graphQL 但没有实现，见 F5.5）。重写版新增的三种如下，实现细节见 `CLAUDE.md` 里 `cyberapi-core` 的 `graphql`、`grpc`、`sse` 说明。
+
+| ID | 功能 | 规则 | 现实现 | 层 |
+|---|---|---|---|---|
+| F16.1 | GraphQL | 请求体分开存查询、变量和操作名（`GraphQlBody`），POST 发 JSON、GET 发查询参数；“获取 Schema”后补全字段、参数、枚举值；订阅按事件流显示。#70：“格式化”同时缩进查询（保留注释）和变量，响应 `errors` 的位置标在查询里，Schema 浏览器里点字段写进查询 | — | D + S + V |
+| F16.2 | gRPC | 一元调用和服务端流；方法来自服务器反射或 `.proto` 文件（仅桌面）；接口保存所选服务需要的定义，网页版也能发；消息和回复都是 JSON。#73：地址栏提示 `host:port`，响应没有 Cookies 标签，Headers 叫元数据（含 trailers）。客户端流和双向流列出但不能调用 | — | D + S + I + V |
+| F16.3 | 事件流（SSE） | `text/event-stream` 边收边显示（时间、类型、数据开头，选中一行显示完整数据），直到服务器结束或读者停止，收到的部分存进历史。#72：流里有 id 时多一列 ID，选中的事件显示 id 和 retry | — | D + I + V |
 
 ---
 

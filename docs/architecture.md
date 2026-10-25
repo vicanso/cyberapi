@@ -87,6 +87,8 @@ pub trait CollectionStore: Send + Sync {
     fn update(&self, id: CollectionId, edit: CollectionEdit) -> StoreFuture<Collection>;
     /// 级联删除目录、接口、变量、各账号的界面状态（修正 #5）。
     fn delete(&self, id: CollectionId) -> StoreFuture<()>;
+    /// 每个可见项目的接口数量（含目录里的），首页卡片用。
+    fn api_counts(&self) -> StoreFuture<BTreeMap<CollectionId, usize>>;
 }
 
 pub trait TreeStore: Send + Sync {
@@ -97,9 +99,15 @@ pub trait TreeStore: Send + Sync {
     fn create_api(&self, collection: CollectionId, parent: Option<ItemId>, name: String) -> StoreFuture<Inserted<ApiSetting>>;
     fn rename(&self, collection: CollectionId, item: ItemId, name: String) -> StoreFuture<()>;
     fn save_request(&self, collection: CollectionId, api: ItemId, request: HttpRequest) -> StoreFuture<ApiSetting>;
+    /// 目录给其中接口的认证和请求头、项目的认证（#66），整份替换。
+    fn set_folder_settings(&self, collection: CollectionId, folder: ItemId, settings: FolderSettings) -> StoreFuture<Folder>;
+    fn set_project_settings(&self, collection: CollectionId, settings: ProjectSettings) -> StoreFuture<()>;
     fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange>;
+    /// 导入的目录和接口放在 `parent`（或顶层）末尾，全部换成新 id（修正 #7 / #9）。
+    fn import(&self, collection: CollectionId, parent: Option<ItemId>, items: Vec<ImportItem>) -> StoreFuture<Imported>;
     fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal>;
-    /// 整份项目配置（名称、说明、目录、接口、顶层顺序、三类变量）和当前修订号，服务器项目拉取时用。
+    /// 整份项目配置（名称、说明、目录及其设置、接口、顶层顺序、项目设置、三类变量、命名环境）
+    /// 和当前修订号，服务器项目拉取时用。
     fn config(&self, collection: CollectionId) -> StoreFuture<ConfigAt>;
     /// 在一个事务里用整份配置替换项目：id 原样保留，修订号必须等于 `base`（`None` 为强制），
     /// 否则返回 `Stale` 且不写入；写完修订号加一。编辑者可调用，名称和说明仍只由管理者修改。
@@ -113,6 +121,14 @@ pub trait VariableStore: Send + Sync {
     /// 按 ID 对应（修正 #26）。
     fn update(&self, collection: CollectionId, id: VariableId, edit: VariableEdit) -> StoreFuture<Variable>;
     fn delete(&self, collection: CollectionId, ids: Vec<VariableId>) -> StoreFuture<()>;
+    /// 命名环境（#61），按项目里的顺序；变量的 `environment` 为 `None` 时属于所有环境共用的一层。
+    fn environments(&self, collection: CollectionId) -> StoreFuture<Vec<Environment>>;
+    /// 名称在项目里唯一（不分大小写），重名返回 `Refusal::EnvironmentNameTaken`。
+    fn create_environment(&self, collection: CollectionId, name: String) -> StoreFuture<Environment>;
+    fn rename_environment(&self, collection: CollectionId, id: EnvironmentId, name: String) -> StoreFuture<Environment>;
+    /// 连同其中的变量一起删除。
+    fn delete_environment(&self, collection: CollectionId, id: EnvironmentId) -> StoreFuture<()>;
+    fn reorder_environments(&self, collection: CollectionId, order: Vec<EnvironmentId>) -> StoreFuture<Vec<Environment>>;
 }
 
 /// 个人数据：应用设置（4.7）与每个项目的工作区状态（4.6，选中项按项目保存，修正 #20）。
@@ -121,6 +137,8 @@ pub trait PrefStore: Send + Sync {
     fn set_app(&self, prefs: AppPrefs) -> StoreFuture<()>;
     fn workspace(&self, collection: CollectionId) -> StoreFuture<WorkspacePrefs>;
     fn set_workspace(&self, collection: CollectionId, prefs: WorkspacePrefs) -> StoreFuture<()>;
+    /// 清除读者在每个项目上的状态（F15.3），应用设置不动。
+    fn clear_workspaces(&self) -> StoreFuture<()>;
 }
 
 /// 一个后端的全部 Store。一个后端实现全部 trait 时用 `Storage::from_backend(Arc::new(backend))`。
@@ -128,14 +146,15 @@ pub trait PrefStore: Send + Sync {
 pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 ```
 
-以上是第 2 步已经落地的部分（`crates/cyberapi-store`）。其余 trait 在用到它们的那一步再加，避免提前设计：
+以上是 `crates/cyberapi-store` 里最核心的四个（第 2 步落地，之后随功能扩充）。其余 trait 在用到它们的那一步加入：
 
-| Trait | 内容 | 加入的步骤 |
-|---|---|---|
-| `DirectoryStore` | 账号、团队、授权（9.4 节），只在浏览器版存在，不放进 `Storage` | 第 5 步 |
-| `HistoryStore` | 每个接口保留 10 条响应历史（F7.9 / F7.11），依赖响应模型 | 第 7 步 |
-| `CookieStore` | 列表 / 新增 / 编辑 / 删除 / 清空（M9） | 第 8 步 |
-| `TreeStore::import`、`BackupStore` | 导入（整体重新映射 ID，修正 #7 / #9）；导出快照，在一个事务内恢复（修正 #8） | 第 9 步 |
+| Trait | 内容 | 在不在 `Storage` 里 | 加入的步骤 |
+|---|---|---|---|
+| `HistoryStore` | 每个接口保留 10 条响应历史（F7.9 / F7.11），属于读者自己 | 在 | 第 7 步 |
+| `CookieStore` | 列表 / 放入 / 删除 / 清空（M9），属于读者自己、所有项目共用 | 在 | 第 8 步 |
+| `BackupStore` | 导出快照，在一个事务内恢复（修正 #8） | 不在：只有桌面版（`TursoStore`）和 `MemoryStore` 实现 | 第 9 步 |
+| `DirectoryStore` | 账号、团队、授权、邀请、MCP 令牌（9.4 节） | 不在：只有 bridge 的 `SqlStore::directory(account)`，浏览器版经 `BridgeStore::directory()` 调用 | 第 5 步 |
+| `ServerCopyStore` | 桌面的服务器项目副本：绑定的账号、基准修订号、是否未同步，按服务器的 id 整份保存副本（[server-sync.md](./server-sync.md) §6） | 不在：只有 `TursoStore` 和 `MemoryStore` 实现 | 服务器同步第 5 步 |
 
 ### 4.2 设计要点
 
@@ -149,8 +168,8 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
   - 服务器把 children 存为 JSON 列。
   - **顶层顺序属于树结构**，由 `TreeStore` 负责，不再是界面状态：在服务器上由团队成员共享；在桌面版存入新表，首次迁移时从旧数据中补全。
 - **共享数据与个人数据分开。**
-  - **项目共享**（同一项目的成员看到同一份）：项目信息、目录、接口、变量、顶层顺序。
-  - **按账号区分**（仍在库里的 `prefs`、响应历史、Cookie）：展开状态、选中项、活动 Tab、响应历史、Cookie、应用设置（含桌面窗口在各屏幕上的位置）。固定接口和 JSON 的默认展示不在库里，见 4.5。
+  - **项目共享**（同一项目的成员看到同一份）：项目信息、目录、接口、变量、顶层顺序，目录和项目的设置（认证、目录的请求头，#66），命名环境的定义（#61）。
+  - **按账号区分**（仍在库里的 `prefs`、响应历史、Cookie）：展开状态、选中项、活动 Tab、各接口的 JSONPath 过滤条件（#63）、当前选的环境（#61：环境属于项目，选哪一个是读者自己的）、响应历史、Cookie、应用设置（含桌面窗口在各屏幕上的位置）。固定接口和 JSON 的默认展示不在库里，见 4.5。
   - 响应历史可能包含 token，所以只有本人可见。
 - **每个修改项目内容的方法都带上项目 ID。** 树、请求、变量的方法都要求传入所属项目；不属于该项目的条目一律按“不存在”（`NotFound`）处理，和真的不存在没有区别。这样服务器只需要检查一次项目权限，也不会通过 ID 越权访问别的项目。
 - **内容修改会刷新项目的修改时间（#21）。** 树、请求、变量的任何修改都会更新项目的 `updated_at`，所以首页“最近修改”排序反映的是整个项目的修改。个人数据（`PrefStore`）不算内容修改。
@@ -174,6 +193,16 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 - 原来存放在 localforage 中的数据（设置、展开状态、置顶、活动 Tab、响应历史）以及顶层顺序、Cookie 改为新表，通过本应用自己的迁移来创建。
   - 迁移的版本号记在新表 `cyberapi_meta.schema_version` 中，不使用旧版的 `versions` 表；旧版的 `versions` 表原样保留，不再写入。
   - 迁移 1（第 3 步）创建 `top_orders`（顶层顺序，逗号分隔，与 `children` 相同）、`prefs`（个人文档，`app` 与 `workspace/<项目 ID>`），并为按项目的查询加索引。
+  - 之后的迁移（`crates/cyberapi-store-turso/src/schema.rs` 的 `MIGRATIONS`，只追加，已发布的步骤不改）：
+
+    | 版本 | 内容 |
+    |---|---|
+    | 2 | `api_collections.revision`：项目修订号（第 7 节） |
+    | 3 | `responses`：每个接口的响应历史（F7.9） |
+    | 4 | `cookies`：Cookie（M9），按 domain、path、name |
+    | 5 | `server_copies`：哪些项目是哪个账号的服务器项目副本（[server-sync.md](./server-sync.md) §6） |
+    | 6 | `folder_settings`、`project_settings`：目录和项目给接口的设置（#66），只有设了东西的才有一行，旧表不加列 |
+    | 7 | `environments`、`variable_environments`：命名环境和变量所在的环境（#61），没有行的变量属于共用的一层 |
   - 数据库的 schema 版本比当前程序更新时拒绝打开，不用旧规则改写新数据。
 - 一个连接串行处理所有调用（桌面版只有一个用户），涉及多行的修改放在一个事务里，要么全部完成，要么全部不生效。
 - 旧库里的行按 `rowid` 排序读取，即插入顺序，与旧版读出的顺序一致。旧版没有保存顶层顺序（它在 localforage 中，不迁移），所以复制过来的旧库第一次打开时顶层按“接口在前、目录在后”排列，和旧版清空缓存后看到的一样。
@@ -193,8 +222,8 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 
 ### 4.4 服务器：sqlx（照搬 zedis ADR 18）
 
-- sqlx 0.9，使用同一个 `AnyPool` 代码路径。每条语句写成 `Stmt { pg, my }` 两种 SQL，SQL 相同的用 `both!` 宏。方言由 `backend_name()` 识别。
-- 迁移按方言分目录：`migrations/postgres`、`migrations/mysql`，用 `sqlx::migrate!` 内嵌到二进制，只增不改。
+- sqlx 0.9，使用同一个 `AnyPool` 代码路径。每条语句只按 PostgreSQL 的写法（`$1, $2…`）写一份（`crates/cyberapi-store-sql/src/sql.rs`），MySQL 运行时把占位符换成 `?`；所以每条语句的占位符必须从 1 开始按出现顺序编号（测试 `placeholders_count_up_from_one_in_order` 检查）。两边写法不同的（upsert）写成 `Pair { pg, my }`。方言由连接的后端名（`Dialect::of`）识别。
+- 迁移按方言分目录：`migrations/postgres`、`migrations/mysql`，两套逐列对应，用 `sqlx::migrate!` 内嵌到二进制，只增不改；MySQL 的 DDL 不在事务里，每条语句都要能重复执行。目前到 `0007`：初始表、响应历史、Cookie、邀请、MCP 令牌、目录和项目的设置（#66）、命名环境（#61）。
 - MySQL 强制使用 `utf8mb4_bin`。
 - 用 `--store postgres://…` 或 `--store mysql://…` 在**运行时**选择后端，不做成 cargo feature。
 - 服务器的表结构**不需要兼容旧版**，可以使用正规的类型、外键和索引。表结构只需和 trait 的语义一致，与桌面版的表结构无关。
@@ -203,13 +232,13 @@ pub struct Storage { /* 每个 trait 一个 Arc<dyn …> */ }
 
 桌面版的库是本机 SQLite，文件名在数据目录里：发布版 `cyberapi.db`，`make dev`（debug）用同目录的 `cyberapi-dev.db`，不打开已安装应用的库。默认目录是平台数据目录下的 `CyberAPI`（Linux / FreeBSD 为 `cyberapi`）；macOS 为 `~/Library/Application Support/CyberAPI/`。`CYBERAPI_DATA_DIR` 只改这个目录，不改文件名。浏览器版没有这份文件，库在 bridge 的 PostgreSQL 或 MySQL 上，按登录账号隔离。
 
-**数据库。** 项目内容团队成员看得到：项目、目录、接口、变量、顶层排序。读者自己的、不跟团队共享、但仍然进库：
+**数据库。** 项目内容团队成员看得到：项目、目录、接口、变量、顶层排序、目录和项目的设置、命名环境。读者自己的、不跟团队共享、但仍然进库：
 
 | 内容 | 位置 |
 |---|---|
 | 主题、语言、超时、分栏宽度、上次打开的项目、首页分组与折叠 | `prefs` 的 `app` 文档 |
 | 窗口大小、是否最大化，以及每块屏幕上一次的位置和大小 | 同上。只由桌面版写入；浏览器不记窗口 |
-| 每个项目展开的目录、选中的接口、各接口停在哪个标签 | `prefs` 的 `workspace/<项目 ID>` |
+| 每个项目展开的目录、选中的接口、各接口停在哪个标签、各接口的 JSONPath 过滤条件、当前选的环境 | `prefs` 的 `workspace/<项目 ID>` |
 | 响应历史 | `responses` |
 | Cookie | `cookies`。桌面版首次启动把复制来的 `legacy-cookies.json` 导入此表，然后把文件改名为 `legacy-cookies.imported.json` |
 | 账号、团队、成员、项目授权、邀请 | 只在 bridge 的库里。桌面版没有这些表 |
@@ -237,14 +266,14 @@ JSON 默认展示：恢复默认设置时写回「文本」，再保存其余设
 - 定义 `HttpEngine` trait，输入是组装完成的请求，输出是响应和耗时统计。drop 对应的 future 即取消请求，修正“中止只是丢弃结果”的问题（#2）。
 - **native 引擎**（`cyberapi-http`）：
   - 基于 hyper，用自定义 connector 按请求计时，替代现在解析 tracing 日志的做法（#1）。
-  - 明确请求头优先级：请求自身 > 全局请求头 > 默认值（#3）。
+  - 明确请求头优先级：请求自身 > 认证 > 目录的请求头 > 全局请求头 > 默认值（#3、#66，见第 8 节第 7 步）。
   - 对响应头做宽松解码（#11）。
   - 桌面版在私有的 tokio 运行时上运行，bridge 直接在 axum 的 tokio 上运行。
 - **浏览器（D5）**：`BridgeHttpEngine` 把请求 POST 到 bridge 的 `/v1/send`，由 bridge 调用 native 引擎执行。
   - 行为和桌面版一致。代价是请求从服务器发出，访问不到用户本机的 `localhost`。
   - Cookie 使用发起请求的账号自己的 Cookie。
   - 以后可以再增加可选的“浏览器直连”模式（受 CORS 限制）。
-  - bridge 需要限制可访问的目标地址，防止被当作 SSRF 跳板，例如默认拒绝内网和元数据地址，管理员可配置白名单。
+  - bridge 需要限制可访问的目标地址，防止被当作 SSRF 跳板：默认拒绝 bridge 所在主机的回环和链路本地（含云元数据地址），`--public-only` 时连内网也拒绝，管理员可用 `--allow-target` 放行网段。
 - **发送管线**（L2 `cyberapi-service`）：变量注入（F5.2）、body 处理（F5.3）、Query / Header 处理（F5.4）、模板函数（M6）、写入历史（F5.8）。两端共用同一份代码。
 - **模板函数的 IO 依赖**通过 trait 注入：`FileReader`、`FilePicker`、`ResponseLookup`、`VariableLookup`、`Clock`。浏览器版不提供 `readFile` 和 `openFile`。
 
@@ -254,10 +283,10 @@ JSON 默认展示：恢复默认设置时写回「文本」，再保存其余设
 
 | 目录 | 内容 |
 |---|---|
-| `src/states/` | gpui Entity，是数据的唯一来源：`AppState`（Global）、`DashboardState`、`WorkspaceState`（每个项目一个，含树、置顶、变量）、`RequestEditorState`、`ResponseState`、`SendState`；浏览器版另有 `AccountState`（当前账号、团队、授权） |
-| `src/views/` | 只负责绘制和转发事件：dashboard、workspace（树 / 请求编辑 / 响应）、dialogs（设置、变量、Cookie、导入、缓存）；浏览器版另有账号与团队管理页 |
-| `src/components/` | 依赖应用状态或 i18n 的共享组件 |
-| `src/helpers/` | 快捷键、格式化、`this_build.rs` 能力查询等 |
+| `src/states/` | gpui Entity，是数据的唯一来源：`AppStore`（Global，持有 `Storage` 和 `HttpEngine`）、`AppState`（路由、设置、登录的账号）、`DashboardState`、`WorkspaceState`（每个打开的项目一个：树、环境与变量、读者的工作区状态；服务器项目经 `copy.rs` 的 `ServerCopy` 读写工作副本）、`ApiState`（选中的接口：保存、发送、历史）、`VariablesState`、`CookiesState`、`DirectoryState`（账号与团队的弹窗）；桌面版另有 `ServerState`（登录 bridge）和 `UpdateState`（检查更新） |
+| `src/views/` | 只负责绘制和转发事件：dashboard、workspace（树 / 请求编辑 / 响应 / 认证 / 目录与项目设置 / 环境切换）、设置（桌面是单独的窗口，网页是弹窗）、变量、Cookie、导入、同步、账号与团队、MCP 令牌、更新等弹窗 |
+| `src/this_build.rs` | 两端能力不同的地方（见 6.4） |
+| `src/*_local.rs` | 不进库的本机数据（4.5）：固定、JSON 默认展示、服务器地址与令牌、草稿、仅本地的条目 |
 
 ### 6.2 数据流
 
@@ -277,21 +306,23 @@ JSON 默认展示：恢复默认设置时写回「文本」，再保存其余设
 
 ### 6.4 平台差异
 
-- **能力查询**：`helpers/this_build.rs` 提供 `saves_files()`、`opens_files()`、`has_file_dialogs()`、`reads_clipboard_on_demand()`、`has_accounts()` 等。每个都是一对同签名、分别加 gate 的函数，桌面版在前，并有 native 测试固定桌面版的返回值。
+- **能力查询**：`src/this_build.rs` 提供 `reads_files()`、`saves_files()`、`proxies()`、`sizes_window()`、`opens_html()`、`view_outside()`、`takes_new_keys()`、`updates()` 等。每个都是一对同签名、分别加 gate 的函数，桌面版在前。只有一端才有的能力对象（桌面的备份，网页的目录和退出登录）由入口经 `Extras` 传进 `launch`。
 - **文件读写成对实现**：桌面版写入下载目录或弹出选择框，浏览器版用下载 / 上传代替。
 - **弹窗**：原版的设置、变量、Cookie 等本来就是弹窗，所以浏览器版不需要第二个窗口。
-- **浏览器版专有**：登录页（由 `index.html` 负责，和 zedis 一样）、账号与团队管理、项目授权、新建项目时选择归属团队、退出登录。这些放在一个 wasm 专用模块中，整体用一个 gate。
+- **账号与团队**：登录页由 `index.html` 负责（和 zedis 一样）。账号与团队管理、项目授权、新建项目时选择归属团队、退出登录的界面两端共用：网页版一直登录着，桌面版登录 bridge 后（`ServerState`）出现同样的菜单和弹窗。
 - **浏览器版不提供的能力**：
   - 模板函数 `readFile` / `openFile`
   - Multipart 选择本地文件
   - 附件自动保存（F7.5）：改为下载
   - 窗口尺寸设置（F1.3）
   - zip 备份与恢复（M13）
+  - 代理（#60）：bridge 直接连目标地址
+  - 导入 `.proto` 文件（gRPC 改用服务器反射）
+  - 检查更新
 
 ### 6.5 i18n
 
-- rust-i18n + 懒加载，语言为 en / zh / uk（F15.2）。
-- 桌面版内嵌语言文件，浏览器版运行时 fetch。
+- rust-i18n，语言只有英文和中文（`locales/en.toml`、`locales/zh-CN.toml`，中文的代码与 gpui-component 共用 `zh-CN`）；两端都把语言文件编进程序。测试 `every_locale_has_every_key` 逐个 key 比对。
 - GPUI 可以直接切换语言，不再需要“3 秒后重启”（F1.8）。
 
 ## 7. 多人协作下的数据一致性（服务器项目）
@@ -338,17 +369,17 @@ JSON 默认展示：恢复默认设置时写回「文本」，再保存其余设
 第 7 步落地时的具体做法：
 
 - **纯逻辑在 core，IO 在 service。** `cyberapi_core::template`（解析和求值，IO 需要的数据由调用方先按 `needs` 准备好）、`send::prepare`、`response`、`curl`；`cyberapi-service::send` 只依赖 trait，两端运行同一份发送管线。cURL 也走同一个准备过程，命令和实际发出的请求一致。
-- **请求头优先级（#3）**：默认值（User-Agent）< 全局请求头 < Basic Auth < 请求自身的 header。
+- **请求头优先级（#3）**：默认值（User-Agent）< 全局请求头 < 目录的请求头（从外到内，#66）< 认证（Basic / Bearer / API key，接口自己的或从目录、项目继承的，#66）< 请求自身的 header。全局请求头先按当前环境取值（#61）。
 - **计时（#1）与取消（#2）**：`NativeEngine` 在 hyper 的连接级 API 上每个请求新建连接，DNS / TCP / TLS 各自计时，包装后的流记录写完请求的时间；响应的起点在 HTTP/1.1 下是收到首字节，在 HTTP/2 下是收到响应头（连接自己的 SETTINGS 帧会先到）。drop future 即中止 tokio 任务、断开连接。每个解析到的地址分到一份连接超时，一个不通的地址不会耗尽全部时间。
 - **HTTP 版本（F14.10）**：默认 HTTPS 经 ALPN 协商 HTTP/2，不支持就用 HTTP/1.1，明文用 HTTP/1.1；设置里可以只用 HTTP/1.1，或只用 HTTP/2（明文时为 h2c）。实际版本记在 `HttpStats.version`。没有做 HTTP/3。
 - **历史记录**：`HistoryStore`，读者自己的（bridge 上按账号隔离），每个接口最近 10 条；写入不算项目修改。
-- **bridge 的目标地址限制**：`TargetPolicy::PublicOnly` 在连接时检查解析后的地址（防 DNS rebinding），默认拒绝回环、私网、链路本地（含云元数据地址）、CGNAT、基准测试段（198.18.0.0/15，fake-IP 代理会把域名解析到这里）、IPv6 ULA，IPv6 中嵌入的 IPv4 按 IPv4 判断；`--allow-target` 放行网段。在使用 fake-IP 模式代理的机器上开发时需要放行 198.18.0.0/15。
-- **暂未做**：响应体的流式处理（整个响应体仍一次读进内存，最多 64 MiB，解压后同样，超出截断并标记；bridge 每个账号同时最多 16 个请求）。后来补上的：Cookie（第 8 步）；附件自动保存（F7.5，桌面写入“下载”目录，浏览器版触发下载，从历史选中时不保存）；大响应体（#17）：历史只保存不超过 2 MiB 的响应体，更大的只记长度，面板最多显示 1 MiB 文本，并可以“保存响应体”。
+- **bridge 的目标地址限制**：`TargetPolicy` 在连接时检查解析后的地址（防 DNS rebinding），IPv6 中嵌入的 IPv4 按 IPv4 判断；`--allow-target` 放行网段。当时的默认是 `PublicOnly`，后来改为 `Networks`：公网和内网都能到，只拒绝 bridge 所在主机的回环、链路本地（含云元数据地址）以及未指定 / 组播 / 广播 / 保留地址；`--public-only` 时才是 `PublicOnly`，再拒绝私网、CGNAT、基准测试段（198.18.0.0/15，fake-IP 代理会把域名解析到这里）、IPv6 ULA。在使用 fake-IP 模式代理的机器上以 `--public-only` 开发时需要放行 198.18.0.0/15。
+- **当时未做**：响应体的流式处理（整个响应体一次读进内存，最多 64 MiB，解压后同样，超出截断并标记；bridge 每个账号同时最多 16 个请求）。后来补上的：事件流（SSE）和 gRPC 服务端流边收边显示（`HttpEngine::send_watched`，不受整体超时限制，bridge 经 `/v1/send/stream` 以 NDJSON 转发），其余响应仍整体读取；Cookie（第 8 步）；附件自动保存（F7.5，桌面写入“下载”目录，浏览器版触发下载，从历史选中时不保存）；大响应体（#17）：历史只保存不超过 2 MiB 的响应体，更大的只记长度，面板最多显示 1 MiB 文本，并可以“保存响应体”。
 
 第 11 步落地时的做法：
 
 - **bridge 是浏览器版的全部部署。** release 构建用 `rust-embed` 把 `cyberapi-web/www` 编进二进制，页面和 API 同源（登录 cookie 保持 `SameSite=Strict`）。`scripts/web-bundle.sh --release` 同时生成 `.wasm.gz`，bridge 按 `Accept-Encoding` 发送；每个文件带内容哈希的 ETag 并要求重新验证（模块的文件名不随版本变）。debug 构建从磁盘读，开发时 `make web-bundle` 后无需重编 bridge。`make web-dist` 打出 `bridge + LICENSE + README.txt` 的 tarball。
-- **桌面版用 cargo-bundle 出包**，沿用 Tauri 版的 identifier（`com.bigtree.cyberapi`），图标（`resources/icons/`）由 `icons/cyberapi.png` 生成（`make icons`），Windows 的 exe 由 `build.rs` 嵌入图标。macOS 的 `.app` 是 ad-hoc 签名，分发给他人还需要 Developer ID 签名和公证；Linux 出 `.deb`，Windows 目前只是 zip。包都在构建所在的平台上产出，不做交叉编译：CI 在三个平台上各自打包（`.github/workflows/package.yml`），版本 tag 挂到对应的 Release，`main` 每晚更新名为 `nightly` 的预发布。
+- **桌面版用 cargo-bundle 出包**，沿用 Tauri 版的 identifier（`com.bigtree.cyberapi`），图标（`resources/icons/`）由 `icons/cyberapi.png` 生成（`make icons`），Windows 的 exe 由 `build.rs` 嵌入图标。macOS 的 `.app` 在设了 `CYBERAPI_SIGN_IDENTITY` 时用 Developer ID 签名（hardened runtime），再设 `CYBERAPI_NOTARY_*` 时公证并 staple（CI 在仓库有 `MACOS_CERTIFICATE` 等密钥时这样做），否则 ad-hoc 签名；Linux 出 `.deb` 和 tarball，Windows 目前只是 zip。包都在构建所在的平台上产出，不做交叉编译：CI 在三个平台上各自打包（`.github/workflows/package.yml`），版本 tag 挂到对应的 Release，`main` 每晚更新名为 `nightly` 的预发布。
 
 ## 9. 账号、团队与授权（浏览器版，D1）
 
@@ -433,5 +464,5 @@ pub trait DirectoryStore: Send + Sync {
 | D5 | 浏览器版发送 HTTP 的方式 | 全部由 bridge 代发；以后可以增加可选的“浏览器直连”模式（第 5 节） |
 | D6 | 项目角色的粒度 | 三级：`Viewer` / `Editor` / `Manager`（9.2 节）；需要更细的粒度时再扩展 |
 | D7 | 团队 `Member` 的默认项目角色 | `Editor`（9.3 节） |
-| D8 | 变量是否区分个人值 | 不区分，变量随项目共享，同项目成员都能看到（4.2 节） |
-| D9 | 接口内容的并发写入 | 后写覆盖，不加乐观锁；冲突明显时再加版本号（第 7 节） |
+| D8 | 变量是否区分个人值 | 不区分，变量随项目共享，同项目成员都能看到；命名环境的定义也随项目共享，当前选哪个环境是读者自己的（#61，4.2 节） |
+| D9 | 接口内容的并发写入 | 起初是后写覆盖；现在服务器项目在工作副本上编辑，整份同步时带基准修订号，对不上即冲突，由读者选用本地或服务器的版本，不做逐条合并（第 7 节） |
