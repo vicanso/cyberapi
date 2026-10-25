@@ -603,7 +603,7 @@ fn build(request: &PreparedRequest, url: &Url, h2: bool) -> Result<http::Request
         }
     };
     if request.header("accept-encoding").is_none() {
-        builder = builder.header("Accept-Encoding", "gzip, deflate, br, zstd");
+        builder = builder.header("Accept-Encoding", cyberapi_core::send::ACCEPT_ENCODING);
     }
     for (name, value) in &request.headers {
         let lower = name.trim().to_ascii_lowercase();

@@ -97,36 +97,37 @@ pub async fn send_watched(
     picked_file: Option<String>,
     watch: Option<Watch>,
 ) -> Result<HttpResponse, SendFailure> {
-    let mut prepared = prepare(&sender, &collection, &request, picked_file, None).await?;
+    let (mut prepared, globals) = prepare(&sender, &collection, &request, picked_file, None).await?;
     let grpc = (request.method == HttpMethod::Grpc).then(|| GrpcBody::read(&request.body));
     // The jar's cookies go to each hop's own address. A Cookie the request
     // names itself stays with the origin it was written for; past it, the
     // jar's are sent.
     let from_jar = prepared.header("cookie").is_none();
+    let own_cookie = prepared.header("cookie").map(str::to_string);
     if from_jar {
         add_cookies(&sender, &mut prepared).await?;
     }
     let started = Instant::now();
     let mut earlier = Duration::ZERO;
     let mut hops = 0;
-    let (sent_to, answered) = loop {
+    let (sent, answered) = loop {
         let sent_to = prepared.url.clone();
         let answered = match &watch {
             Some(watch) => sender.engine.send_watched(prepared.clone(), watch.clone()).await,
             None => sender.engine.send(prepared.clone()).await,
         };
         let Ok(exchange) = &answered else {
-            break (sent_to, answered);
+            break (prepared, answered);
         };
         keep_cookies(&sender, exchange, &sent_to).await;
         let next = (sender.sending.follow_redirects && grpc.is_none())
             .then(|| redirect::next(&prepared, exchange.status, &exchange.headers))
             .flatten();
         let Some(mut next) = next else {
-            break (sent_to, answered);
+            break (prepared, answered);
         };
         if hops == MAX_REDIRECTS {
-            break (sent_to, Err(SendError::Redirects { count: hops }));
+            break (prepared, Err(SendError::Redirects { count: hops }));
         }
         hops += 1;
         earlier += exchange.stats.total;
@@ -140,6 +141,15 @@ pub async fn send_watched(
     };
     // Never zero (F5.7).
     let floor = |latency: Duration| latency.max(Duration::from_millis(1));
+    // #58: the last hop as it went. Its cookies are the jar's unless they
+    // are the ones the request names itself.
+    let version = answered
+        .as_ref()
+        .map(|exchange| exchange.stats.version.as_str())
+        .unwrap_or_default();
+    let jar = sent.header("cookie").is_some() && sent.header("cookie") != own_cookie.as_deref();
+    let sent_request = send::sent_request(&sent, &request, &globals, jar, version);
+    let sent_to = sent.url;
     let response = match answered {
         Ok(exchange) => {
             let mut headers = exchange.headers;
@@ -175,6 +185,7 @@ pub async fn send_watched(
                 stats: exchange.stats,
                 truncated: exchange.truncated,
                 stream,
+                sent: Some(sent_request),
                 ..Default::default()
             }
         }
@@ -185,6 +196,7 @@ pub async fn send_watched(
             url: sent_to,
             error: Some(error.to_string()),
             latency: floor(started.elapsed()),
+            sent: Some(sent_request),
             ..Default::default()
         },
     };
@@ -224,7 +236,7 @@ pub async fn introspect(sender: Sender, collection: CollectionId, request: HttpR
         .to_body(),
         ..request
     };
-    let mut prepared = prepare(&sender, &collection, &asking, None, None)
+    let (mut prepared, _) = prepare(&sender, &collection, &asking, None, None)
         .await
         .map_err(|failure| failure.to_string())?;
     if prepared.header("cookie").is_none() {
@@ -243,7 +255,7 @@ pub async fn introspect(sender: Sender, collection: CollectionId, request: HttpR
 /// F7.8: the cURL command of `request`, prepared as sending would prepare
 /// it. An `openFile` in it is not asked: its parameter stands.
 pub async fn curl(sender: Sender, collection: CollectionId, request: HttpRequest) -> Result<String, SendFailure> {
-    let mut prepared = prepare(&sender, &collection, &request, None, None).await?;
+    let (mut prepared, _) = prepare(&sender, &collection, &request, None, None).await?;
     if prepared.header("cookie").is_none() {
         add_cookies(&sender, &mut prepared).await?;
     }
@@ -326,7 +338,7 @@ async fn ask_reflection(
     body: Vec<u8>,
 ) -> Result<Vec<reflection::Reply>, Unreflected> {
     let failed = |why: String| Unreflected::Failed(why);
-    let mut prepared = prepare(sender, collection, request, None, Some((path, body)))
+    let (mut prepared, _) = prepare(sender, collection, request, None, Some((path, body)))
         .await
         .map_err(|failure| failed(failure.to_string()))?;
     if prepared.header("cookie").is_none() {
@@ -410,7 +422,7 @@ async fn prepare(
     request: &HttpRequest,
     picked_file: Option<String>,
     grpc_call: Option<(&str, Vec<u8>)>,
-) -> Result<PreparedRequest, SendFailure> {
+) -> Result<(PreparedRequest, Vec<String>), SendFailure> {
     let store = |source| SendFailure::Store { source };
     let mut variables: Vec<Variable> = Vec::new();
     for category in [
@@ -470,11 +482,12 @@ async fn prepare(
         http_version: sender.sending.http_version,
         boundary: &boundary,
     };
-    match grpc_call {
+    let prepared = match grpc_call {
         Some((path, body)) => send::grpc_call(request, &cx, path, body),
         None => send::prepare(request, &cx),
     }
-    .map_err(|source| SendFailure::Prepare { source })
+    .map_err(|source| SendFailure::Prepare { source })?;
+    Ok((prepared, send::global_header_names(&variables)))
 }
 
 #[cfg(test)]
@@ -482,7 +495,7 @@ mod tests {
     use super::*;
     use cyberapi_core::grpc;
     use cyberapi_core::model::{ContentType, HttpMethod, KvParam};
-    use cyberapi_core::response::HttpStats;
+    use cyberapi_core::response::{HeaderSource, HttpStats};
     use cyberapi_core::response::{StreamEnd, StreamInfo};
     use cyberapi_core::template::{BaseDir, TemplateError};
     use cyberapi_http::SendFuture;
@@ -1002,13 +1015,26 @@ mod tests {
         assert_eq!(jar.len(), 1, "a cookie for another site is not kept: {jar:?}");
         assert_eq!((jar[0].name.as_str(), jar[0].domain.as_str()), ("sid", "api.test"));
 
-        send_one(request("https://api.test/me", vec![]));
+        let jars = send_one(request("https://api.test/me", vec![]));
         send_one(request("https://other.test/", vec![]));
-        send_one(request("https://api.test/me", vec![kv("Cookie", "mine=1")]));
+        let own = send_one(request("https://api.test/me", vec![kv("Cookie", "mine=1")]));
         let sent = setup.engine.sent.lock().expect("sent").clone();
         assert_eq!(sent[1].header("cookie"), Some("sid=s-1"));
         assert_eq!(sent[2].header("cookie"), None);
         assert_eq!(sent[3].header("cookie"), Some("mine=1"), "the request's own wins");
+        // #58: the history says what went, and where its cookie came from.
+        let cookie = |response: &HttpResponse| {
+            let sent = response.sent.as_ref().expect("kept as sent");
+            sent.headers
+                .iter()
+                .find(|header| header.name.eq_ignore_ascii_case("cookie"))
+                .map(|header| (header.value.clone(), header.from))
+        };
+        assert_eq!(cookie(&jars), Some(("sid=s-1".into(), HeaderSource::Cookie)));
+        assert_eq!(cookie(&own), Some(("mine=1".into(), HeaderSource::Request)));
+        let kept =
+            pollster::block_on(setup.storage.history().list(setup.collection.clone(), api.clone())).expect("history");
+        assert!(kept.iter().all(|response| response.sent.is_some()));
     }
 
     fn redirect(to: &str, cookie: Option<&str>) -> Exchange {

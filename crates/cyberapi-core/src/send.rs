@@ -20,6 +20,7 @@ use crate::graphql::GraphQlBody;
 use crate::grpc::{self, GrpcBody};
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam, Variable, VariableCategory, split_env_prefix};
 use crate::prefs::{HttpVersion, Timeouts};
+use crate::response::{HeaderSource, SENT_BODY_LIMIT, SentHeader, SentRequest};
 use crate::template::{self, FileReader, Inputs, Needs, TemplateError};
 use base64::Engine as _;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
@@ -107,6 +108,97 @@ fn enabled(variables: &[Variable], category: VariableCategory) -> impl Iterator<
 fn global_headers(variables: &[Variable]) -> impl Iterator<Item = &Variable> {
     enabled(variables, VariableCategory::GlobalRequestHeader)
         .filter(|variable| !variable.name.trim().is_empty() && !variable.value.trim().is_empty())
+}
+
+/// The names of the global headers a request goes with.
+pub fn global_header_names(variables: &[Variable]) -> Vec<String> {
+    global_headers(variables)
+        .map(|variable| variable.name.trim().to_string())
+        .collect()
+}
+
+/// The `Accept-Encoding` a request goes with when it names none: every
+/// coding the engine reads.
+pub const ACCEPT_ENCODING: &str = "gzip, deflate, br, zstd";
+
+/// #58: what went out — `prepared`, the last hop's, with the headers the
+/// engine adds as it does (`Host` over HTTP/1.1, `Accept-Encoding`,
+/// `Content-Length`), each said where it came from. `globals` are the
+/// project's global headers' names; `jar` says the cookies are the jar's;
+/// `version` is the HTTP version it went over, empty when it never did.
+pub fn sent_request(
+    prepared: &PreparedRequest,
+    request: &HttpRequest,
+    globals: &[String],
+    jar: bool,
+    version: &str,
+) -> SentRequest {
+    let named = |list: &[KvParam], name: &str| {
+        list.iter()
+            .any(|kv| kv.enabled && kv.key.trim().eq_ignore_ascii_case(name))
+    };
+    let from = |name: &str| {
+        if name.eq_ignore_ascii_case("cookie") && jar {
+            HeaderSource::Cookie
+        } else if named(&request.headers, name) {
+            HeaderSource::Request
+        } else if name.eq_ignore_ascii_case("authorization") && request.auth.iter().any(|kv| kv.enabled) {
+            HeaderSource::Auth
+        } else if globals.iter().any(|global| global.eq_ignore_ascii_case(name)) {
+            HeaderSource::Global
+        } else if name.eq_ignore_ascii_case("content-type") {
+            HeaderSource::Body
+        } else {
+            HeaderSource::Default
+        }
+    };
+    let header = |name: &str, value: &str, from: HeaderSource| SentHeader {
+        name: name.to_string(),
+        value: value.to_string(),
+        from,
+    };
+    let mut headers = Vec::new();
+    let h2 = version == "HTTP/2" || (version.is_empty() && prepared.http_version == HttpVersion::Http2);
+    if !h2
+        && prepared.header("host").is_none()
+        && let Ok(url) = url::Url::parse(&prepared.url)
+    {
+        let host = url.host_str().unwrap_or_default();
+        let authority = match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        };
+        headers.push(header("Host", &authority, HeaderSource::Default));
+    }
+    if prepared.header("accept-encoding").is_none() {
+        headers.push(header("Accept-Encoding", ACCEPT_ENCODING, HeaderSource::Default));
+    }
+    headers.extend(
+        prepared
+            .headers
+            .iter()
+            .map(|(name, value)| header(name, value, from(name))),
+    );
+    if !prepared.body.is_empty() && prepared.header("content-length").is_none() {
+        let length = prepared.body.len().to_string();
+        headers.push(header("Content-Length", &length, HeaderSource::Default));
+    }
+    let start = &prepared.body[..prepared.body.len().min(SENT_BODY_LIMIT)];
+    let body = match std::str::from_utf8(start) {
+        Ok(text) => Some(text.to_string()),
+        // Cut inside a character: the text before it.
+        Err(error) if error.error_len().is_none() => {
+            Some(String::from_utf8_lossy(&start[..error.valid_up_to()]).into_owned())
+        }
+        Err(_) => None,
+    };
+    SentRequest {
+        method: prepared.method.as_str().to_string(),
+        url: prepared.url.clone(),
+        headers,
+        body,
+        body_size: prepared.body.len() as u64,
+    }
 }
 
 /// F5.2: the URI with its environment variable's value in place of
@@ -780,6 +872,82 @@ mod tests {
         request.headers = vec![kv("Content-Type", "application/vnd.api+json")];
         let prepared = prepare_with(&request, &[]).expect("prepare");
         assert_eq!(prepared.header("Content-Type"), Some("application/vnd.api+json"));
+    }
+
+    /// #58: what went out, each header said where it came from, with the
+    /// ones the engine adds.
+    #[test]
+    fn the_sent_request_says_where_each_header_came_from() {
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            headers: vec![kv("X-Trace", "{{uuid()}}")],
+            auth: vec![kv("u", "p")],
+            ..Default::default()
+        };
+        let prepared = PreparedRequest {
+            method: HttpMethod::Post,
+            url: "http://a.test:8080/v1?x=1".into(),
+            headers: vec![
+                ("User-Agent".into(), "CyberAPI/test".into()),
+                ("X-Tenant".into(), "t1".into()),
+                ("Authorization".into(), "Basic dTpw".into()),
+                ("X-Trace".into(), "4f1e".into()),
+                ("Content-Type".into(), "application/json".into()),
+                ("Cookie".into(), "sid=1".into()),
+            ],
+            body: b"{\"a\": 1}".to_vec(),
+            ..Default::default()
+        };
+        let sent = sent_request(&prepared, &request, &["x-tenant".into()], true, "HTTP/1.1");
+        let seen: Vec<(&str, &str, HeaderSource)> = sent
+            .headers
+            .iter()
+            .map(|header| (header.name.as_str(), header.value.as_str(), header.from))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("Host", "a.test:8080", HeaderSource::Default),
+                ("Accept-Encoding", ACCEPT_ENCODING, HeaderSource::Default),
+                ("User-Agent", "CyberAPI/test", HeaderSource::Default),
+                ("X-Tenant", "t1", HeaderSource::Global),
+                ("Authorization", "Basic dTpw", HeaderSource::Auth),
+                ("X-Trace", "4f1e", HeaderSource::Request),
+                ("Content-Type", "application/json", HeaderSource::Body),
+                ("Cookie", "sid=1", HeaderSource::Cookie),
+                ("Content-Length", "8", HeaderSource::Default),
+            ]
+        );
+        assert_eq!(
+            (sent.method.as_str(), sent.url.as_str()),
+            ("POST", "http://a.test:8080/v1?x=1")
+        );
+        assert_eq!((sent.body.as_deref(), sent.body_size), (Some("{\"a\": 1}"), 8));
+
+        // Over HTTP/2 there is no Host; a body that is not text is not kept
+        // as text; a long one keeps its start.
+        let binary = PreparedRequest {
+            body: vec![0, 0, 0, 0, 3, 0xff, 0xfe, 1],
+            ..prepared.clone()
+        };
+        let sent = sent_request(&binary, &request, &[], false, "HTTP/2");
+        assert!(sent.headers.iter().all(|header| header.name != "Host"));
+        assert_eq!(
+            sent.headers
+                .iter()
+                .find(|header| header.name == "Cookie")
+                .map(|header| header.from),
+            Some(HeaderSource::Default),
+            "the request's own, not the jar's"
+        );
+        assert_eq!((sent.body, sent.body_size), (None, 8));
+        let long = PreparedRequest {
+            body: "é".repeat(SENT_BODY_LIMIT).into_bytes(),
+            ..prepared
+        };
+        let sent = sent_request(&long, &request, &[], false, "HTTP/1.1");
+        assert_eq!(sent.body.map(|body| body.len()), Some(SENT_BODY_LIMIT));
+        assert_eq!(sent.body_size, 2 * SENT_BODY_LIMIT as u64);
     }
 
     #[test]

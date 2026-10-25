@@ -156,6 +156,57 @@ pub struct HttpResponse {
     /// An event stream's arrivals and end (`crate::sse`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<StreamInfo>,
+    /// The request as it went out (#58); `None` in entries kept before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sent: Option<SentRequest>,
+}
+
+/// The most of a sent body the history keeps (#58).
+pub const SENT_BODY_LIMIT: usize = 16 * 1024;
+
+/// The request as it went out (#58), the last hop's: every variable,
+/// template function, global header, cookie and default in place, and the
+/// headers the engine adds.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SentRequest {
+    pub method: String,
+    pub url: String,
+    /// In the order sent.
+    pub headers: Vec<SentHeader>,
+    /// The body's start as text, [`SENT_BODY_LIMIT`] of it; `None` when it
+    /// is not text (a gRPC call's frames, a file).
+    pub body: Option<String>,
+    /// The whole body's length, in bytes.
+    pub body_size: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SentHeader {
+    pub name: String,
+    pub value: String,
+    pub from: HeaderSource,
+}
+
+/// Where a sent header came from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HeaderSource {
+    /// The request's own headers (a gRPC call's metadata).
+    Request,
+    /// The project's global request headers.
+    Global,
+    /// The request's Basic auth.
+    Auth,
+    /// The cookie jar.
+    Cookie,
+    /// The body's type.
+    Body,
+    /// The application's or the engine's: `User-Agent`, `Accept-Encoding`,
+    /// `Host`, `Content-Length`.
+    #[default]
+    Default,
 }
 
 /// How the id of an answer the history did not keep starts: no store gives
@@ -425,6 +476,7 @@ impl HttpResponse {
             truncated: self.truncated,
             notice: self.notice.clone(),
             stream: self.stream.clone(),
+            sent: self.sent.clone(),
         }
     }
 

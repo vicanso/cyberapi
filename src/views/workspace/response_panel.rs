@@ -13,8 +13,8 @@ use cyberapi_core::grpc::GrpcStatus;
 use cyberapi_core::media::{self, HEX_LIMIT, ImageType};
 use cyberapi_core::model::{ContentType, HttpMethod};
 use cyberapi_core::response::{
-    BodyKind, DISPLAY_LIMIT, HttpResponse, RESPONSE_LIMIT, StatusLevel, StreamEnd, TREE_LIMIT, clip_text,
-    format_duration, format_size, status_level, status_text, unwrappable_line,
+    BodyKind, DISPLAY_LIMIT, HeaderSource, HttpResponse, RESPONSE_LIMIT, SentRequest, StatusLevel, StreamEnd,
+    TREE_LIMIT, clip_text, format_duration, format_size, status_level, status_text, unwrappable_line,
 };
 use cyberapi_http::SendError;
 use gpui_kit::component::alert::Alert;
@@ -108,6 +108,8 @@ pub struct ResponsePanel {
     filter: Entity<InputState>,
     /// The filter's field shows: opened, or a filter kept for this API.
     filtering: bool,
+    /// #58: the sent request's secrets show unmasked.
+    reveal: bool,
     found: Option<Found>,
     _finding: Option<Task<()>>,
     /// The path whose matches the editor holds; `None` for the whole body.
@@ -213,6 +215,7 @@ impl ResponsePanel {
             workspace,
             filter,
             filtering: !kept.is_empty(),
+            reveal: false,
             found: None,
             _finding: None,
             shown_filter: None,
@@ -1375,6 +1378,7 @@ impl ResponsePanel {
             );
         // Nothing was timed (it failed before it went out): no line of dashes.
         let timed = span > 0.;
+        let sent = response.sent.as_ref().map(|sent| self.render_sent(sent, cx));
         v_flex()
             .id("response-info")
             .size_full()
@@ -1383,8 +1387,158 @@ impl ResponsePanel {
             .gap_3()
             .child(field_rows("response-info-fields", rows, cx))
             .when(timed, |this| this.child(timeline))
+            .children(sent)
             .into_any_element()
     }
+
+    /// #58: the request as it went out — every header, said where it came
+    /// from, and the body — what reads like a secret masked till shown.
+    fn render_sent(&self, sent: &SentRequest, cx: &mut Context<Self>) -> AnyElement {
+        let reveal = self.reveal;
+        let secrets = sent
+            .headers
+            .iter()
+            .any(|header| cyberapi_core::mcp::secret_name(&header.name));
+        let rows: Vec<(String, String, String)> = sent
+            .headers
+            .iter()
+            .map(|header| {
+                let value = if !reveal && cyberapi_core::mcp::secret_name(&header.name) {
+                    "••••••".to_string()
+                } else {
+                    header.value.clone()
+                };
+                (header.name.clone(), value, header_source(header.from))
+            })
+            .collect();
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let shown = sent.body.as_ref().map_or(0, String::len) as u64;
+        let body_note = match &sent.body {
+            Some(_) if sent.body_size > shown => Some(t!(
+                "response.sent_body_cut",
+                size = format_size(shown),
+                total = format_size(sent.body_size)
+            )),
+            None if sent.body_size > 0 => Some(t!("response.sent_binary", size = format_size(sent.body_size))),
+            _ => None,
+        };
+        let body = sent.body.clone().filter(|body| !body.is_empty()).map(|body| {
+            div()
+                .px_2()
+                .py_1p5()
+                .rounded(theme.radius)
+                .bg(theme.muted)
+                .text_xs()
+                .font_family(theme.mono_font_family.clone())
+                .child(body)
+        });
+        v_flex()
+            .gap_1()
+            .pt_2()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                h_flex()
+                    .px_2()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_semibold()
+                            .child(t!("response.sent_title").to_string()),
+                    )
+                    .when(secrets, |this| {
+                        let (icon, label) = if reveal {
+                            (IconName::EyeOff, t!("response.hide_secrets"))
+                        } else {
+                            (IconName::Eye, t!("response.show_secrets"))
+                        };
+                        this.child(
+                            Button::new("response-sent-reveal")
+                                .ghost()
+                                .xsmall()
+                                .icon(icon)
+                                .label(label.to_string())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.reveal = !this.reveal;
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            )
+            .child(sent_rows(rows, cx))
+            .when(body.is_some() || body_note.is_some(), |this| {
+                this.child(
+                    v_flex()
+                        .px_2()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(muted)
+                                .child(t!("response.sent_body").to_string()),
+                        )
+                        .when_some(body_note, |this, note| {
+                            this.child(div().text_xs().text_color(muted).child(note.to_string()))
+                        })
+                        .children(body),
+                )
+            })
+            .into_any_element()
+    }
+}
+
+/// Where a sent header came from, as its row says it.
+fn header_source(from: HeaderSource) -> String {
+    match from {
+        HeaderSource::Request => t!("response.from_request"),
+        HeaderSource::Global => t!("response.from_global"),
+        HeaderSource::Auth => t!("response.from_auth"),
+        HeaderSource::Cookie => t!("response.from_cookie"),
+        HeaderSource::Body => t!("response.from_body"),
+        HeaderSource::Default => t!("response.from_default"),
+    }
+    .to_string()
+}
+
+/// A sent request's headers: name, value and where it came from, the
+/// value — as shown — copied by the button its row shows on hover.
+fn sent_rows(rows: Vec<(String, String, String)>, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    let (muted, hover) = (theme.muted_foreground, theme.list_hover);
+    v_flex()
+        .text_sm()
+        .children(rows.into_iter().enumerate().map(move |(index, (name, value, from))| {
+            let group = SharedString::from(format!("response-sent-{index}"));
+            let copied = value.clone();
+            h_flex()
+                .group(group.clone())
+                .px_2()
+                .py_1()
+                .gap_3()
+                .items_start()
+                .rounded(theme.radius)
+                .hover(move |style| style.bg(hover))
+                .child(div().w(px(180.)).flex_none().text_color(muted).child(name))
+                .child(div().flex_1().min_w_0().child(value))
+                .child(div().flex_none().text_xs().text_color(muted).child(from))
+                .child(
+                    div()
+                        .flex_none()
+                        .invisible()
+                        .group_hover(group, |style| style.visible())
+                        .child(
+                            Button::new(("response-sent-copy", index))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .tooltip(t!("common.copy").to_string())
+                                .on_click(move |_, window, cx| copy(copied.clone(), window, cx)),
+                        ),
+                )
+        }))
 }
 
 /// Names and values, each value copied by the button its row shows on
