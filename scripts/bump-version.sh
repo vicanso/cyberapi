@@ -9,7 +9,8 @@
 # and only those: `cargo update --workspace` leaves the pinned dependencies
 # alone), so the lockfile committed with the bump matches. So do the
 # deployment guides' examples: the image tag, the tarball, the version
-# named as one in backticks (#54).
+# named as one in backticks (#54); and the Helm chart's version and
+# appVersion (G6).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -30,9 +31,14 @@ NEXT="$MAJ.$MIN.$PAT"
 # A bump that fails part-way leaves the tree as it found it: the version is
 # read back from Cargo.toml, so a half-applied bump would skip one on retry.
 DOCS=(docs/DEPLOY.md docs/DEPLOY_zh.md)
-TOUCHED=(Cargo.toml Cargo.lock "${DOCS[@]}")
+CHART=deploy/helm/cyberapi/Chart.yaml
+TOUCHED=(Cargo.toml Cargo.lock "${DOCS[@]}" "$CHART")
 SNAPSHOT=$(mktemp -d)
-for f in "${TOUCHED[@]}"; do cp "$f" "$SNAPSHOT/"; done
+# Each under its own path: two of them share a name in another directory.
+for f in "${TOUCHED[@]}"; do
+  mkdir -p "$SNAPSHOT/$(dirname "$f")"
+  cp "$f" "$SNAPSHOT/$f"
+done
 finish() {
   status=$?
   if [ "$status" -ne 0 ]; then
@@ -53,5 +59,9 @@ cargo update --workspace --offline --quiet
 
 CURRENT="$CURRENT" NEXT="$NEXT" perl -pi -e \
   's/(cyberapi-web[:-])\Q$ENV{CURRENT}\E(?![\d.])/$1$ENV{NEXT}/g; s/`\Q$ENV{CURRENT}\E`/`$ENV{NEXT}`/g' "${DOCS[@]}"
+
+CURRENT="$CURRENT" NEXT="$NEXT" perl -pi -e \
+  's/^(version: )\Q$ENV{CURRENT}\E$/$1$ENV{NEXT}/; s/^(appVersion: ")\Q$ENV{CURRENT}\E"$/$1$ENV{NEXT}"/' "$CHART"
+grep -q "^appVersion: \"$NEXT\"" "$CHART" || { echo "failed to bump $CHART" >&2; exit 1; }
 
 echo "version: $CURRENT -> $NEXT"

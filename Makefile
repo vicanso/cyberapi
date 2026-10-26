@@ -1,4 +1,4 @@
-.PHONY: dev debug check fmt lint test release desktop-dist bundle icons nightly version version-patch version-minor version-major check-web web-bundle web-release web-serve web-dist docker db-up db-down test-sql bridge cli
+.PHONY: dev debug check fmt lint test release desktop-dist bundle icons nightly version version-patch version-minor version-major check-web web-bundle web-release web-serve web-dist docker db-up db-down test-sql bridge cli helm-lint
 
 # The desktop app.
 dev:
@@ -101,6 +101,11 @@ test-sql:
 # The bridge on the local PostgreSQL, serving the last `make web-bundle`:
 # open http://127.0.0.1:7380/. The first visit makes the administrator with
 # the setup token `dev`. Requests may go to this machine, for local APIs.
+# G6: the Helm chart, rendered with a database named (it refuses to without).
+helm-lint:
+	helm lint deploy/helm/cyberapi --set store.url=postgres://user:password@db:5432/cyberapi
+	helm template cyberapi deploy/helm/cyberapi --set store.url=postgres://user:password@db:5432/cyberapi > /dev/null
+
 # A4: the command line, `cyberapi-cli run`, in the target directory's release/.
 cli:
 	cargo build --release -p cyberapi-cli

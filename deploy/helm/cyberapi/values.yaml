@@ -1,0 +1,90 @@
+# CyberAPI's web version on Kubernetes: one bridge, the page compiled in,
+# and a PostgreSQL or MySQL database you provide (docs/DEPLOY.md).
+
+image:
+  repository: vicanso/cyberapi-web
+  # The chart's appVersion when empty; `nightly` follows main.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# One is the bridge's shape: the login throttle, the MCP call limit and
+# the requests an account has out at once are counted in each process.
+replicaCount: 1
+
+# The database. Give `url` here, or name a Secret of your own that holds
+# it under `existingSecretKey` (better: it stays out of the values).
+store:
+  url: ""
+  existingSecret: ""
+  existingSecretKey: store-url
+
+# The token the first administrator is made with. Random, and in the
+# bridge's log, when empty; it counts only while there is no account.
+setupToken:
+  value: ""
+  existingSecret: ""
+  existingSecretKey: setup-token
+
+bridge:
+  # Serve the page and the API under a path, e.g. /cyberapi; the ingress
+  # path should be the same. Empty: the root.
+  basePath: ""
+  # Address ranges requests may also go to, e.g. 10.0.0.0/8 for the APIs
+  # of your own network ("Where requests may go").
+  allowTargets: []
+  # Refuse private networks too, for a bridge open to the internet.
+  publicOnly: false
+  # Leave Secure off the login cookie: only for plain HTTP inside a
+  # network you trust. Behind TLS, leave it off.
+  insecureCookie: false
+  # More arguments, as `cyberapi-bridge --help` lists them.
+  extraArgs: []
+  extraEnv: []
+
+service:
+  type: ClusterIP
+  port: 7380
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: cyberapi.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: cyberapi-tls
+  #    hosts:
+  #      - cyberapi.example.com
+
+# The image is distroless and runs as nonroot (65532).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources: {}
+#  requests:
+#    cpu: 100m
+#    memory: 128Mi
+#  limits:
+#    memory: 512Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -10,6 +10,7 @@ This guide follows `main`. What a release does not have yet is marked with the v
 - [Try it](#try-it)
 - [Docker Compose](#docker-compose)
 - [The binary, with systemd](#the-binary-with-systemd)
+- [Kubernetes (Helm)](#kubernetes-helm)
 - [Options](#options)
 - [The first administrator](#the-first-administrator)
 - [HTTPS behind a reverse proxy](#https-behind-a-reverse-proxy)
@@ -120,6 +121,26 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now cyberapi-bridge
 journalctl -u cyberapi-bridge | grep setup_token
 ```
+
+## Kubernetes (Helm)
+
+*0.3.1.* A chart is in the repository, `deploy/helm/cyberapi`: one Deployment of the image, a Service and, if you want one, an Ingress. It does not make the database: give it one you have.
+
+```bash
+git clone https://github.com/vicanso/cyberapi && cd cyberapi
+kubectl create secret generic cyberapi-db \
+  --from-literal=store-url='postgres://cyberapi:change-me@postgres:5432/cyberapi'
+helm install cyberapi deploy/helm/cyberapi \
+  --set store.existingSecret=cyberapi-db \
+  --set ingress.enabled=true --set 'ingress.hosts[0].host=cyberapi.example.com' \
+  --set 'ingress.hosts[0].paths[0].path=/' --set 'ingress.hosts[0].paths[0].pathType=Prefix'
+```
+
+- **The database**: `store.existingSecret` (and `store.existingSecretKey`, `store-url` by default) names a Secret of yours; or `store.url` puts the URL in a Secret the chart writes. Without either it refuses to install.
+- **The first administrator**: `setupToken.value` or `setupToken.existingSecret`; without one the token is in the log (`kubectl logs deploy/cyberapi | grep -i "setup token"`).
+- **The options** above, as values: `bridge.basePath` (the ingress path should match it), `bridge.allowTargets` (a list), `bridge.publicOnly`, `bridge.insecureCookie`, and `bridge.extraArgs` / `bridge.extraEnv` for the rest.
+- **One replica** (`replicaCount: 1`): the login throttle, the MCP limit and the requests an account has out at once are counted in each process. The pod runs as non-root with a read-only root filesystem; it is ready once it reaches its database.
+- **TLS** is the Ingress's (`ingress.tls`): behind it the login cookie stays `Secure`. A version other than the chart's is `image.tag` (`nightly` follows `main`).
 
 ## Options
 

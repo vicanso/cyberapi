@@ -1,0 +1,22 @@
+CyberAPI's web version is starting{{ with .Values.bridge.basePath }} under {{ . }}{{ end }}.
+
+{{- if .Values.ingress.enabled }}
+Open it at:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ include "cyberapi.path" $ }}/
+{{- end }}
+{{- else }}
+Reach it with:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "cyberapi.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+and open http://127.0.0.1:{{ .Values.service.port }}{{ include "cyberapi.path" . }}/
+{{- if not .Values.bridge.insecureCookie }}
+(over plain http the browser drops the Secure login cookie: put TLS in front, or set bridge.insecureCookie for a trial)
+{{- end }}
+{{- end }}
+
+The first administrator is made with the setup token:
+{{- if or .Values.setupToken.value .Values.setupToken.existingSecret }}
+  the one you gave (setupToken).
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} logs deploy/{{ include "cyberapi.fullname" . }} | grep -i "setup token"
+{{- end }}

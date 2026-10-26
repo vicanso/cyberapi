@@ -10,6 +10,7 @@
 - [先试一下](#先试一下)
 - [Docker Compose](#docker-compose)
 - [二进制加 systemd](#二进制加-systemd)
+- [Kubernetes（Helm）](#kuberneteshelm)
 - [选项](#选项)
 - [第一个管理员](#第一个管理员)
 - [反向代理和 HTTPS](#反向代理和-https)
@@ -120,6 +121,26 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now cyberapi-bridge
 journalctl -u cyberapi-bridge | grep setup_token
 ```
+
+## Kubernetes（Helm）
+
+*0.3.1*。仓库里有一个 chart：`deploy/helm/cyberapi`，包括镜像的一个 Deployment、一个 Service，需要的话还有一个 Ingress。它不创建数据库，请用你已有的。
+
+```bash
+git clone https://github.com/vicanso/cyberapi && cd cyberapi
+kubectl create secret generic cyberapi-db \
+  --from-literal=store-url='postgres://cyberapi:change-me@postgres:5432/cyberapi'
+helm install cyberapi deploy/helm/cyberapi \
+  --set store.existingSecret=cyberapi-db \
+  --set ingress.enabled=true --set 'ingress.hosts[0].host=cyberapi.example.com' \
+  --set 'ingress.hosts[0].paths[0].path=/' --set 'ingress.hosts[0].paths[0].pathType=Prefix'
+```
+
+- **数据库**：`store.existingSecret`（及 `store.existingSecretKey`，默认 `store-url`）指向你自己的 Secret；或者用 `store.url`，由 chart 写进它生成的 Secret。两者都没有时拒绝安装。
+- **第一个管理员**：`setupToken.value` 或 `setupToken.existingSecret`；都没有时初始化 token 在日志里（`kubectl logs deploy/cyberapi | grep -i "setup token"`）。
+- **上面的选项**都有对应的 value：`bridge.basePath`（Ingress 的路径要和它一致）、`bridge.allowTargets`（列表）、`bridge.publicOnly`、`bridge.insecureCookie`，其余用 `bridge.extraArgs` / `bridge.extraEnv`。
+- **一个副本**（`replicaCount: 1`）：登录限流、MCP 调用限制和每个账号同时发送的请求数都是在各自进程里计数的。Pod 以非 root 用户、只读根文件系统运行，连上数据库后才算就绪。
+- **TLS** 交给 Ingress（`ingress.tls`），这样登录 Cookie 保持 `Secure`。要用 chart 之外的版本就设 `image.tag`（`nightly` 跟随 `main`）。
 
 ## 选项
 

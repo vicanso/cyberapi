@@ -1,0 +1,16 @@
+apiVersion: v2
+name: cyberapi
+description: CyberAPI's web version — the bridge, with the page compiled in — on Kubernetes. It needs a PostgreSQL or MySQL database of its own.
+type: application
+# Moves with the app (scripts/bump-version.sh).
+version: 0.3.0
+appVersion: "0.3.0"
+home: https://github.com/vicanso/cyberapi
+sources:
+  - https://github.com/vicanso/cyberapi
+keywords:
+  - api
+  - http
+  - rest
+  - graphql
+  - grpc

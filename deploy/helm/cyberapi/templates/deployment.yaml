@@ -1,0 +1,109 @@
+{{- if and (not .Values.store.url) (not .Values.store.existingSecret) }}
+{{- fail "store.url or store.existingSecret: the bridge needs a PostgreSQL or MySQL database" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cyberapi.fullname" . }}
+  labels:
+    {{- include "cyberapi.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cyberapi.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- /* A changed value rolls the pods. */}}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "cyberapi.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: bridge
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- $args := list }}
+          {{- if .Values.bridge.insecureCookie }}{{ $args = append $args "--insecure-cookie" }}{{ end }}
+          {{- $args = concat $args .Values.bridge.extraArgs }}
+          {{- with $args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: CYBERAPI_BRIDGE_LISTEN
+              value: "0.0.0.0:{{ .Values.service.port }}"
+            - name: CYBERAPI_BRIDGE_STORE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.store.existingSecret | default (include "cyberapi.secretName" .) }}
+                  key: {{ ternary .Values.store.existingSecretKey "store-url" (not (empty .Values.store.existingSecret)) }}
+            {{- if or .Values.setupToken.value .Values.setupToken.existingSecret }}
+            - name: CYBERAPI_BRIDGE_SETUP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.setupToken.existingSecret | default (include "cyberapi.secretName" .) }}
+                  key: {{ ternary .Values.setupToken.existingSecretKey "setup-token" (not (empty .Values.setupToken.existingSecret)) }}
+            {{- end }}
+            {{- with .Values.bridge.basePath }}
+            - name: CYBERAPI_BRIDGE_BASE_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.bridge.allowTargets }}
+            - name: CYBERAPI_BRIDGE_ALLOW_TARGETS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- if .Values.bridge.publicOnly }}
+            - name: CYBERAPI_BRIDGE_PUBLIC_ONLY
+              value: "true"
+            {{- end }}
+            {{- with .Values.bridge.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          # Ready once it reaches its database: the setup check counts
+          # the accounts.
+          readinessProbe:
+            httpGet:
+              path: {{ include "cyberapi.path" . }}/v1/setup
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
