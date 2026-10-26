@@ -34,7 +34,9 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 ///    `HttpRequest.extractions`).
 /// 9: what APIs and folders are for, and an API's examples (F3,
 ///    `HttpRequest.description` / `examples`, `FolderSettings.description`).
-pub const MODEL: u32 = 9;
+/// 10: an API, folder or project signs in with OAuth 2.0 (C4,
+///    `Auth::OAuth2`).
+pub const MODEL: u32 = 10;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

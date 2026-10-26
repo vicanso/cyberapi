@@ -15,6 +15,7 @@
 //! kept read as JSON, and its trailers after the headers. [`reflect`] asks a
 //! server for the definitions its calls are encoded with.
 
+use crate::oauth::{self, Signed, Tokens};
 use cyberapi_core::Timestamp;
 use cyberapi_core::certificates;
 use cyberapi_core::code::CodeTarget;
@@ -88,6 +89,9 @@ pub struct Sender {
     /// variables stand in for the shared ones of the same name. The caller
     /// fills it, as `inherited`.
     pub environment: Option<Environment>,
+    /// C4: the OAuth tokens had so far, shared by every send of the app
+    /// (or of the run, the call) that holds them.
+    pub tokens: Arc<Tokens>,
 }
 
 impl Sender {
@@ -175,6 +179,11 @@ pub(crate) async fn send_with(
     if from_jar {
         add_cookies(&sender, &mut prepared).await?;
     }
+    // C4: no token, no request: why is kept as its answer.
+    let (mut oauth_signed, mut no_token) = match oauth::sign(&sender, &mut prepared, false).await {
+        Ok(signed) => (signed, None),
+        Err(why) => (Signed::No, Some(why)),
+    };
     let started = Instant::now();
     let mut earlier = Duration::ZERO;
     let mut hops = 0;
@@ -183,6 +192,9 @@ pub(crate) async fn send_with(
     let mut answered_digest = false;
     let mut digest_notice = None;
     let (sent, answered) = loop {
+        if let Some(why) = no_token.take() {
+            break (prepared, Err(SendError::Http { message: why }));
+        }
         let sent_to = prepared.url.clone();
         let answered = match &watch {
             Some(watch) => sender.engine.send_watched(prepared.clone(), watch.clone()).await,
@@ -192,6 +204,18 @@ pub(crate) async fn send_with(
             break (prepared, answered);
         };
         keep_cookies(&sender, exchange, &sent_to).await;
+        // C4: a kept token the API no longer takes: once more, with a new
+        // one.
+        if exchange.status == 401 && oauth_signed == Signed::Kept {
+            match oauth::sign(&sender, &mut prepared, true).await {
+                Ok(signed) => {
+                    oauth_signed = signed;
+                    earlier += exchange.stats.total;
+                    continue;
+                }
+                Err(why) => break (prepared, Err(SendError::Http { message: why })),
+            }
+        }
         match answer_digest(&prepared, exchange) {
             Some(Ok(signed)) => {
                 answered_digest = true;
@@ -349,6 +373,7 @@ pub async fn introspect(
             .await
             .map_err(|failure| failure.to_string())?;
     }
+    oauth::sign(&sender, &mut prepared, false).await?;
     let mut exchange = sender
         .engine
         .send(prepared.clone())
@@ -425,6 +450,8 @@ pub async fn code(
     if prepared.header("cookie").is_none() {
         add_cookies(&sender, &mut prepared).await?;
     }
+    // C4: no token is asked for to write code.
+    oauth::sign_kept(&sender, &mut prepared);
     Ok(cyberapi_core::code::code(
         target,
         &prepared,
@@ -572,6 +599,7 @@ async fn ask_reflection(
             .await
             .map_err(|failure| failed(failure.to_string()))?;
     }
+    oauth::sign(sender, &mut prepared, false).await.map_err(failed)?;
     let exchange = sender
         .engine
         .send(prepared)
@@ -823,6 +851,7 @@ mod tests {
             sending: SendPrefs::default(),
             inherited: Inherited::default(),
             environment: None,
+            tokens: Default::default(),
         };
         Setup {
             storage,
@@ -1535,6 +1564,161 @@ mod tests {
         let (response, asked) = send_to(&setup, "auth-int", Vec::new());
         assert_eq!((response.status, asked.len()), (Some(401), 1));
         assert!(response.notice.expect("why").contains("qop auth-int"));
+    }
+
+    /// C4: a token is asked for once and kept; one the API refuses is
+    /// asked for again, with the refresh token first; a token that cannot
+    /// be had is the answer, and why. Code takes the kept one, asking none.
+    #[test]
+    fn an_oauth_token_is_asked_for_once_and_again_when_refused() {
+        /// Gives t1, t2…, and takes only the newest.
+        struct Id {
+            given: Mutex<u32>,
+            fails: bool,
+            asked: Mutex<Vec<PreparedRequest>>,
+        }
+        impl HttpEngine for Id {
+            fn send(&self, request: PreparedRequest) -> SendFuture {
+                self.asked.lock().expect("asked").push(request.clone());
+                let mut given = self.given.lock().expect("given");
+                let answer = match request.url.as_str() {
+                    "https://id.test/token" if self.fails => ok(401, r#"{"error":"invalid_client"}"#),
+                    "https://id.test/token" => {
+                        *given += 1;
+                        ok(
+                            200,
+                            &format!(
+                                r#"{{"access_token":"t{0}","expires_in":3600,"refresh_token":"r{0}"}}"#,
+                                *given
+                            ),
+                        )
+                    }
+                    _ if request.header("authorization") == Some(&format!("Bearer t{given}")) => ok(200, "{}"),
+                    _ => ok(401, "{}"),
+                };
+                Box::pin(async move { answer })
+            }
+        }
+        let setup = setup(ok(200, "{}"));
+        let api = new_api(&setup, "oauth");
+        let request = HttpRequest {
+            uri: "https://api.test/a".into(),
+            auth: cyberapi_core::auth::Auth::from(cyberapi_core::oauth::OAuth2 {
+                token_url: "https://id.test/token".into(),
+                client_id: "app".into(),
+                client_secret: "s".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let id = Arc::new(Id {
+            given: Mutex::new(0),
+            fails: false,
+            asked: Mutex::default(),
+        });
+        let sender = Sender {
+            engine: id.clone(),
+            ..setup.sender.clone()
+        };
+        let send_one = |sender: &Sender| {
+            pollster::block_on(send(
+                sender.clone(),
+                setup.collection.clone(),
+                api.clone(),
+                request.clone(),
+                Answers::default(),
+            ))
+            .expect("sent")
+        };
+        let asked = |id: &Id| -> Vec<(String, String)> {
+            id.asked
+                .lock()
+                .expect("asked")
+                .drain(..)
+                .map(|asked| {
+                    let said = match asked.url.as_str() {
+                        "https://id.test/token" => String::from_utf8_lossy(&asked.body).to_string(),
+                        _ => asked.header("authorization").unwrap_or_default().to_string(),
+                    };
+                    (asked.url, said)
+                })
+                .collect()
+        };
+
+        let response = send_one(&sender);
+        assert_eq!(response.status, Some(200));
+        assert_eq!(
+            asked(&id),
+            [
+                (
+                    "https://id.test/token".to_string(),
+                    "grant_type=client_credentials".to_string()
+                ),
+                ("https://api.test/a".into(), "Bearer t1".into()),
+            ]
+        );
+        let sent = response.sent.expect("sent");
+        let header = sent.headers.iter().find(|h| h.name == "Authorization").expect("kept");
+        assert_eq!(header.from, HeaderSource::Auth, "masked as the auth's");
+
+        // Kept: not asked for again.
+        assert_eq!(send_one(&sender).status, Some(200));
+        assert_eq!(
+            asked(&id),
+            [("https://api.test/a".to_string(), "Bearer t1".to_string())]
+        );
+
+        // Refused: refreshed, and sent again once.
+        *id.given.lock().expect("given") = 5;
+        assert_eq!(send_one(&sender).status, Some(200));
+        assert_eq!(
+            asked(&id),
+            [
+                ("https://api.test/a".to_string(), "Bearer t1".to_string()),
+                (
+                    "https://id.test/token".into(),
+                    "grant_type=refresh_token&refresh_token=r1".into()
+                ),
+                ("https://api.test/a".into(), "Bearer t6".into()),
+            ]
+        );
+
+        // Code takes the kept token; with none kept, says where one is had.
+        let code_of = |sender: &Sender| {
+            pollster::block_on(code(
+                sender.clone(),
+                setup.collection.clone(),
+                request.clone(),
+                Answers::default(),
+                CodeTarget::Curl,
+            ))
+            .expect("code")
+        };
+        assert!(code_of(&sender).contains("Authorization: Bearer t6"));
+        let fresh = Sender {
+            tokens: Default::default(),
+            ..sender.clone()
+        };
+        assert!(code_of(&fresh).contains("Bearer <an access token from https://id.test/token>"));
+        assert_eq!(asked(&id), [], "code asks for none");
+
+        // No token: nothing goes to the API, and the answer says why.
+        let refusing = Arc::new(Id {
+            given: Mutex::new(0),
+            fails: true,
+            asked: Mutex::default(),
+        });
+        let response = send_one(&Sender {
+            engine: refusing.clone(),
+            tokens: Default::default(),
+            ..sender.clone()
+        });
+        assert_eq!(response.status, None);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("OAuth 2.0: no token from https://id.test/token: 401 invalid_client")
+        );
+        assert_eq!(asked(&refusing).len(), 1);
     }
 
     #[test]

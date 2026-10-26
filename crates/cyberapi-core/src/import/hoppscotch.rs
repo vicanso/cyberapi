@@ -14,6 +14,7 @@ use super::{ImportBundle, ImportEnvironment, ImportItem, api, content_type_of, g
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
 use crate::model::{ContentType, FolderSettings, HttpMethod, KvParam};
+use crate::oauth::{ClientAuth, Grant, OAuth2};
 use serde_json::Value;
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -163,6 +164,33 @@ fn auth(value: &Value) -> Option<Auth> {
                 KeyPlace::Header
             },
         },
+        // C4: the grants asked without a browser. Their token endpoint is
+        // `authEndpoint`.
+        "oauth-2" => {
+            let info = value.get("grantTypeInfo").unwrap_or(&Value::Null);
+            let field = |key: &str| variables(text(info, key));
+            let grant = match text(info, "grantType") {
+                "CLIENT_CREDENTIALS" => Grant::ClientCredentials,
+                "PASSWORD" => Grant::Password,
+                _ => return None,
+            };
+            Auth::from(OAuth2 {
+                grant,
+                token_url: [field("tokenEndpoint"), field("authEndpoint")]
+                    .into_iter()
+                    .find(|url| !url.is_empty())
+                    .unwrap_or_default(),
+                client_id: field("clientID"),
+                client_secret: field("clientSecret"),
+                username: field("username"),
+                password: field("password"),
+                scope: field("scopes"),
+                client_auth: match text(info, "clientAuthentication") {
+                    "IN_BODY" => ClientAuth::Body,
+                    _ => ClientAuth::Header,
+                },
+            })
+        }
         _ => return None,
     })
 }

@@ -31,6 +31,7 @@ pub mod local_only;
 pub mod mcp;
 pub mod media;
 pub mod model;
+pub mod oauth;
 pub mod prefs;
 pub mod proxy;
 pub mod redirect;

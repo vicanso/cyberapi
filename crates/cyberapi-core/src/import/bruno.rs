@@ -17,6 +17,7 @@ use super::{ImportBundle, ImportItem, api, content_type_of, kv};
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
 use crate::model::{ContentType, KvParam};
+use crate::oauth::{ClientAuth, Grant, OAuth2};
 
 const METHODS: [&str; 9] = [
     "get", "post", "put", "delete", "patch", "options", "head", "connect", "trace",
@@ -215,6 +216,29 @@ fn auth(mode: &str, find: &dyn Fn(&str) -> Vec<KvParam>) -> Auth {
                     KeyPlace::Header
                 },
             }
+        }
+        // C4: the grants asked without a browser; Bruno puts the client
+        // in the body unless told otherwise.
+        "oauth2" => {
+            let field = fields("auth:oauth2");
+            let grant = match field("grant_type").as_str() {
+                "client_credentials" => Grant::ClientCredentials,
+                "password" => Grant::Password,
+                _ => return Auth::Inherit,
+            };
+            Auth::from(OAuth2 {
+                grant,
+                token_url: field("access_token_url"),
+                client_id: field("client_id"),
+                client_secret: field("client_secret"),
+                username: field("username"),
+                password: field("password"),
+                scope: field("scope"),
+                client_auth: match field("credentials_placement").as_str() {
+                    "basic_auth_header" => ClientAuth::Header,
+                    _ => ClientAuth::Body,
+                },
+            })
         }
         // `inherit`, and what this app has no counterpart of.
         _ => Auth::Inherit,

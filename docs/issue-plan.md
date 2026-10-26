@@ -175,6 +175,6 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | H1 | MCP 写入：签发令牌时单独勾选“允许修改”（`McpToken.can_write`，存在旁边的 `mcp_token_writes` 表，旧令牌读作不允许；签发在一个事务里），这样的令牌多出 `create_api`（目录可用路径或 id）和 `update_api`（给出的字段替换原来的，没给的不动，可改名），账号对项目至少是编辑者；不能删除。规则在 `cyberapi_core::mcp::written` / `find_folder` | 已完成 |
 | G6 | Helm chart：`deploy/helm/cyberapi`（Deployment + Service + 可选 Ingress，数据库由用户提供：`store.url` 或自己的 Secret，不给时拒绝安装；初始化 token 同理；bridge 的选项都有对应 value；非 root、只读根文件系统，连上数据库才就绪）。版本随 `scripts/bump-version.sh` 一起改（顺带修好它备份不同目录同名文件的问题），`make helm-lint` 检查；用 helm 3.16 lint / template 验证过 | 已完成 |
 | G4 | 项目历史版本：bridge 在每次整份替换（同步、上传、恢复）前把项目原样存一份（`project_versions` 表，每个项目 50 份，空项目不存），`VersionStore`（只有 `SqlStore` 实现，经 `Call::VersionsList` / `VersionsGet` 给页面和登录后的桌面）；项目菜单“历史版本…”列出，编辑者在没有未同步修改时可恢复（用旧配置再整份替换，现在的样子也被存下，可撤回），之后副本取服务器的 | 已完成 |
-| C4 | OAuth 2.0（client credentials、password） | |
+| C4 | OAuth 2.0（client credentials、password）：认证多一种 `Auth::OAuth2`（授权方式、令牌地址、客户端 ID / 密钥、密码方式的用户名和密码、范围、客户端用 Basic 头还是放在请求体里，都是模板；数据模型编号 10）。服务发送前申请令牌（`cyberapi_core::oauth` 拼请求、读应答；`cyberapi_service` 的 `Tokens` 按渲染后的全部字段缓存在内存里，应用一份，不存库、不同步；过期前 30 秒、或接口回 401 时重新申请，有刷新令牌时先用它；取不到时请求不发，原因作为响应记进历史）；内省、反射同样签名，复制为代码只用已有的令牌。Postman / Insomnia / Hoppscotch / Bruno 导入，Postman / OpenAPI 导出（OpenAPI 只写流程、令牌地址和范围）；MCP 打码。授权码 + PKCE 之后再做 | 已完成 |
 | F1 | 标签页 | |
 | E1 | WebSocket | |

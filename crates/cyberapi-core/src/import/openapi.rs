@@ -18,6 +18,7 @@
 use super::{ImportBundle, ImportItem, kv};
 use crate::auth::{Auth, KeyPlace};
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam};
+use crate::oauth::{Grant, OAuth2};
 use serde_json::{Map, Value, json};
 
 const METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "options", "head"];
@@ -148,9 +149,9 @@ fn security(json: &Value, requirements: &Value) -> Option<Auth> {
     requirements
         .iter()
         .filter_map(Value::as_object)
-        .flat_map(|requirement| requirement.keys())
-        .filter_map(|name| schemes.get(name).map(|scheme| resolve(json, scheme)))
-        .find_map(|scheme| {
+        .flat_map(|requirement| requirement.iter())
+        .filter_map(|(name, scopes)| schemes.get(name).map(|scheme| (resolve(json, scheme), scopes)))
+        .find_map(|(scheme, scopes)| {
             let place = |scheme: &Value| match text(scheme, "in") {
                 "header" => Some(KeyPlace::Header),
                 "query" => Some(KeyPlace::Query),
@@ -174,9 +175,40 @@ fn security(json: &Value, requirements: &Value) -> Option<Auth> {
                     value: String::new(),
                     place: place(scheme)?,
                 }),
+                ("oauth2", _) => oauth(scheme, scopes),
                 _ => None,
             }
         })
+}
+
+/// C4: an OAuth 2.0 scheme's flow asked without a browser — client
+/// credentials, else password — with the scopes the requirement names.
+/// Swagger 2 names its one flow `application` or `password`.
+fn oauth(scheme: &Value, scopes: &Value) -> Option<Auth> {
+    let flows = scheme.get("flows");
+    let (grant, flow) = match flows {
+        Some(flows) => [
+            ("clientCredentials", Grant::ClientCredentials),
+            ("password", Grant::Password),
+        ]
+        .into_iter()
+        .find_map(|(name, grant)| Some((grant, flows.get(name)?)))?,
+        None => match text(scheme, "flow") {
+            "application" => (Grant::ClientCredentials, scheme),
+            "password" => (Grant::Password, scheme),
+            _ => return None,
+        },
+    };
+    let scope: Vec<&str> = scopes
+        .as_array()
+        .map(|scopes| scopes.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    Some(Auth::from(OAuth2 {
+        grant,
+        token_url: text(flow, "tokenUrl").to_string(),
+        scope: scope.join(" "),
+        ..Default::default()
+    }))
 }
 
 fn operation(

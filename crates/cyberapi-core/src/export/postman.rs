@@ -10,6 +10,7 @@ use crate::ItemId;
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
 use crate::model::{ContentType, HttpRequest, KvParam};
+use crate::oauth::{ClientAuth, Grant};
 use crate::send::form_fields;
 use crate::tree::TreeData;
 use serde_json::{Map, Value, json};
@@ -55,6 +56,33 @@ fn auth(auth: &Auth) -> Option<Value> {
         Auth::Basic { username, password } => fields("basic", &[("username", username), ("password", password)]),
         Auth::Digest { username, password } => fields("digest", &[("username", username), ("password", password)]),
         Auth::Bearer { token } => fields("bearer", &[("token", token)]),
+        // C4: the grant Postman asks with, unless it asks in a browser.
+        Auth::OAuth2(oauth) => fields(
+            "oauth2",
+            &[
+                (
+                    "grant_type",
+                    match oauth.grant {
+                        Grant::ClientCredentials => "client_credentials",
+                        Grant::Password => "password_credentials",
+                    },
+                ),
+                ("accessTokenUrl", &oauth.token_url),
+                ("clientId", &oauth.client_id),
+                ("clientSecret", &oauth.client_secret),
+                ("username", &oauth.username),
+                ("password", &oauth.password),
+                ("scope", &oauth.scope),
+                (
+                    "client_authentication",
+                    match oauth.client_auth {
+                        ClientAuth::Header => "header",
+                        ClientAuth::Body => "body",
+                    },
+                ),
+                ("addTokenTo", "header"),
+            ],
+        ),
         Auth::ApiKey { name, value, place } => fields(
             "apikey",
             &[
@@ -347,6 +375,26 @@ mod tests {
         assert_eq!(requests[1].description, "Makes an order.");
         assert_eq!(requests[1].examples, shop().apis[1].request.examples);
         assert_eq!(settings.description, "Orders, made and listed.");
+    }
+
+    /// C4: OAuth goes as Postman's, and this app's import reads it back.
+    #[test]
+    fn oauth_comes_back() {
+        let oauth = Auth::from(crate::oauth::OAuth2 {
+            grant: Grant::Password,
+            token_url: "{{ID}}/token".into(),
+            client_id: "app".into(),
+            client_secret: "{{value(secret)}}".into(),
+            username: "me".into(),
+            password: "pw".into(),
+            scope: "read".into(),
+            client_auth: ClientAuth::Body,
+        });
+        let mut data = shop();
+        data.settings.auth = oauth.clone();
+        let text = postman(&data, None, "shop", &[]);
+        let bundle = crate::import::parse(&text).expect("a collection");
+        assert_eq!(bundle.auth, oauth);
     }
 
     /// A folder alone signs in as it does, its own or from above.

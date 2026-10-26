@@ -34,6 +34,7 @@ use cyberapi_core::mcp::{
     MAX_RESULT_BYTES, MAX_TEXT_CHARS, cut, find_api, listing, masked, masked_body, masked_params,
 };
 use cyberapi_core::model::{ApiSetting, Collection, ContentType, Environment, HttpMethod, KvParam, VariableCategory};
+use cyberapi_core::oauth::Grant;
 use cyberapi_core::response::{BodyKind, HttpResponse};
 use cyberapi_core::template::{Answers, NoEnv, NoFiles};
 use cyberapi_core::version;
@@ -563,6 +564,20 @@ fn auth_json(auth: &Auth) -> Json {
             },
             "value": masked("token", value),
         }),
+        // C4: where its token is had, the secrets masked.
+        Auth::OAuth2(oauth) => json!({
+            "type": "oauth2",
+            "grant": match oauth.grant {
+                Grant::ClientCredentials => "client_credentials",
+                Grant::Password => "password",
+            },
+            "tokenUrl": oauth.token_url,
+            "clientId": oauth.client_id,
+            "clientSecret": masked("secret", &oauth.client_secret),
+            "username": oauth.username,
+            "password": masked("password", &oauth.password),
+            "scope": oauth.scope,
+        }),
     }
 }
 
@@ -801,6 +816,8 @@ async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, argumen
         },
         inherited,
         environment,
+        // C4: a call's own; none is kept on the server.
+        tokens: Default::default(),
     };
     let response = cyberapi_service::send(sender, collection.id, api.id, api.request, Answers::default())
         .await

@@ -280,6 +280,8 @@ async fn run(args: RunArgs, handle: tokio::runtime::Handle) -> Result<bool, Stri
         },
         inherited: Default::default(),
         environment,
+        // One run's: each token is asked for once.
+        tokens: Default::default(),
     };
     let places: HashMap<ItemId, report::Place> = steps
         .iter()

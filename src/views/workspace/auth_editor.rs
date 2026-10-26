@@ -1,6 +1,6 @@
 //! How an API, a folder or the project signs in (#66): inherited, none,
-//! Basic, a bearer token, or an API key in a header or the query (a gRPC
-//! call's as metadata). Values are templates, offering the hints as one
+//! Basic, a bearer token, an API key in a header or the query (a gRPC
+//! call's as metadata), Digest (C2), or OAuth 2.0 (C4). Values are templates, offering the hints as one
 //! types `{{` (M6); the secrets show as dots till shown. An API's changes go
 //! to it at once, and its view is made again when its request is replaced
 //! (the history, a cURL command); a folder's and the project's wait for
@@ -13,6 +13,7 @@ use cyberapi_core::ItemId;
 use cyberapi_core::auth::{Auth, AuthKind, KeyPlace};
 use cyberapi_core::inherit::AuthSource;
 use cyberapi_core::model::HttpMethod;
+use cyberapi_core::oauth::{ClientAuth, Grant, OAuth2};
 use cyberapi_core::template_hints::Hint;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
@@ -27,6 +28,8 @@ use rust_i18n::t;
 type Choices = Entity<SelectState<Vec<Choice>>>;
 
 const PLACES: [KeyPlace; 2] = [KeyPlace::Header, KeyPlace::Query];
+const GRANTS: [Grant; 2] = [Grant::ClientCredentials, Grant::Password];
+const CLIENT_AUTHS: [ClientAuth; 2] = [ClientAuth::Header, ClientAuth::Body];
 
 /// The fields whose values are templates, in the order of their index in
 /// the open hints (`FieldHints::field`).
@@ -34,6 +37,15 @@ const USERNAME: usize = 0;
 const PASSWORD: usize = 1;
 const TOKEN: usize = 2;
 const KEY_VALUE: usize = 3;
+const TOKEN_URL: usize = 4;
+const CLIENT_ID: usize = 5;
+const CLIENT_SECRET: usize = 6;
+const SCOPE: usize = 7;
+
+/// The fields whose values are secrets, shown as dots till shown.
+fn secret(field: usize) -> bool {
+    matches!(field, PASSWORD | TOKEN | KEY_VALUE | CLIENT_SECRET)
+}
 
 /// Whose auth it edits.
 #[derive(Clone)]
@@ -48,12 +60,13 @@ pub enum AuthFor {
 
 /// The project has nothing to inherit: its "none" is kept as inheriting,
 /// which is the same and leaves it nothing to keep.
-const PROJECT_KINDS: [AuthKind; 5] = [
+const PROJECT_KINDS: [AuthKind; 6] = [
     AuthKind::None,
     AuthKind::Basic,
     AuthKind::Bearer,
     AuthKind::ApiKey,
     AuthKind::Digest,
+    AuthKind::OAuth2,
 ];
 
 pub struct AuthEditor {
@@ -63,8 +76,12 @@ pub struct AuthEditor {
     kinds: &'static [AuthKind],
     kind: Choices,
     place: Choices,
-    /// Basic's user and password, the token, the key's value: templates.
-    templated: [Entity<InputState>; 4],
+    /// C4: OAuth's grant, and where its client signs in.
+    grant: Choices,
+    client_auth: Choices,
+    /// Basic's user and password, the token, the key's value, OAuth's
+    /// token URL, client and scope: templates.
+    templated: [Entity<InputState>; 8],
     key_name: Entity<InputState>,
     hints: HintSource,
     /// The hints open under one of `templated`.
@@ -82,6 +99,23 @@ fn kind_label(kind: AuthKind) -> String {
         AuthKind::Bearer => t!("editor.auth_bearer"),
         AuthKind::ApiKey => t!("editor.auth_api_key"),
         AuthKind::Digest => t!("editor.auth_digest"),
+        AuthKind::OAuth2 => t!("editor.auth_oauth2"),
+    }
+    .to_string()
+}
+
+fn grant_label(grant: Grant) -> String {
+    match grant {
+        Grant::ClientCredentials => t!("editor.auth_grant_client"),
+        Grant::Password => t!("editor.auth_grant_password"),
+    }
+    .to_string()
+}
+
+fn client_auth_label(place: ClientAuth) -> String {
+    match place {
+        ClientAuth::Header => t!("editor.auth_client_in_header"),
+        ClientAuth::Body => t!("editor.auth_client_in_body"),
     }
     .to_string()
 }
@@ -135,6 +169,7 @@ impl AuthEditor {
         });
         let hints = HintSource::new(&workspace);
         let (mut username, mut password, mut token, mut name, mut value, mut place_now) = Default::default();
+        let mut oauth = OAuth2::default();
         match &auth {
             Auth::Basic {
                 username: user,
@@ -150,6 +185,10 @@ impl AuthEditor {
                 value: key,
                 place,
             } => (name, value, place_now) = (own.clone(), key.clone(), *place),
+            Auth::OAuth2(own) => {
+                oauth = own.as_ref().clone();
+                (username, password) = (own.username.clone(), own.password.clone());
+            }
             Auth::Inherit | Auth::None => {}
         }
         let place_index = PLACES.iter().position(|place| *place == place_now).unwrap_or(0);
@@ -161,6 +200,24 @@ impl AuthEditor {
                 cx,
             )
         });
+        let listed = |labels: Vec<String>, at: usize, window: &mut Window, cx: &mut Context<Self>| {
+            cx.new(|cx| SelectState::new(choices(labels), Some(IndexPath::new(at)), window, cx))
+        };
+        let grant = listed(
+            GRANTS.map(grant_label).to_vec(),
+            GRANTS.iter().position(|each| *each == oauth.grant).unwrap_or(0),
+            window,
+            cx,
+        );
+        let client_auth = listed(
+            CLIENT_AUTHS.map(client_auth_label).to_vec(),
+            CLIENT_AUTHS
+                .iter()
+                .position(|each| *each == oauth.client_auth)
+                .unwrap_or(0),
+            window,
+            cx,
+        );
         let field = |text: String, label: String, masked: bool, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
                 InputState::new(window, cx)
@@ -174,6 +231,28 @@ impl AuthEditor {
             field(password, t!("editor.password").to_string(), true, window, cx),
             field(token, t!("editor.auth_token").to_string(), true, window, cx),
             field(value, t!("editor.auth_key_value").to_string(), true, window, cx),
+            field(
+                oauth.token_url,
+                t!("editor.auth_token_url").to_string(),
+                false,
+                window,
+                cx,
+            ),
+            field(
+                oauth.client_id,
+                t!("editor.auth_client_id").to_string(),
+                false,
+                window,
+                cx,
+            ),
+            field(
+                oauth.client_secret,
+                t!("editor.auth_client_secret").to_string(),
+                true,
+                window,
+                cx,
+            ),
+            field(oauth.scope, t!("editor.auth_scope").to_string(), false, window, cx),
         ];
         let key_name = field(name, t!("editor.auth_key_name").to_string(), false, window, cx);
 
@@ -187,6 +266,16 @@ impl AuthEditor {
                 }
             }),
             cx.subscribe(&place, |this, _, event: &SelectEvent<Vec<Choice>>, cx| {
+                if let SelectEvent::Confirm(Some(_)) = event {
+                    this.write(cx);
+                }
+            }),
+            cx.subscribe(&grant, |this, _, event: &SelectEvent<Vec<Choice>>, cx| {
+                if let SelectEvent::Confirm(Some(_)) = event {
+                    this.write(cx);
+                }
+            }),
+            cx.subscribe(&client_auth, |this, _, event: &SelectEvent<Vec<Choice>>, cx| {
                 if let SelectEvent::Confirm(Some(_)) = event {
                     this.write(cx);
                 }
@@ -213,6 +302,8 @@ impl AuthEditor {
             kinds,
             kind,
             place,
+            grant,
+            client_auth,
             templated,
             key_name,
             hints,
@@ -257,6 +348,25 @@ impl AuthEditor {
                 value: text(&self.templated[KEY_VALUE]),
                 place: PLACES[self.place.read(cx).selected_value().copied().unwrap_or(0).min(1)],
             },
+            AuthKind::OAuth2 => {
+                let grant = GRANTS[self.grant.read(cx).selected_value().copied().unwrap_or(0).min(1)];
+                let password = grant == Grant::Password;
+                // The user's only for the grant that sends them.
+                let user = |field: usize| match password {
+                    true => text(&self.templated[field]),
+                    false => String::new(),
+                };
+                Auth::from(OAuth2 {
+                    grant,
+                    token_url: text(&self.templated[TOKEN_URL]),
+                    client_id: text(&self.templated[CLIENT_ID]),
+                    client_secret: text(&self.templated[CLIENT_SECRET]),
+                    username: user(USERNAME),
+                    password: user(PASSWORD),
+                    scope: text(&self.templated[SCOPE]),
+                    client_auth: CLIENT_AUTHS[self.client_auth.read(cx).selected_value().copied().unwrap_or(0).min(1)],
+                })
+            }
         }
     }
 
@@ -369,7 +479,7 @@ impl AuthEditor {
     /// A template field, the hints under it when they are open for it.
     fn templated_field(&self, field: usize, cx: &mut Context<Self>) -> AnyElement {
         let input = &self.templated[field];
-        let masked = field != USERNAME;
+        let masked = secret(field);
         let view = cx.entity().downgrade();
         div()
             .w_full()
@@ -438,6 +548,7 @@ impl Render for AuthEditor {
             AuthKind::Bearer => t!("editor.auth_bearer_hint"),
             AuthKind::ApiKey if grpc => t!("editor.auth_api_key_grpc_hint"),
             AuthKind::ApiKey => t!("editor.auth_api_key_hint"),
+            AuthKind::OAuth2 => t!("editor.auth_oauth2_hint"),
         }
         .to_string()
         .into();
@@ -472,6 +583,40 @@ impl Render for AuthEditor {
                         narrow(Select::new(&self.place)),
                     ));
                 }
+            }
+            AuthKind::OAuth2 => {
+                rows.push(row(
+                    t!("editor.auth_grant").to_string(),
+                    narrow(Select::new(&self.grant)),
+                ));
+                rows.push(row(
+                    t!("editor.auth_token_url").to_string(),
+                    self.templated_field(TOKEN_URL, cx),
+                ));
+                rows.push(row(
+                    t!("editor.auth_client_id").to_string(),
+                    self.templated_field(CLIENT_ID, cx),
+                ));
+                rows.push(row(
+                    t!("editor.auth_client_secret").to_string(),
+                    self.templated_field(CLIENT_SECRET, cx),
+                ));
+                let grant = self.grant.read(cx).selected_value().copied().unwrap_or(0);
+                if GRANTS.get(grant) == Some(&Grant::Password) {
+                    rows.push(row(t!("editor.user").to_string(), self.templated_field(USERNAME, cx)));
+                    rows.push(row(
+                        t!("editor.password").to_string(),
+                        self.templated_field(PASSWORD, cx),
+                    ));
+                }
+                rows.push(row(
+                    t!("editor.auth_scope").to_string(),
+                    self.templated_field(SCOPE, cx),
+                ));
+                rows.push(row(
+                    t!("editor.auth_client_auth").to_string(),
+                    narrow(Select::new(&self.client_auth)),
+                ));
             }
             AuthKind::Inherit | AuthKind::None => {}
         }

@@ -15,6 +15,7 @@ use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
 use crate::model::FolderSettings;
 use crate::model::{ContentType, Example, KvParam};
+use crate::oauth::{ClientAuth, Grant, OAuth2};
 use serde_json::Value;
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -86,6 +87,24 @@ fn auth(value: &Value) -> Option<Auth> {
                 KeyPlace::Header
             },
         },
+        // C4: the grants asked without a browser.
+        "oauth2" => Auth::from(OAuth2 {
+            grant: match field("grant_type").as_str() {
+                "client_credentials" => Grant::ClientCredentials,
+                "password_credentials" => Grant::Password,
+                _ => return None,
+            },
+            token_url: field("accessTokenUrl"),
+            client_id: field("clientId"),
+            client_secret: field("clientSecret"),
+            username: field("username"),
+            password: field("password"),
+            scope: field("scope"),
+            client_auth: match field("client_authentication").as_str() {
+                "body" => ClientAuth::Body,
+                _ => ClientAuth::Header,
+            },
+        }),
         _ => return None,
     })
 }

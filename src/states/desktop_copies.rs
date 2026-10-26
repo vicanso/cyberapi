@@ -215,6 +215,7 @@ impl Machine {
             sending: SendPrefs::default(),
             inherited: Default::default(),
             environment: None,
+            tokens: Default::default(),
         }
     }
 

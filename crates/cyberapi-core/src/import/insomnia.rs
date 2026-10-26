@@ -14,6 +14,7 @@ use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
 use crate::model::FolderSettings;
 use crate::model::{ContentType, KvParam};
+use crate::oauth::{ClientAuth, Grant, OAuth2};
 use serde_json::Value;
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -112,7 +113,8 @@ fn request(resource: &Value) -> ImportItem {
 }
 
 /// B4: an `authentication` object as this app's; `None` where there is
-/// none (`{}`) or a kind this app has no counterpart of (OAuth, AWS…),
+/// none (`{}`) or a kind this app has no counterpart of (OAuth asked in a
+/// browser, AWS…),
 /// which then inherits. One switched off signs in with nothing.
 fn auth(value: &Value) -> Option<Auth> {
     let field = |key: &str| variables(text(value, key));
@@ -139,6 +141,24 @@ fn auth(value: &Value) -> Option<Auth> {
                 KeyPlace::Header
             },
         },
+        // C4: the grants asked without a browser.
+        "oauth2" => Auth::from(OAuth2 {
+            grant: match text(value, "grantType") {
+                "client_credentials" => Grant::ClientCredentials,
+                "password" => Grant::Password,
+                _ => return None,
+            },
+            token_url: field("accessTokenUrl"),
+            client_id: field("clientId"),
+            client_secret: field("clientSecret"),
+            username: field("username"),
+            password: field("password"),
+            scope: field("scope"),
+            client_auth: match value.get("credentialsInBody").and_then(Value::as_bool) {
+                Some(true) => ClientAuth::Body,
+                _ => ClientAuth::Header,
+            },
+        }),
         _ => return None,
     })
 }

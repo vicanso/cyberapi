@@ -60,6 +60,11 @@ pub struct PreparedRequest {
     /// sent to the bridge: the answer goes, as a header.
     #[serde(skip)]
     pub digest: Option<DigestLogin>,
+    /// C4: what the token it is signed with is asked with; the service
+    /// asks, and adds the `Authorization`. Never sent to the bridge: the
+    /// token request and the token go, as requests and a header.
+    #[serde(skip)]
+    pub oauth: Option<crate::oauth::OAuthLogin>,
     /// C5: the client certificate and the authorities its handshake takes
     /// (`certificates::tls_for`). Never sent to the bridge, which reads no
     /// files of its own for anyone.
@@ -530,6 +535,7 @@ pub fn grpc_call(
     let mut headers = sent_headers(request, cx)?;
     headers.set("Content-Type", "application/grpc");
     headers.set("TE", "trailers");
+    let oauth = oauth_login(request, cx, &headers)?;
     Ok(PreparedRequest {
         method: HttpMethod::Post,
         url: url.to_string(),
@@ -542,6 +548,7 @@ pub fn grpc_call(
         proxy: cx.proxy.clone(),
         // gRPC servers ask for no Digest.
         digest: None,
+        oauth,
         tls: Default::default(),
     })
 }
@@ -643,14 +650,11 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
     }
 
     // C2: unless the request names its own Authorization (#3).
-    let digest = match headers
-        .0
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
-    {
+    let digest = match names_authorization(&headers) {
         true => None,
         false => cx.inherited.auth(&request.auth).digest_login(render)?,
     };
+    let oauth = oauth_login(request, cx, &headers)?;
     Ok(PreparedRequest {
         method: request.method,
         url: url.to_string(),
@@ -662,9 +666,30 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         proxy: cx.proxy.clone(),
         streams: false,
         digest,
+        oauth,
         // By host, as each hop goes (the service's).
         tls: Default::default(),
     })
+}
+
+fn names_authorization(headers: &Headers) -> bool {
+    headers
+        .0
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+}
+
+/// C4: what OAuth's token is asked with, unless the request names its own
+/// Authorization (#3).
+fn oauth_login(
+    request: &HttpRequest,
+    cx: &Context<'_>,
+    headers: &Headers,
+) -> Result<Option<crate::oauth::OAuthLogin>, PrepareError> {
+    match names_authorization(headers) {
+        true => Ok(None),
+        false => cx.inherited.auth(&request.auth).oauth_login(|text| rendered(text, cx)),
+    }
 }
 
 /// F5.3: enabled fields with a name; a `file://` value is the file's bytes,

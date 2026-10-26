@@ -14,8 +14,8 @@ use cyberapi_core::prefs::{AppPrefs, ColumnWidths, SendPrefs, TextPrefs, ThemeMo
 use cyberapi_core::prefs::{MonitorPlacement, remember_monitor};
 use cyberapi_core::{CollectionId, ItemId, Timestamp};
 use cyberapi_http::HttpEngine;
-use cyberapi_service::Sender;
 use cyberapi_service::backup::{self, BackupFailure};
+use cyberapi_service::{Sender, Tokens};
 use cyberapi_store::{BackupStore, DirectoryStore, Storage, StoreError, StoreFuture, VersionStore};
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
 use std::path::PathBuf;
@@ -37,6 +37,8 @@ pub struct AppStore {
     /// The desktop's update check; a page's bridge is updated by whoever
     /// runs it.
     updates: Option<Entity<UpdateState>>,
+    /// C4: the OAuth tokens had while the app runs, every send's.
+    tokens: Arc<Tokens>,
 }
 
 impl Global for AppStore {}
@@ -71,6 +73,7 @@ impl AppStore {
             state: state.clone(),
             server,
             updates,
+            tokens: Arc::default(),
         });
         state.update(cx, |state, cx| {
             state.reload_me(cx);
@@ -159,6 +162,7 @@ impl AppStore {
             // Each API's own, filled where it is sent (#66, #61).
             inherited: Default::default(),
             environment: None,
+            tokens: self.tokens.clone(),
         }
     }
 

@@ -383,6 +383,72 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    /// C4: OAuth 2.0's grants asked without a browser come in from each
+    /// format that has them; one asked in a browser inherits.
+    #[test]
+    fn oauth_comes_in_from_each_format() {
+        use crate::auth::Auth;
+        use crate::oauth::{ClientAuth, Grant, OAuth2};
+        let auths = |text: &str| -> Vec<Auth> {
+            fn walk(items: &[ImportItem], out: &mut Vec<Auth>) {
+                for item in items {
+                    match item {
+                        ImportItem::Api { request, .. } => out.push(request.auth.clone()),
+                        ImportItem::Folder { children, .. } => walk(children, out),
+                    }
+                }
+            }
+            let mut out = Vec::new();
+            walk(&parse(text).expect("imported").items, &mut out);
+            out
+        };
+        let oauth = |grant, client_auth, user: (&str, &str)| {
+            Auth::from(OAuth2 {
+                grant,
+                token_url: "https://id.test/token".into(),
+                client_id: "app".into(),
+                client_secret: "s".into(),
+                username: user.0.into(),
+                password: user.1.into(),
+                scope: "read".into(),
+                client_auth,
+            })
+        };
+        let postman = r#"{"info": {"name": "S", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+            "item": [
+                {"name": "a", "request": {"method": "GET", "url": "https://api.test/a", "auth": {"type": "oauth2", "oauth2": [
+                    {"key": "grant_type", "value": "password_credentials"}, {"key": "accessTokenUrl", "value": "https://id.test/token"},
+                    {"key": "clientId", "value": "app"}, {"key": "clientSecret", "value": "s"}, {"key": "username", "value": "me"},
+                    {"key": "password", "value": "pw"}, {"key": "scope", "value": "read"}, {"key": "client_authentication", "value": "body"}]}}},
+                {"name": "b", "request": {"method": "GET", "url": "https://api.test/b", "auth": {"type": "oauth2", "oauth2": [
+                    {"key": "grant_type", "value": "authorization_code"}]}}}
+            ]}"#;
+        assert_eq!(
+            auths(postman),
+            [oauth(Grant::Password, ClientAuth::Body, ("me", "pw")), Auth::Inherit]
+        );
+        let insomnia = r#"{"_type": "export", "__export_format": 4, "resources": [
+            {"_id": "wrk_1", "_type": "workspace", "name": "S"},
+            {"_id": "req_1", "_type": "request", "parentId": "wrk_1", "name": "a", "method": "GET", "url": "https://api.test/a",
+             "authentication": {"type": "oauth2", "grantType": "client_credentials", "accessTokenUrl": "https://id.test/token",
+                                "clientId": "app", "clientSecret": "s", "scope": "read", "credentialsInBody": false}}]}"#;
+        assert_eq!(
+            auths(insomnia),
+            [oauth(Grant::ClientCredentials, ClientAuth::Header, ("", ""))]
+        );
+        let hoppscotch = r#"{"v": 12, "name": "S", "folders": [], "requests": [
+            {"v": "17", "name": "a", "method": "GET", "endpoint": "https://api.test/a",
+             "auth": {"authType": "oauth-2", "authActive": true, "grantTypeInfo": {"grantType": "CLIENT_CREDENTIALS",
+                      "authEndpoint": "https://id.test/token", "clientID": "app", "clientSecret": "s", "scopes": "read",
+                      "clientAuthentication": "IN_BODY"}}}]}"#;
+        assert_eq!(
+            auths(hoppscotch),
+            [oauth(Grant::ClientCredentials, ClientAuth::Body, ("", ""))]
+        );
+        let bruno = "meta {\n  name: a\n}\n\nget {\n  url: https://api.test/a\n  auth: oauth2\n}\n\nauth:oauth2 {\n  grant_type: password\n  access_token_url: https://id.test/token\n  username: me\n  password: pw\n  client_id: app\n  client_secret: s\n  scope: read\n  credentials_placement: basic_auth_header\n}\n";
+        assert_eq!(auths(bruno), [oauth(Grant::Password, ClientAuth::Header, ("me", "pw"))]);
+    }
+
     #[test]
     fn a_pasted_curl_command_is_a_request() {
         let request = request_from_curl(" curl -X PUT 'https://a.test/x?y=1' -H 'X-A: 1'").expect("a request");

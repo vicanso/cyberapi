@@ -1,5 +1,6 @@
 //! How a request signs in (#66, `docs/batch4-design.md` §4): inherited,
-//! none, Basic, a bearer token, or an API key in a header or the query.
+//! none, Basic, a bearer token, an API key in a header or the query,
+//! Digest (C2), or an OAuth 2.0 token (C4).
 //! Its values are templates, rendered as the request's others are.
 //!
 //! What the old app and the versions before #66 kept — a list whose first
@@ -8,6 +9,7 @@
 
 use crate::digest::DigestLogin;
 use crate::model::KvParam;
+use crate::oauth::{OAuth2, OAuthLogin};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +50,17 @@ pub enum Auth {
         #[serde(default)]
         place: KeyPlace,
     },
+    /// C4: a token the service asks the token endpoint for
+    /// (`crate::oauth`), sent as a bearer token.
+    /// Boxed: it is several times the size of the others.
+    #[serde(rename = "oauth2")]
+    OAuth2(Box<OAuth2>),
+}
+
+impl From<OAuth2> for Auth {
+    fn from(oauth: OAuth2) -> Self {
+        Self::OAuth2(Box::new(oauth))
+    }
 }
 
 /// Where an API key goes.
@@ -68,13 +81,14 @@ pub enum Signed {
 
 impl Auth {
     /// The kinds, in the order the editor offers them.
-    pub const KINDS: [AuthKind; 6] = [
+    pub const KINDS: [AuthKind; 7] = [
         AuthKind::Inherit,
         AuthKind::None,
         AuthKind::Basic,
         AuthKind::Bearer,
         AuthKind::ApiKey,
         AuthKind::Digest,
+        AuthKind::OAuth2,
     ];
 
     pub fn is_inherit(&self) -> bool {
@@ -89,6 +103,7 @@ impl Auth {
             Self::Bearer { .. } => AuthKind::Bearer,
             Self::ApiKey { .. } => AuthKind::ApiKey,
             Self::Digest { .. } => AuthKind::Digest,
+            Self::OAuth2(_) => AuthKind::OAuth2,
         }
     }
 
@@ -96,7 +111,7 @@ impl Auth {
     pub fn signs(&self) -> bool {
         matches!(
             self,
-            Self::Basic { .. } | Self::Bearer { .. } | Self::ApiKey { .. } | Self::Digest { .. }
+            Self::Basic { .. } | Self::Bearer { .. } | Self::ApiKey { .. } | Self::Digest { .. } | Self::OAuth2(_)
         )
     }
 
@@ -113,22 +128,23 @@ impl Auth {
     }
 
     /// The texts that are templates: Basic's and Digest's user and
-    /// password, the token, the key's value.
+    /// password, the token, the key's value, OAuth's (`OAuth2::templates`).
     pub fn templates(&self) -> Vec<&str> {
         match self {
             Self::Basic { username, password } | Self::Digest { username, password } => vec![username, password],
             Self::Bearer { token } => vec![token],
             Self::ApiKey { value, .. } => vec![value],
+            Self::OAuth2(oauth) => oauth.templates(),
             Self::Inherit | Self::None => Vec::new(),
         }
     }
 
     /// The name of the header it sends, if it sends one — Digest's goes
-    /// once the server asks for it. A call with no query (gRPC: `query`
-    /// false) sends its key as a header too.
+    /// once the server asks for it, OAuth's once there is a token. A call
+    /// with no query (gRPC: `query` false) sends its key as a header too.
     pub fn header_name(&self, query: bool) -> Option<&str> {
         match self {
-            Self::Basic { .. } | Self::Bearer { .. } | Self::Digest { .. } => Some("Authorization"),
+            Self::Basic { .. } | Self::Bearer { .. } | Self::Digest { .. } | Self::OAuth2(_) => Some("Authorization"),
             Self::ApiKey { name, place, .. } if *place == KeyPlace::Header || !query => {
                 Some(name.trim()).filter(|name| !name.is_empty())
             }
@@ -156,11 +172,11 @@ impl Auth {
 
     /// What it adds to a request, its templates rendered by `render`: a
     /// header, a query parameter, or nothing (inheriting, none, a key with
-    /// no name, Digest until the server asks). A call with no query takes
-    /// its key as a header.
+    /// no name, Digest until the server asks, OAuth until the service has a
+    /// token). A call with no query takes its key as a header.
     pub fn sign<E>(&self, query: bool, render: impl Fn(&str) -> Result<String, E>) -> Result<Option<Signed>, E> {
         Ok(match self {
-            Self::Inherit | Self::None | Self::Digest { .. } => None,
+            Self::Inherit | Self::None | Self::Digest { .. } | Self::OAuth2(_) => None,
             Self::Basic { username, password } => {
                 let pair = format!("{}:{}", render(username)?, render(password)?);
                 Some(Signed::Header {
@@ -199,6 +215,14 @@ impl Auth {
             _ => None,
         })
     }
+
+    /// C4: what OAuth's token is asked with, rendered by `render`.
+    pub fn oauth_login<E>(&self, render: impl Fn(&str) -> Result<String, E>) -> Result<Option<OAuthLogin>, E> {
+        Ok(match self {
+            Self::OAuth2(oauth) => Some(oauth.login(render)?),
+            _ => None,
+        })
+    }
 }
 
 /// An [`Auth`]'s kind, without its values: what the editor's list picks.
@@ -210,6 +234,7 @@ pub enum AuthKind {
     Bearer,
     ApiKey,
     Digest,
+    OAuth2,
 }
 
 #[cfg(test)]
@@ -345,6 +370,39 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Auth>(r#"{"kind":"bearer"}"#).expect("read"),
             Auth::Bearer { token: String::new() }
+        );
+        let oauth = Auth::from(crate::oauth::OAuth2 {
+            token_url: "https://id.test/token".into(),
+            ..Default::default()
+        });
+        let json = serde_json::to_string(&oauth).expect("JSON");
+        assert!(
+            json.starts_with(r#"{"kind":"oauth2","grant":"clientCredentials","tokenUrl":"#),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<Auth>(&json).expect("read"), oauth);
+        assert_eq!(
+            serde_json::from_str::<Auth>(r#"{"kind":"oauth2"}"#).expect("read"),
+            Auth::OAuth2(Default::default())
+        );
+    }
+
+    #[test]
+    fn oauth_signs_once_there_is_a_token() {
+        let oauth = Auth::from(crate::oauth::OAuth2 {
+            token_url: "{{T}}/token".into(),
+            ..Default::default()
+        });
+        assert_eq!(signed(&oauth, true), None);
+        assert_eq!(oauth.header_name(false), Some("Authorization"));
+        let login = oauth
+            .oauth_login(|text| Ok::<_, Infallible>(text.replace("{{T}}", "https://id")))
+            .expect("rendered")
+            .expect("a login");
+        assert_eq!(login.token_url, "https://id/token");
+        assert_eq!(
+            Auth::None.oauth_login(|text| Ok::<_, Infallible>(text.into())),
+            Ok(None)
         );
     }
 }

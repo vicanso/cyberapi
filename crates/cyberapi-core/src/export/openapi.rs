@@ -14,6 +14,7 @@ use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
 use crate::inherit;
 use crate::model::{ApiSetting, ContentType, HttpRequest, split_env_prefix};
+use crate::oauth::Grant;
 use crate::send::form_fields;
 use crate::tree::TreeData;
 use serde_json::{Map, Value, json};
@@ -91,7 +92,7 @@ pub fn openapi(data: &TreeData, folder: Option<&ItemId>, title: &str, variables:
             let security = match scheme(&effective) {
                 Some((name, scheme)) => {
                     schemes.insert(name.clone(), scheme);
-                    json!([{ name: [] }])
+                    json!([{ name: scopes(&effective) }])
                 }
                 None => json!([]),
             };
@@ -117,7 +118,7 @@ pub fn openapi(data: &TreeData, folder: Option<&ItemId>, title: &str, variables:
     }
     if let Some((name, scheme)) = scheme(&global) {
         schemes.insert(name.clone(), scheme);
-        document.insert("security".into(), json!([{ name: [] }]));
+        document.insert("security".into(), json!([{ name: scopes(&global) }]));
     }
     document.insert("paths".into(), Value::Object(paths));
     if !schemes.is_empty() {
@@ -325,6 +326,14 @@ fn request_body(request: &HttpRequest) -> Option<Value> {
     Some(json!({ "content": content }))
 }
 
+/// The scopes a requirement asks for: OAuth's (C4), else none.
+fn scopes(auth: &Auth) -> Vec<&str> {
+    match auth {
+        Auth::OAuth2(oauth) => oauth.scope.split_whitespace().collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// A security scheme for how a request signs in, and its name; none for
 /// none.
 fn scheme(auth: &Auth) -> Option<(String, Value)> {
@@ -333,6 +342,22 @@ fn scheme(auth: &Auth) -> Option<(String, Value)> {
         Auth::Basic { .. } => ("basicAuth".into(), json!({"type": "http", "scheme": "basic"})),
         Auth::Bearer { .. } => ("bearerAuth".into(), json!({"type": "http", "scheme": "bearer"})),
         Auth::Digest { .. } => ("digestAuth".into(), json!({"type": "http", "scheme": "digest"})),
+        // C4: the flow, where its token is had and the scopes it asks.
+        Auth::OAuth2(oauth) => {
+            let flow = match oauth.grant {
+                Grant::ClientCredentials => "clientCredentials",
+                Grant::Password => "password",
+            };
+            let scopes: Map<String, Value> = oauth
+                .scope
+                .split_whitespace()
+                .map(|scope| (scope.to_string(), json!("")))
+                .collect();
+            (
+                "oauth2".into(),
+                json!({"type": "oauth2", "flows": {flow: {"tokenUrl": oauth.token_url.trim(), "scopes": scopes}}}),
+            )
+        }
         Auth::ApiKey { name, place, .. } => {
             let place = match place {
                 KeyPlace::Header => "header",
@@ -525,6 +550,41 @@ mod tests {
         assert!(
             doc["paths"]["/users/{id}"]["get"].get("security").is_none(),
             "the project's"
+        );
+    }
+
+    /// C4: OAuth is its flow, its token URL and the scopes asked; its
+    /// client is the reader's to fill again.
+    #[test]
+    fn oauth_is_its_flow_and_comes_back() {
+        let oauth = Auth::from(crate::oauth::OAuth2 {
+            grant: Grant::Password,
+            token_url: "https://id.test/token".into(),
+            client_id: "app".into(),
+            client_secret: "s".into(),
+            username: "me".into(),
+            password: "pw".into(),
+            scope: "read write".into(),
+            ..Default::default()
+        });
+        let mut data = shop();
+        data.settings.auth = oauth;
+        let yaml = openapi(&data, None, "Shop", &[]);
+        let doc: Value = serde_saphyr::from_str(&yaml).expect("YAML");
+        assert_eq!(doc["security"], json!([{"oauth2": ["read", "write"]}]));
+        assert_eq!(
+            doc["components"]["securitySchemes"]["oauth2"],
+            json!({"type": "oauth2", "flows": {"password": {"tokenUrl": "https://id.test/token", "scopes": {"read": "", "write": ""}}}})
+        );
+        let bundle = crate::import::parse(&yaml).expect("a document");
+        assert_eq!(
+            bundle.auth,
+            Auth::from(crate::oauth::OAuth2 {
+                grant: Grant::Password,
+                token_url: "https://id.test/token".into(),
+                scope: "read write".into(),
+                ..Default::default()
+            })
         );
     }
 

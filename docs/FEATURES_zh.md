@@ -14,7 +14,7 @@
 
 ## 请求
 
-Query、请求头、认证（Basic、Bearer 令牌、放在请求头或查询参数里的 API Key、Digest（摄像头、路由器等设备常用），值可以用模板函数；可以设在接口上，也可以继承所在目录或项目的），请求体支持 JSON、表单、multipart、XML、纯文本；任何键值列表都能切换成文本批量编辑。目录可以设置请求头，目录里的接口都会带上。在地址栏里写的查询参数会移到 Query 表。可设置超时、HTTP/1.1 或 HTTP/2、是否跟随重定向，需要时可以接受自签名证书；单个接口可以在自己的“设置”标签里另设其中任意几项。桌面版的请求可以经过 HTTP 或 SOCKS5 代理：在设置里填写，或读取环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`；还可以按主机配置客户端证书（PEM，或 PKCS#12 加密码），以及系统之外额外信任的 CA，例如公司内部的 CA。
+Query、请求头、认证（Basic、Bearer 令牌、放在请求头或查询参数里的 API Key、Digest（摄像头、路由器等设备常用），以及 OAuth 2.0 的客户端凭据和密码两种授权方式（发送前先申请令牌；令牌只在应用运行期间留在内存里，不进项目、不同步、不进备份；过期或接口回答 401 时重新申请，有刷新令牌时先用它；客户端用 Basic 认证头或放在请求体里），值可以用模板函数；可以设在接口上，也可以继承所在目录或项目的），请求体支持 JSON、表单、multipart、XML、纯文本；任何键值列表都能切换成文本批量编辑。目录可以设置请求头，目录里的接口都会带上。在地址栏里写的查询参数会移到 Query 表。可设置超时、HTTP/1.1 或 HTTP/2、是否跟随重定向，需要时可以接受自签名证书；单个接口可以在自己的“设置”标签里另设其中任意几项。桌面版的请求可以经过 HTTP 或 SOCKS5 代理：在设置里填写，或读取环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`；还可以按主机配置客户端证书（PEM，或 PKCS#12 加密码），以及系统之外额外信任的 CA，例如公司内部的 CA。
 
 ## GraphQL
 
@@ -50,7 +50,7 @@ GraphQL 请求体分开编辑查询、变量和操作名，带语法高亮；POS
 
 ## cURL 和导入
 
-粘贴 cURL 命令即新建接口，任何请求都能复制为 cURL、HTTPie、JavaScript `fetch`、Node.js axios、Python `requests`、PHP Guzzle、Go `net/http`、Rust reqwest、Java `HttpClient`、C# `HttpClient` 或 Swift `URLSession` 代码（菜单按命令行、脚本语言、编译型语言分组；跟随重定向、不校验证书照设置写出，Digest 认证在库能自己应答时写成它的写法）；可把 Postman、Insomnia、Hoppscotch（单个集合、“全部导出”或环境）、Bruno（`.bru` 请求或环境文件，或 OpenCollection YAML 导出）、Swagger 2 / OpenAPI 3（JSON 或 YAML）、浏览器开发者工具导出的 HAR（其中的接口调用，不含页面加载的图片、脚本和样式，每个主机一个目录）和 cURL 导入到项目里，或在首页直接导入为新项目，认证（Basic、Bearer、API Key、Digest）和环境一起带进来（Postman、Hoppscotch 的环境文件，Insomnia 的子环境，OpenCollection 的环境成为命名环境；Bruno 的 `{{process.env.NAME}}` 变成 `{{env(NAME)}}`；OpenAPI 的安全方案成为项目认证、值由你填），内容可以粘贴、选文件，也可以填地址取回（网页版经服务器取，受“请求能发往哪里”限制）；重新导入时可以只添加新的接口（放进同名目录），也可以同时更新项目里已有的接口（方法和路径相同的），它们的认证、断言和设置保留；可按接口、目录或项目导出，目录和项目还能导出为 Postman 集合（v2.1）或 OpenAPI 3（YAML，地址前缀变量成为 servers，请求体带示例和推断出的 schema，认证只写类型、不写值）。
+粘贴 cURL 命令即新建接口，任何请求都能复制为 cURL、HTTPie、JavaScript `fetch`、Node.js axios、Python `requests`、PHP Guzzle、Go `net/http`、Rust reqwest、Java `HttpClient`、C# `HttpClient` 或 Swift `URLSession` 代码（菜单按命令行、脚本语言、编译型语言分组；跟随重定向、不校验证书照设置写出，Digest 认证在库能自己应答时写成它的写法；OAuth 2.0 写当前的令牌，还没有令牌时写一句从哪里取）；可把 Postman、Insomnia、Hoppscotch（单个集合、“全部导出”或环境）、Bruno（`.bru` 请求或环境文件，或 OpenCollection YAML 导出）、Swagger 2 / OpenAPI 3（JSON 或 YAML）、浏览器开发者工具导出的 HAR（其中的接口调用，不含页面加载的图片、脚本和样式，每个主机一个目录）和 cURL 导入到项目里，或在首页直接导入为新项目，认证（Basic、Bearer、API Key、Digest，OAuth 2.0 的客户端凭据和密码两种）和环境一起带进来（Postman、Hoppscotch 的环境文件，Insomnia 的子环境，OpenCollection 的环境成为命名环境；Bruno 的 `{{process.env.NAME}}` 变成 `{{env(NAME)}}`；OpenAPI 的安全方案成为项目认证、值由你填），内容可以粘贴、选文件，也可以填地址取回（网页版经服务器取，受“请求能发往哪里”限制）；重新导入时可以只添加新的接口（放进同名目录），也可以同时更新项目里已有的接口（方法和路径相同的），它们的认证、断言和设置保留；可按接口、目录或项目导出，目录和项目还能导出为 Postman 集合（v2.1）或 OpenAPI 3（YAML，地址前缀变量成为 servers，请求体带示例和推断出的 schema，认证只写类型、不写值；OAuth 2.0 写授权方式、令牌地址和范围）。
 
 ## 数据
 
