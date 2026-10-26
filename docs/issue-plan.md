@@ -166,7 +166,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | B2 | 导出 Postman Collection v2.1：目录层级、Query / 请求头（含关掉的）、各种请求体、各层认证；共用变量成为集合变量；自己的 Postman 导入能原样读回 | 已完成 |
 | B1 | 导出 OpenAPI 3.0（YAML）：地址前缀变量的值或主机成为 servers，`{{id}}` 路径段成为路径参数，Query / 请求头带示例，请求体带示例和推断的 schema，目录路径成为 tag，认证成为 securitySchemes（不写值） | 已完成 |
 | B5 | 导入 HAR（每个调用一个接口，跳过页面资源、非 HTTP 地址和重复的，多个主机时各一个目录）、Hoppscotch 集合 / 全部导出 / 环境（`<<var>>` 换成 `{{var}}`）、Bruno 单个 `.bru` 请求或环境文件、OpenCollection YAML（整份导出或单个请求；环境成为命名环境）；各层认证照 B4；`{{process.env.X}}` 换成 `{{env(X)}}` | 已完成 |
-| B6 | 更多“复制为代码”目标 | |
+| B6 | 复制为代码加 Node axios、PHP Guzzle、Rust reqwest（blocking）、Java HttpClient、C# HttpClient、Swift URLSession；菜单分三组（命令行、脚本、编译型），cURL 仍在第一个；跟随重定向、不校验证书照设置写，Digest 在 Guzzle、.NET、URLSession 里写成库自己的应答，其余写一行注释。axios、reqwest、URLSession 的代码对本地服务器实际跑过 | 已完成 |
 | D4 | 历史：保留条数可设、项目的最近发送、两条历史对比 | |
 | A3 + A2 | 运行器，运行中提取变量 | |
 | A4 | `cyberapi run` 命令行 | |

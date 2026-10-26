@@ -1,9 +1,18 @@
 //! A request as code to run elsewhere (#69): cURL, HTTPie, JavaScript's
-//! `fetch`, Python's `requests`, Go's `net/http`. Made, as the cURL command
-//! is (F7.8), from the [`PreparedRequest`], so each sends what the app
-//! sends: variables resolved, functions run, headers merged, the jar's
-//! cookies in. Redirects are followed, and certificates taken, as the app's
-//! settings say. A gRPC call is a grpcurl command, whatever is asked for.
+//! `fetch`, Python's `requests`, Go's `net/http`; and (B6) Node's axios,
+//! PHP's Guzzle, Rust's reqwest, Java's and C#'s `HttpClient`, Swift's
+//! `URLSession`. Made, as the cURL command is (F7.8), from the
+//! [`PreparedRequest`], so each sends what the app sends: variables
+//! resolved, functions run, headers merged, the jar's cookies in. Redirects
+//! are followed, and certificates taken, as the app's settings say. A gRPC
+//! call is a grpcurl command, whatever is asked for.
+
+mod axios;
+mod csharp;
+mod java;
+mod php;
+mod reqwest;
+mod swift;
 
 use crate::curl::curl;
 use crate::model::{ContentType, HttpMethod, HttpRequest};
@@ -17,10 +26,37 @@ pub enum CodeTarget {
     Fetch,
     Python,
     Go,
+    /// B6.
+    Axios,
+    Php,
+    Rust,
+    Java,
+    CSharp,
+    Swift,
 }
 
 impl CodeTarget {
-    pub const ALL: [Self; 5] = [Self::Curl, Self::Httpie, Self::Fetch, Self::Python, Self::Go];
+    /// The menu's groups, cURL first: the command line, scripts, compiled
+    /// languages.
+    pub const GROUPS: [&'static [Self]; 3] = [
+        &[Self::Curl, Self::Httpie],
+        &[Self::Fetch, Self::Axios, Self::Python, Self::Php],
+        &[Self::Go, Self::Rust, Self::Java, Self::CSharp, Self::Swift],
+    ];
+
+    pub const ALL: [Self; 11] = [
+        Self::Curl,
+        Self::Httpie,
+        Self::Fetch,
+        Self::Axios,
+        Self::Python,
+        Self::Php,
+        Self::Go,
+        Self::Rust,
+        Self::Java,
+        Self::CSharp,
+        Self::Swift,
+    ];
 
     /// Its name, as the menu lists it: not translated.
     pub fn label(self) -> &'static str {
@@ -30,6 +66,12 @@ impl CodeTarget {
             Self::Fetch => "JavaScript fetch",
             Self::Python => "Python requests",
             Self::Go => "Go net/http",
+            Self::Axios => "Node.js axios",
+            Self::Php => "PHP Guzzle",
+            Self::Rust => "Rust reqwest",
+            Self::Java => "Java HttpClient",
+            Self::CSharp => "C# HttpClient",
+            Self::Swift => "Swift URLSession",
         }
     }
 }
@@ -46,6 +88,12 @@ pub fn code(target: CodeTarget, prepared: &PreparedRequest, request: &HttpReques
         CodeTarget::Fetch => fetch(prepared, &parts, follow_redirects),
         CodeTarget::Python => python(prepared, &parts, follow_redirects),
         CodeTarget::Go => go(prepared, &parts, follow_redirects),
+        CodeTarget::Axios => axios::axios(prepared, &parts, follow_redirects),
+        CodeTarget::Php => php::guzzle(prepared, &parts, follow_redirects),
+        CodeTarget::Rust => reqwest::reqwest(prepared, &parts, follow_redirects),
+        CodeTarget::Java => java::http_client(prepared, &parts, follow_redirects),
+        CodeTarget::CSharp => csharp::http_client(prepared, &parts, follow_redirects),
+        CodeTarget::Swift => swift::url_session(prepared, &parts, follow_redirects),
     }
 }
 
@@ -112,6 +160,35 @@ fn shell(text: &str) -> String {
 /// The file name of a path, as a multipart field sends it.
 fn file_name(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+/// The boundary of a multipart body written out by hand, for a library
+/// with nothing to write one (Java's, Swift's).
+const BOUNDARY: &str = "CyberAPIFormBoundary";
+
+/// What goes before a multipart field's value: its boundary and headers.
+fn part_head(name: &str, file: Option<&str>) -> String {
+    let quoted = |text: &str| text.replace('"', "%22");
+    match file {
+        Some(file) => format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\nContent-Type: application/octet-stream\r\n\r\n",
+            quoted(name),
+            quoted(file_name(file))
+        ),
+        None => format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{}\"\r\n\r\n",
+            quoted(name)
+        ),
+    }
+}
+
+/// Whether a multipart body sends a file.
+fn sends_files(parts: &Parts<'_>) -> bool {
+    parts
+        .fields
+        .iter()
+        .flatten()
+        .any(|(_, field)| matches!(field, Field::File(_)))
 }
 
 fn httpie(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool) -> String {
@@ -501,6 +578,25 @@ mod tests {
         );
         assert!(of(CodeTarget::Fetch).contains(r#"// It signs in with Digest as "admin", which fetch does not"#));
         assert!(of(CodeTarget::Go).contains(r#"	// It signs in with Digest as "admin", which net/http does not"#));
+        // B6: Guzzle, .NET and URLSession answer it; the others say so.
+        assert!(of(CodeTarget::Php).contains(r"    'auth' => ['admin', 'it\'s', 'digest'],"));
+        assert!(of(CodeTarget::CSharp).contains(r#"    Credentials = new NetworkCredential("admin", "it's"),"#));
+        assert!(of(CodeTarget::Swift).contains(
+            r#"return (.useCredential, URLCredential(user: "admin", password: "it's", persistence: .forSession))"#
+        ));
+        for (target, library) in [
+            (CodeTarget::Axios, "axios"),
+            (CodeTarget::Rust, "reqwest"),
+            (CodeTarget::Java, "HttpClient"),
+        ] {
+            assert!(
+                of(target).contains(&format!(
+                    r#"// It signs in with Digest as "admin", which {library} does not"#
+                )),
+                "{}",
+                of(target)
+            );
+        }
     }
 
     #[test]
@@ -672,6 +768,260 @@ func main() {
             go.contains("\t\tTransport:     &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},"),
             "aligned under CheckRedirect, as gofmt has it\n{go}"
         );
+    }
+
+    /// B6: every status an answer, the body read as text.
+    #[test]
+    fn axios_takes_every_status() {
+        let (prepared, request) = post();
+        assert_eq!(
+            code(CodeTarget::Axios, &prepared, &request, false),
+            r#"import axios from "axios";
+
+const response = await axios.request({
+    method: "POST",
+    url: "https://api.test/v1/orders?x=1",
+    headers: {
+        "Authorization": "Bearer t-1",
+        "Content-Type": "application/json",
+    },
+    data: "{\"name\":\"o'neil\"}",
+    maxRedirects: 0,
+    responseType: "text",
+    validateStatus: () => true,
+});
+console.log(response.status, response.data);"#
+        );
+        let (prepared, request) = multipart();
+        let insecure = PreparedRequest {
+            accept_invalid_certs: true,
+            ..prepared
+        };
+        let axios = code(CodeTarget::Axios, &insecure, &request, true);
+        for line in [
+            "import { openAsBlob } from \"node:fs\";",
+            "import https from \"node:https\";",
+            "body.append(\"f\", await openAsBlob(\"/tmp/x.png\"), \"x.png\");",
+            "    data: body,",
+            "    httpsAgent: new https.Agent({ rejectUnauthorized: false }),",
+        ] {
+            assert!(axios.lines().any(|candidate| candidate == line), "{line}\n{axios}");
+        }
+        assert!(!axios.contains("maxRedirects"), "following, as axios does");
+    }
+
+    #[test]
+    fn guzzle_quotes_as_php_reads_single_quotes() {
+        let (prepared, request) = post();
+        let insecure = PreparedRequest {
+            accept_invalid_certs: true,
+            ..prepared
+        };
+        assert_eq!(
+            code(CodeTarget::Php, &insecure, &request, true),
+            r#"<?php
+require 'vendor/autoload.php';
+
+use GuzzleHttp\Client;
+
+$client = new Client();
+$response = $client->request('POST', 'https://api.test/v1/orders?x=1', [
+    'headers' => [
+        'Authorization' => 'Bearer t-1',
+        'Content-Type' => 'application/json',
+    ],
+    'body' => '{"name":"o\'neil"}',
+    'verify' => false,
+    'http_errors' => false,
+]);
+echo $response->getStatusCode(), "\n";
+echo $response->getBody(), "\n";"#
+        );
+        let (prepared, request) = multipart();
+        let php = code(CodeTarget::Php, &prepared, &request, false);
+        assert!(
+            php.contains(
+                "    'multipart' => [\n        ['name' => 'a', 'contents' => '1'],\n        ['name' => 'f', 'contents' => fopen('/tmp/x.png', 'r'), 'filename' => 'x.png'],\n    ],"
+            ),
+            "{php}"
+        );
+        assert!(php.contains("    'allow_redirects' => false,"));
+        assert!(!php.contains("multipart/form-data"), "Guzzle writes its own");
+    }
+
+    #[test]
+    fn reqwest_blocks_and_reads_a_body_as_written() {
+        let (prepared, request) = post();
+        assert_eq!(
+            code(CodeTarget::Rust, &prepared, &request, false),
+            r##"// reqwest, with its "blocking" feature.
+use reqwest::blocking::Client;
+use reqwest::redirect::Policy;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::builder()
+        .redirect(Policy::none())
+        .build()?;
+    let response = client
+        .request(reqwest::Method::POST, "https://api.test/v1/orders?x=1")
+        .header("Authorization", "Bearer t-1")
+        .header("Content-Type", "application/json")
+        .body(r#"{"name":"o'neil"}"#)
+        .send()?;
+    println!("{}", response.status());
+    println!("{}", response.text()?);
+    Ok(())
+}"##
+        );
+        let (prepared, request) = multipart();
+        let rust = code(CodeTarget::Rust, &prepared, &request, true);
+        assert!(rust.starts_with("// reqwest, with its \"blocking\" and \"multipart\" features."));
+        assert!(
+            rust.contains("    let client = Client::new();\n    let form = Form::new()\n        .text(\"a\", \"1\")\n        .file(\"f\", \"/tmp/x.png\")?;\n"),
+            "{rust}"
+        );
+        assert!(rust.contains("        .multipart(form)\n"));
+    }
+
+    #[test]
+    fn java_writes_a_form_out_and_leaves_what_it_sets_itself() {
+        let (prepared, request) = post();
+        assert_eq!(
+            code(CodeTarget::Java, &prepared, &request, true),
+            r#"import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+public class Main {
+    public static void main(String[] args) throws Exception {
+        HttpClient client = HttpClient.newBuilder()
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
+        HttpRequest request = HttpRequest.newBuilder(URI.create("https://api.test/v1/orders?x=1"))
+            .method("POST", HttpRequest.BodyPublishers.ofString("{\"name\":\"o'neil\"}"))
+            .header("Authorization", "Bearer t-1")
+            .header("Content-Type", "application/json")
+            .build();
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        System.out.println(response.statusCode());
+        System.out.println(response.body());
+    }
+}"#
+        );
+        let (mut prepared, request) = multipart();
+        prepared.headers.push(("Host".into(), "api.test".into()));
+        prepared.accept_invalid_certs = true;
+        let java = code(CodeTarget::Java, &prepared, &request, false);
+        for line in [
+            "import java.nio.file.Files;",
+            "import javax.net.ssl.SSLContext;",
+            "        form.add(\"--CyberAPIFormBoundary\\r\\nContent-Disposition: form-data; name=\\\"a\\\"\\r\\n\\r\\n1\\r\\n\".getBytes(StandardCharsets.UTF_8));",
+            "        form.add(Files.readAllBytes(Path.of(\"/tmp/x.png\")));",
+            "        form.add(\"--CyberAPIFormBoundary--\\r\\n\".getBytes(StandardCharsets.UTF_8));",
+            "            .method(\"POST\", HttpRequest.BodyPublishers.ofByteArrays(form))",
+            "            // Host: HttpClient sends its own.",
+            "            .header(\"Content-Type\", \"multipart/form-data; boundary=CyberAPIFormBoundary\")",
+            "            .sslContext(trustAll)",
+        ] {
+            assert!(java.lines().any(|candidate| candidate == line), "{line}\n{java}");
+        }
+        assert!(!java.contains("followRedirects"), "HttpClient follows none by default");
+    }
+
+    #[test]
+    fn csharp_puts_the_bodys_headers_on_its_content() {
+        let (prepared, request) = post();
+        assert_eq!(
+            code(CodeTarget::CSharp, &prepared, &request, false),
+            r#"var handler = new HttpClientHandler
+{
+    AllowAutoRedirect = false,
+};
+using var client = new HttpClient(handler);
+var request = new HttpRequestMessage(new HttpMethod("POST"), "https://api.test/v1/orders?x=1");
+request.Headers.TryAddWithoutValidation("Authorization", "Bearer t-1");
+request.Content = new ByteArrayContent(System.Text.Encoding.UTF8.GetBytes("{\"name\":\"o'neil\"}"));
+request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+var response = await client.SendAsync(request);
+Console.WriteLine((int)response.StatusCode);
+Console.WriteLine(await response.Content.ReadAsStringAsync());"#
+        );
+        let (prepared, request) = multipart();
+        let csharp = code(CodeTarget::CSharp, &prepared, &request, true);
+        assert!(csharp.starts_with("using var client = new HttpClient();\n"), "{csharp}");
+        assert!(csharp.contains(
+            "form.Add(new StringContent(\"1\"), \"a\");\nform.Add(new StreamContent(File.OpenRead(\"/tmp/x.png\")), \"f\", \"x.png\");\nrequest.Content = form;"
+        ));
+        // A content header without a body still has content to go on.
+        let get = PreparedRequest {
+            method: HttpMethod::Get,
+            url: "https://api.test/".into(),
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            ..Default::default()
+        };
+        assert!(
+            code(CodeTarget::CSharp, &get, &HttpRequest::default(), true).contains(
+                "request.Content = new ByteArrayContent(Array.Empty<byte>());\nrequest.Content.Headers.TryAddWithoutValidation(\"Content-Type\", \"application/json\");"
+            )
+        );
+    }
+
+    #[test]
+    fn swift_needs_a_delegate_only_for_what_it_changes() {
+        let (prepared, request) = post();
+        assert_eq!(
+            code(CodeTarget::Swift, &prepared, &request, true),
+            r#"import Foundation
+
+var request = URLRequest(url: URL(string: "https://api.test/v1/orders?x=1")!)
+request.httpMethod = "POST"
+request.setValue("Bearer t-1", forHTTPHeaderField: "Authorization")
+request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+request.httpBody = Data("{\"name\":\"o'neil\"}".utf8)
+
+let session = URLSession.shared
+let (data, response) = try await session.data(for: request)
+print((response as! HTTPURLResponse).statusCode)
+print(String(decoding: data, as: UTF8.self))"#
+        );
+        let (prepared, request) = multipart();
+        let insecure = PreparedRequest {
+            accept_invalid_certs: true,
+            ..prepared
+        };
+        let swift = code(CodeTarget::Swift, &insecure, &request, false);
+        for line in [
+            "final class Delegate: NSObject, URLSessionTaskDelegate {",
+            "        nil",
+            "        return (.useCredential, URLCredential(trust: trust))",
+            "body.append(try Data(contentsOf: URL(fileURLWithPath: \"/tmp/x.png\")))",
+            "request.setValue(\"multipart/form-data; boundary=CyberAPIFormBoundary\", forHTTPHeaderField: \"Content-Type\")",
+            "let session = URLSession(configuration: .default, delegate: Delegate(), delegateQueue: nil)",
+        ] {
+            assert!(swift.lines().any(|candidate| candidate == line), "{line}\n{swift}");
+        }
+        // No interpolation, and a control character as Swift writes one.
+        let odd = PreparedRequest {
+            method: HttpMethod::Post,
+            url: "https://api.test/".into(),
+            body: b"a\\(b)\x07".to_vec(),
+            ..Default::default()
+        };
+        let plain = HttpRequest {
+            content_type: ContentType::Plain,
+            ..Default::default()
+        };
+        assert!(code(CodeTarget::Swift, &odd, &plain, true).contains(r#"request.httpBody = Data("a\\(b)\u{7}".utf8)"#));
+    }
+
+    #[test]
+    fn the_menu_groups_every_target_once_curl_first() {
+        let grouped: Vec<CodeTarget> = CodeTarget::GROUPS
+            .iter()
+            .flat_map(|group| group.iter().copied())
+            .collect();
+        assert_eq!(grouped, CodeTarget::ALL);
     }
 
     #[test]

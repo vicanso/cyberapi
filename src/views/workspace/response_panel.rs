@@ -1670,13 +1670,17 @@ impl ResponsePanel {
     }
 }
 
-/// #69: an item for each client a request is copied as, cURL first.
+/// #69: an item for each client a request is copied as, cURL first; B6:
+/// in their groups, a line between.
 fn code_menu(menu: PopupMenu, api: &gpui_kit::WeakEntity<ApiState>) -> PopupMenu {
-    CodeTarget::ALL.into_iter().fold(menu, |menu, target| {
-        let api = api.clone();
-        menu.item(PopupMenuItem::new(target.label()).on_click(move |_, _, cx| {
-            let _ = api.update(cx, |api, cx| api.copy_code(target, cx));
-        }))
+    CodeTarget::GROUPS.iter().enumerate().fold(menu, |menu, (at, group)| {
+        let menu = if at == 0 { menu } else { menu.separator() };
+        group.iter().fold(menu, |menu, &target| {
+            let api = api.clone();
+            menu.item(PopupMenuItem::new(target.label()).on_click(move |_, _, cx| {
+                let _ = api.update(cx, |api, cx| api.copy_code(target, cx));
+            }))
+        })
     })
 }
 

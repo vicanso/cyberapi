@@ -1087,11 +1087,15 @@ fn item_menu(
                     window,
                     cx,
                     move |menu, _, _| {
-                        CodeTarget::ALL.into_iter().fold(menu, |menu, target| {
-                            let (state, id) = (curl_state.clone(), curl_id.clone());
-                            menu.item(PopupMenuItem::new(target.label()).on_click(move |_, _, cx| {
-                                let _ = state.update(cx, |state, cx| state.copy_code(&id, target, cx));
-                            }))
+                        // B6: grouped, a line between.
+                        CodeTarget::GROUPS.iter().enumerate().fold(menu, |menu, (at, group)| {
+                            let menu = if at == 0 { menu } else { menu.separator() };
+                            group.iter().fold(menu, |menu, &target| {
+                                let (state, id) = (curl_state.clone(), curl_id.clone());
+                                menu.item(PopupMenuItem::new(target.label()).on_click(move |_, _, cx| {
+                                    let _ = state.update(cx, |state, cx| state.copy_code(&id, target, cx));
+                                }))
+                            })
                         })
                     },
                 )
