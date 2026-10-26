@@ -7,7 +7,7 @@
 use cyberapi_core::graphql_schema::{InputDef, Schema, TypeDef};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::DialogFooter;
-use gpui_kit::component::input::{EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::input::{EditorState, Input, InputEvent, InputState, RopeExt as _};
 use gpui_kit::component::scroll::{ScrollableElement as _, Scrollbar, ScrollbarAxis};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
@@ -113,10 +113,16 @@ impl SchemaBrowser {
         }
     }
 
-    /// The field's name, into the query at its caret.
+    /// The field's name, into the query: at its caret in a selection set,
+    /// or else last in the set around it, or in the operation (#75).
     fn insert(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let name = name.to_string();
-        self.query.update(cx, |editor, cx| editor.insert(name, window, cx));
+        self.query.update(cx, |editor, cx| {
+            let query = editor.value().to_string();
+            let (at, text) = cyberapi_core::graphql_format::field_insertion(&query, editor.cursor(), name);
+            let position = editor.text().offset_to_position(at);
+            editor.set_cursor_position(position, window, cx);
+            editor.insert(text, window, cx);
+        });
         window.close_dialog(cx);
     }
 

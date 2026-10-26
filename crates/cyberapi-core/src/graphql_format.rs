@@ -272,6 +272,150 @@ pub fn format_query(query: &str) -> Result<String, Unformatted> {
     Ok(printer.lines.join("\n"))
 }
 
+/// Where the caret at `caret` in `before` goes in `after`, the same query
+/// formatted (#75): after as many characters other than white space as
+/// came before it, for formatting moves white space alone.
+pub fn caret_after_format(before: &str, caret: usize, after: &str) -> usize {
+    let wanted = before
+        .get(..caret)
+        .unwrap_or(before)
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .count();
+    if wanted == 0 {
+        return 0;
+    }
+    after
+        .char_indices()
+        .filter(|(_, ch)| !ch.is_whitespace())
+        .nth(wanted - 1)
+        .map_or(after.len(), |(at, ch)| at + ch.len_utf8())
+}
+
+/// Where a field picked in the schema browser goes in `query` with its
+/// caret at `caret`, and what is written there (#75). In a selection set,
+/// at the caret — past the word it is in, on a line of its own at the end
+/// of a line. Anywhere else — before the operation, in arguments — at the
+/// end of the selection set around the caret, or of the query's first one.
+/// An empty query becomes a selection set of the field; one that does not
+/// read, or has no selection set, takes it at the caret as a set would.
+pub fn field_insertion(query: &str, caret: usize, field: &str) -> (usize, String) {
+    let mut caret = caret.min(query.len());
+    while !query.is_char_boundary(caret) {
+        caret -= 1;
+    }
+    if query.trim().is_empty() {
+        return (0, format!("{{\n{}{field}\n}}", " ".repeat(JSON_INDENT)));
+    }
+    let Ok(tokens) = lex(query) else {
+        return at_the_caret(query, caret, field);
+    };
+    let span = |token: &Token<'_>| {
+        let start = token.text.as_ptr() as usize - query.as_ptr() as usize;
+        (start, start + token.text.len())
+    };
+    // Inside a word, a string or a comment: past it.
+    if let Some((_, end)) = tokens
+        .iter()
+        .map(span)
+        .find(|(start, end)| *start < caret && caret < *end)
+    {
+        caret = end;
+    }
+    // What is open at the caret, and where each selection set closes.
+    let mut open: Vec<(Open, usize)> = Vec::new();
+    let mut at_caret: Option<Vec<(Open, usize)>> = None;
+    let mut closes: Vec<(usize, usize)> = Vec::new();
+    let mut first_selection = None;
+    for token in tokens.iter().filter(|token| token.kind == Kind::Punct) {
+        let (start, _) = span(token);
+        if at_caret.is_none() && start >= caret {
+            at_caret = Some(open.clone());
+        }
+        let value = matches!(open.last(), Some((Open::Value(_), _)));
+        match token.text {
+            "{" if value => open.push((Open::Value('}'), start)),
+            "{" => {
+                first_selection = first_selection.or(Some(start));
+                open.push((Open::Selection, start));
+            }
+            "(" => open.push((Open::Value(')'), start)),
+            "[" => open.push((Open::Value(']'), start)),
+            "}" | ")" | "]" => {
+                if let Some((Open::Selection, opened)) = open.pop() {
+                    closes.push((opened, start));
+                }
+            }
+            _ => {}
+        }
+    }
+    let at_caret = at_caret.unwrap_or(open);
+    if matches!(at_caret.last(), Some((Open::Selection, _))) {
+        return at_the_caret(query, caret, field);
+    }
+    let around = at_caret
+        .iter()
+        .rev()
+        .find(|(open, _)| *open == Open::Selection)
+        .map(|(_, opened)| *opened)
+        .or(first_selection);
+    match around.and_then(|opened| closes.iter().find(|(start, _)| *start == opened)) {
+        Some((_, close)) => before_close(query, *close, field),
+        None => at_the_caret(query, caret, field),
+    }
+}
+
+/// `field` at the caret in a selection set, apart from the words beside it.
+fn at_the_caret(query: &str, caret: usize, field: &str) -> (usize, String) {
+    let line_start = query[..caret].rfind('\n').map_or(0, |at| at + 1);
+    let line_end = query[caret..].find('\n').map_or(query.len(), |at| caret + at);
+    let (before, after) = (&query[line_start..caret], &query[caret..line_end]);
+    let indent: String = query[line_start..]
+        .chars()
+        .take_while(|ch| *ch == ' ' || *ch == '\t')
+        .collect();
+    // At the end of a line: on the next, a level in when the line opens a set.
+    if !before.trim().is_empty() && after.trim().is_empty() {
+        let inner = if before.trim_end().ends_with('{') {
+            " ".repeat(JSON_INDENT)
+        } else {
+            String::new()
+        };
+        return (line_end, format!("\n{indent}{inner}{field}"));
+    }
+    // At the start of a line: on a line of its own above it.
+    if before.trim().is_empty() && !after.trim().is_empty() {
+        return (line_start + indent.len(), format!("{field}\n{indent}"));
+    }
+    let prev = query[..caret].chars().next_back();
+    let next = query[caret..].chars().next();
+    let lead = if prev.is_some_and(|ch| !ch.is_whitespace() && ch != '{') {
+        " "
+    } else {
+        ""
+    };
+    let trail = if next.is_some_and(|ch| !ch.is_whitespace() && ch != '}') {
+        " "
+    } else {
+        ""
+    };
+    (caret, format!("{lead}{field}{trail}"))
+}
+
+/// `field` last in the selection set closed at `close`.
+fn before_close(query: &str, close: usize, field: &str) -> (usize, String) {
+    let line_start = query[..close].rfind('\n').map_or(0, |at| at + 1);
+    let lead = &query[line_start..close];
+    // `}` on a line of its own: a line a level in from it, before it.
+    if line_start > 0 && lead.trim().is_empty() {
+        return (line_start - 1, format!("\n{lead}{}{field}", " ".repeat(JSON_INDENT)));
+    }
+    match query[..close].chars().next_back() {
+        Some(ch) if ch.is_whitespace() => (close, format!("{field} ")),
+        _ => (close, format!(" {field}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +490,83 @@ fragment F on User {
         assert_eq!(format_query("{ a(b: {{value(x) }"), Err(Unformatted::StringNotClosed));
         assert_eq!(format_query("{ a ^ }"), Err(Unformatted::NotGraphQl('^')));
         assert_eq!(format_query("").as_deref(), Ok(""));
+    }
+
+    /// `query` with `field` put where `field_insertion` says.
+    fn inserted(query: &str, caret: usize, field: &str) -> String {
+        let (at, text) = field_insertion(query, caret, field);
+        let mut query = query.to_string();
+        query.insert_str(at, &text);
+        query
+    }
+
+    /// #75 as reported: Format left the caret at the start, and the field
+    /// went in before `query`.
+    #[test]
+    fn a_field_picked_with_the_caret_outside_goes_last_in_the_operation() {
+        let typed = "query Q { users { id name } hello }";
+        let formatted = format_query(typed).expect("formatted");
+        assert_eq!(
+            inserted(&formatted, 0, "email"),
+            "query Q {\n    users {\n        id\n        name\n    }\n    hello\n    email\n}"
+        );
+        assert_eq!(
+            inserted("{ users(first: 1) { id } }", 15, "email"),
+            "{ users(first: 1) { id } email }",
+            "in arguments: the set around them"
+        );
+        assert_eq!(
+            inserted("query { a(x: \"{\") # {\n b }", 0, "c"),
+            "query { a(x: \"{\") # {\n b c }",
+            "braces in strings and comments are none"
+        );
+    }
+
+    #[test]
+    fn format_keeps_the_caret_where_it_was() {
+        let typed = "query Q { users { id name } hello }";
+        let formatted = format_query(typed).expect("formatted");
+        let after_name = typed.find("name").expect("there") + "name".len();
+        let caret = caret_after_format(typed, after_name, &formatted);
+        assert_eq!(&formatted[..caret], "query Q {\n    users {\n        id\n        name");
+        assert_eq!(caret_after_format(typed, 0, &formatted), 0);
+        assert_eq!(caret_after_format(typed, typed.len(), &formatted), formatted.len());
+        // And the field picked there goes on the next line, in the same set.
+        assert_eq!(
+            inserted(&formatted, caret, "email"),
+            "query Q {\n    users {\n        id\n        name\n        email\n    }\n    hello\n}"
+        );
+    }
+
+    #[test]
+    fn a_field_picked_in_a_selection_set_goes_at_the_caret_apart_from_its_neighbours() {
+        let query = "query Q {\n    users {\n        id\n        name\n    }\n}";
+        let in_name = query.find("name").expect("there") + 2;
+        assert_eq!(
+            inserted(query, in_name, "email"),
+            "query Q {\n    users {\n        id\n        name\n        email\n    }\n}",
+            "inside a word: past it"
+        );
+        let after_open = query.find("users {").expect("there") + "users {".len();
+        assert_eq!(
+            inserted(query, after_open, "email"),
+            "query Q {\n    users {\n        email\n        id\n        name\n    }\n}",
+            "after an opening brace: a level in"
+        );
+        let line_start = query.find("        id").expect("there");
+        assert_eq!(
+            inserted(query, line_start, "email"),
+            "query Q {\n    users {\n        email\n        id\n        name\n    }\n}",
+            "before a line's field: a line of its own"
+        );
+        assert_eq!(inserted("{ a b }", 3, "c"), "{ a c b }", "one line: spaced");
+        assert_eq!(inserted("{a}", 2, "c"), "{a c}");
+    }
+
+    #[test]
+    fn an_empty_query_becomes_a_selection_set_and_a_broken_one_takes_it_as_it_is() {
+        assert_eq!(inserted("", 0, "hello"), "{\n    hello\n}");
+        assert_eq!(inserted("  \n", 1, "hello"), "{\n    hello\n}  \n");
+        assert_eq!(inserted("{ a \"b", 2, "c"), "{ c a \"b");
     }
 }

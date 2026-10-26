@@ -23,7 +23,7 @@ use cyberapi_core::send::{self, form_fields, unsent_body};
 use cyberapi_core::template::Answers;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::ANIMATION_DURATION;
-use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, RopeExt as _};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::notification::Notification;
@@ -1561,9 +1561,13 @@ impl RequestEditor {
         let query = self.graphql.query.read(cx).value().to_string();
         match cyberapi_core::graphql_format::format_query(&query) {
             Ok(formatted) if formatted != query => {
-                self.graphql
-                    .query
-                    .update(cx, |editor, cx| editor.set_value(formatted, window, cx));
+                self.graphql.query.update(cx, |editor, cx| {
+                    // #75: the caret stays by the same word, not at the start.
+                    let caret = cyberapi_core::graphql_format::caret_after_format(&query, editor.cursor(), &formatted);
+                    editor.set_value(formatted, window, cx);
+                    let position = editor.text().offset_to_position(caret);
+                    editor.set_cursor_position(position, window, cx);
+                });
             }
             Ok(_) => {}
             Err(why) => {
