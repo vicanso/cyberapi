@@ -1,4 +1,4 @@
-.PHONY: dev debug check fmt lint test release desktop-dist bundle icons nightly version version-patch version-minor version-major check-web web-bundle web-release web-serve web-dist docker db-up db-down test-sql bridge
+.PHONY: dev debug check fmt lint test release desktop-dist bundle icons nightly version version-patch version-minor version-major check-web web-bundle web-release web-serve web-dist docker db-up db-down test-sql bridge cli
 
 # The desktop app.
 dev:
@@ -101,6 +101,10 @@ test-sql:
 # The bridge on the local PostgreSQL, serving the last `make web-bundle`:
 # open http://127.0.0.1:7380/. The first visit makes the administrator with
 # the setup token `dev`. Requests may go to this machine, for local APIs.
+# A4: the command line, `cyberapi-cli run`, in the target directory's release/.
+cli:
+	cargo build --release -p cyberapi-cli
+
 bridge:
 	CYBERAPI_BRIDGE_STORE=$(PG_URL) CYBERAPI_BRIDGE_SETUP_TOKEN=dev cargo run -p cyberapi-bridge -- --insecure-cookie --allow-target 127.0.0.0/8,::1/128
 

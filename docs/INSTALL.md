@@ -16,6 +16,16 @@ Download from [Releases](https://github.com/vicanso/cyberapi/releases). Each rel
 | Linux (x86_64, arm64) | `cyberapi_<version>_amd64.deb`, `cyberapi_<version>_arm64.deb` | Debian, Ubuntu and their relatives. |
 | Linux (x86_64, aarch64) | `cyberapi-<version>-<arch>-unknown-linux-gnu.tar.gz` | The binary alone. Needs glibc 2.35 or newer. |
 
+## The command line
+
+`cyberapi-cli run` runs a project's APIs without the window — in a terminal or CI — as the app's Run… does. There is no package of it yet: build it from the source with Rust installed, `cargo install --path crates/cyberapi-cli` (or `make cli`, which leaves it in the cargo target directory's `release/`).
+
+```sh
+cyberapi-cli run project.json --env-file staging.postman_environment.json --data users.csv --junit results.xml
+```
+
+The project is a file: CyberAPI's own export (Export → CyberAPI, which can live in git), or anything the app imports — a Postman collection, an Insomnia export, an OpenAPI document, Bruno and Hoppscotch files. `--env` picks one of its named environments; `--env-file` adds another file's variables, and its environment is the run's unless `--env` names one; `--var NAME=VALUE` and `--data FILE` (CSV or a JSON array, once for each row) give values read as `{{value(NAME)}}`; `env(NAME)` reads the process's environment, where CI keeps its secrets; `--prompt LABEL=VALUE` answers a `prompt`. Each send is printed as it ends, with what did not hold; `--junit` writes the run as JUnit XML. The exit code is 0 when every send held, 1 when one did not, 2 when nothing could run. A file a request reads is found beside the project file.
+
 ## Nightly builds
 
 A `nightly` prerelease is built from `main` every night when it has moved. Its version is the next patch's, with the day and the commit, e.g. `0.2.2-nightly.20261024.137a858`, which the app's About and `cyberapi-bridge --version` show.

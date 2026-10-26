@@ -108,6 +108,58 @@ pub(super) fn parse_value(json: &Value) -> ImportBundle {
     }
 }
 
+/// A4: the tree an export holds, with the ids it was written with — a
+/// `get` names an API by its id — for a run outside the app. The top level
+/// is what no folder lists, in the file's order; a folder lists only what
+/// the file has.
+pub fn tree_data(json: &Value) -> TreeData {
+    let values: Vec<&Value> = match json {
+        Value::Array(items) => items.iter().collect(),
+        other => vec![other],
+    };
+    let records: Vec<Record> = values
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value.clone()).ok())
+        .collect();
+    let ids: HashSet<&str> = records.iter().map(|record| record.id.as_str()).collect();
+    let mut data = TreeData::default();
+    for record in &records {
+        let id = ItemId::new(record.id.as_str());
+        if record.category.as_deref() == Some("http") {
+            data.apis.push(ApiSetting {
+                id,
+                name: record.name.clone(),
+                request: HttpRequest::from_json_lenient(record.setting.as_deref().unwrap_or("{}")),
+                ..Default::default()
+            });
+        } else {
+            data.folders.push(Folder {
+                id,
+                collection: Default::default(),
+                name: record.name.clone(),
+                children: record
+                    .children
+                    .as_deref()
+                    .map(legacy::parse_id_list)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|child| ids.contains(child.as_str()))
+                    .collect(),
+                settings: record.settings.clone().unwrap_or_default(),
+                created_at: Default::default(),
+                updated_at: Default::default(),
+            });
+        }
+    }
+    let listed: HashSet<ItemId> = data.folders.iter().flat_map(|folder| folder.children.clone()).collect();
+    data.top_order = records
+        .iter()
+        .map(|record| ItemId::new(record.id.as_str()))
+        .filter(|id| !listed.contains(id))
+        .collect();
+    data
+}
+
 fn folder_record(folder: &Folder) -> Record {
     Record {
         id: folder.id.to_string(),

@@ -8,17 +8,22 @@
 //! to the project. What a run sent is kept in the history as any send is;
 //! the run itself is only shown.
 
-use crate::ItemId;
 use crate::assertions::{Outcomes, tally};
-use crate::model::{Variable, VariableCategory};
+use crate::import::{self, Format, ImportEnvironment, ImportError};
+use crate::model::{ApiSetting, Environment, Folder, Variable, VariableCategory};
 use crate::response::HttpResponse;
+use crate::sync::ProjectConfig;
 use crate::tree::{ItemKind, Tree, TreeData};
+use crate::{EnvironmentId, ItemId, VariableId};
 use serde_json::Value;
 use snafu::Snafu;
 
 /// A run's values, by name, in the order they were given; a later one of a
 /// name stands for an earlier.
-pub type Values = Vec<(String, String)>;
+pub type Values = Vec<Pair>;
+
+/// A name and its value.
+type Pair = (String, String);
 
 /// The APIs a run of `folder`, or of the whole project, sends, in the
 /// tree's order: depth first, each folder's in its order.
@@ -59,6 +64,166 @@ pub fn with_values(variables: &[Variable], values: &[(String, String)]) -> Vec<V
             out.push(variable(category, name, value));
         }
     }
+    out
+}
+
+/// A4: a project file as a run outside the app reads it — whatever the app
+/// imports (`import::parse`). CyberAPI's own export keeps its ids, which a
+/// `get` names an API by; any other format's items get ids of their own.
+/// Its variables are the ones every environment shares, its named
+/// environments and its auth the project's.
+pub fn project(text: &str) -> Result<ProjectConfig, ImportError> {
+    let bundle = import::parse(text)?;
+    let mut config = ProjectConfig {
+        name: bundle.name.clone().unwrap_or_default(),
+        ..Default::default()
+    };
+    let tree = match import::detect(text)? {
+        (Format::CyberApi, Some(json)) => import::tree_data(&json),
+        _ => {
+            let mut next = 0;
+            let assigned = import::assign_ids(&bundle.items, &mut || {
+                next += 1;
+                ItemId::new(format!("item-{next}"))
+            });
+            TreeData {
+                folders: assigned
+                    .folders
+                    .into_iter()
+                    .map(|(id, name, children, settings)| Folder {
+                        id,
+                        collection: Default::default(),
+                        name,
+                        children,
+                        settings,
+                        created_at: Default::default(),
+                        updated_at: Default::default(),
+                    })
+                    .collect(),
+                apis: assigned
+                    .apis
+                    .into_iter()
+                    .map(|(id, name, request)| ApiSetting {
+                        id,
+                        name,
+                        request,
+                        ..Default::default()
+                    })
+                    .collect(),
+                top_order: assigned.top,
+                ..Default::default()
+            }
+        }
+    };
+    config.folders = tree.folders;
+    config.apis = tree.apis;
+    config.top_order = tree.top_order;
+    config.settings.auth = bundle.auth;
+    add_environments(&mut config, &bundle.environment, &bundle.environments);
+    Ok(config)
+}
+
+/// A4: `shared` as variables every environment has, and each of `named` as
+/// an environment of the project's — the one of its name, in any case,
+/// where it has one. A later one of a name stands for an earlier.
+pub fn add_environments(config: &mut ProjectConfig, shared: &[(String, String)], named: &[ImportEnvironment]) {
+    // Each environment, `None` for every one's, and what it is given.
+    let mut layers: Vec<(Option<EnvironmentId>, &[Pair])> = vec![(None, shared)];
+    for environment in named.iter().filter(|environment| !environment.name.trim().is_empty()) {
+        let name = environment.name.trim();
+        let id = match config
+            .environments
+            .iter()
+            .find(|known| known.name.eq_ignore_ascii_case(name))
+        {
+            Some(known) => known.id.clone(),
+            None => {
+                let id = EnvironmentId::new(format!("environment-{}", config.environments.len() + 1));
+                config.environments.push(Environment {
+                    id: id.clone(),
+                    name: name.to_string(),
+                    ..Default::default()
+                });
+                id
+            }
+        };
+        layers.push((Some(id), &environment.variables));
+    }
+    for (environment, variables) in layers {
+        for (name, value) in variables {
+            config.variables.retain(|known| {
+                !(known.category == VariableCategory::Environment
+                    && known.environment == environment
+                    && known.name == *name)
+            });
+            config.variables.push(Variable {
+                id: VariableId::new(format!("variable-{}", config.variables.len() + 1)),
+                environment: environment.clone(),
+                ..variable(VariableCategory::Environment, name, value)
+            });
+        }
+    }
+}
+
+/// A4: one send of a run, as a JUnit test case.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Case {
+    /// The API's name, and the data row's number when there are rows.
+    pub name: String,
+    /// Where it is: its folders, `/` between.
+    pub group: String,
+    pub seconds: f64,
+    /// Why it did not hold; `None` when it did.
+    pub failure: Option<String>,
+}
+
+/// A4: a run as JUnit XML, which CI systems read: one suite named `suite`.
+pub fn junit(suite: &str, cases: &[Case]) -> String {
+    fn escaped(text: &str) -> String {
+        text.chars()
+            .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+            .map(|c| match c {
+                '&' => "&amp;".to_string(),
+                '<' => "&lt;".to_string(),
+                '>' => "&gt;".to_string(),
+                '"' => "&quot;".to_string(),
+                '\n' => "&#10;".to_string(),
+                c => c.to_string(),
+            })
+            .collect()
+    }
+    let failures = cases.iter().filter(|case| case.failure.is_some()).count();
+    let total: f64 = cases.iter().map(|case| case.seconds).sum();
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    out.push_str(&format!(
+        "<testsuites tests=\"{}\" failures=\"{failures}\" time=\"{total:.3}\">\n",
+        cases.len()
+    ));
+    out.push_str(&format!(
+        "  <testsuite name=\"{}\" tests=\"{}\" failures=\"{failures}\" time=\"{total:.3}\">\n",
+        escaped(suite),
+        cases.len()
+    ));
+    for case in cases {
+        let opening = format!(
+            "    <testcase classname=\"{}\" name=\"{}\" time=\"{:.3}\"",
+            escaped(&case.group),
+            escaped(&case.name),
+            case.seconds
+        );
+        match &case.failure {
+            None => out.push_str(&format!("{opening}/>\n")),
+            Some(why) => {
+                let first = why.lines().next().unwrap_or_default();
+                out.push_str(&format!(
+                    "{opening}>\n      <failure message=\"{}\">{}</failure>\n    </testcase>\n",
+                    escaped(first),
+                    escaped(why)
+                ));
+            }
+        }
+    }
+    out.push_str("  </testsuite>\n</testsuites>\n");
     out
 }
 
@@ -292,6 +457,92 @@ mod tests {
             ..answered(200)
         };
         assert!(!held(&failed, &Vec::new()));
+    }
+
+    /// A4: CyberAPI's own export keeps its ids; another format's items get
+    /// ids of their own; variables and environments come along.
+    #[test]
+    fn a_project_file_reads_as_the_app_imports_it() {
+        let own = r#"[
+            {"id": "f1", "name": "users", "children": "a1,gone"},
+            {"id": "a1", "name": "login", "category": "http", "setting": "{\"method\":\"POST\",\"uri\":\"{{HOST}}/login\"}"},
+            {"id": "a2", "name": "me", "category": "http", "setting": "{\"uri\":\"{{HOST}}/me\"}"}
+        ]"#;
+        let config = project(own).expect("an export");
+        let tree = config.tree();
+        let names = |ids: Vec<ItemId>| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        assert_eq!(names(plan(&tree, None)), ["a1", "a2"], "its ids, the folder's first");
+        assert_eq!(config.folders[0].children, [ItemId::new("a1")], "what the file has");
+
+        let postman = r#"{"info": {"name": "Shop"}, "item": [
+            {"name": "orders", "item": [{"name": "list", "request": {"method": "GET", "url": "{{host}}/orders"}}]},
+            {"name": "health", "request": {"method": "GET", "url": "{{host}}/h"}}
+        ], "variable": [{"key": "host", "value": "https://shop.test"}],
+        "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{token}}"}]}}"#;
+        let mut config = project(postman).expect("a collection");
+        assert_eq!(config.name, "Shop");
+        assert_eq!(config.apis.len(), 2);
+        assert!(config.settings.auth.signs());
+        assert_eq!(
+            config
+                .variables
+                .iter()
+                .map(|v| (v.name.as_str(), v.value.as_str(), v.environment.is_none()))
+                .collect::<Vec<_>>(),
+            [("host", "https://shop.test", true)]
+        );
+        add_environments(
+            &mut config,
+            &[("host".into(), "http://localhost".into())],
+            &[ImportEnvironment {
+                name: "CI".into(),
+                variables: vec![("token".into(), "t".into())],
+            }],
+        );
+        let shared: Vec<&str> = config
+            .variables
+            .iter()
+            .filter(|v| v.environment.is_none())
+            .map(|v| v.value.as_str())
+            .collect();
+        assert_eq!(shared, ["http://localhost"], "a later one stands for the earlier");
+        assert_eq!(config.environments[0].name, "CI");
+        assert!(matches!(project("nothing"), Err(ImportError::Unreadable { .. })));
+    }
+
+    #[test]
+    fn a_run_reads_as_junit() {
+        let xml = junit(
+            "Shop <CI>",
+            &[
+                Case {
+                    name: "login".into(),
+                    group: "users".into(),
+                    seconds: 0.012,
+                    failure: None,
+                },
+                Case {
+                    name: "me [2]".into(),
+                    group: String::new(),
+                    seconds: 0.5,
+                    failure: Some("status equals 200: was 401\nsecond line".into()),
+                },
+            ],
+        );
+        assert_eq!(
+            xml,
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<testsuites tests=\"2\" failures=\"1\" time=\"0.512\">\n",
+                "  <testsuite name=\"Shop &lt;CI&gt;\" tests=\"2\" failures=\"1\" time=\"0.512\">\n",
+                "    <testcase classname=\"users\" name=\"login\" time=\"0.012\"/>\n",
+                "    <testcase classname=\"\" name=\"me [2]\" time=\"0.500\">\n",
+                "      <failure message=\"status equals 200: was 401\">status equals 200: was 401&#10;second line</failure>\n",
+                "    </testcase>\n",
+                "  </testsuite>\n",
+                "</testsuites>\n",
+            )
+        );
     }
 
     #[test]

@@ -35,7 +35,7 @@ mod opencollection;
 mod own;
 mod postman;
 
-pub use own::{api_config, export, parse_own};
+pub use own::{api_config, export, parse_own, tree_data};
 
 use crate::ItemId;
 use crate::auth::Auth;

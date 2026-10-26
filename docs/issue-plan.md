@@ -169,7 +169,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | B6 | 复制为代码加 Node axios、PHP Guzzle、Rust reqwest（blocking）、Java HttpClient、C# HttpClient、Swift URLSession；菜单分三组（命令行、脚本、编译型），cURL 仍在第一个；跟随重定向、不校验证书照设置写，Digest 在 Guzzle、.NET、URLSession 里写成库自己的应答，其余写一行注释。axios、reqwest、URLSession 的代码对本地服务器实际跑过 | 已完成 |
 | D4 | 历史：每个接口保留的条数在设置的“数据”里改（5–100，默认 10，`SendPrefs.history_size`；`HistoryStore::add` 带上条数，bridge 限在这个范围里，旧页面不带时按 10）；项目的“最近发送”（`HistoryStore::recent`，最近 50 条、不带响应体；树面板的项目菜单和响应区的历史菜单里打开，点一条打开接口并显示那条响应）；“对比两条响应”按行对比响应体（`cyberapi_core::diff`，JSON 先缩进，未变的折叠，过长时只比前 20000 行） | 已完成 |
 | A3 + A2 | 运行器：目录或项目菜单的“运行…”，按树的顺序串行发送，可带 CSV / JSON 数据每行一遍（列用 `{{value(列名)}}` 读），请求要的 prompt 在运行弹窗里一次填好；每条结束即显示响应、断言结果，汇总通过 / 失败（有断言按断言，没有时 4xx / 5xx 或 gRPC 非 OK 算失败），运行结束后点一条打开对应接口；关掉弹窗即停止；发出的请求照常记进历史，运行结果不存。提取（`HttpRequest.extractions`，数据模型编号 8）写在断言标签页下面，只在一次运行里有效，后面的请求用 `{{value(名称)}}` 读（也作地址前缀的 `{{名称}}`）。规则在 `cyberapi_core::run` / `assertions::extract`，运行在 `cyberapi_service::run` | 已完成 |
-| A4 | `cyberapi run` 命令行 | |
+| A4 | 命令行 `cyberapi-cli run`（新的 bin crate `crates/cyberapi-cli`，不依赖 GUI）：读项目文件（自己的导出保留 id，其他能导入的格式也行），项目放在内存里，不碰本机库也不连 bridge；`--env` / `--env-file` / `--var` / `--data` / `--prompt` / `--folder`，`env()` 读进程的环境变量；每条结束打印一行和没通过的原因，`--junit` 写 JUnit XML，退出码 0 / 1 / 2。还没有安装包，从源码构建（`make cli`），见 feature-research §9 | 已完成 |
 | F2 | 命令面板 | |
 | F3 | 接口、目录、项目的说明，响应存为示例 | |
 | H1 | MCP 写入工具 | |

@@ -16,6 +16,16 @@
 | Linux（x86_64、arm64） | `cyberapi_<版本>_amd64.deb`、`cyberapi_<版本>_arm64.deb` | Debian、Ubuntu 及其衍生版。 |
 | Linux（x86_64、aarch64） | `cyberapi-<版本>-<架构>-unknown-linux-gnu.tar.gz` | 只有程序本身。需要 glibc 2.35 或更新。 |
 
+## 命令行
+
+`cyberapi-cli run` 不开窗口运行一个项目的接口（终端或 CI 里），和应用里的“运行…”一样。目前还没有它的安装包，需要装好 Rust 从源码构建：`cargo install --path crates/cyberapi-cli`（或 `make cli`，产物在 cargo target 目录的 `release/` 下）。
+
+```sh
+cyberapi-cli run project.json --env-file staging.postman_environment.json --data users.csv --junit results.xml
+```
+
+项目是一个文件：CyberAPI 自己的导出（导出 → CyberAPI，可以放进 git），或任何应用能导入的格式——Postman 集合、Insomnia 导出、OpenAPI 文档、Bruno 和 Hoppscotch 文件。`--env` 选文件里的命名环境；`--env-file` 补上另一个文件的变量，没写 `--env` 时就用这个文件的环境；`--var 名称=值` 和 `--data 文件`（CSV 或 JSON 数组，每行运行一遍）给出的值用 `{{value(名称)}}` 读；`env(名称)` 读进程的环境变量，CI 的密钥就放在这里；`--prompt 说明=值` 回答 `prompt`。每个请求结束就打印一行，没通过的写出原因；`--junit` 把结果写成 JUnit XML。全部通过时退出码为 0，有失败时为 1，无法运行时为 2。请求读取的文件到项目文件所在的目录里找。
+
 ## Nightly 版
 
 `main` 有新提交时，每晚构建一个 `nightly` 预发布版。它的版本号是下一个补丁版本加上日期和提交，如 `0.2.2-nightly.20261024.137a858`，应用的“关于”和 `cyberapi-bridge --version` 都会显示。

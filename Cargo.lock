@@ -1883,6 +1883,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyberapi-cli"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "cyberapi-core",
+ "cyberapi-http",
+ "cyberapi-service",
+ "cyberapi-store",
+ "pretty_assertions",
+ "tokio",
+]
+
+[[package]]
 name = "cyberapi-core"
 version = "0.3.0"
 dependencies = [
