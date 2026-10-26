@@ -828,17 +828,22 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
         })
         .await
         .expect("a variable in it");
-    let issue = |who, name: &str, can_send| {
+    let issue_with = |who, name: &str, can_send, can_write| {
         let directory = store.directory(who);
         let input = NewMcpToken {
             name: name.into(),
             can_send,
+            can_write,
             days: None,
         };
         async move { directory.issue_mcp_token(input).await.expect("a token") }
     };
+    let issue = |who, name: &str, can_send| issue_with(who, name, can_send, false);
     let reader = issue(ann.clone(), "reader", false).await;
     let sender = issue(ann.clone(), "sender", true).await;
+    // H1.
+    let writer = issue_with(ann.clone(), "writer", false, true).await;
+    assert!(writer.token.can_write && !sender.token.can_write);
 
     // Only a token signs in here: not the page's cookie, nor nothing.
     let ping = json!({"jsonrpc": "2.0", "id": 1, "method": "ping"});
@@ -885,8 +890,16 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
         names(&body),
         ["list_projects", "list_apis", "get_api", "get_variables", "get_history"]
     );
-    let (_, body) = mcp(&router, Some(&format!("Bearer {}", sender.secret)), None, list).await;
+    let (_, body) = mcp(&router, Some(&format!("Bearer {}", sender.secret)), None, list.clone()).await;
     assert!(names(&body).contains(&"send_api".to_string()));
+    assert!(!names(&body).contains(&"create_api".to_string()));
+    let (_, body) = mcp(&router, Some(&format!("Bearer {}", writer.secret)), None, list).await;
+    assert!(names(&body).contains(&"create_api".to_string()) && names(&body).contains(&"update_api".to_string()));
+    let listed = store.directory(ann.clone()).mcp_tokens().await.expect("listed");
+    assert!(
+        listed.iter().any(|token| token.name == "writer" && token.can_write),
+        "kept as allowed"
+    );
 
     // What it reads, with the secrets masked and the templates kept.
     let (projects, _) = tool(&router, &reader.secret, "list_projects", json!({})).await;
@@ -983,6 +996,67 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
         "{nowhere}"
     );
 
+    // H1: making and changing, with a token allowed to; never with another.
+    let (refused, failed) = tool(
+        &router,
+        &sender.secret,
+        "create_api",
+        json!({"project": "shop", "name": "orders"}),
+    )
+    .await;
+    assert!(failed && refused.as_str().is_some_and(|why| why.contains("may not change")));
+    let folder = storage
+        .tree()
+        .create_folder(project.id.clone(), None, "users".into())
+        .await
+        .expect("a folder")
+        .item;
+    let (made, failed) = tool(
+        &router,
+        &writer.secret,
+        "create_api",
+        json!({"project": "shop", "name": "list", "folder": "users", "method": "GET",
+               "url": "{{HOST}}/users?page=1", "headers": {"Accept": "application/json"},
+               "description": "Lists the users."}),
+    )
+    .await;
+    assert!(!failed, "{made}");
+    assert_eq!(made["path"], json!("users/list"));
+    assert_eq!(made["url"], json!("{{HOST}}/users"));
+    assert_eq!(made["query"][0]["name"], json!("page"));
+    assert_eq!(made["description"], json!("Lists the users."));
+    let data = storage.tree().load(project.id.clone()).await.expect("the tree");
+    let kept = data.apis.iter().find(|api| api.name == "list").expect("made");
+    assert!(
+        data.folders
+            .iter()
+            .any(|f| f.id == folder.id && f.children.contains(&kept.id))
+    );
+    let (changed, failed) = tool(
+        &router,
+        &writer.secret,
+        "update_api",
+        json!({"project": "shop", "api": "users/list", "name": "list users", "method": "POST",
+               "contentType": "json", "body": {"page": 2}}),
+    )
+    .await;
+    assert!(!failed, "{changed}");
+    assert_eq!(changed["name"], json!("list users"));
+    assert_eq!(changed["method"], json!("POST"));
+    assert_eq!(changed["url"], json!("{{HOST}}/users"), "not given, kept");
+    assert_eq!(changed["description"], json!("Lists the users."));
+    let (bad, failed) = tool(
+        &router,
+        &writer.secret,
+        "update_api",
+        json!({"project": "shop", "api": "users/list users", "method": "FETCH"}),
+    )
+    .await;
+    assert!(
+        failed && bad.as_str().is_some_and(|why| why.contains("no method")),
+        "{bad}"
+    );
+
     // Where its account only views, a sending token does not send.
     store
         .set_grant(
@@ -992,7 +1066,7 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
         )
         .await
         .expect("bob views it");
-    let bobs = issue(bob, "bobs", true).await;
+    let bobs = issue(bob.clone(), "bobs", true).await;
     let (refused, failed) = tool(
         &router,
         &bobs.secret,
@@ -1009,6 +1083,16 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     )
     .await;
     assert_eq!(seen["method"], json!("GET"), "it reads what it views");
+    // H1: nor does a writing token write there.
+    let bobs_writer = issue_with(bob.clone(), "bobs-writer", false, true).await;
+    let (refused, failed) = tool(
+        &router,
+        &bobs_writer.secret,
+        "update_api",
+        json!({"project": "shop", "api": "ping", "url": "http://elsewhere.test"}),
+    )
+    .await;
+    assert!(failed, "a viewer's token changes nothing: {refused}");
 
     // Revoked, it signs in no more.
     store

@@ -795,6 +795,9 @@ expires_in_other = "Ends in %{count} days"
 revoke = "Revoke"
 revoke_title = "Revoke %{name}?"
 revoke_description = "An assistant that signs in with it is shut out at its next call."
+can_write = "Allow changes"
+can_write_desc = "Also lets it make and change APIs (never delete them) in the projects your account edits."
+writes = "Changes"
 
 [hints]
 value = "A custom variable's value: value(name)"

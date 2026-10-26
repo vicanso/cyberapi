@@ -795,6 +795,9 @@ expires_in_other = "%{count} 天后到期"
 revoke = "吊销"
 revoke_title = "吊销 %{name}？"
 revoke_description = "用这个令牌的 AI 助手在下一次调用时就会被拒绝。"
+can_write = "允许修改"
+can_write_desc = "还允许它在你的账号能编辑的项目里新建和修改接口（不能删除）。"
+writes = "可修改"
 
 [hints]
 value = "自定义变量的值：value(名称)"

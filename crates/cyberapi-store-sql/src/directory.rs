@@ -69,12 +69,14 @@ fn team_role(text: &str) -> TeamRole {
     TeamRole::parse(text).unwrap_or(TeamRole::Member)
 }
 
-/// `id, name, can_send, created_at, expires_at`, from column `start` on.
+/// `id, name, can_send, created_at, expires_at, can_write`, from column
+/// `start` on.
 pub(crate) fn mcp_token(row: &AnyRow, start: usize) -> Result<McpToken, StoreError> {
     Ok(McpToken {
         id: McpTokenId::new(rows::text(row, start)?),
         name: rows::text(row, start + 1)?,
         can_send: row.try_get::<i32, _>(start + 2).map_err(db)? != 0,
+        can_write: row.try_get::<i32, _>(start + 5).map_err(db)? != 0,
         created_at: Timestamp::parse_lenient(&rows::text(row, start + 3)?),
         expires_at: row
             .try_get::<Option<i64>, _>(start + 4)
@@ -601,7 +603,8 @@ impl DirectoryStore for Scoped {
             if input.days.is_some_and(|days| !MCP_TOKEN_DAYS.contains(&days)) {
                 return Err(refused(Refusal::BadTokenDays));
             }
-            let mut conn = this.pool.acquire().await.map_err(db)?;
+            // H1: the token and whether it may write, together.
+            let mut conn = this.pool.begin().await.map_err(db)?;
             let taken = sqlx::query(this.dialect.sql(sql::MCP_TOKEN_NAME_COUNT))
                 .bind(this.account())
                 .bind(name.clone())
@@ -628,11 +631,20 @@ impl DirectoryStore for Scoped {
                 .execute(&mut *conn)
                 .await
                 .map_err(db)?;
+            if input.can_write {
+                sqlx::query(this.dialect.sql(sql::MCP_TOKEN_WRITE_INSERT))
+                    .bind(id.as_str().to_string())
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(db)?;
+            }
+            conn.commit().await.map_err(db)?;
             Ok(IssuedMcpToken {
                 token: McpToken {
                     id,
                     name,
                     can_send: input.can_send,
+                    can_write: input.can_write,
                     created_at,
                     expires_at: expires_at.map(Timestamp::from_unix),
                 },

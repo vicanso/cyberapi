@@ -113,7 +113,8 @@ pub struct NewInvite {
 
 /// An MCP token of the reader's: how an AI assistant signs in as them at the
 /// bridge's `/v1/mcp`, and nowhere else. It reads what the account reads;
-/// `can_send` lets it send the account's saved requests too.
+/// `can_send` lets it send the account's saved requests too, `can_write`
+/// make and change APIs where the account edits (H1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpToken {
@@ -121,6 +122,9 @@ pub struct McpToken {
     /// The machine or the client it is for, unique among the account's.
     pub name: String,
     pub can_send: bool,
+    /// H1: a token from before says nothing: it may not.
+    #[serde(default)]
+    pub can_write: bool,
     pub created_at: Timestamp,
     /// `None`: until it is revoked.
     pub expires_at: Option<Timestamp>,
@@ -133,6 +137,9 @@ pub struct McpToken {
 pub struct NewMcpToken {
     pub name: String,
     pub can_send: bool,
+    /// H1: a page from before asks for none.
+    #[serde(default)]
+    pub can_write: bool,
     pub days: Option<u32>,
 }
 

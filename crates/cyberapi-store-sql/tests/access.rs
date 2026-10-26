@@ -979,6 +979,7 @@ async fn mcp_tokens(variable: &str) {
     let input = |name: &str, can_send, days| NewMcpToken {
         name: name.into(),
         can_send,
+        can_write: false,
         days,
     };
     let now = || {
@@ -994,8 +995,16 @@ async fn mcp_tokens(variable: &str) {
     assert_eq!(laptop.token.name, "laptop", "trimmed");
     let lasts = laptop.token.expires_at.expect("an end").get().timestamp() - now();
     assert!((89 * 24 * 3600..=90 * 24 * 3600).contains(&lasts));
-    let ci = alice.issue_mcp_token(input("ci", true, None)).await.expect("issue");
+    // H1: one that may change projects too, and says so when listed.
+    let ci = alice
+        .issue_mcp_token(NewMcpToken {
+            can_write: true,
+            ..input("ci", true, None)
+        })
+        .await
+        .expect("issue");
     assert_eq!(ci.token.expires_at, None);
+    assert!(ci.token.can_write && !laptop.token.can_write);
     assert_eq!(
         alice.mcp_tokens().await.expect("list"),
         [laptop.token.clone(), ci.token.clone()]

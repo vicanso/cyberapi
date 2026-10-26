@@ -1,10 +1,11 @@
 //! What the bridge's MCP tools (`cyberapi-bridge/src/mcp.rs`) show an AI
 //! assistant of a project, the rules of it: the tree as paths, an API found
 //! by its id, its path or its name, what reads like a secret masked, and
-//! long text cut to fit a model's context.
+//! long text cut to fit a model's context. H1: what a token allowed to write
+//! changes of a request ([`written`]), and the folder it names.
 
 use crate::ItemId;
-use crate::model::{ApiSetting, HttpMethod, KvParam};
+use crate::model::{ApiSetting, ContentType, HttpMethod, HttpRequest, KvParam};
 use crate::tree::{Tree, TreeData};
 use serde_json::Value;
 
@@ -196,6 +197,133 @@ pub fn find_api<'a>(data: &'a TreeData, spec: &str) -> Result<&'a ApiSetting, St
     }
 }
 
+/// H1: the folder `spec` names — its id or its path (`users/admin`) — or
+/// why not.
+pub fn find_folder(data: &TreeData, spec: &str) -> Result<ItemId, String> {
+    let spec = spec.trim().trim_matches('/');
+    if data.folders.iter().any(|folder| folder.id.as_str() == spec) {
+        return Ok(ItemId::new(spec));
+    }
+    let found: Vec<ItemId> = listing(data)
+        .into_iter()
+        .filter(|line| line.folder && line.path == spec)
+        .map(|line| line.id)
+        .collect();
+    match found.as_slice() {
+        [id] => Ok(id.clone()),
+        [] => Err(format!("no folder is {spec:?}: list_apis names them")),
+        many => Err(format!("{} folders are {spec:?}: give one's id", many.len())),
+    }
+}
+
+/// `[{name, value, enabled?}]` or `{name: value}`, as a list.
+fn params(value: &Value, what: &str) -> Result<Vec<KvParam>, String> {
+    let text = |value: &Value| match value {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    match value {
+        Value::Object(map) => Ok(map
+            .iter()
+            .map(|(key, value)| KvParam {
+                key: key.clone(),
+                value: text(value),
+                enabled: true,
+            })
+            .collect()),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                let name = item.get("name").or_else(|| item.get("key")).and_then(Value::as_str);
+                let Some(name) = name.filter(|name| !name.trim().is_empty()) else {
+                    return Err(format!("each of {what} has a name"));
+                };
+                Ok(KvParam {
+                    key: name.trim().to_string(),
+                    value: item.get("value").map(text).unwrap_or_default(),
+                    enabled: item.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+                })
+            })
+            .collect(),
+        _ => Err(format!(
+            "{what} is an object of names and values, or a list of {{name, value}}"
+        )),
+    }
+}
+
+/// H1: the content types an assistant names, as it names them.
+const CONTENT_TYPES: [(&str, ContentType); 6] = [
+    ("json", ContentType::Json),
+    ("form", ContentType::Form),
+    ("multipart", ContentType::Multipart),
+    ("xml", ContentType::Xml),
+    ("text", ContentType::Plain),
+    ("graphql", ContentType::GraphQl),
+];
+
+/// H1: `request` with what `arguments` gives of it in place: `method`,
+/// `url` (its query moves to the list, as the URL field does), `query` and
+/// `headers` (each replacing the list), `contentType`, `body` (text; a
+/// form's an object of fields) and `description`. What it does not give
+/// stays. A gRPC call is not written here.
+pub fn written(request: &HttpRequest, arguments: &Value) -> Result<HttpRequest, String> {
+    let mut out = request.clone();
+    if out.method == HttpMethod::Grpc {
+        return Err("a gRPC call is not written by an assistant".into());
+    }
+    let given = |name: &str| arguments.get(name).filter(|value| !value.is_null());
+    if let Some(method) = given("method") {
+        let method = method.as_str().ok_or("method is text: GET, POST…")?;
+        let parsed = HttpMethod::parse_lenient(method);
+        if parsed == HttpMethod::Grpc || !parsed.as_str().eq_ignore_ascii_case(method.trim()) {
+            return Err(format!(
+                "{method:?} is no method: GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS"
+            ));
+        }
+        out.method = parsed;
+    }
+    if let Some(url) = given("url") {
+        let url = url.as_str().ok_or("url is text")?;
+        let (uri, query) = crate::import::split_url(url.trim());
+        out.uri = uri;
+        if !query.is_empty() {
+            out.query = query;
+        }
+    }
+    if let Some(query) = given("query") {
+        out.query = params(query, "query")?;
+    }
+    if let Some(headers) = given("headers") {
+        out.headers = params(headers, "headers")?;
+    }
+    if let Some(kind) = given("contentType") {
+        let kind = kind.as_str().unwrap_or_default().trim().to_ascii_lowercase();
+        out.content_type = CONTENT_TYPES
+            .iter()
+            .find(|(name, _)| *name == kind)
+            .map(|(_, content_type)| *content_type)
+            .ok_or_else(|| {
+                let names: Vec<&str> = CONTENT_TYPES.iter().map(|(name, _)| *name).collect();
+                format!("contentType is one of {}", names.join(", "))
+            })?;
+    }
+    if let Some(body) = given("body") {
+        out.body = match (out.content_type.is_key_value(), body) {
+            (true, fields @ (Value::Object(_) | Value::Array(_))) => {
+                serde_json::to_string(&params(fields, "body")?).unwrap_or_default()
+            }
+            (_, Value::String(text)) => text.clone(),
+            (false, json @ (Value::Object(_) | Value::Array(_))) => crate::format::json(json),
+            _ => return Err("body is text, or a form's fields".into()),
+        };
+    }
+    if let Some(description) = given("description") {
+        out.description = description.as_str().ok_or("description is text")?.to_string();
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +434,64 @@ mod tests {
         assert!(find_api(&data, "users/login").is_err_and(|why| why.contains("2 APIs")));
         assert!(find_api(&data, "login").is_err_and(|why| why.contains("2 APIs")));
         assert!(find_api(&data, "nope").is_err_and(|why| why.contains("list_apis")));
+    }
+
+    /// H1: a folder by its id or its path.
+    #[test]
+    fn a_folder_is_found_by_id_or_path() {
+        let data = data();
+        assert_eq!(find_folder(&data, "f"), Ok(ItemId::new("f")));
+        assert_eq!(find_folder(&data, "/users/"), Ok(ItemId::new("f")));
+        assert!(find_folder(&data, "health").is_err(), "an API is no folder");
+        assert!(find_folder(&data, "admins").is_err_and(|why| why.contains("list_apis")));
+    }
+
+    /// H1: what an assistant gives is written; what it does not, stays.
+    #[test]
+    fn an_assistant_writes_what_it_gives() {
+        let kept = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "{{HOST}}/login".into(),
+            headers: vec![KvParam {
+                key: "X-A".into(),
+                value: "1".into(),
+                enabled: true,
+            }],
+            body: "{}".into(),
+            ..Default::default()
+        };
+        let changed = written(
+            &kept,
+            &json!({"url": "{{HOST}}/users?page=2", "headers": {"Accept": "application/json"}, "description": "Lists users."}),
+        )
+        .expect("written");
+        assert_eq!(changed.method, HttpMethod::Post, "not given, kept");
+        assert_eq!(changed.uri, "{{HOST}}/users");
+        assert_eq!(changed.query[0].key, "page");
+        assert_eq!(changed.headers.len(), 1);
+        assert_eq!(changed.headers[0].key, "Accept");
+        assert_eq!(changed.body, "{}");
+        assert_eq!(changed.description, "Lists users.");
+        let form = written_form();
+        assert_eq!(form.content_type, ContentType::Form);
+        assert_eq!(crate::send::form_fields(&form.body).len(), 2);
+        let json_body = written(&kept, &json!({"body": {"a": 1}})).expect("a JSON body");
+        assert_eq!(json_body.body, "{\n    \"a\": 1\n}");
+        assert!(written(&kept, &json!({"method": "FETCH"})).is_err());
+        assert!(written(&kept, &json!({"contentType": "yaml"})).is_err_and(|why| why.contains("json")));
+        assert!(written(&kept, &json!({"headers": [{"value": "x"}]})).is_err());
+        let grpc = HttpRequest {
+            method: HttpMethod::Grpc,
+            ..Default::default()
+        };
+        assert!(written(&grpc, &json!({})).is_err());
+    }
+
+    fn written_form() -> HttpRequest {
+        written(
+            &HttpRequest::default(),
+            &json!({"method": "post", "contentType": "form", "body": [{"name": "user", "value": "me"}, {"name": "pass", "value": "p", "enabled": false}]}),
+        )
+        .expect("a form")
     }
 }

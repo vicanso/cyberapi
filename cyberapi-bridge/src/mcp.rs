@@ -12,7 +12,9 @@
 //! the account's scoped store, so a token sees what its account sees. They
 //! read; a token issued with `can_send` also has `send_api`, which sends a
 //! saved API from the bridge, as the page does, where the account is at
-//! least an editor of the project. What reads like a secret is masked
+//! least an editor of the project; one issued with `can_write` (H1) has
+//! `create_api` and `update_api` there — nothing deletes. What reads like a
+//! secret is masked
 //! (`cyberapi_core::mcp`), long bodies are cut, an account makes at most
 //! [`CALLS_PER_MINUTE`] calls a minute, and every call is a log line.
 
@@ -62,7 +64,8 @@ path and id; the other tools take a project by its name or id and an API by its 
 only one API has. get_api shows an API's saved request, get_variables the project's environments, custom \
 variables and global request headers, get_history an API's latest responses. A token allowed to send also \
 has send_api, which sends a saved API from the bridge with the project's variables and keeps the response \
-in the account's history. Values that read like secrets (passwords, tokens, keys, cookies) are masked as \
+in the account's history. A token allowed to change also has create_api and update_api, which make an API and \
+change one's request where the account edits; nothing deletes. Values that read like secrets (passwords, tokens, keys, cookies) are masked as \
 ***, a value made with a template such as {{TOKEN}} is shown as written, long bodies are cut, and every \
 call is logged.";
 
@@ -277,6 +280,48 @@ fn tool_list(token: &McpToken) -> Vec<Json> {
             "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true },
         }));
     }
+    // H1: making and changing, never deleting.
+    if token.can_write {
+        let written = json!({
+            "method": { "type": "string", "description": "GET, POST, PUT, PATCH, DELETE, HEAD or OPTIONS." },
+            "url": { "type": "string", "description": "The URL; may start with an environment variable, {{HOST}}/users. Its query goes to the query list." },
+            "query": { "description": "The query, replacing the list: an object of names and values, or a list of {name, value, enabled}." },
+            "headers": { "description": "The headers, replacing the list, as query is given." },
+            "contentType": { "type": "string", "enum": ["json", "form", "multipart", "xml", "text", "graphql"] },
+            "body": { "description": "The body as text; a form's may be an object of fields, a JSON one any JSON." },
+            "description": { "type": "string", "description": "What the API is for, as plain text." },
+        });
+        let mut create = written.clone();
+        if let Some(properties) = create.as_object_mut() {
+            properties.insert("project".into(), project.clone());
+            properties.insert(
+                "name".into(),
+                json!({ "type": "string", "description": "The new API's name." }),
+            );
+            properties.insert("folder".into(), json!({ "type": "string", "description": "The folder to put it in, by its path (users/admin) or id, as list_apis names them; the top level when not given." }));
+        }
+        let mut update = written;
+        if let Some(properties) = update.as_object_mut() {
+            properties.insert("project".into(), project.clone());
+            properties.insert("api".into(), api.clone());
+            properties.insert(
+                "name".into(),
+                json!({ "type": "string", "description": "A new name for it." }),
+            );
+        }
+        tools.push(json!({
+            "name": "create_api",
+            "description": "Makes an API in a project — in a folder, or at the top level — with the request given; what is not given is left empty (a GET). Answers its id and path. Needs an editor's role in the project.",
+            "inputSchema": { "type": "object", "properties": create, "required": ["project", "name"] },
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false },
+        }));
+        tools.push(json!({
+            "name": "update_api",
+            "description": "Changes an API's saved request: what is given replaces what it had, what is not stays; a new name renames it. Answers it as get_api does. Needs an editor's role in the project.",
+            "inputSchema": { "type": "object", "properties": update, "required": ["project", "api"] },
+            "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false },
+        }));
+    }
     tools
 }
 
@@ -300,6 +345,11 @@ async fn call(bridge: &Bridge, account: &Account, token: &McpToken, params: Json
         "get_history" => get_history(&storage, &arguments).await,
         "send_api" if token.can_send => send_api(bridge, account, &storage, &arguments).await,
         "send_api" => Err("this token may not send: issue one that may, or read with the other tools".into()),
+        "create_api" if token.can_write => create_api(&storage, &arguments).await,
+        "update_api" if token.can_write => update_api(&storage, &arguments).await,
+        "create_api" | "update_api" => {
+            Err("this token may not change projects: issue one that may, or read with the other tools".into())
+        }
         other => return Err((INVALID_PARAMS, format!("unknown tool {other:?}"))),
     };
     tracing::info!(account = %account.name, token = %token.name, tool, ok = answer.is_ok(), "mcp call");
@@ -369,6 +419,65 @@ async fn api(storage: &Storage, arguments: &Json) -> Result<(Collection, ApiSett
         .unwrap_or_else(|| api.name.clone());
     let inherited = inherited(&data, &api.id);
     Ok((collection, api, path, inherited))
+}
+
+/// H1: an API made where `arguments` say, with the request they give.
+async fn create_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
+    let collection = project(storage, arguments).await?;
+    let name = argument(arguments, "name")?.to_string();
+    let request = cyberapi_core::mcp::written(&Default::default(), arguments)?;
+    let data = storage.tree().load(collection.id.clone()).await.map_err(failed)?;
+    let folder = match arguments
+        .get("folder")
+        .and_then(Json::as_str)
+        .filter(|spec| !spec.trim().is_empty())
+    {
+        Some(spec) => Some(cyberapi_core::mcp::find_folder(&data, spec)?),
+        None => None,
+    };
+    let made = storage
+        .tree()
+        .create_api(collection.id.clone(), folder, name)
+        .await
+        .map_err(failed)?;
+    let id = made.item.id.clone();
+    storage
+        .tree()
+        .save_request(collection.id.clone(), id.clone(), request)
+        .await
+        .map_err(failed)?;
+    let mut arguments = arguments.clone();
+    arguments["api"] = json!(id.as_str());
+    arguments["project"] = json!(collection.id.as_str());
+    get_api(storage, &arguments).await
+}
+
+/// H1: an API's request with what `arguments` give in place, renamed when
+/// they name it anew.
+async fn update_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
+    let (collection, api, ..) = self::api(storage, arguments).await?;
+    let request = cyberapi_core::mcp::written(&api.request, arguments)?;
+    if let Some(name) = arguments.get("name").and_then(Json::as_str).map(str::trim)
+        && !name.is_empty()
+        && name != api.name
+    {
+        storage
+            .tree()
+            .rename(collection.id.clone(), api.id.clone(), name.to_string())
+            .await
+            .map_err(failed)?;
+    }
+    if request != api.request {
+        storage
+            .tree()
+            .save_request(collection.id.clone(), api.id.clone(), request)
+            .await
+            .map_err(failed)?;
+    }
+    let mut arguments = arguments.clone();
+    arguments["api"] = json!(api.id.as_str());
+    arguments["project"] = json!(collection.id.as_str());
+    get_api(storage, &arguments).await
 }
 
 async fn list_projects(bridge: &Bridge, account: &Account, storage: &Storage) -> Result<Json, String> {

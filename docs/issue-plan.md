@@ -172,7 +172,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | A4 | 命令行 `cyberapi-cli run`（新的 bin crate `crates/cyberapi-cli`，不依赖 GUI）：读项目文件（自己的导出保留 id，其他能导入的格式也行），项目放在内存里，不碰本机库也不连 bridge；`--env` / `--env-file` / `--var` / `--data` / `--prompt` / `--folder`，`env()` 读进程的环境变量；每条结束打印一行和没通过的原因，`--junit` 写 JUnit XML，退出码 0 / 1 / 2。还没有安装包，从源码构建（`make cli`），见 feature-research §9 | 已完成 |
 | F2 | 命令面板：任何页面按 ⌘/Ctrl-K（网页版在 Windows / Linux 上 Ctrl-K 被浏览器占用，快捷键一览不列）；查找任意项目里的接口（当前项目的立即可用，其他项目按最近修改读最多 50 个）、项目、环境（切换）和命令（新建、导入、运行、最近发送、环境变量、返回项目、设置、Cookie、快捷键）；↑↓ 移动、回车选中。打开别的项目的接口时，项目打开并读完读者状态后再选中（`AppState::open_at` → `WorkspaceState::select_when_loaded`） | 已完成 |
 | F3 | 说明与示例：接口的“说明”标签页（纯文本，Markdown 原样显示；示例列表，点开看响应体，可删除），历史菜单“存为示例…”（有状态码、文本、256 KB 以内）；目录的说明在目录设置里；项目已有说明。`HttpRequest.description` / `examples`、`FolderSettings.description`，数据模型编号 9。MCP 的 `get_api` 带上说明和示例（打码、截断）；Postman 导出说明和保存的响应、OpenAPI 导出 description 和响应示例；Postman（含保存的响应）、Insomnia、OpenAPI 导入读说明 | 已完成 |
-| H1 | MCP 写入工具 | |
+| H1 | MCP 写入：签发令牌时单独勾选“允许修改”（`McpToken.can_write`，存在旁边的 `mcp_token_writes` 表，旧令牌读作不允许；签发在一个事务里），这样的令牌多出 `create_api`（目录可用路径或 id）和 `update_api`（给出的字段替换原来的，没给的不动，可改名），账号对项目至少是编辑者；不能删除。规则在 `cyberapi_core::mcp::written` / `find_folder` | 已完成 |
 | G6 | Helm chart | |
 | G4 | 项目历史版本与回滚（bridge） | |
 | C4 | OAuth 2.0（client credentials、password） | |

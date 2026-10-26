@@ -54,6 +54,8 @@ struct McpTokens {
     /// The lifetime picked: one of `MCP_TOKEN_DAYS`, or `None` for none.
     days: Option<u32>,
     can_send: bool,
+    /// H1.
+    can_write: bool,
     /// The token being asked about before it is revoked.
     revoking: Option<McpTokenId>,
     error: Option<String>,
@@ -108,6 +110,7 @@ impl McpTokens {
             name,
             days: Some(MCP_TOKEN_DAYS[0]),
             can_send: false,
+            can_write: false,
             revoking: None,
             error: None,
             _subscriptions: subscriptions,
@@ -124,6 +127,7 @@ impl McpTokens {
         let input = NewMcpToken {
             name,
             can_send: self.can_send,
+            can_write: self.can_write,
             days: self.days,
         };
         self.state.update(cx, |state, cx| state.issue_mcp_token(input, cx));
@@ -191,6 +195,33 @@ impl McpTokens {
                                     .text_xs()
                                     .text_color(muted)
                                     .child(t!("mcp.can_send_desc").to_string()),
+                            ),
+                    ),
+            )
+            // H1.
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_start()
+                    .child(
+                        Switch::new("mcp-can-write")
+                            .checked(self.can_write)
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.can_write = *checked;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_0p5()
+                            .child(div().text_sm().child(t!("mcp.can_write").to_string()))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(t!("mcp.can_write_desc").to_string()),
                             ),
                     ),
             )
@@ -264,6 +295,9 @@ impl McpTokens {
             .child(div().flex_1().min_w_0().truncate().child(token.name.clone()))
             .when(token.can_send, |this| {
                 this.child(Tag::warning().small().child(t!("mcp.sends").to_string()))
+            })
+            .when(token.can_write, |this| {
+                this.child(Tag::warning().small().child(t!("mcp.writes").to_string()))
             })
             .child(div().text_xs().text_color(muted).child(lasts))
             .child(

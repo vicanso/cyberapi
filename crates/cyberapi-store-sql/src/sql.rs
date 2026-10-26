@@ -183,14 +183,19 @@ pub const INVITE_PLACE: &str = "SELECT inviter, team, role FROM invites WHERE to
 pub const MCP_TOKEN_INSERT: &str = "INSERT INTO mcp_tokens \
     (id, token_hash, account, name, can_send, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7)";
 /// An account's tokens that still sign in at unix `$2`.
-pub const MCP_TOKENS_OF: &str = "SELECT id, name, can_send, created_at, expires_at FROM mcp_tokens \
-    WHERE account = $1 AND (expires_at IS NULL OR expires_at > $2)";
+pub const MCP_TOKENS_OF: &str = "SELECT t.id, t.name, t.can_send, t.created_at, t.expires_at, \
+    CASE WHEN w.token IS NULL THEN 0 ELSE 1 END \
+    FROM mcp_tokens t LEFT JOIN mcp_token_writes w ON w.token = t.id \
+    WHERE t.account = $1 AND (t.expires_at IS NULL OR t.expires_at > $2)";
+/// H1: a token that may make and change APIs.
+pub const MCP_TOKEN_WRITE_INSERT: &str = "INSERT INTO mcp_token_writes (token) VALUES ($1)";
 pub const MCP_TOKEN_NAME_COUNT: &str = "SELECT COUNT(*) FROM mcp_tokens WHERE account = $1 AND name = $2";
 pub const MCP_TOKEN_DELETE: &str = "DELETE FROM mcp_tokens WHERE id = $1 AND account = $2";
 /// The enabled account a token signs in as at unix `$2`, and the token.
 pub const MCP_TOKEN_ACCOUNT: &str = "SELECT a.id, a.name, a.display_name, a.admin, \
-    t.id, t.name, t.can_send, t.created_at, t.expires_at \
+    t.id, t.name, t.can_send, t.created_at, t.expires_at, CASE WHEN w.token IS NULL THEN 0 ELSE 1 END \
     FROM mcp_tokens t JOIN accounts a ON a.id = t.account \
+    LEFT JOIN mcp_token_writes w ON w.token = t.id \
     WHERE t.token_hash = $1 AND (t.expires_at IS NULL OR t.expires_at > $2) AND a.disabled = 0";
 /// The teams an account is in, with its place in each.
 pub const TEAMS_OF: &str = "SELECT t.id, t.name, t.personal_of, tm.role \
@@ -392,6 +397,7 @@ mod tests {
         INVITE_PLACE,
         MCP_TOKEN_INSERT,
         MCP_TOKENS_OF,
+        MCP_TOKEN_WRITE_INSERT,
         MCP_TOKEN_NAME_COUNT,
         MCP_TOKEN_DELETE,
         MCP_TOKEN_ACCOUNT,
