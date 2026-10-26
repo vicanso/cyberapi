@@ -33,7 +33,7 @@ use cyberapi_core::model::{
 };
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
 use cyberapi_core::response::{HttpResponse, RECENT_LIMIT};
-use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, Step};
+use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, ProjectVersion, Step};
 use cyberapi_core::template::Answers;
 use cyberapi_core::template_hints;
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
@@ -168,6 +168,8 @@ pub struct WorkspaceState {
     /// D4: the project's newest responses, as last read for its recent
     /// list; `None` while they are read.
     recent: Option<Result<Vec<Arc<HttpResponse>>, StoreError>>,
+    /// G4: the server project's versions, as last read; `None` while read.
+    versions: Option<Result<Vec<ProjectVersion>, StoreError>>,
     /// A server project's working copy; `None` for a project of this
     /// machine's, whose changes are written at once.
     copy: Option<CopyState>,
@@ -257,6 +259,7 @@ impl WorkspaceState {
             schemas: HashMap::new(),
             grpc: HashMap::new(),
             recent: None,
+            versions: None,
             copy,
             _poll: poll.filter(|_| !is_copy).map(|every| Self::poll(every, cx)),
             _filter_save: None,
@@ -793,6 +796,61 @@ impl WorkspaceState {
     /// The selected API's editor.
     pub fn api(&self) -> Option<&Entity<ApiState>> {
         self.api.as_ref()
+    }
+
+    /// G4: whether the project's server keeps its versions: a server
+    /// project, with the server to ask.
+    pub fn keeps_versions(&self, cx: &App) -> bool {
+        self.copy.is_some()
+            && cx
+                .try_global::<AppStore>()
+                .is_some_and(|store| store.versions(cx).is_some())
+    }
+
+    /// G4: reads the project's versions again.
+    pub fn load_versions(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = cx.try_global::<AppStore>().and_then(|store| store.versions(cx)) else {
+            return;
+        };
+        self.versions = None;
+        run_store(cx, store.versions(self.collection.id.clone()), |this, result, cx| {
+            this.versions = Some(result);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// G4: the project's versions, newest first, as last read; `None`
+    /// while they are read.
+    pub fn versions(&self) -> Option<&Result<Vec<ProjectVersion>, StoreError>> {
+        self.versions.as_ref()
+    }
+
+    /// G4: version `id` put back on the server — which keeps the project
+    /// as it is now as a version too — and the copy then takes it. Not
+    /// over changes the server has not had, nor by a viewer.
+    pub fn restore_version(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.unsynced() || !self.editable() {
+            return;
+        }
+        let store = cx.try_global::<AppStore>().and_then(|store| store.versions(cx));
+        let (Some(store), Some(copy)) = (store, self.copy.as_ref()) else {
+            return;
+        };
+        let server = copy.server.clone();
+        let collection = self.collection.id.clone();
+        let call: StoreFuture<u64> = Box::pin(async move {
+            let config = store.version(collection.clone(), id).await?;
+            let at = server.tree().config(collection.clone()).await?;
+            server.tree().replace(collection, config, Some(at.revision)).await
+        });
+        run_serial(cx, &self.gate, call, |this, result, cx| match result {
+            Ok(_) => {
+                this.take_server(cx);
+                this.load_versions(cx);
+            }
+            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+        });
     }
 
     /// D4: reads the project's newest responses again, for its recent list.

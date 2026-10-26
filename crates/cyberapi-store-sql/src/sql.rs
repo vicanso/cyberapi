@@ -347,6 +347,17 @@ pub const RESPONSE_OLDEST_KEPT: &str =
 /// D4: the newest `$3` of the project's, of any API.
 pub const RESPONSES_RECENT: &str =
     "SELECT doc FROM responses WHERE account = $1 AND collection = $2 ORDER BY seq DESC LIMIT $3";
+/// G4: a project as it was before it was replaced whole.
+pub const VERSION_INSERT: &str = "INSERT INTO project_versions \
+    (id, collection, revision, saved_at, saved_by, folders, apis, doc) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)";
+/// G4: the oldest version kept: `$2` is how many newer ones there are.
+pub const VERSION_OLDEST_KEPT: &str =
+    "SELECT seq FROM project_versions WHERE collection = $1 ORDER BY seq DESC LIMIT 1 OFFSET $2";
+pub const VERSIONS_TRIM: &str = "DELETE FROM project_versions WHERE collection = $1 AND seq < $2";
+/// G4: a project's versions, newest first, without their configurations.
+pub const VERSIONS_OF: &str = "SELECT id, revision, saved_at, saved_by, folders, apis \
+    FROM project_versions WHERE collection = $1 ORDER BY seq DESC";
+pub const VERSION_DOC: &str = "SELECT doc FROM project_versions WHERE collection = $1 AND id = $2";
 pub const RESPONSES_TRIM: &str =
     "DELETE FROM responses WHERE account = $1 AND collection = $2 AND api = $3 AND seq < $4";
 pub const RESPONSES_CLEAR: &str = "DELETE FROM responses WHERE account = $1 AND collection = $2 AND api = $3";
@@ -491,6 +502,11 @@ mod tests {
         RESPONSE_NEWEST,
         RESPONSE_OLDEST_KEPT,
         RESPONSES_RECENT,
+        VERSION_INSERT,
+        VERSION_OLDEST_KEPT,
+        VERSIONS_TRIM,
+        VERSIONS_OF,
+        VERSION_DOC,
         RESPONSES_TRIM,
         RESPONSES_CLEAR,
         RESPONSES_CLEAR_ALL,

@@ -976,6 +976,20 @@ fn project_menu(
     } else {
         menu
     };
+    // G4: a server project's versions; a viewer reads them.
+    let keeps_versions = state.upgrade().is_some_and(|state| state.read(cx).keeps_versions(cx));
+    let for_versions = state.clone();
+    let menu = menu.when(keeps_versions, |menu| {
+        menu.item(
+            PopupMenuItem::new(t!("versions.open").to_string())
+                .icon(Icons::ArchiveRestore)
+                .on_click(move |_, window, cx| {
+                    if let Some(state) = for_versions.upgrade() {
+                        super::versions_dialog::open_versions_dialog(state, window, cx);
+                    }
+                }),
+        )
+    });
     // A3, D4: anyone sends, so anyone runs and has a history.
     let (for_recent, for_run) = (state.clone(), state.clone());
     let menu = menu.item(

@@ -271,3 +271,5 @@ Everything the server keeps is in its database: back it up as you back up any da
 
 - **Unsynced edits made in a browser** to a server project are a draft in that browser's local storage until synced.
 - **The desktop's copies** of server projects, and its own projects, are in the desktop's data directory; the desktop's own backup covers them.
+
+*0.3.1.* Besides the backups, the server keeps each project's last 50 versions: what it was before each time it was replaced whole — a sync, an upload, a version put back (the `project_versions` table). An editor puts one back from the project menu, Versions…; that keeps the project as it was too.

@@ -78,7 +78,7 @@ impl HttpEngine for Bridge {
             let reply = if request.url.ends_with("/v1/store") {
                 match serde_json::from_slice::<Call>(&request.body) {
                     Ok(Call::DirectoryMe) => Reply::Ok(serde_json::to_value(Bridge::me()).unwrap_or_default()),
-                    Ok(call) => dispatch(&storage, &NoDirectory, call).await,
+                    Ok(call) => dispatch(&storage, &NoDirectory, &NoDirectory, call).await,
                     Err(error) => Reply::Err(StoreError::backend(error)),
                 }
             } else {
@@ -98,6 +98,15 @@ struct NoDirectory;
 
 fn none<T: Send + 'static>() -> StoreFuture<T> {
     Box::pin(async { Err(StoreError::backend("no directory here")) })
+}
+
+impl cyberapi_store::VersionStore for NoDirectory {
+    fn versions(&self, _: CollectionId) -> StoreFuture<Vec<cyberapi_core::sync::ProjectVersion>> {
+        none()
+    }
+    fn version(&self, _: CollectionId, _: String) -> StoreFuture<cyberapi_core::sync::ProjectConfig> {
+        none()
+    }
 }
 
 impl DirectoryStore for NoDirectory {
@@ -766,6 +775,84 @@ async fn the_last_copy_reopens_once_the_server_is_known(cx: &mut TestAppContext)
     cx.run_until_parked();
     assert_eq!(state.read_with(cx, |state, _| state.route().clone()), Route::Dashboard);
     assert_eq!(state.read_with(cx, |state, _| state.me().cloned()), None);
+}
+
+/// G4's versions, as a test gives one: the project as it was, an API
+/// renamed `old`.
+struct OneVersion(cyberapi_core::sync::ProjectConfig);
+
+impl cyberapi_store::VersionStore for OneVersion {
+    fn versions(&self, _: CollectionId) -> StoreFuture<Vec<cyberapi_core::sync::ProjectVersion>> {
+        let version = cyberapi_core::sync::ProjectVersion {
+            id: "v1".into(),
+            apis: 1,
+            ..Default::default()
+        };
+        Box::pin(async move { Ok(vec![version]) })
+    }
+    fn version(&self, _: CollectionId, _: String) -> StoreFuture<cyberapi_core::sync::ProjectConfig> {
+        let config = self.0.clone();
+        Box::pin(async move { Ok(config) })
+    }
+}
+
+/// G4: a version put back goes to the server, and the copy takes it; not
+/// over unsynced changes.
+#[gpui_kit::test]
+async fn a_version_put_back_reaches_the_server_and_the_copy(cx: &mut TestAppContext) {
+    use crate::Extras;
+    use crate::states::AppStore;
+    let machine = Machine::signed_in(cx);
+    let theirs = machine.on_server("orders").await;
+    machine.dashboard(cx);
+    let (workspace, _) = machine.open(theirs.clone(), cx);
+    workspace.update(cx, |state, cx| state.create_api(None, "login".into(), cx));
+    cx.run_until_parked();
+    workspace.update(cx, |state, cx| state.sync(false, cx));
+    cx.run_until_parked();
+    let server = machine.bridge.server.storage();
+    assert_eq!(api_names(&server, &theirs.id), ["login"]);
+    let mut old = pollster::block_on(server.tree().config(theirs.id.clone()))
+        .expect("the server's")
+        .config;
+    old.apis[0].name = "old".into();
+    let (local, bridge) = (machine.local.clone(), machine.bridge.clone());
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        let extras = Extras {
+            copies: Some(Arc::new(local.clone())),
+            versions: Some(Arc::new(OneVersion(old))),
+            ..Default::default()
+        };
+        AppStore::init(local.storage(), bridge, Default::default(), extras, cx);
+    });
+    cx.run_until_parked();
+    assert!(workspace.read_with(cx, |state, cx| state.keeps_versions(cx)));
+    workspace.update(cx, |state, cx| state.load_versions(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.read_with(cx, |state, _| state
+            .versions()
+            .and_then(|read| read.as_ref().ok())
+            .map(Vec::len)),
+        Some(1)
+    );
+    // Not over a change the server has not had.
+    workspace.update(cx, |state, cx| state.create_api(None, "draft".into(), cx));
+    cx.run_until_parked();
+    workspace.update(cx, |state, cx| state.restore_version("v1".into(), cx));
+    cx.run_until_parked();
+    assert_eq!(api_names(&server, &theirs.id), ["login"], "nothing put back");
+    workspace.update(cx, |state, cx| state.take_server(cx));
+    cx.run_until_parked();
+    workspace.update(cx, |state, cx| state.restore_version("v1".into(), cx));
+    cx.run_until_parked();
+    assert_eq!(api_names(&server, &theirs.id), ["old"], "put back on the server");
+    assert_eq!(
+        api_names(&machine.local.storage(), &theirs.id),
+        ["old"],
+        "and in the copy"
+    );
 }
 
 /// Server-sync §3.4 on the desktop: the reader's own items stay in the copy

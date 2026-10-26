@@ -1109,3 +1109,107 @@ async fn postgres_mcp_tokens() {
 async fn mysql_mcp_tokens() {
     mcp_tokens("CYBERAPI_TEST_MYSQL").await;
 }
+
+/// G4: the project's configuration with its one API named `name` — made
+/// when it has none — and the revision it was read at.
+async fn named(storage: &Storage, project: &CollectionId, name: &str) -> (cyberapi_core::sync::ProjectConfig, u64) {
+    let at = storage.tree().config(project.clone()).await.expect("the project");
+    let mut config = at.config;
+    if config.apis.is_empty() {
+        let id = cyberapi_core::ItemId::new(format!("api-{}", ulid::Ulid::generate()));
+        config.apis.push(cyberapi_core::model::ApiSetting {
+            id: id.clone(),
+            collection: project.clone(),
+            ..Default::default()
+        });
+        config.top_order.push(id);
+    }
+    config.apis[0].name = name.into();
+    (config, at.revision)
+}
+
+/// G4: a project replaced whole keeps what it was, newest first, up to
+/// `KEPT_VERSIONS`; an empty one is not kept; a viewer reads them; one put
+/// back is kept in turn.
+async fn versions(variable: &str) {
+    use cyberapi_core::sync::KEPT_VERSIONS;
+    let Ok(url) = std::env::var(variable) else {
+        eprintln!("skipped: {variable} is not set");
+        return;
+    };
+    let store = SqlStore::connect(&url).await.expect("connect");
+    let (ann_id, bob_id) = (account(&store, "ann").await, account(&store, "bob").await);
+    let ann = store.scoped(ann_id.clone());
+    let project = ann
+        .collections()
+        .create(NewCollection {
+            name: "shop".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("a project");
+    let id = project.id.clone();
+    let versions = store.versions(ann_id.clone());
+    // The first fills an empty project: nothing to keep.
+    let (first, at) = named(&ann, &id, "one").await;
+    ann.tree().replace(id.clone(), first, Some(at)).await.expect("filled");
+    assert!(versions.versions(id.clone()).await.expect("versions").is_empty());
+    let (second, at) = named(&ann, &id, "two").await;
+    ann.tree()
+        .replace(id.clone(), second, Some(at))
+        .await
+        .expect("replaced");
+    let kept = versions.versions(id.clone()).await.expect("versions");
+    assert_eq!(kept.len(), 1);
+    assert_eq!((kept[0].apis, kept[0].revision), (1, at));
+    assert!(kept[0].by.starts_with("ann-"), "{}", kept[0].by);
+    let was = versions
+        .version(id.clone(), kept[0].id.clone())
+        .await
+        .expect("a version");
+    assert_eq!(was.apis[0].name, "one");
+    not_found(versions.version(id.clone(), "nope".into()).await, Entity::Collection);
+    // Put back, and what it replaced kept in turn.
+    let now = ann.tree().config(id.clone()).await.expect("now").revision;
+    ann.tree().replace(id.clone(), was, Some(now)).await.expect("put back");
+    let kept = versions.versions(id.clone()).await.expect("versions");
+    assert_eq!(kept.len(), 2);
+    let latest = versions
+        .version(id.clone(), kept[0].id.clone())
+        .await
+        .expect("a version");
+    assert_eq!(latest.apis[0].name, "two", "the newest first");
+    // A viewer reads them; another account does not.
+    store
+        .set_grant(&id, &Grantee::Account(bob_id.clone()), Some(CollectionRole::Viewer))
+        .await
+        .expect("bob views it");
+    assert_eq!(
+        store.versions(bob_id).versions(id.clone()).await.expect("read").len(),
+        2
+    );
+    let stranger = account(&store, "eve").await;
+    not_found(store.versions(stranger).versions(id.clone()).await, Entity::Collection);
+    // No more than are kept.
+    for n in 0..KEPT_VERSIONS {
+        let (config, at) = named(&ann, &id, &format!("n{n}")).await;
+        ann.tree()
+            .replace(id.clone(), config, Some(at))
+            .await
+            .expect("replaced");
+    }
+    assert_eq!(
+        versions.versions(id.clone()).await.expect("versions").len(),
+        KEPT_VERSIONS
+    );
+}
+
+#[tokio::test]
+async fn postgres_versions() {
+    versions("CYBERAPI_TEST_POSTGRES").await;
+}
+
+#[tokio::test]
+async fn mysql_versions() {
+    versions("CYBERAPI_TEST_MYSQL").await;
+}

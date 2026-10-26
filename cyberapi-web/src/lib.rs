@@ -100,6 +100,7 @@ pub fn run(origin: String, ui_font: Vec<u8>, prefs: String) {
     };
     let extras = Extras {
         directory: Some(bridge.directory()),
+        versions: Some(bridge.versions()),
         sign_out: Some(sign_out),
         ..Default::default()
     };

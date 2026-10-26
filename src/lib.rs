@@ -37,7 +37,7 @@ use crate::states::AppStore;
 use crate::views::StartupError;
 use cyberapi_core::prefs::{AppPrefs, MonitorPlacement, WindowPrefs, opening_monitor};
 use cyberapi_http::HttpEngine;
-use cyberapi_store::{BackupStore, DirectoryStore, ServerCopyStore, Storage};
+use cyberapi_store::{BackupStore, DirectoryStore, ServerCopyStore, Storage, VersionStore};
 use gpui_kit::component::TitleBar;
 use gpui_kit::{
     App, AppContext as _, Bounds, DisplayId, Entity, Pixels, Render, Size, Window, WindowBounds, WindowOptions, point,
@@ -78,6 +78,8 @@ pub struct Extras {
     pub copies: Option<Arc<dyn ServerCopyStore>>,
     /// The browser's accounts and teams (`docs/architecture.md` §9.4).
     pub directory: Option<Arc<dyn DirectoryStore>>,
+    /// G4: the browser's projects' versions, on the bridge.
+    pub versions: Option<Arc<dyn VersionStore>>,
     /// Ends the browser's login; the page then asks for one again.
     pub sign_out: Option<SignOut>,
 }

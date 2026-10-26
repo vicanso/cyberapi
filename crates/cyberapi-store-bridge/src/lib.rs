@@ -36,13 +36,14 @@ use cyberapi_core::model::{
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HISTORY_SIZES, HttpResponse, RECENT_LIMIT};
 use cyberapi_core::response::{StreamEnd, StreamInfo};
-use cyberapi_core::sync::{ConfigAt, ProjectConfig};
+use cyberapi_core::sync::{ConfigAt, ProjectConfig, ProjectVersion};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, EnvironmentId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
 use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, Progress, SendError, SendFuture, Watch};
 use cyberapi_store::{
     AccountEdit, CollectionEdit, CollectionStore, CookieStore, DirectoryStore, HistoryStore, Imported, Inserted,
     NewCollection, NewVariable, PrefStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
+    VersionStore,
 };
 use futures::{Stream, StreamExt as _};
 use serde::de::DeserializeOwned;
@@ -266,6 +267,14 @@ pub enum Call {
         api: ItemId,
     },
     HistoryClearAll,
+    /// G4.
+    VersionsList {
+        collection: CollectionId,
+    },
+    VersionsGet {
+        collection: CollectionId,
+        id: String,
+    },
     CookiesList,
     CookiesPut {
         cookies: Vec<Cookie>,
@@ -381,6 +390,8 @@ impl Call {
             | Self::HistoryRecent { .. }
             | Self::HistoryClear { .. }
             | Self::HistoryClearAll
+            | Self::VersionsList { .. }
+            | Self::VersionsGet { .. }
             | Self::CookiesList
             | Self::CookiesPut { .. }
             | Self::CookiesDelete { .. }
@@ -416,9 +427,14 @@ pub enum Reply {
     Err(StoreError),
 }
 
-/// Runs `call` on `storage`, or on `directory` for the directory's calls —
-/// the bridge's side.
-pub async fn dispatch(storage: &Storage, directory: &dyn DirectoryStore, call: Call) -> Reply {
+/// Runs `call` on `storage`, or on `directory` for the directory's calls
+/// and `versions` for a project's versions (G4) — the bridge's side.
+pub async fn dispatch(
+    storage: &Storage,
+    directory: &dyn DirectoryStore,
+    versions: &dyn VersionStore,
+    call: Call,
+) -> Reply {
     fn reply<T: Serialize>(result: Result<T, StoreError>) -> Reply {
         match result.and_then(|value| serde_json::to_value(value).map_err(StoreError::backend)) {
             Ok(value) => Reply::Ok(value),
@@ -513,6 +529,8 @@ pub async fn dispatch(storage: &Storage, directory: &dyn DirectoryStore, call: C
         Call::CookiesPut { cookies: put } => reply(cookies.put(put).await),
         Call::CookiesDelete { domain, path, name } => reply(cookies.delete(domain, path, name).await),
         Call::CookiesClear => reply(cookies.clear().await),
+        Call::VersionsList { collection } => reply(versions.versions(collection).await),
+        Call::VersionsGet { collection, id } => reply(versions.version(collection, id).await),
         Call::DirectoryMe => reply(directory.me().await),
         Call::DirectoryAccounts => reply(directory.accounts().await),
         Call::DirectoryCreateTeam { name } => reply(directory.create_team(name).await),
@@ -597,6 +615,11 @@ impl BridgeStore {
 
     /// The accounts and teams, through the same transport.
     pub fn directory(&self) -> Arc<dyn DirectoryStore> {
+        Arc::new(self.clone())
+    }
+
+    /// G4: the projects' versions, on the bridge.
+    pub fn versions(&self) -> Arc<dyn VersionStore> {
         Arc::new(self.clone())
     }
 
@@ -889,6 +912,15 @@ impl HistoryStore for BridgeStore {
 
     fn clear_all(&self) -> StoreFuture<()> {
         self.call(Call::HistoryClearAll)
+    }
+}
+
+impl VersionStore for BridgeStore {
+    fn versions(&self, collection: CollectionId) -> StoreFuture<Vec<ProjectVersion>> {
+        self.call(Call::VersionsList { collection })
+    }
+    fn version(&self, collection: CollectionId, id: String) -> StoreFuture<ProjectConfig> {
+        self.call(Call::VersionsGet { collection, id })
     }
 }
 

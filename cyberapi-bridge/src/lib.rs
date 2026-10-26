@@ -509,8 +509,9 @@ async fn store_call(State(bridge): State<Bridge>, headers: HeaderMap, Json(call)
         })
     } else {
         let storage = bridge.inner.store.scoped(account.id.clone());
-        let directory = bridge.inner.store.directory(account.id);
-        dispatch(&storage, directory.as_ref(), call).await
+        let directory = bridge.inner.store.directory(account.id.clone());
+        let versions = bridge.inner.store.versions(account.id);
+        dispatch(&storage, directory.as_ref(), versions.as_ref(), call).await
     };
     let mut response = Json(reply).into_response();
     response.headers_mut().insert(MODEL_HEADER, HeaderValue::from(MODEL));

@@ -12,7 +12,7 @@ use cyberapi_core::directory::Me;
 use cyberapi_core::sync::CopyBinding;
 use cyberapi_core::{AccountId, CollectionId};
 use cyberapi_http::HttpEngine;
-use cyberapi_store::{DirectoryStore, ServerCopyStore, Storage};
+use cyberapi_store::{DirectoryStore, ServerCopyStore, Storage, VersionStore};
 use cyberapi_store_bridge::{
     BridgeStore, EngineTransport, LoginForm, SignInError, bridge_address, session_me, sign_in, sign_out,
 };
@@ -119,6 +119,11 @@ impl ServerState {
     /// The server's accounts and teams (§9.4), as the signed-in account.
     pub fn directory(&self) -> Option<Arc<dyn DirectoryStore>> {
         Some(BridgeStore::new(Arc::new(self.transport()?)).directory())
+    }
+
+    /// G4: the server's projects' versions, while signed in.
+    pub fn versions(&self) -> Option<Arc<dyn VersionStore>> {
+        Some(BridgeStore::new(Arc::new(self.transport()?)).versions())
     }
 
     /// The application's copy of who is signed in follows: the menu's

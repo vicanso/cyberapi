@@ -21,6 +21,7 @@ mod run_dialog;
 mod schema_browser;
 mod settings_dialogs;
 mod tree_panel;
+mod versions_dialog;
 
 use crate::APP_NAME;
 use crate::i18n;

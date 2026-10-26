@@ -39,7 +39,7 @@ use cyberapi_core::model::{
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
-use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
+use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig, ProjectVersion};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, EnvironmentId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
 use serde::{Deserialize, Serialize};
@@ -194,6 +194,17 @@ pub trait TreeStore: Send + Sync {
     /// new one. Editors and up; the name and description are the managers'
     /// to change, and stay as they are for anyone else.
     fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64>;
+}
+
+/// G4: the versions a project had before each time it was replaced whole —
+/// the newest `cyberapi_core::sync::KEPT_VERSIONS`, newest first. Only a
+/// server keeps them (bridge's `SqlStore`); a version is put back with
+/// [`TreeStore::replace`], which keeps the one it replaces too. A viewer
+/// reads them.
+pub trait VersionStore: Send + Sync {
+    fn versions(&self, collection: CollectionId) -> StoreFuture<Vec<ProjectVersion>>;
+    /// The project as it was in version `id`.
+    fn version(&self, collection: CollectionId, id: String) -> StoreFuture<ProjectConfig>;
 }
 
 /// The responses each API keeps (F7.9 – F7.11): the newest, newest first,

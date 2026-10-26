@@ -18,13 +18,13 @@ use cyberapi_core::model::{
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
-use cyberapi_core::sync::{ConfigAt, ProjectConfig};
+use cyberapi_core::sync::{ConfigAt, KEPT_VERSIONS, ProjectConfig, ProjectVersion};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
-use cyberapi_core::{AccountId, CollectionId, EnvironmentId, ItemId, TeamId, VariableId};
+use cyberapi_core::{AccountId, CollectionId, EnvironmentId, ItemId, TeamId, Timestamp, VariableId};
 use cyberapi_store::rules::{environment_name, known_environment, project_config, required_name};
 use cyberapi_store::{
     CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection, NewVariable,
-    PrefStore, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, sort_cookies,
+    PrefStore, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, VersionStore, sort_cookies,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -175,6 +175,85 @@ impl Scoped {
         let mut collection = rows::collection(&row, 0)?;
         collection.role = role;
         Ok(collection)
+    }
+
+    /// The project's whole configuration, as a sync reads it.
+    async fn config_of(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+        name: String,
+        description: String,
+    ) -> Result<ProjectConfig, StoreError> {
+        let tree = self.tree_data(conn, collection).await?;
+        let variables = sqlx::query(self.dialect.sql(sql::VARIABLES_ALL_OF))
+            .bind(collection.as_str().to_string())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(db)?
+            .iter()
+            .map(rows::variable)
+            .collect::<Result<Vec<_>, _>>()?;
+        let variables = in_environments(variables, &self.variable_environments(conn, collection).await?);
+        let environments = self.environments_of(conn, collection).await?;
+        Ok(ProjectConfig {
+            name,
+            description,
+            folders: tree.folders,
+            apis: tree.apis,
+            top_order: tree.top_order,
+            variables,
+            settings: tree.settings,
+            environments,
+        })
+    }
+
+    /// G4: the project as it is, kept as a version before it is replaced
+    /// whole, by this account; the oldest beyond `KEPT_VERSIONS` go. An
+    /// empty one — a project made to be uploaded into — is not kept.
+    async fn keep_version(&self, conn: &mut AnyConnection, current: &Collection) -> Result<(), StoreError> {
+        let collection = &current.id;
+        let config = self
+            .config_of(conn, collection, current.name.clone(), current.description.clone())
+            .await?;
+        if config.is_empty() {
+            return Ok(());
+        }
+        let by = sqlx::query(self.dialect.sql(sql::ACCOUNT_INFO))
+            .bind(self.account())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(db)?
+            .map(|row| rows::text(&row, 1))
+            .transpose()?
+            .unwrap_or_default();
+        sqlx::query(self.dialect.sql(sql::VERSION_INSERT))
+            .bind(new_id())
+            .bind(collection.as_str().to_string())
+            .bind(current.revision as i64)
+            .bind(now().to_rfc3339())
+            .bind(by)
+            .bind(config.folders.len() as i32)
+            .bind(config.apis.len() as i32)
+            .bind(serde_json::to_string(&config).map_err(db)?)
+            .execute(&mut *conn)
+            .await
+            .map_err(db)?;
+        let oldest_kept = sqlx::query(self.dialect.sql(sql::VERSION_OLDEST_KEPT))
+            .bind(collection.as_str().to_string())
+            .bind(KEPT_VERSIONS as i64 - 1)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(db)?;
+        if let Some(row) = oldest_kept {
+            sqlx::query(self.dialect.sql(sql::VERSIONS_TRIM))
+                .bind(collection.as_str().to_string())
+                .bind(row.try_get::<i64, _>(0).map_err(db)?)
+                .execute(&mut *conn)
+                .await
+                .map_err(db)?;
+        }
+        Ok(())
     }
 
     async fn tree_data(&self, conn: &mut AnyConnection, collection: &CollectionId) -> Result<TreeData, StoreError> {
@@ -921,29 +1000,12 @@ impl TreeStore for Scoped {
             let mut conn = this.pool.acquire().await.map_err(db)?;
             let role = this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
             let found = this.get_collection(&mut conn, &collection, role).await?;
-            let tree = this.tree_data(&mut conn, &collection).await?;
-            let variables = sqlx::query(this.dialect.sql(sql::VARIABLES_ALL_OF))
-                .bind(collection.as_str().to_string())
-                .fetch_all(&mut *conn)
-                .await
-                .map_err(db)?
-                .iter()
-                .map(rows::variable)
-                .collect::<Result<Vec<_>, _>>()?;
-            let variables = in_environments(variables, &this.variable_environments(&mut conn, &collection).await?);
-            let environments = this.environments_of(&mut conn, &collection).await?;
+            let config = this
+                .config_of(&mut conn, &collection, found.name, found.description)
+                .await?;
             Ok(ConfigAt {
                 revision: found.revision,
-                config: ProjectConfig {
-                    name: found.name,
-                    description: found.description,
-                    folders: tree.folders,
-                    apis: tree.apis,
-                    top_order: tree.top_order,
-                    variables,
-                    settings: tree.settings,
-                    environments,
-                },
+                config,
             })
         })
     }
@@ -958,8 +1020,8 @@ impl TreeStore for Scoped {
             if role < CollectionRole::Manager {
                 // An editor's sync carries the tree and the variables; the
                 // name and description stay the managers'.
-                config.name = current.name;
-                config.description = current.description;
+                config.name = current.name.clone();
+                config.description = current.description.clone();
             }
             if let Some(base) = base
                 && base != current.revision
@@ -969,6 +1031,8 @@ impl TreeStore for Scoped {
                     revision: current.revision,
                 });
             }
+            // G4: what it was, kept before it is replaced.
+            this.keep_version(&mut tx, &current).await?;
             let id = collection.as_str().to_string();
             let items = config.folders.iter().map(|folder| folder.id.as_str());
             let items = items.chain(config.apis.iter().map(|api| api.id.as_str()));
@@ -1558,6 +1622,48 @@ impl HistoryStore for Scoped {
                 .await
                 .map_err(db)?;
             Ok(())
+        })
+    }
+}
+
+/// G4: a project's versions; a viewer reads them.
+impl VersionStore for Scoped {
+    fn versions(&self, collection: CollectionId) -> StoreFuture<Vec<ProjectVersion>> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            sqlx::query(this.dialect.sql(sql::VERSIONS_OF))
+                .bind(collection.as_str().to_string())
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(db)?
+                .iter()
+                .map(|row| {
+                    Ok(ProjectVersion {
+                        id: rows::text(row, 0)?,
+                        revision: row.try_get::<i64, _>(1).map_err(db)?.max(0) as u64,
+                        saved_at: Timestamp::parse_lenient(&rows::text(row, 2)?),
+                        by: rows::text(row, 3)?,
+                        folders: row.try_get::<i32, _>(4).map_err(db)?.max(0) as u32,
+                        apis: row.try_get::<i32, _>(5).map_err(db)?.max(0) as u32,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    fn version(&self, collection: CollectionId, id: String) -> StoreFuture<ProjectConfig> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            let row = sqlx::query(this.dialect.sql(sql::VERSION_DOC))
+                .bind(collection.as_str().to_string())
+                .bind(id.clone())
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(db)?
+                .ok_or_else(|| StoreError::not_found(Entity::Collection, &id))?;
+            serde_json::from_str(&rows::text(&row, 0)?).map_err(db)
         })
     }
 }

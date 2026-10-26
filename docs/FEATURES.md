@@ -58,7 +58,7 @@ Back up and restore on the desktop, in the same format as the earlier Tauri app.
 
 ## Teams
 
-A self-hosted web version — one binary or a Docker image, at the root or under a sub-path — with accounts by invitation, teams, and per-project roles (viewer, editor, manager); share a project with accounts or teams, or move it to another team. The desktop app signs in to the same server — listing the team's projects as they come — uploads a project of its own there, keeping its history, and works on shared projects offline, syncing when you choose and asking whose version to keep when someone else changed it meanwhile; APIs and folders can stay local, out of the sync.
+A self-hosted web version — one binary or a Docker image, at the root or under a sub-path — with accounts by invitation, teams, and per-project roles (viewer, editor, manager); share a project with accounts or teams, or move it to another team. The desktop app signs in to the same server — listing the team's projects as they come — uploads a project of its own there, keeping its history, and works on shared projects offline, syncing when you choose and asking whose version to keep when someone else changed it meanwhile; APIs and folders can stay local, out of the sync. The server keeps a project's last 50 versions — what it was before each sync — and an editor puts one back from the project menu (Versions…); what it replaces is kept too, so that can be undone.
 
 ## AI assistants
 

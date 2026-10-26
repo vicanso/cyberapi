@@ -43,6 +43,32 @@ impl ProjectConfig {
     }
 }
 
+/// G4: how many versions a server keeps of each project.
+pub const KEPT_VERSIONS: usize = 50;
+
+/// G4: a project as it was before it was replaced whole — a sync, an
+/// upload, a version put back — as a list of them shows it; its
+/// configuration is read apart.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProjectVersion {
+    pub id: String,
+    /// The project's revision it was at.
+    pub revision: u64,
+    /// When it was replaced, and by whom (an account's name).
+    pub saved_at: crate::Timestamp,
+    pub by: String,
+    pub folders: u32,
+    pub apis: u32,
+}
+
+impl ProjectConfig {
+    /// Whether it holds nothing: no item, no variable, no environment.
+    pub fn is_empty(&self) -> bool {
+        self.folders.is_empty() && self.apis.is_empty() && self.variables.is_empty() && self.environments.is_empty()
+    }
+}
+
 /// A configuration as a store read it, and the project's revision then: the
 /// base a copy later syncs against.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

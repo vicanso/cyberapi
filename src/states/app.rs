@@ -16,7 +16,7 @@ use cyberapi_core::{CollectionId, ItemId, Timestamp};
 use cyberapi_http::HttpEngine;
 use cyberapi_service::Sender;
 use cyberapi_service::backup::{self, BackupFailure};
-use cyberapi_store::{BackupStore, DirectoryStore, Storage, StoreError, StoreFuture};
+use cyberapi_store::{BackupStore, DirectoryStore, Storage, StoreError, StoreFuture, VersionStore};
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -98,6 +98,15 @@ impl AppStore {
             return Some(directory.clone());
         }
         self.server.as_ref()?.read(cx).directory()
+    }
+
+    /// G4: the server's projects' versions: a page's, or the desktop's
+    /// while signed in.
+    pub fn versions(&self, cx: &App) -> Option<Arc<dyn VersionStore>> {
+        if let Some(versions) = &self.extras.versions {
+            return Some(versions.clone());
+        }
+        self.server.as_ref()?.read(cx).versions()
     }
 
     /// Whether an account is signed in: always in a page, and on the

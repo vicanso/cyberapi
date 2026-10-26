@@ -20,7 +20,7 @@ use chrono::Utc;
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::directory::{AccountInfo, InviteInfo, McpToken, invite_needs, valid_account_name, valid_password};
 use cyberapi_core::{AccountId, CollectionId, TeamId, Timestamp};
-use cyberapi_store::{DirectoryStore, Refusal, Storage, StoreError};
+use cyberapi_store::{DirectoryStore, Refusal, Storage, StoreError, VersionStore};
 use directory::NoPasswords;
 use scoped::Scoped;
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
@@ -185,6 +185,11 @@ impl SqlStore {
 
     /// One account's view of the accounts and teams (§9.4).
     pub fn directory(&self, account: AccountId) -> Arc<dyn DirectoryStore> {
+        Arc::new(Scoped::new(self.clone(), account))
+    }
+
+    /// G4: one account's view of the projects' versions.
+    pub fn versions(&self, account: AccountId) -> Arc<dyn VersionStore> {
         Arc::new(Scoped::new(self.clone(), account))
     }
 
