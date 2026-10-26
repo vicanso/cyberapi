@@ -20,10 +20,11 @@ use super::copy::{self, Kept, Pushed, ServerCopy};
 use super::{ApiState, AppStore, GrpcDefinitions, Load, ServerStatus, run_serial, run_store};
 use crate::pacing;
 use async_lock::Mutex;
+use cyberapi_core::auth::Auth;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::environments;
 use cyberapi_core::graphql_schema::Schema;
-use cyberapi_core::import::{ImportBundle, ImportItem};
+use cyberapi_core::import::{ImportBundle, ImportEnvironment, ImportItem};
 use cyberapi_core::inherit::{self, Inherited};
 use cyberapi_core::model::{
     ApiSetting, Collection, Environment, Folder, FolderSettings, HttpMethod, ProjectSettings, Variable,
@@ -1428,6 +1429,7 @@ impl WorkspaceState {
     }
 
     pub fn import(&mut self, parent: Option<ItemId>, bundle: ImportBundle, cx: &mut Context<Self>) {
+        self.import_settings(bundle.auth, bundle.environments, cx);
         let call = self
             .sender
             .storage
@@ -1486,6 +1488,7 @@ impl WorkspaceState {
             api.request = request.clone();
         }
         let merge = cyberapi_core::import::merge::merge(&data, parent.as_ref(), &bundle.items, update);
+        self.import_settings(bundle.auth, bundle.environments, cx);
         let (apis, folders) = merge.added();
         let again = Some((merge.updates.len(), merge.matched - merge.updates.len()));
         let known: Vec<&str> = self.environment.iter().map(|variable| variable.name.as_str()).collect();
@@ -1554,6 +1557,78 @@ impl WorkspaceState {
                 cx.notify();
             });
         }
+    }
+
+    /// B4: what an import brings besides its items: how the project signs
+    /// in, unless it does already; named environments, made where the
+    /// project has none of the name (in any case), each given the variables
+    /// it lacks.
+    fn import_settings(&mut self, auth: Auth, environments: Vec<ImportEnvironment>, cx: &mut Context<Self>) {
+        if auth.signs() && !self.data.settings.auth.signs() {
+            self.set_project_settings(ProjectSettings { auth }, cx);
+        }
+        let environments: Vec<ImportEnvironment> = environments
+            .into_iter()
+            .filter(|environment| !environment.name.trim().is_empty())
+            .collect();
+        if environments.is_empty() {
+            return;
+        }
+        let (storage, collection) = (self.sender.storage.clone(), self.collection.id.clone());
+        let named = self.named.clone();
+        let known: Vec<(Option<EnvironmentId>, String)> = self
+            .environment
+            .iter()
+            .map(|variable| (variable.environment.clone(), variable.name.clone()))
+            .collect();
+        cx.spawn(async move |this, cx| {
+            let failed = |error, cx: &mut gpui_kit::AsyncApp| {
+                let _ = this.update(cx, |_, cx| cx.emit(WorkspaceEvent::Failed(error)));
+            };
+            for imported in environments {
+                let name = imported.name.trim().to_string();
+                let id = match named
+                    .iter()
+                    .find(|environment| environment.name.eq_ignore_ascii_case(&name))
+                {
+                    Some(environment) => environment.id.clone(),
+                    None => {
+                        let call = storage.variables().create_environment(collection.clone(), name);
+                        match cx.background_spawn(call).await {
+                            Ok(made) => made.id,
+                            Err(error) => {
+                                failed(error, cx);
+                                continue;
+                            }
+                        }
+                    }
+                };
+                for (name, value) in imported.variables {
+                    let has = known
+                        .iter()
+                        .any(|(environment, known)| environment.as_ref() == Some(&id) && *known == name);
+                    if has || name.trim().is_empty() {
+                        continue;
+                    }
+                    let call = storage.variables().create(cyberapi_store::NewVariable {
+                        collection: collection.clone(),
+                        category: VariableCategory::Environment,
+                        name,
+                        value,
+                        enabled: true,
+                        environment: Some(id.clone()),
+                    });
+                    if let Err(error) = cx.background_spawn(call).await {
+                        failed(error, cx);
+                    }
+                }
+            }
+            let _ = this.update(cx, |this, cx| {
+                this.refresh_environments(cx);
+                this.refresh_variables(VariableCategory::Environment, cx);
+            });
+        })
+        .detach();
     }
 
     fn add_environment(&mut self, variables: Vec<(String, String)>, cx: &mut Context<Self>) {
@@ -2053,6 +2128,105 @@ mod tests {
         state.update(cx, |state, cx| state.reload(cx));
         cx.run_until_parked();
         assert_eq!(row_names(&state, cx), ["orders"]);
+    }
+
+    /// B4: an import's auth becomes the project's when it has none, and its
+    /// named environments are made, or given what they lack.
+    #[gpui_kit::test]
+    async fn an_import_brings_its_auth_and_named_environments(cx: &mut TestAppContext) {
+        use cyberapi_core::import::ImportEnvironment;
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let staging = storage
+            .variables()
+            .create_environment(collection.id.clone(), "Staging".into())
+            .await
+            .expect("an environment");
+        storage
+            .variables()
+            .create(NewVariable {
+                collection: collection.id.clone(),
+                category: VariableCategory::Environment,
+                name: "host".into(),
+                value: "https://mine.test".into(),
+                enabled: true,
+                environment: Some(staging.id.clone()),
+            })
+            .await
+            .expect("a variable");
+        let state = open(&storage, collection.clone(), cx);
+        cx.run_until_parked();
+        let bundle = |auth| ImportBundle {
+            auth,
+            environments: vec![
+                ImportEnvironment {
+                    name: "staging".into(),
+                    variables: vec![
+                        ("host".into(), "https://theirs.test".into()),
+                        ("token".into(), "t".into()),
+                    ],
+                },
+                ImportEnvironment {
+                    name: "dev".into(),
+                    variables: vec![("host".into(), "http://localhost".into())],
+                },
+            ],
+            ..Default::default()
+        };
+        state.update(cx, |state, cx| {
+            state.import(
+                None,
+                bundle(Auth::Bearer {
+                    token: "{{token}}".into(),
+                }),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(
+                state.project_settings().auth,
+                Auth::Bearer {
+                    token: "{{token}}".into()
+                }
+            );
+            let names: Vec<&str> = state.named_environments().iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(
+                names,
+                ["Staging", "dev"],
+                "the one of the same name, in any case, is the project's"
+            );
+        });
+        let variables = storage
+            .variables()
+            .list(collection.id.clone(), VariableCategory::Environment)
+            .await
+            .expect("variables");
+        let in_staging: Vec<(&str, &str)> = variables
+            .iter()
+            .filter(|variable| variable.environment.as_ref() == Some(&staging.id))
+            .map(|variable| (variable.name.as_str(), variable.value.as_str()))
+            .collect();
+        assert_eq!(
+            in_staging,
+            [("host", "https://mine.test"), ("token", "t")],
+            "only what it lacks"
+        );
+
+        // The project's own auth stays.
+        state.update(cx, |state, cx| {
+            state.import(None, bundle(Auth::Bearer { token: "other".into() }), cx)
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(
+                state.project_settings().auth,
+                Auth::Bearer {
+                    token: "{{token}}".into()
+                }
+            );
+            assert_eq!(state.named_environments().len(), 2, "made once");
+        });
     }
 
     /// B3: imported again, an API the project has is left or updated, not

@@ -7,8 +7,16 @@
 //! made from its schema. OpenAPI 3 is read the same way (#28), with
 //! `servers` and `requestBody`. `$ref`s are followed — not just one level —
 //! up to a depth that stops loops.
+//!
+//! B4: the scheme the document's `security` names — OpenAPI 3's
+//! `components.securitySchemes`, Swagger's `securityDefinitions` — is how
+//! the project signs in: HTTP Basic, Bearer or Digest, or an API key in a
+//! header or the query, its values left for the reader to fill in. An
+//! operation that asks for another, or for none (`security: []`), signs in
+//! so itself. OAuth and OpenID Connect have no counterpart here yet.
 
 use super::{ImportBundle, ImportItem, kv};
+use crate::auth::{Auth, KeyPlace};
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam};
 use serde_json::{Map, Value, json};
 
@@ -126,6 +134,51 @@ fn server(json: &Value) -> Option<(String, String)> {
     Some((name, value))
 }
 
+/// B4: the auth a `security` list asks for, its values empty: the first
+/// scheme of its first requirement this app has a counterpart of. `[]` is
+/// none; `None` when it names nothing this app knows.
+fn security(json: &Value, requirements: &Value) -> Option<Auth> {
+    let requirements = requirements.as_array()?;
+    if requirements.is_empty() {
+        return Some(Auth::None);
+    }
+    let schemes = json
+        .pointer("/components/securitySchemes")
+        .or_else(|| json.get("securityDefinitions"))?;
+    requirements
+        .iter()
+        .filter_map(Value::as_object)
+        .flat_map(|requirement| requirement.keys())
+        .filter_map(|name| schemes.get(name).map(|scheme| resolve(json, scheme)))
+        .find_map(|scheme| {
+            let place = |scheme: &Value| match text(scheme, "in") {
+                "header" => Some(KeyPlace::Header),
+                "query" => Some(KeyPlace::Query),
+                _ => None,
+            };
+            match (
+                text(scheme, "type"),
+                text(scheme, "scheme").to_ascii_lowercase().as_str(),
+            ) {
+                ("http", "bearer") => Some(Auth::Bearer { token: String::new() }),
+                ("http", "basic") | ("basic", _) => Some(Auth::Basic {
+                    username: String::new(),
+                    password: String::new(),
+                }),
+                ("http", "digest") => Some(Auth::Digest {
+                    username: String::new(),
+                    password: String::new(),
+                }),
+                ("apiKey", _) => Some(Auth::ApiKey {
+                    name: text(scheme, "name").to_string(),
+                    value: String::new(),
+                    place: place(scheme)?,
+                }),
+                _ => None,
+            }
+        })
+}
+
 fn operation(
     json: &Value,
     prefix: &str,
@@ -227,6 +280,15 @@ fn operation(
             request.body = serde_json::to_string(&fields).unwrap_or_default();
         }
     }
+    // B4: an operation's own security, where it is not the document's.
+    if let Some(own) = op.get("security").and_then(|requirements| security(json, requirements))
+        && json
+            .get("security")
+            .and_then(|requirements| security(json, requirements))
+            != Some(own.clone())
+    {
+        request.auth = own;
+    }
     let tag = op
         .get("tags")
         .and_then(Value::as_array)
@@ -281,6 +343,10 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
     ImportBundle {
         items,
         environment: server.into_iter().collect(),
+        auth: json
+            .get("security")
+            .and_then(|requirements| security(json, requirements))
+            .unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -377,5 +443,60 @@ mod tests {
         .expect("JSON");
         let request = first_api(&parse(&json).items).clone();
         assert!(request.body.contains("next"));
+    }
+
+    /// B4: the document's security is the project's auth, values empty; an
+    /// operation's own, or none, is its API's.
+    #[test]
+    fn security_schemes_become_auth() {
+        let json: Value = serde_json::from_str(
+            r#"{"openapi": "3.0.1", "info": {"title": "Shop"},
+                "components": {"securitySchemes": {
+                    "bearer": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"},
+                    "key": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
+                    "oauth": {"type": "oauth2", "flows": {}}}},
+                "security": [{"oauth": []}, {"bearer": []}],
+                "paths": {
+                    "/me": {"get": {"summary": "me"}},
+                    "/health": {"get": {"summary": "health", "security": []}},
+                    "/admin": {"get": {"summary": "admin", "security": [{"key": []}]}}
+                }}"#,
+        )
+        .expect("JSON");
+        let bundle = parse(&json);
+        assert_eq!(bundle.auth, Auth::Bearer { token: String::new() }, "OAuth passed over");
+        let auth = |name: &str| {
+            bundle
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    ImportItem::Api { name: own, request } if own == name => Some(request.auth.clone()),
+                    _ => None,
+                })
+                .expect("there")
+        };
+        assert_eq!(auth("me"), Auth::Inherit);
+        assert_eq!(auth("health"), Auth::None);
+        assert_eq!(
+            auth("admin"),
+            Auth::ApiKey {
+                name: "X-API-Key".into(),
+                value: String::new(),
+                place: KeyPlace::Header
+            }
+        );
+        // Swagger 2's definitions.
+        let swagger: Value = serde_json::from_str(
+            r#"{"swagger": "2.0", "info": {"title": "Old"}, "securityDefinitions": {"b": {"type": "basic"}},
+                "security": [{"b": []}], "paths": {}}"#,
+        )
+        .expect("JSON");
+        assert_eq!(
+            parse(&swagger).auth,
+            Auth::Basic {
+                username: String::new(),
+                password: String::new()
+            }
+        );
     }
 }

@@ -162,7 +162,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 
 | 编号 | 内容 | 状态 |
 |---|---|---|
-| B4 | 导入时带上认证和环境 | |
+| B4 | 导入时带上认证和环境：Postman 请求 / 目录 / 集合与 Insomnia 请求 / 目录的 Basic、Bearer、API key、Digest；OpenAPI / Swagger 的安全方案成为项目认证（值留空）；Postman 环境文件、Insomnia 子环境成为命名环境。项目已有认证时保留项目的，同名环境只补没有的变量 | 已完成 |
 | B2 | 导出 Postman Collection v2.1 | |
 | B1 | 导出 OpenAPI 3.0 | |
 | B5 | 导入 HAR、Hoppscotch、Bruno `.bru` / OpenCollection | |

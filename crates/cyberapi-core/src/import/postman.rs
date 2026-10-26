@@ -4,10 +4,16 @@
 //! collection's `variable`s become environment variables. Unlike before,
 //! headers, Basic auth and form bodies come along too (#28). Postman's
 //! `{{name}}` is this app's prefix syntax already.
+//!
+//! B4: a request's, a folder's and the collection's `auth` — Basic,
+//! Bearer, API key, Digest, none — come in as this app's (#66); a kind it
+//! has no counterpart of (OAuth, AWS, Hawk…) inherits. A Postman
+//! environment file is a named environment.
 
-use super::{ImportBundle, ImportItem, api, content_type_of, guess_content_type, kv};
-use crate::auth::Auth;
+use super::{ImportBundle, ImportEnvironment, ImportItem, api, content_type_of, guess_content_type, kv};
+use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
+use crate::model::FolderSettings;
 use crate::model::{ContentType, KvParam};
 use serde_json::Value;
 
@@ -34,6 +40,56 @@ fn pairs(value: Option<&Value>, key: &str) -> Vec<KvParam> {
         .unwrap_or_default()
 }
 
+/// A value as text: a variable's may be a number or a flag.
+fn as_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    }
+}
+
+/// B4: an `auth` object as this app's; `None` for a kind it has no
+/// counterpart of, which then inherits. v2.1 lists the fields
+/// (`[{key, value}]`), v2.0 names them (`{username: …}`).
+fn auth(value: &Value) -> Option<Auth> {
+    let kind = text(value, "type");
+    let fields = value.get(kind);
+    let field = |key: &str| match fields {
+        Some(Value::Array(items)) => as_text(
+            items
+                .iter()
+                .find(|item| text(item, "key") == key)
+                .and_then(|item| item.get("value")),
+        ),
+        Some(object) => as_text(object.get(key)),
+        None => String::new(),
+    };
+    Some(match kind {
+        "inherit" => Auth::Inherit,
+        "noauth" => Auth::None,
+        "basic" => Auth::Basic {
+            username: field("username"),
+            password: field("password"),
+        },
+        "digest" => Auth::Digest {
+            username: field("username"),
+            password: field("password"),
+        },
+        "bearer" => Auth::Bearer { token: field("token") },
+        "apikey" => Auth::ApiKey {
+            name: field("key"),
+            value: field("value"),
+            place: if field("in") == "query" {
+                KeyPlace::Query
+            } else {
+                KeyPlace::Header
+            },
+        },
+        _ => return None,
+    })
+}
+
 fn item(value: &Value) -> Option<ImportItem> {
     let name = text(value, "name");
     let Some(request) = value.get("request") else {
@@ -45,7 +101,10 @@ fn item(value: &Value) -> Option<ImportItem> {
         return Some(ImportItem::Folder {
             name: name.to_string(),
             children,
-            settings: Default::default(),
+            settings: FolderSettings {
+                auth: value.get("auth").and_then(auth).unwrap_or_default(),
+                headers: Vec::new(),
+            },
         });
     };
     // A request may be just its URL.
@@ -135,21 +194,8 @@ fn item(value: &Value) -> Option<ImportItem> {
             _ => {}
         }
     }
-    if let Some(auth) = request.get("auth")
-        && text(auth, "type") == "basic"
-    {
-        let basic = pairs(auth.get("basic"), "key");
-        let find = |key: &str| {
-            basic
-                .iter()
-                .find(|pair| pair.key == key)
-                .map(|pair| pair.value.clone())
-                .unwrap_or_default()
-        };
-        built.auth = Auth::Basic {
-            username: find("username"),
-            password: find("password"),
-        };
+    if let Some(own) = request.get("auth").and_then(auth) {
+        built.auth = own;
     }
     Some(ImportItem::Api {
         name,
@@ -174,6 +220,36 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
                     .collect()
             })
             .unwrap_or_default(),
+        auth: json.get("auth").and_then(auth).unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
+/// B4: a Postman environment file as a named environment: its enabled
+/// values.
+pub(super) fn parse_environment(json: &Value) -> ImportBundle {
+    let name = text(json, "name").trim();
+    let variables = json
+        .get("values")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter(|value| value.get("enabled").and_then(Value::as_bool).unwrap_or(true))
+                .map(|value| (text(value, "key").to_string(), as_text(value.get("value"))))
+                .filter(|(key, _)| !key.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    ImportBundle {
+        environments: vec![ImportEnvironment {
+            name: if name.is_empty() {
+                "Postman".into()
+            } else {
+                name.to_string()
+            },
+            variables,
+        }],
         ..Default::default()
     }
 }
@@ -258,5 +334,87 @@ mod tests {
             (request.method, request.uri.as_str()),
             (HttpMethod::Get, "https://a.test/bare")
         );
+    }
+
+    /// B4: the collection's, a folder's and a request's auth, in v2.1's
+    /// list and v2.0's named form; a kind with no counterpart inherits.
+    #[test]
+    fn auth_comes_in_at_every_level() {
+        let json: Value = serde_json::from_str(
+            r#"{"info": {"name": "Shop"},
+                "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{token}}", "type": "string"}]},
+                "item": [
+                    {"name": "admin", "auth": {"type": "apikey", "apikey": [
+                        {"key": "key", "value": "X-Key"}, {"key": "value", "value": "k"}, {"key": "in", "value": "query"}]},
+                     "item": [{"name": "stats", "request": {"method": "GET", "url": "{{host}}/stats",
+                        "auth": {"type": "noauth"}}}]},
+                    {"name": "legacy", "request": {"method": "GET", "url": "{{host}}/old",
+                        "auth": {"type": "digest", "digest": {"username": "u", "password": "p"}}}},
+                    {"name": "oauth", "request": {"method": "GET", "url": "{{host}}/o",
+                        "auth": {"type": "oauth2", "oauth2": []}}}
+                ]}"#,
+        )
+        .expect("JSON");
+        let bundle = parse(&json);
+        assert_eq!(
+            bundle.auth,
+            Auth::Bearer {
+                token: "{{token}}".into()
+            }
+        );
+        let ImportItem::Folder { settings, children, .. } = &bundle.items[0] else {
+            panic!("a folder");
+        };
+        assert_eq!(
+            settings.auth,
+            Auth::ApiKey {
+                name: "X-Key".into(),
+                value: "k".into(),
+                place: KeyPlace::Query
+            }
+        );
+        let request_auth = |item: &ImportItem| match item {
+            ImportItem::Api { request, .. } => request.auth.clone(),
+            ImportItem::Folder { .. } => panic!("an API"),
+        };
+        assert_eq!(request_auth(&children[0]), Auth::None);
+        assert_eq!(
+            request_auth(&bundle.items[1]),
+            Auth::Digest {
+                username: "u".into(),
+                password: "p".into()
+            }
+        );
+        assert_eq!(
+            request_auth(&bundle.items[2]),
+            Auth::Inherit,
+            "OAuth has no counterpart yet"
+        );
+    }
+
+    /// B4: a Postman environment file is a named environment of its
+    /// enabled values.
+    #[test]
+    fn an_environment_file_is_a_named_environment() {
+        let text = r#"{"id": "e1", "name": "staging", "_postman_variable_scope": "environment",
+            "values": [{"key": "host", "value": "https://staging.test", "enabled": true},
+                       {"key": "port", "value": 8443, "enabled": true},
+                       {"key": "old", "value": "x", "enabled": false}]}"#;
+        assert_eq!(
+            super::super::detect(text).map(|(format, _)| format),
+            Ok(super::super::Format::PostmanEnvironment)
+        );
+        let bundle = super::super::parse(text).expect("a bundle");
+        assert_eq!(
+            bundle.environments,
+            [ImportEnvironment {
+                name: "staging".into(),
+                variables: vec![
+                    ("host".into(), "https://staging.test".into()),
+                    ("port".into(), "8443".into())
+                ],
+            }]
+        );
+        assert!(bundle.items.is_empty() && bundle.name.is_none());
     }
 }

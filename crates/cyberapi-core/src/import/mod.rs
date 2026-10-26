@@ -4,8 +4,15 @@
 //!
 //! The formats are told apart as before (F10.2): text starting with `curl`
 //! is a cURL command; JSON with `swagger` is Swagger 2.0, with `openapi`
-//! OpenAPI 3, with `item` a Postman collection, with `resources` an Insomnia
-//! export; any other JSON is CyberAPI's own export.
+//! OpenAPI 3, with `item` a Postman collection, with `values` a Postman
+//! environment, with `resources` an Insomnia export; any other JSON is
+//! CyberAPI's own export.
+//!
+//! B4: besides its items, an import brings how the project signs in (a
+//! Postman collection's auth, an OpenAPI document's security, its values
+//! left empty) and named environments (a Postman environment, Insomnia's
+//! sub-environments); the project keeps an auth of its own, and an
+//! environment it has already only gets the variables it lacks.
 //!
 //! The bundle carries no ids: the old app kept the ids of its own format,
 //! so importing a file twice clashed, and retried APIs left their folders
@@ -21,6 +28,7 @@ mod postman;
 pub use own::{api_config, export, parse_own};
 
 use crate::ItemId;
+use crate::auth::Auth;
 use crate::model::{ContentType, FolderSettings, HttpMethod, HttpRequest, KvParam};
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
@@ -51,6 +59,22 @@ pub struct ImportBundle {
     pub environment: Vec<(String, String)>,
     /// What the document calls itself, for a project made from it (#65).
     pub name: Option<String>,
+    /// B4: how the project signs in, as the document says; `Inherit` when
+    /// it says nothing.
+    #[serde(skip_serializing_if = "Auth::is_inherit")]
+    pub auth: Auth,
+    /// B4: named environments.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub environments: Vec<ImportEnvironment>,
+}
+
+/// A named environment an import brings (B4), with its variables, name and
+/// value.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ImportEnvironment {
+    pub name: String,
+    pub variables: Vec<(String, String)>,
 }
 
 /// Ids given to a bundle's items, depth first, and the records to write.
@@ -94,6 +118,11 @@ pub fn assign_ids(items: &[ImportItem], new_id: &mut dyn FnMut() -> ItemId) -> A
 }
 
 impl ImportBundle {
+    /// Whether it brings nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty() && self.environment.is_empty() && self.environments.is_empty() && self.auth.is_inherit()
+    }
+
     /// How many APIs and folders it holds, at every depth.
     pub fn counts(&self) -> (usize, usize) {
         fn walk(items: &[ImportItem], apis: &mut usize, folders: &mut usize) {
@@ -117,6 +146,8 @@ impl ImportBundle {
 pub enum Format {
     Curl,
     Postman,
+    /// B4: a Postman environment file.
+    PostmanEnvironment,
     Insomnia,
     Swagger,
     OpenApi,
@@ -146,6 +177,12 @@ pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportE
         serde_json::Value::Object(map) if map.contains_key("swagger") => Format::Swagger,
         serde_json::Value::Object(map) if map.contains_key("openapi") => Format::OpenApi,
         serde_json::Value::Object(map) if map.contains_key("item") => Format::Postman,
+        serde_json::Value::Object(map)
+            if map.get("values").is_some_and(serde_json::Value::is_array)
+                && (map.contains_key("_postman_variable_scope") || map.contains_key("name")) =>
+        {
+            Format::PostmanEnvironment
+        }
         serde_json::Value::Object(map) if map.contains_key("resources") => Format::Insomnia,
         _ => Format::CyberApi,
     };
@@ -178,12 +215,13 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     let bundle = match (format, json) {
         (Format::Curl, _) => curl::parse(text)?,
         (Format::Postman, Some(json)) => postman::parse(&json),
+        (Format::PostmanEnvironment, Some(json)) => postman::parse_environment(&json),
         (Format::Insomnia, Some(json)) => insomnia::parse(&json),
         (Format::Swagger | Format::OpenApi, Some(json)) => openapi::parse(&json),
         (_, Some(json)) => own::parse_value(&json),
         (_, None) => ImportBundle::default(),
     };
-    if bundle.items.is_empty() && bundle.environment.is_empty() {
+    if bundle.is_empty() {
         return EmptySnafu.fail();
     }
     Ok(ImportBundle { name, ..bundle })
@@ -204,7 +242,7 @@ fn json_name(format: Format, json: &serde_json::Value) -> Option<String> {
             .iter()
             .find(|resource| text(resource.get("_type")) == Some("workspace"))
             .and_then(|workspace| text(workspace.get("name"))),
-        Format::Curl | Format::CyberApi => None,
+        Format::Curl | Format::PostmanEnvironment | Format::CyberApi => None,
     };
     name.filter(|name| !name.is_empty()).map(str::to_string)
 }

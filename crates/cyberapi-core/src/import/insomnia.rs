@@ -3,10 +3,16 @@
 //! `request_group`s are folders, nested by `parentId`; `request`s are APIs;
 //! the `data` of `environment`s are environment variables. Insomnia writes a
 //! variable as `{{ _.name }}`; it comes in as this app's `{{name}}`.
+//!
+//! B4: a request's and a folder's `authentication` — Basic, Bearer, API
+//! key, Digest — come in as this app's (#66); the base environment's data
+//! are the variables every environment shares, and each sub-environment is
+//! a named environment.
 
-use super::{ImportBundle, ImportItem, api, content_type_of, guess_content_type, kv};
-use crate::auth::Auth;
+use super::{ImportBundle, ImportEnvironment, ImportItem, api, content_type_of, guess_content_type, kv};
+use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
+use crate::model::FolderSettings;
 use crate::model::{ContentType, KvParam};
 use serde_json::Value;
 
@@ -94,18 +100,64 @@ fn request(resource: &Value) -> ImportItem {
             }
         }
     }
-    if let Some(auth) = resource.get("authentication")
-        && text(auth, "type") == "basic"
-    {
-        built.auth = Auth::Basic {
-            username: text(auth, "username").into(),
-            password: text(auth, "password").into(),
-        };
+    if let Some(own) = resource.get("authentication").and_then(auth) {
+        built.auth = own;
     }
     ImportItem::Api {
         name,
         request: Box::new(built),
     }
+}
+
+/// B4: an `authentication` object as this app's; `None` where there is
+/// none (`{}`) or a kind this app has no counterpart of (OAuth, AWS…),
+/// which then inherits. One switched off signs in with nothing.
+fn auth(value: &Value) -> Option<Auth> {
+    let field = |key: &str| variables(text(value, key));
+    if value.get("disabled").and_then(Value::as_bool) == Some(true) {
+        return Some(Auth::None);
+    }
+    Some(match text(value, "type") {
+        "none" => Auth::None,
+        "basic" => Auth::Basic {
+            username: field("username"),
+            password: field("password"),
+        },
+        "digest" => Auth::Digest {
+            username: field("username"),
+            password: field("password"),
+        },
+        "bearer" => Auth::Bearer { token: field("token") },
+        "apikey" => Auth::ApiKey {
+            name: field("key"),
+            value: field("value"),
+            place: if text(value, "addTo") == "queryParams" {
+                KeyPlace::Query
+            } else {
+                KeyPlace::Header
+            },
+        },
+        _ => return None,
+    })
+}
+
+/// An environment's data, name and value as text.
+fn data(resource: &Value) -> Vec<(String, String)> {
+    resource
+        .get("data")
+        .and_then(Value::as_object)
+        .map(|data| {
+            data.iter()
+                .map(|(key, value)| {
+                    let value = match value {
+                        Value::String(text) => variables(text),
+                        other => other.to_string(),
+                    };
+                    (key.clone(), value)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn children(resources: &[Value], parent: &str) -> Vec<ImportItem> {
@@ -117,7 +169,10 @@ fn children(resources: &[Value], parent: &str) -> Vec<ImportItem> {
             "request_group" => Some(ImportItem::Folder {
                 name: text(resource, "name").to_string(),
                 children: children(resources, text(resource, "_id")),
-                settings: Default::default(),
+                settings: FolderSettings {
+                    auth: resource.get("authentication").and_then(auth).unwrap_or_default(),
+                    headers: Vec::new(),
+                },
             }),
             _ => None,
         })
@@ -147,23 +202,27 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
         }
     }
     let items = tops.into_iter().flat_map(|top| children(&resources, top)).collect();
-    let environment = resources
+    // A sub-environment hangs on another environment; the base one on the
+    // workspace.
+    let environments: Vec<&Value> = resources
         .iter()
         .filter(|resource| text(resource, "_type") == "environment")
-        .filter_map(|resource| resource.get("data").and_then(Value::as_object))
-        .flat_map(|data| {
-            data.iter().map(|(key, value)| {
-                let value = match value {
-                    Value::String(text) => text.clone(),
-                    other => other.to_string(),
-                };
-                (key.clone(), value)
-            })
-        })
         .collect();
+    let ids: Vec<&str> = environments.iter().map(|resource| text(resource, "_id")).collect();
+    let (subs, bases): (Vec<&Value>, Vec<&Value>) = environments
+        .into_iter()
+        .partition(|resource| ids.contains(&text(resource, "parentId")));
     ImportBundle {
         items,
-        environment,
+        environment: bases.into_iter().flat_map(data).collect(),
+        environments: subs
+            .into_iter()
+            .map(|resource| ImportEnvironment {
+                name: text(resource, "name").trim().to_string(),
+                variables: data(resource),
+            })
+            .filter(|environment| !environment.name.is_empty())
+            .collect(),
         ..Default::default()
     }
 }
@@ -230,5 +289,65 @@ mod tests {
             graphql.variables, "{\n    \"id\": \"{{user}}\"\n}",
             "its templates as this app writes them"
         );
+    }
+
+    /// B4: requests' and folders' auth; the base environment shared, each
+    /// sub-environment named.
+    #[test]
+    fn auth_and_sub_environments() {
+        let json: Value = serde_json::from_str(
+            r#"{"_type": "export", "__export_format": 4, "resources": [
+                {"_id": "wrk_1", "_type": "workspace", "name": "Shop"},
+                {"_id": "env_base", "_type": "environment", "parentId": "wrk_1", "name": "Base", "data": {"host": "https://shop.test"}},
+                {"_id": "env_dev", "_type": "environment", "parentId": "env_base", "name": "dev", "data": {"host": "http://localhost:8080", "token": "{{ _.secret }}"}},
+                {"_id": "fld_1", "_type": "request_group", "parentId": "wrk_1", "name": "admin",
+                 "authentication": {"type": "bearer", "token": "{{ _.token }}"}},
+                {"_id": "req_1", "_type": "request", "parentId": "fld_1", "name": "stats", "method": "GET",
+                 "url": "{{ _.host }}/stats", "authentication": {}},
+                {"_id": "req_2", "_type": "request", "parentId": "wrk_1", "name": "key", "method": "GET",
+                 "url": "{{ _.host }}/k", "authentication": {"type": "apikey", "key": "X-Key", "value": "v", "addTo": "queryParams"}},
+                {"_id": "req_3", "_type": "request", "parentId": "wrk_1", "name": "off", "method": "GET",
+                 "url": "{{ _.host }}/off", "authentication": {"type": "basic", "username": "u", "password": "p", "disabled": true}}
+            ]}"#,
+        )
+        .expect("JSON");
+        let bundle = parse(&json);
+        assert_eq!(
+            bundle.environment,
+            [("host".to_string(), "https://shop.test".to_string())]
+        );
+        assert_eq!(
+            bundle.environments,
+            [ImportEnvironment {
+                name: "dev".into(),
+                variables: vec![
+                    ("host".into(), "http://localhost:8080".into()),
+                    ("token".into(), "{{secret}}".into())
+                ],
+            }]
+        );
+        let ImportItem::Folder { settings, children, .. } = &bundle.items[0] else {
+            panic!("a folder");
+        };
+        assert_eq!(
+            settings.auth,
+            Auth::Bearer {
+                token: "{{token}}".into()
+            }
+        );
+        let auth = |item: &ImportItem| match item {
+            ImportItem::Api { request, .. } => request.auth.clone(),
+            ImportItem::Folder { .. } => panic!("an API"),
+        };
+        assert_eq!(auth(&children[0]), Auth::Inherit, "an empty one inherits");
+        assert_eq!(
+            auth(&bundle.items[1]),
+            Auth::ApiKey {
+                name: "X-Key".into(),
+                value: "v".into(),
+                place: KeyPlace::Query
+            }
+        );
+        assert_eq!(auth(&bundle.items[2]), Auth::None, "switched off");
     }
 }

@@ -85,6 +85,7 @@ fn format_name(format: Format) -> &'static str {
     match format {
         Format::Curl => "cURL",
         Format::Postman => "Postman",
+        Format::PostmanEnvironment => "Postman environment",
         Format::Insomnia => "Insomnia",
         Format::Swagger => "Swagger 2.0",
         Format::OpenApi => "OpenAPI 3",
@@ -137,6 +138,14 @@ fn describe(text: &str, into: Option<&MergeInto>) -> (Option<Found>, usize) {
             if !bundle.environment.is_empty() {
                 let variables = crate::i18n::counted("import.variable", bundle.environment.len());
                 found += &t!("import.found_variables", variables = variables);
+            }
+            // B4: named environments, and how the project signs in.
+            if !bundle.environments.is_empty() {
+                let environments = crate::i18n::counted("import.environment", bundle.environments.len());
+                found += &t!("import.found_variables", variables = environments);
+            }
+            if bundle.auth.signs() {
+                found += &t!("import.found_auth");
             }
             Ok(found)
         }
