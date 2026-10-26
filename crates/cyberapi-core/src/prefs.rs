@@ -159,6 +159,19 @@ pub struct SendPrefs {
     pub proxy: crate::proxy::ProxyPrefs,
     /// C5: on the desktop, as the proxy.
     pub certificates: crate::certificates::CertificatePrefs,
+    /// D4: how many responses each API keeps; `0` is the default
+    /// ([`crate::response::HISTORY_LIMIT`]). Read by [`Self::history_size`].
+    pub history_size: u32,
+}
+
+impl SendPrefs {
+    /// D4: how many responses each API keeps: the setting, kept to
+    /// [`crate::response::HISTORY_SIZES`], or the default.
+    pub fn history_size(&self) -> usize {
+        use crate::response::{HISTORY_LIMIT, HISTORY_SIZES};
+        let sizes = *HISTORY_SIZES.start() as u32..=*HISTORY_SIZES.end() as u32;
+        within(self.history_size, HISTORY_LIMIT as u32, sizes) as usize
+    }
 }
 
 /// What one API overrides of the settings' sending (#71): each it leaves
@@ -201,6 +214,7 @@ impl RequestSettings {
             http_version: self.http_version.unwrap_or(sending.http_version),
             proxy: sending.proxy.clone(),
             certificates: sending.certificates.clone(),
+            history_size: sending.history_size,
         }
     }
 }

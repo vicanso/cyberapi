@@ -19,9 +19,10 @@ use crate::views::inline_confirm::inline_confirm;
 use crate::views::json_tree::json_view_label;
 use crate::views::server_section::ServerSection;
 use crate::views::update_dialog::open_update_dialog;
-use cyberapi_core::prefs::{HttpVersion, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
+use cyberapi_core::prefs::{AppPrefs, HttpVersion, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
 use cyberapi_core::proxy::{ProxyMode, ProxyPrefs};
 use cyberapi_core::redirect::MAX_REDIRECTS;
+use cyberapi_core::response::{HISTORY_LIMIT, HISTORY_SIZES};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
 use gpui_kit::component::list::ListItem;
@@ -225,6 +226,8 @@ pub struct SettingsView {
     proxy_bypass: Entity<InputState>,
     ui_size: Entity<InputState>,
     editor_size: Entity<InputState>,
+    /// D4: how many responses each API keeps.
+    history_size: Entity<InputState>,
     connect: Entity<InputState>,
     write: Entity<InputState>,
     read: Entity<InputState>,
@@ -391,6 +394,24 @@ impl SettingsView {
             cx,
             &mut subscriptions,
         );
+        // D4.
+        let history_size = Self::size_field(
+            prefs.sending.history_size() as u32,
+            history_sizes(),
+            HISTORY_LIMIT as u32,
+            |prefs| prefs.sending.history_size() as u32,
+            |size, cx| {
+                let app = AppStore::global(cx).state().clone();
+                let sending = SendPrefs {
+                    history_size: size,
+                    ..app.read(cx).prefs().sending.clone()
+                };
+                app.update(cx, |app, cx| app.set_sending(sending, cx));
+            },
+            window,
+            cx,
+            &mut subscriptions,
+        );
 
         // Empty is the default, which the field shows greyed.
         let mut number = |value: u32, default: u32, kind: Number, window: &mut Window, cx: &mut Context<Self>| {
@@ -479,6 +500,7 @@ impl SettingsView {
             proxy_bypass,
             ui_size,
             editor_size,
+            history_size,
             connect,
             write,
             read,
@@ -557,9 +579,7 @@ impl SettingsView {
         state
     }
 
-    /// F14.6: a size in pixels within `sizes`, saved as it is typed or
-    /// stepped once it is one; leaving the field puts what it shows right.
-    /// The default is kept as `0`, so it follows a new default.
+    /// F14.6: a size in pixels within `sizes`, as [`Self::size_field`].
     #[allow(clippy::too_many_arguments)]
     fn text_size(
         value: u32,
@@ -571,6 +591,37 @@ impl SettingsView {
         cx: &mut Context<Self>,
         subscriptions: &mut Vec<Subscription>,
     ) -> Entity<InputState> {
+        Self::size_field(
+            value,
+            sizes,
+            default,
+            move |prefs| current(&prefs.text),
+            move |size, cx| {
+                let app = AppStore::global(cx).state().clone();
+                let mut text = app.read(cx).prefs().text;
+                set(&mut text, size);
+                app.update(cx, |app, cx| app.set_text(text, cx));
+            },
+            window,
+            cx,
+            subscriptions,
+        )
+    }
+
+    /// A number within `sizes`, saved as it is typed or stepped once it is
+    /// one; leaving the field puts what it shows right. The default is
+    /// stored as `0`, so it follows a new default.
+    #[allow(clippy::too_many_arguments)]
+    fn size_field(
+        value: u32,
+        sizes: RangeInclusive<u32>,
+        default: u32,
+        current: impl Fn(&AppPrefs) -> u32 + 'static,
+        store: impl Fn(u32, &mut App) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        subscriptions: &mut Vec<Subscription>,
+    ) -> Entity<InputState> {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(value.to_string())
@@ -578,12 +629,7 @@ impl SettingsView {
                 .min(f64::from(*sizes.start()))
                 .max(f64::from(*sizes.end()))
         });
-        let save = move |size: u32, cx: &mut App| {
-            let app = AppStore::global(cx).state().clone();
-            let mut text = app.read(cx).prefs().text;
-            set(&mut text, if size == default { 0 } else { size });
-            app.update(cx, |app, cx| app.set_text(text, cx));
-        };
+        let save = move |size: u32, cx: &mut App| store(if size == default { 0 } else { size }, cx);
         subscriptions.push(
             cx.subscribe_in(&input, window, move |_, input, event: &InputEvent, window, cx| {
                 let typed = input.read(cx).value().trim().parse::<u32>().ok();
@@ -594,10 +640,10 @@ impl SettingsView {
                         }
                     }
                     InputEvent::Blur | InputEvent::PressEnter { .. } => {
-                        let text = AppStore::global(cx).state().read(cx).prefs().text;
+                        let shown = current(AppStore::global(cx).state().read(cx).prefs());
                         let size = typed
                             .map(|size| size.clamp(*sizes.start(), *sizes.end()))
-                            .unwrap_or(current(&text));
+                            .unwrap_or(shown);
                         if input.read(cx).value().as_ref() != size.to_string() {
                             input.update(cx, |input, cx| input.set_value(size.to_string(), window, cx));
                         }
@@ -896,6 +942,17 @@ impl SettingsView {
             })),
             cx,
         )];
+        // D4: what the history keeps, then clearing it.
+        rows.push(setting_row(
+            t!("settings.history_size").to_string(),
+            Some(size_description(
+                history_sizes(),
+                HISTORY_LIMIT as u32,
+                "settings.history_size_desc",
+            )),
+            NumberInput::new(&self.history_size).small(),
+            cx,
+        ));
         for (clearing, id, label, description, action) in [
             (
                 Clearing::History,
@@ -1128,6 +1185,11 @@ pub(super) fn setting_row(
         // against a long description.
         .child(h_flex().w(rems(14.)).flex_none().justify_end().child(control))
         .into_any_element()
+}
+
+/// D4: the history sizes the settings offer, as the field takes them.
+fn history_sizes() -> RangeInclusive<u32> {
+    *HISTORY_SIZES.start() as u32..=*HISTORY_SIZES.end() as u32
 }
 
 /// The text of a size row: its range and its default.

@@ -340,12 +340,15 @@ async fn a_machines_project_is_uploaded_in_place(cx: &mut TestAppContext) {
         .expect("an API");
     local
         .history()
-        .add(cyberapi_core::response::HttpResponse {
-            api: api.item.id.clone(),
-            collection: mine.id.clone(),
-            status: Some(200),
-            ..Default::default()
-        })
+        .add(
+            cyberapi_core::response::HttpResponse {
+                api: api.item.id.clone(),
+                collection: mine.id.clone(),
+                status: Some(200),
+                ..Default::default()
+            },
+            cyberapi_core::response::HISTORY_LIMIT,
+        )
         .await
         .expect("a response");
     let dashboard = machine.dashboard(cx);

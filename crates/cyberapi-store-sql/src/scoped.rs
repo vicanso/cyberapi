@@ -1450,8 +1450,8 @@ fn response(row: &AnyRow) -> Result<HttpResponse, StoreError> {
 }
 
 impl HistoryStore for Scoped {
-    fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse> {
-        self.run(|this| async move {
+    fn add(&self, response: HttpResponse, keep: usize) -> StoreFuture<HttpResponse> {
+        self.run(move |this| async move {
             let mut tx = this.pool.begin().await.map_err(db)?;
             this.require_api(&mut tx, &response.collection, &response.api).await?;
             let kept = HttpResponse {
@@ -1470,11 +1470,12 @@ impl HistoryStore for Scoped {
                 .execute(&mut *tx)
                 .await
                 .map_err(db)?;
-            // The oldest beyond the limit go.
+            // The oldest beyond the newest `keep` go.
             let oldest_kept = sqlx::query(this.dialect.sql(sql::RESPONSE_OLDEST_KEPT))
                 .bind(this.account())
                 .bind(collection.clone())
                 .bind(api.clone())
+                .bind(keep.max(1) as i64 - 1)
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(db)?;
@@ -1498,6 +1499,23 @@ impl HistoryStore for Scoped {
             let mut conn = this.pool.acquire().await.map_err(db)?;
             this.require_api(&mut conn, &collection, &api).await?;
             this.responses(&mut conn, sql::RESPONSES_OF, &collection, &api).await
+        })
+    }
+
+    fn recent(&self, collection: CollectionId, limit: usize) -> StoreFuture<Vec<HttpResponse>> {
+        self.run(move |this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            sqlx::query(this.dialect.sql(sql::RESPONSES_RECENT))
+                .bind(this.account())
+                .bind(collection.as_str().to_string())
+                .bind(limit as i64)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(db)?
+                .iter()
+                .map(|row| response(row).map(HttpResponse::summary))
+                .collect()
         })
     }
 

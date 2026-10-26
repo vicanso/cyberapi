@@ -34,7 +34,7 @@ use cyberapi_store::{
     StoreFuture, TreeStore, VariableEdit, VariableStore,
 };
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// Where a copy stands against the server.
@@ -87,6 +87,10 @@ struct Shared {
     /// kept while the project is open, and given to the history once a
     /// sync takes their API there (#52).
     waiting: Mutex<Vec<HttpResponse>>,
+    /// D4: how many of an API's the reader keeps, as the last answer was
+    /// kept: what the page keeps of the waiting ones, and what they go to
+    /// the history with.
+    keep: AtomicUsize,
     /// A write finished.
     news: UnboundedSender<()>,
 }
@@ -222,6 +226,7 @@ impl ServerCopy {
             scope,
             local: Mutex::new(local),
             waiting: Mutex::default(),
+            keep: AtomicUsize::new(HISTORY_LIMIT),
             marks: Mutex::new(Marks {
                 base: None,
                 unsynced: false,
@@ -261,8 +266,9 @@ impl ServerCopy {
         Box::pin(async move {
             let waiting: Vec<HttpResponse> = shared.waiting().iter().rev().cloned().collect();
             let mut moved = false;
+            let keep = shared.keep.load(Ordering::Relaxed);
             for response in waiting {
-                match server.history().add(response.clone()).await {
+                match server.history().add(response.clone(), keep).await {
                     Ok(_) => {
                         shared.waiting().retain(|kept| kept.id != response.id);
                         moved = true;
@@ -710,9 +716,10 @@ fn waiting_of(waiting: &[HttpResponse], collection: &CollectionId, api: &ItemId)
 }
 
 impl HistoryStore for CopyHistory {
-    fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse> {
-        let call = self.server.history().add(response.clone());
+    fn add(&self, response: HttpResponse, keep: usize) -> StoreFuture<HttpResponse> {
+        let call = self.server.history().add(response.clone(), keep);
         let shared = self.shared.clone();
+        shared.keep.store(keep, Ordering::Relaxed);
         Box::pin(async move {
             match call.await {
                 Err(error) if unknown_api(&error) => {
@@ -728,7 +735,7 @@ impl HistoryStore for CopyHistory {
                     waiting.retain(|other| {
                         let of_api = other.collection == kept.collection && other.api == kept.api;
                         count += usize::from(of_api);
-                        !of_api || count <= HISTORY_LIMIT
+                        !of_api || count <= keep
                     });
                     Ok(kept)
                 }
@@ -752,7 +759,30 @@ impl HistoryStore for CopyHistory {
             // Synced, and not given to the history yet: both, newest first.
             let mut all: Vec<HttpResponse> = waiting.into_iter().chain(kept).collect();
             all.sort_by_key(|response| std::cmp::Reverse(response.created_at));
-            all.truncate(HISTORY_LIMIT);
+            all.truncate(shared.keep.load(Ordering::Relaxed));
+            Ok(all)
+        })
+    }
+
+    /// D4: the server's and the page's, newest first.
+    fn recent(&self, collection: CollectionId, limit: usize) -> StoreFuture<Vec<HttpResponse>> {
+        let call = self.server.history().recent(collection.clone(), limit);
+        let shared = self.shared.clone();
+        Box::pin(async move {
+            let kept = call.await?;
+            let waiting: Vec<HttpResponse> = shared
+                .waiting()
+                .iter()
+                .filter(|response| response.collection == collection)
+                .cloned()
+                .map(HttpResponse::summary)
+                .collect();
+            if waiting.is_empty() {
+                return Ok(kept);
+            }
+            let mut all: Vec<HttpResponse> = waiting.into_iter().chain(kept).collect();
+            all.sort_by_key(|response| std::cmp::Reverse(response.created_at));
+            all.truncate(limit);
             Ok(all)
         })
     }

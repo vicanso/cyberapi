@@ -54,16 +54,96 @@ enum ResponseTab {
     Wire,
 }
 
-/// A history entry as the menu lists it.
+/// A history entry as the menu lists it, and the project's recent list
+/// (D4).
 #[derive(Clone)]
-struct HistoryRow {
-    id: String,
+pub(super) struct HistoryRow {
+    pub(super) id: String,
     color: Hsla,
     status: String,
     measures: String,
     when: String,
     method: HttpMethod,
     path: String,
+}
+
+impl HistoryRow {
+    /// Its status in its colour, how long it took, how big it was, when.
+    pub(super) fn of(response: &HttpResponse, today: chrono::NaiveDate, cx: &App) -> Self {
+        let (status, color) = match (response.grpc_status(), response.status) {
+            (Some(grpc), _) => (grpc.code.to_string(), grpc_color(&grpc, cx)),
+            (None, Some(code)) => (code.to_string(), status_color(code, cx)),
+            (None, None) => (t!("response.failed").to_string(), cx.theme().danger),
+        };
+        let at = response.created_at.get().with_timezone(&chrono::Local);
+        let when = if at.date_naive() == today {
+            at.format("%H:%M:%S")
+        } else {
+            at.format("%m-%d %H:%M")
+        };
+        // A failure has no size: only how long it took to fail.
+        let measures = match response.status {
+            Some(_) => format!("{} · {}", format_duration(response.latency), body_size(response)),
+            None => format_duration(response.latency),
+        };
+        HistoryRow {
+            id: response.id.clone(),
+            color,
+            status,
+            measures,
+            when: when.to_string(),
+            method: response.request.method,
+            path: response.sent_path(),
+        }
+    }
+
+    /// Two lines: the answer, then what it sent; `name` before the path,
+    /// the API it was of, where that is not plain.
+    pub(super) fn render(&self, name: Option<&str>, width: f32, cx: &App) -> impl IntoElement + use<> {
+        let muted = cx.theme().muted_foreground;
+        v_flex()
+            .w(px(width))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(36.))
+                            .font_semibold()
+                            .text_color(self.color)
+                            .child(self.status.clone()),
+                    )
+                    .child(div().flex_1().child(self.measures.clone()))
+                    .child(div().text_color(muted).child(self.when.clone())),
+            )
+            // What it sent: the method, and where.
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .text_xs()
+                    .child(
+                        div()
+                            .w(px(36.))
+                            .flex_none()
+                            .font_semibold()
+                            .text_color(super::method_color(self.method, cx))
+                            .child(super::method_label(self.method)),
+                    )
+                    .when_some(name.map(str::to_string), |row, name| {
+                        row.child(div().flex_none().max_w(px(width * 0.4)).truncate().child(name))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(muted)
+                            .child(self.path.clone()),
+                    ),
+            )
+    }
 }
 
 /// The scales an image steps through, of its own size (F7.4).
@@ -474,64 +554,15 @@ impl ResponsePanel {
         cx.notify();
     }
 
-    fn status_color(&self, status: u16, cx: &App) -> Hsla {
-        let theme = cx.theme();
-        match status_level(status) {
-            StatusLevel::Success => theme.success,
-            StatusLevel::Redirect => theme.info,
-            StatusLevel::ClientError => theme.warning,
-            StatusLevel::ServerError => theme.danger,
-        }
-    }
-
-    /// A gRPC call's status in its colour: OK green, one the caller can
-    /// mend (an argument, a permission, what is not found) yellow, the
-    /// server's red.
-    fn grpc_color(&self, status: &GrpcStatus, cx: &App) -> Hsla {
-        let theme = cx.theme();
-        match status.code {
-            0 => theme.success,
-            1 | 3 | 5 | 6 | 7 | 9 | 11 | 16 => theme.warning,
-            _ => theme.danger,
-        }
-    }
-
     fn render_summary(&self, response: Option<&HttpResponse>, cx: &mut Context<Self>) -> AnyElement {
         let api = self.api.read(cx);
         let muted = cx.theme().muted_foreground;
         let today = chrono::Local::now().date_naive();
-        // Each answer as a line of the history: its status in its colour,
-        // how long it took, how big it was, when.
+        // Each answer as a line of the history.
         let entries: Vec<HistoryRow> = api
             .responses()
             .iter()
-            .map(|response| {
-                let (status, color) = match (response.grpc_status(), response.status) {
-                    (Some(grpc), _) => (grpc.code.to_string(), self.grpc_color(&grpc, cx)),
-                    (None, Some(code)) => (code.to_string(), self.status_color(code, cx)),
-                    (None, None) => (t!("response.failed").to_string(), cx.theme().danger),
-                };
-                let at = response.created_at.get().with_timezone(&chrono::Local);
-                let when = if at.date_naive() == today {
-                    at.format("%H:%M:%S")
-                } else {
-                    at.format("%m-%d %H:%M")
-                };
-                // A failure has no size: only how long it took to fail.
-                let measures = match response.status {
-                    Some(_) => format!("{} · {}", format_duration(response.latency), body_size(response)),
-                    None => format_duration(response.latency),
-                };
-                HistoryRow {
-                    id: response.id.clone(),
-                    color,
-                    status,
-                    measures,
-                    when: when.to_string(),
-                    method: response.request.method,
-                    path: response.sent_path(),
-                }
-            })
+            .map(|response| HistoryRow::of(response, today, cx))
             .collect();
         let sending = api.sending_since();
         // A1: how many of the API's assertions this answer holds up to.
@@ -550,58 +581,39 @@ impl ResponsePanel {
                 let (this, id) = (this.clone(), row.id.clone());
                 let row = row.clone();
                 menu.item(
-                    PopupMenuItem::element(move |_, cx| {
-                        let muted = cx.theme().muted_foreground;
-                        v_flex()
-                            .w(px(300.))
-                            .child(
-                                h_flex()
-                                    .gap_3()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .w(px(36.))
-                                            .font_semibold()
-                                            .text_color(row.color)
-                                            .child(row.status.clone()),
-                                    )
-                                    .child(div().flex_1().child(row.measures.clone()))
-                                    .child(div().text_color(muted).child(row.when.clone())),
-                            )
-                            // What it sent: the method, and where.
-                            .child(
-                                h_flex()
-                                    .gap_3()
-                                    .items_center()
-                                    .text_xs()
-                                    .child(
-                                        div()
-                                            .w(px(36.))
-                                            .flex_none()
-                                            .font_semibold()
-                                            .text_color(super::method_color(row.method, cx))
-                                            .child(super::method_label(row.method)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_color(muted)
-                                            .child(row.path.clone()),
-                                    ),
-                            )
-                    })
-                    .checked(shown_id.as_deref() == Some(id.as_str()))
-                    .on_click(move |_, _, cx| {
-                        let _ = this.update(cx, |this, cx| {
-                            this.api.update(cx, |api, cx| api.choose_response(&id, cx));
-                        });
-                    }),
+                    PopupMenuItem::element(move |_, cx| row.render(None, 300., cx))
+                        .checked(shown_id.as_deref() == Some(id.as_str()))
+                        .on_click(move |_, _, cx| {
+                            let _ = this.update(cx, |this, cx| {
+                                this.api.update(cx, |api, cx| api.choose_response(&id, cx));
+                            });
+                        }),
                 )
             });
-            let clear = this.clone();
+            let (clear, compare, recent) = (this.clone(), this.clone(), this.clone());
+            let comparable = entries.len() >= 2;
             menu.separator()
+                // D4.
+                .when(comparable, |menu| {
+                    menu.item(
+                        PopupMenuItem::new(t!("compare.open").to_string()).on_click(move |_, window, cx| {
+                            if let Some(this) = compare.upgrade() {
+                                let api = this.read(cx).api.clone();
+                                super::compare_dialog::open_compare_dialog(api, window, cx);
+                            }
+                        }),
+                    )
+                })
+                .item(
+                    PopupMenuItem::new(t!("recent.open").to_string()).on_click(move |_, window, cx| {
+                        let workspace = recent
+                            .upgrade()
+                            .and_then(|this| this.read(cx).api.read(cx).workspace().upgrade());
+                        if let Some(workspace) = workspace {
+                            super::recent_dialog::open_recent_dialog(workspace, window, cx);
+                        }
+                    }),
+                )
                 .item(
                     PopupMenuItem::new(t!("response.clear_history").to_string()).on_click(move |_, _, cx| {
                         let _ = clear.update(cx, |this, cx| this.api.update(cx, |api, cx| api.clear_history(cx)));
@@ -626,7 +638,7 @@ impl ResponsePanel {
                     .when_some(live, |this, (status, ..)| {
                         this.child(pill(
                             format!("{status} {}", status_text(status)),
-                            self.status_color(status, cx),
+                            status_color(status, cx),
                         ))
                     })
                     .child(Spinner::new().small())
@@ -636,8 +648,8 @@ impl ResponsePanel {
             (None, Some(response)) => {
                 // A gRPC call's own status, where it gave one.
                 let shown = match (response.grpc_status(), response.status) {
-                    (Some(grpc), _) => Some((format!("{} {}", grpc.code, grpc.name()), self.grpc_color(&grpc, cx))),
-                    (None, Some(code)) => Some((format!("{code} {}", status_text(code)), self.status_color(code, cx))),
+                    (Some(grpc), _) => Some((format!("{} {}", grpc.code, grpc.name()), grpc_color(&grpc, cx))),
+                    (None, Some(code)) => Some((format!("{code} {}", status_text(code)), status_color(code, cx))),
                     (None, None) => None,
                 };
                 let status = match shown {
@@ -1899,6 +1911,27 @@ fn fill(body: AnyElement) -> AnyElement {
 
 /// F7.2: how big the body is — as it came, or as it was decoded from a
 /// compressed one.
+fn status_color(status: u16, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    match status_level(status) {
+        StatusLevel::Success => theme.success,
+        StatusLevel::Redirect => theme.info,
+        StatusLevel::ClientError => theme.warning,
+        StatusLevel::ServerError => theme.danger,
+    }
+}
+
+/// A gRPC call's status in its colour: OK green, one the caller can mend
+/// (an argument, a permission, what is not found) yellow, the server's red.
+fn grpc_color(status: &GrpcStatus, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    match status.code {
+        0 => theme.success,
+        1 | 3 | 5 | 6 | 7 | 9 | 11 | 16 => theme.warning,
+        _ => theme.danger,
+    }
+}
+
 fn body_size(response: &HttpResponse) -> String {
     match response.compression() {
         Some(_) => format_size(response.body_omitted.unwrap_or(response.body.len() as u64)),

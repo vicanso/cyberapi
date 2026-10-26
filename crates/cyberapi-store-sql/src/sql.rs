@@ -335,9 +335,13 @@ pub const RESPONSES_OF: &str =
     "SELECT doc FROM responses WHERE account = $1 AND collection = $2 AND api = $3 ORDER BY seq DESC";
 pub const RESPONSE_NEWEST: &str =
     "SELECT doc FROM responses WHERE account = $1 AND collection = $2 AND api = $3 ORDER BY seq DESC LIMIT 1";
-/// The oldest response within the limit (`HISTORY_LIMIT - 1` newer ones).
+/// The oldest response kept: `$4` is how many newer ones there are, one
+/// fewer than the reader keeps (D4).
 pub const RESPONSE_OLDEST_KEPT: &str =
-    "SELECT seq FROM responses WHERE account = $1 AND collection = $2 AND api = $3 ORDER BY seq DESC LIMIT 1 OFFSET 9";
+    "SELECT seq FROM responses WHERE account = $1 AND collection = $2 AND api = $3 ORDER BY seq DESC LIMIT 1 OFFSET $4";
+/// D4: the newest `$3` of the project's, of any API.
+pub const RESPONSES_RECENT: &str =
+    "SELECT doc FROM responses WHERE account = $1 AND collection = $2 ORDER BY seq DESC LIMIT $3";
 pub const RESPONSES_TRIM: &str =
     "DELETE FROM responses WHERE account = $1 AND collection = $2 AND api = $3 AND seq < $4";
 pub const RESPONSES_CLEAR: &str = "DELETE FROM responses WHERE account = $1 AND collection = $2 AND api = $3";
@@ -480,6 +484,7 @@ mod tests {
         RESPONSES_OF,
         RESPONSE_NEWEST,
         RESPONSE_OLDEST_KEPT,
+        RESPONSES_RECENT,
         RESPONSES_TRIM,
         RESPONSES_CLEAR,
         RESPONSES_CLEAR_ALL,
@@ -487,12 +492,6 @@ mod tests {
         COOKIE_DELETE,
         COOKIES_CLEAR,
     ];
-
-    #[test]
-    fn the_history_trim_keeps_the_limit() {
-        let offset = cyberapi_core::response::HISTORY_LIMIT - 1;
-        assert!(RESPONSE_OLDEST_KEPT.ends_with(&format!("OFFSET {offset}")));
-    }
 
     fn placeholders(statement: &str) -> Vec<usize> {
         let mut found = Vec::new();

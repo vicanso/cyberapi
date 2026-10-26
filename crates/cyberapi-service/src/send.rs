@@ -271,7 +271,12 @@ pub async fn send_watched(
         },
     };
     // A body too big for the history still shows now, in full (#17).
-    match sender.storage.history().add(response.for_history()).await {
+    match sender
+        .storage
+        .history()
+        .add(response.for_history(), sender.sending.history_size())
+        .await
+    {
         Ok(kept) => Ok(HttpResponse {
             id: kept.id,
             created_at: kept.created_at,

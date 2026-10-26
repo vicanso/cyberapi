@@ -18,7 +18,7 @@ use cyberapi_core::model::{
     VariableCategory,
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
-use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
+use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
@@ -822,7 +822,7 @@ impl State {
 }
 
 impl HistoryStore for MemoryStore {
-    fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse> {
+    fn add(&self, response: HttpResponse, keep: usize) -> StoreFuture<HttpResponse> {
         self.run(move |state, now| {
             state.require_api(&response.collection, &response.api)?;
             let kept = HttpResponse {
@@ -833,7 +833,7 @@ impl HistoryStore for MemoryStore {
             state.responses.push(kept.clone());
             let of_api = |response: &HttpResponse| response.collection == kept.collection && response.api == kept.api;
             let count = state.responses.iter().filter(|response| of_api(response)).count();
-            let mut extra = count.saturating_sub(HISTORY_LIMIT);
+            let mut extra = count.saturating_sub(keep.max(1));
             state.responses.retain(|response| {
                 if extra > 0 && of_api(response) {
                     extra -= 1;
@@ -855,6 +855,21 @@ impl HistoryStore for MemoryStore {
                 .rev()
                 .filter(|response| response.collection == collection && response.api == api)
                 .cloned()
+                .collect())
+        })
+    }
+
+    fn recent(&self, collection: CollectionId, limit: usize) -> StoreFuture<Vec<HttpResponse>> {
+        self.run(move |state, _| {
+            state.collection(&collection)?;
+            Ok(state
+                .responses
+                .iter()
+                .rev()
+                .filter(|response| response.collection == collection)
+                .take(limit)
+                .cloned()
+                .map(HttpResponse::summary)
                 .collect())
         })
     }
@@ -1125,11 +1140,14 @@ mod tests {
                 .expect("api");
             storage
                 .history()
-                .add(HttpResponse {
-                    collection: collection.id.clone(),
-                    api: api.item.id,
-                    ..Default::default()
-                })
+                .add(
+                    HttpResponse {
+                        collection: collection.id.clone(),
+                        api: api.item.id,
+                        ..Default::default()
+                    },
+                    cyberapi_core::response::HISTORY_LIMIT,
+                )
                 .await
                 .expect("history");
             let at = storage.tree().config(collection.id.clone()).await.expect("config");

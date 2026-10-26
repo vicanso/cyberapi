@@ -12,6 +12,7 @@ pub mod code;
 pub mod collection;
 pub mod cookie;
 pub mod curl;
+pub mod diff;
 pub mod digest;
 pub mod directory;
 pub mod environments;

@@ -32,6 +32,7 @@ use cyberapi_core::model::{
     VariableCategory,
 };
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
+use cyberapi_core::response::{HttpResponse, RECENT_LIMIT};
 use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, Step};
 use cyberapi_core::template::Answers;
 use cyberapi_core::template_hints;
@@ -159,6 +160,9 @@ pub struct WorkspaceState {
     schemas: HashMap<String, Arc<Schema>>,
     /// gRPC definitions by the address as the APIs write it, the same way.
     grpc: HashMap<String, Arc<GrpcDefinitions>>,
+    /// D4: the project's newest responses, as last read for its recent
+    /// list; `None` while they are read.
+    recent: Option<Result<Vec<Arc<HttpResponse>>, StoreError>>,
     /// A server project's working copy; `None` for a project of this
     /// machine's, whose changes are written at once.
     copy: Option<CopyState>,
@@ -245,6 +249,7 @@ impl WorkspaceState {
             answers: HashMap::new(),
             schemas: HashMap::new(),
             grpc: HashMap::new(),
+            recent: None,
             copy,
             _poll: poll.filter(|_| !is_copy).map(|every| Self::poll(every, cx)),
             _filter_save: None,
@@ -781,6 +786,49 @@ impl WorkspaceState {
     /// The selected API's editor.
     pub fn api(&self) -> Option<&Entity<ApiState>> {
         self.api.as_ref()
+    }
+
+    /// D4: reads the project's newest responses again, for its recent list.
+    pub fn load_recent(&mut self, cx: &mut Context<Self>) {
+        self.recent = None;
+        let call = self
+            .sender
+            .storage
+            .history()
+            .recent(self.collection.id.clone(), RECENT_LIMIT);
+        run_store(cx, call, |this, result, cx| {
+            this.recent = Some(result.map(|responses| responses.into_iter().map(Arc::new).collect()));
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// D4: the project's newest responses, newest first, as last read;
+    /// `None` while they are read.
+    pub fn recent(&self) -> Option<&Result<Vec<Arc<HttpResponse>>, StoreError>> {
+        self.recent.as_ref()
+    }
+
+    /// D4: a response of the recent list: its API selected, the response
+    /// shown and its request put back, as choosing it in the API's history
+    /// does (F7.10). One of an API that is gone does nothing.
+    pub fn open_response(&mut self, api: &ItemId, response: &str, cx: &mut Context<Self>) {
+        if !self.data.apis.iter().any(|found| &found.id == api) {
+            return;
+        }
+        self.select(api, cx);
+        if let Some(state) = &self.api {
+            state.update(cx, |state, cx| state.show_response(response.to_string(), cx));
+        }
+    }
+
+    /// An API's name, for a list of responses.
+    pub fn api_name(&self, api: &ItemId) -> Option<&str> {
+        self.data
+            .apis
+            .iter()
+            .find(|found| &found.id == api)
+            .map(|found| found.name.as_str())
     }
 
     /// F4.4: the enabled environment variables, by name, as the reader's
@@ -2051,7 +2099,7 @@ mod tests {
         };
         storage
             .history()
-            .add(answer(r#"{"token": "t-1"}"#))
+            .add(answer(r#"{"token": "t-1"}"#), cyberapi_core::response::HISTORY_LIMIT)
             .await
             .expect("kept");
 
@@ -2064,7 +2112,7 @@ mod tests {
         // Kept: a newer answer is not read until the API is said to have one.
         storage
             .history()
-            .add(answer(r#"{"token": "t-2"}"#))
+            .add(answer(r#"{"token": "t-2"}"#), cyberapi_core::response::HISTORY_LIMIT)
             .await
             .expect("kept");
         assert_eq!(read(&state, cx).await, token("t-1"));
@@ -2072,7 +2120,11 @@ mod tests {
         assert_eq!(read(&state, cx).await, token("t-2"));
 
         // Not JSON: nothing to offer.
-        storage.history().add(answer("plain text")).await.expect("kept");
+        storage
+            .history()
+            .add(answer("plain text"), cyberapi_core::response::HISTORY_LIMIT)
+            .await
+            .expect("kept");
         state.update(cx, |state, _| state.forget_answer(&login));
         assert_eq!(read(&state, cx).await, None);
     }
@@ -3093,6 +3145,69 @@ mod tests {
         api.update(cx, |api, cx| api.clear_history(cx));
         cx.run_until_parked();
         assert!(api.read_with(cx, |api, _| api.shown_response().is_none()));
+    }
+
+    /// D4: the project's newest responses, any API's; one picked opens its
+    /// API and is shown there, its request put back.
+    #[gpui_kit::test]
+    async fn the_recent_list_opens_a_response_where_it_was(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_api(None, "a".into(), cx));
+        state.update(cx, |state, cx| state.create_api(None, "b".into(), cx));
+        cx.run_until_parked();
+        let (a, b) = (find(&state, "a", cx), find(&state, "b", cx));
+        let mut kept = Vec::new();
+        for (api, uri) in [
+            (&a, "http://a.test/1"),
+            (&a, "http://a.test/2"),
+            (&b, "http://b.test/1"),
+        ] {
+            let response = HttpResponse {
+                collection: collection.id.clone(),
+                api: api.clone(),
+                request: HttpRequest {
+                    uri: uri.into(),
+                    ..Default::default()
+                },
+                status: Some(200),
+                body: b"{}".to_vec(),
+                ..Default::default()
+            };
+            kept.push(
+                storage
+                    .history()
+                    .add(response, cyberapi_core::response::HISTORY_LIMIT)
+                    .await
+                    .expect("kept"),
+            );
+        }
+        state.update(cx, |state, cx| state.load_recent(cx));
+        assert!(state.read_with(cx, |state, _| state.recent().is_none()), "being read");
+        cx.run_until_parked();
+        let listed: Vec<String> = state.read_with(cx, |state, _| match state.recent() {
+            Some(Ok(responses)) => responses.iter().map(|response| response.id.clone()).collect(),
+            other => panic!("read: {other:?}"),
+        });
+        assert_eq!(listed, [kept[2].id.as_str(), kept[1].id.as_str(), kept[0].id.as_str()]);
+        assert_eq!(
+            state.read_with(cx, |state, _| state.api_name(&a).map(str::to_string)),
+            Some("a".into())
+        );
+
+        // `b` is open; the oldest of `a` is picked.
+        state.update(cx, |state, cx| state.open_response(&a, &kept[0].id, cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        api.read_with(cx, |api, _| {
+            assert_eq!(api.api(), &a);
+            assert_eq!(
+                api.shown_response().map(|shown| shown.id.clone()),
+                Some(kept[0].id.clone())
+            );
+            assert_eq!(api.request().uri, "http://a.test/1");
+        });
     }
 
     #[gpui_kit::test]

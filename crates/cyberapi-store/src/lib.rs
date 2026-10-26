@@ -196,16 +196,20 @@ pub trait TreeStore: Send + Sync {
     fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64>;
 }
 
-/// The responses each API keeps (F7.9 – F7.11): the newest
-/// `cyberapi_core::response::HISTORY_LIMIT`, newest first. A reader's own,
-/// like their prefs — in the browser build every account keeps its own — and
+/// The responses each API keeps (F7.9 – F7.11): the newest, newest first,
+/// as many as the reader's setting says (D4,
+/// `cyberapi_core::prefs::SendPrefs::history_size`). A reader's own, like
+/// their prefs — in the browser build every account keeps its own — and
 /// not a change to the project: it moves neither `updated_at` nor the
 /// revision.
 pub trait HistoryStore: Send + Sync {
     /// Keeps a response of `response.api` in `response.collection`, giving it
-    /// an id and the time; the oldest beyond the limit go.
-    fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse>;
+    /// an id and the time; the API's oldest beyond the newest `keep` go.
+    fn add(&self, response: HttpResponse, keep: usize) -> StoreFuture<HttpResponse>;
     fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>>;
+    /// D4: the newest `limit` responses of any of the project's APIs, newest
+    /// first, as a list shows them (`HttpResponse::summary`: no bodies).
+    fn recent(&self, collection: CollectionId, limit: usize) -> StoreFuture<Vec<HttpResponse>>;
     /// The newest response of each of `apis` that has one, in no particular
     /// order; an id that is not one of the project's APIs is skipped. For the
     /// `get` template function (M6).

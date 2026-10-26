@@ -976,6 +976,17 @@ fn project_menu(
     } else {
         menu
     };
+    // D4: anyone sends, so anyone has a history.
+    let for_recent = state.clone();
+    let menu = menu.item(
+        PopupMenuItem::new(t!("recent.open").to_string())
+            .icon(Icons::Clock)
+            .on_click(move |_, window, cx| {
+                if let Some(state) = for_recent.upgrade() {
+                    super::recent_dialog::open_recent_dialog(state, window, cx);
+                }
+            }),
+    );
     // F11.1: a viewer may export too.
     export_menu(menu, t!("export.project").to_string(), &for_export, None, window, cx)
 }

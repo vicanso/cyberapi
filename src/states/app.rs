@@ -918,12 +918,15 @@ mod tests {
             .expect("an API")
             .item
             .id;
-        pollster::block_on(storage.history().add(HttpResponse {
-            collection: shop.id.clone(),
-            api: api.clone(),
-            status: Some(200),
-            ..Default::default()
-        }))
+        pollster::block_on(storage.history().add(
+            HttpResponse {
+                collection: shop.id.clone(),
+                api: api.clone(),
+                status: Some(200),
+                ..Default::default()
+            },
+            cyberapi_core::response::HISTORY_LIMIT,
+        ))
         .expect("a response");
         let pinned = WorkspacePrefs {
             pinned: vec![api.clone()],

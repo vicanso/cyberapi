@@ -58,6 +58,8 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     workspace_prefs_are_per_collection(storage).await;
     history_keeps_the_newest(storage, probe).await;
     history_is_only_of_the_projects_apis(storage).await;
+    history_keeps_as_many_as_asked(storage).await;
+    recent_history_is_the_projects_newest(storage).await;
     cookies_are_kept_by_key(storage).await;
     imports_get_new_ids_at_the_end(storage).await;
     the_readers_state_clears(storage).await;
@@ -282,7 +284,7 @@ async fn deleting_a_collection_takes_its_content(storage: &Storage, probe: &dyn 
         .expect("set workspace prefs");
     storage
         .history()
-        .add(response(&doomed, &login.item.id, 0))
+        .add(response(&doomed, &login.item.id, 0), HISTORY_LIMIT)
         .await
         .expect("add a response");
     let tree = storage.tree();
@@ -1361,7 +1363,7 @@ async fn history_keeps_the_newest(storage: &Storage, probe: &dyn Probe) {
     let mut added = Vec::new();
     for n in 0..HISTORY_LIMIT + 2 {
         let kept = history
-            .add(response(&collection, &login.item.id, n))
+            .add(response(&collection, &login.item.id, n), HISTORY_LIMIT)
             .await
             .expect("add");
         assert!(!kept.id.is_empty(), "the store gives the id");
@@ -1381,7 +1383,7 @@ async fn history_keeps_the_newest(storage: &Storage, probe: &dyn Probe) {
     ids.dedup();
     assert_eq!(ids.len(), added.len(), "every response has its own id");
     let other_kept = history
-        .add(response(&collection, &other.item.id, 99))
+        .add(response(&collection, &other.item.id, 99), HISTORY_LIMIT)
         .await
         .expect("add");
 
@@ -1444,6 +1446,92 @@ async fn history_keeps_the_newest(storage: &Storage, probe: &dyn Probe) {
     not_found(history.list(collection.id, other.item.id).await, Entity::Api);
 }
 
+/// D4: an API keeps as many as the reader's setting says, which can
+/// change: fewer cuts the oldest at the next response, more keeps them.
+async fn history_keeps_as_many_as_asked(storage: &Storage) {
+    // Within what the settings offer (`HISTORY_SIZES`): the bridge keeps an
+    // account to them.
+    let collection = new_collection(storage, "history kept").await;
+    let login = api(storage, &collection, None, "login").await;
+    let history = storage.history();
+    let mut added = Vec::new();
+    for n in 0..8 {
+        added.push(
+            history
+                .add(response(&collection, &login.item.id, n), 6)
+                .await
+                .expect("add"),
+        );
+    }
+    let listed = || history.list(collection.id.clone(), login.item.id.clone());
+    fn newest(added: &[HttpResponse], count: usize) -> Vec<HttpResponse> {
+        added.iter().rev().take(count).cloned().collect()
+    }
+    assert_eq!(listed().await.expect("list"), newest(&added, 6), "six of eight");
+    added.push(
+        history
+            .add(response(&collection, &login.item.id, 8), 8)
+            .await
+            .expect("add"),
+    );
+    assert_eq!(
+        listed().await.expect("list").len(),
+        7,
+        "more kept from now on; none back"
+    );
+    added.push(
+        history
+            .add(response(&collection, &login.item.id, 9), 5)
+            .await
+            .expect("add"),
+    );
+    assert_eq!(listed().await.expect("list"), newest(&added, 5), "fewer: the oldest go");
+}
+
+/// D4: a project's newest responses, of any of its APIs, newest first,
+/// as a list shows them: no bodies. Another project's are not among them.
+async fn recent_history_is_the_projects_newest(storage: &Storage) {
+    let collection = new_collection(storage, "recent").await;
+    let elsewhere = new_collection(storage, "recent elsewhere").await;
+    let login = api(storage, &collection, None, "login").await;
+    let users = api(storage, &collection, None, "users").await;
+    let theirs = api(storage, &elsewhere, None, "theirs").await;
+    let history = storage.history();
+    let mut ours = Vec::new();
+    for n in 0..6 {
+        let api = if n % 2 == 0 { &login } else { &users };
+        ours.push(
+            history
+                .add(response(&collection, &api.item.id, n), HISTORY_LIMIT)
+                .await
+                .expect("add"),
+        );
+        history
+            .add(response(&elsewhere, &theirs.item.id, n), HISTORY_LIMIT)
+            .await
+            .expect("add");
+    }
+    let summaries = |count: usize| -> Vec<HttpResponse> {
+        ours.iter()
+            .rev()
+            .take(count)
+            .cloned()
+            .map(HttpResponse::summary)
+            .collect()
+    };
+    assert_eq!(
+        history.recent(collection.id.clone(), 4).await.expect("recent"),
+        summaries(4),
+        "the newest four, of both APIs, without their bodies"
+    );
+    assert_eq!(
+        history.recent(collection.id.clone(), 50).await.expect("recent"),
+        summaries(6),
+        "all there are"
+    );
+    not_found(history.recent(CollectionId::new(MISSING), 4).await, Entity::Collection);
+}
+
 /// A response belongs to one of the project's APIs: not another project's,
 /// not a folder.
 async fn history_is_only_of_the_projects_apis(storage: &Storage) {
@@ -1455,18 +1543,28 @@ async fn history_is_only_of_the_projects_apis(storage: &Storage) {
 
     not_found(
         history
-            .add(HttpResponse {
-                collection: CollectionId::new(MISSING),
-                ..response(&collection, &theirs.item.id, 1)
-            })
+            .add(
+                HttpResponse {
+                    collection: CollectionId::new(MISSING),
+                    ..response(&collection, &theirs.item.id, 1)
+                },
+                HISTORY_LIMIT,
+            )
             .await,
         Entity::Collection,
     );
     not_found(
-        history.add(response(&collection, &theirs.item.id, 1)).await,
+        history
+            .add(response(&collection, &theirs.item.id, 1), HISTORY_LIMIT)
+            .await,
         Entity::Api,
     );
-    not_found(history.add(response(&collection, &users.item.id, 1)).await, Entity::Api);
+    not_found(
+        history
+            .add(response(&collection, &users.item.id, 1), HISTORY_LIMIT)
+            .await,
+        Entity::Api,
+    );
     not_found(
         history.list(collection.id.clone(), theirs.item.id.clone()).await,
         Entity::Api,
@@ -1708,8 +1806,14 @@ async fn the_readers_state_clears(storage: &Storage) {
         api(storage, &second, None, "b").await,
     );
     let history = storage.history();
-    history.add(response(&first, &a.item.id, 1)).await.expect("add");
-    history.add(response(&second, &b.item.id, 2)).await.expect("add");
+    history
+        .add(response(&first, &a.item.id, 1), HISTORY_LIMIT)
+        .await
+        .expect("add");
+    history
+        .add(response(&second, &b.item.id, 2), HISTORY_LIMIT)
+        .await
+        .expect("add");
     let pinned = WorkspacePrefs {
         pinned: vec![a.item.id.clone()],
         selected: Some(a.item.id.clone()),
@@ -1779,7 +1883,7 @@ pub async fn backup(storage: &Storage, backups: &dyn crate::BackupStore) {
         .expect("a variable");
     storage
         .history()
-        .add(response(&kept, &login.item.id, 1))
+        .add(response(&kept, &login.item.id, 1), HISTORY_LIMIT)
         .await
         .expect("a response");
     // What the folder and the project set (#66) is backed up with them.
@@ -1949,11 +2053,11 @@ async fn configs_replace_at_their_base(storage: &Storage) {
         .expect("create a variable");
     let history = storage.history();
     history
-        .add(response(&collection, &login.item.id, 1))
+        .add(response(&collection, &login.item.id, 1), HISTORY_LIMIT)
         .await
         .expect("history");
     history
-        .add(response(&collection, &gone.item.id, 2))
+        .add(response(&collection, &gone.item.id, 2), HISTORY_LIMIT)
         .await
         .expect("history");
     let read = storage.tree().config(collection.id.clone()).await.expect("config");
@@ -2209,7 +2313,11 @@ pub async fn copies(storage: &Storage, copies: &dyn crate::ServerCopyStore) {
 
     // Kept again: what goes, goes with its history; what stays keeps it.
     for id in [&login.item.id, &logout.item.id] {
-        storage.history().add(response(&copy, id, 1)).await.expect("a response");
+        storage
+            .history()
+            .add(response(&copy, id, 1), HISTORY_LIMIT)
+            .await
+            .expect("a response");
     }
     let mut fewer = config.clone();
     fewer.apis.retain(|api| api.id != logout.item.id);

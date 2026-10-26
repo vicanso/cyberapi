@@ -24,7 +24,7 @@ use cyberapi_core::model::{
     VariableCategory, legacy as columns,
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
-use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
+use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
@@ -1430,7 +1430,7 @@ fn response(row: &Row) -> Result<HttpResponse, StoreError> {
 }
 
 impl HistoryStore for TursoStore {
-    fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse> {
+    fn add(&self, response: HttpResponse, keep: usize) -> StoreFuture<HttpResponse> {
         self.run(move |inner, now| async move {
             let mut conn = inner.conn.lock().await;
             let tx = conn.transaction().await.map_err(backend)?;
@@ -1453,13 +1453,13 @@ impl HistoryStore for TursoStore {
                 ),
             )
             .await?;
-            // The oldest beyond the limit go.
+            // The oldest beyond the newest `keep` go.
             let oldest_kept = query_one(
                 &tx,
                 &format!(
                     "SELECT rowid FROM responses WHERE collection = ?1 AND api = ?2
                      ORDER BY rowid DESC LIMIT 1 OFFSET {}",
-                    HISTORY_LIMIT - 1
+                    keep.max(1) - 1
                 ),
                 (collection, api),
                 |row| rows::text(row, 0),
@@ -1491,6 +1491,23 @@ impl HistoryStore for TursoStore {
             .await?
             .into_iter()
             .collect()
+        })
+    }
+
+    fn recent(&self, collection: CollectionId, limit: usize) -> StoreFuture<Vec<HttpResponse>> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            require_collection(&conn, &collection).await?;
+            let responses: Result<Vec<HttpResponse>, StoreError> = query_all(
+                &conn,
+                "SELECT doc FROM responses WHERE collection = ?1 ORDER BY rowid DESC LIMIT ?2",
+                (collection.as_str(), limit as i64),
+                response,
+            )
+            .await?
+            .into_iter()
+            .collect();
+            Ok(responses?.into_iter().map(HttpResponse::summary).collect())
         })
     }
 

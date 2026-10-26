@@ -6,7 +6,7 @@ use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::directory::{MCP_TOKEN_PREFIX, NewMcpToken, TeamPlace};
 use cyberapi_core::model::{HttpRequest, ProjectSettings, VariableCategory};
 use cyberapi_core::prefs::{AppPrefs, ThemeMode, WorkspacePrefs};
-use cyberapi_core::response::HttpResponse;
+use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::{AccountId, CollectionId};
 use cyberapi_store::{AccountEdit, CollectionEdit, Entity, NewCollection, NewVariable, Refusal, Storage, StoreError};
 use cyberapi_store_sql::{Acceptance, NewAccount, SqlStore};
@@ -219,10 +219,13 @@ async fn rules(variable: &str) {
     };
     let kept = carol
         .history()
-        .add(answered.clone())
+        .add(answered.clone(), HISTORY_LIMIT)
         .await
         .expect("a viewer keeps her responses");
-    bob.history().add(answered).await.expect("so does an editor");
+    bob.history()
+        .add(answered, HISTORY_LIMIT)
+        .await
+        .expect("so does an editor");
     assert_eq!(
         carol
             .history()

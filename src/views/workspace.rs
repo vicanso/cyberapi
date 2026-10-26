@@ -4,12 +4,14 @@
 
 mod assertions_editor;
 mod auth_editor;
+mod compare_dialog;
 mod event_stream;
 mod import_dialog;
 mod move_dialog;
 mod pins;
 mod project_title;
 mod prompt_dialog;
+mod recent_dialog;
 mod request_editor;
 mod request_settings;
 mod response_panel;

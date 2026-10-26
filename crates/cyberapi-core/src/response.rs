@@ -8,10 +8,17 @@ use crate::redirect;
 use crate::send::base64_bytes;
 use crate::{CollectionId, ItemId, Timestamp};
 use serde::{Deserialize, Serialize};
+use std::ops::RangeInclusive;
 use std::time::Duration;
 
-/// How many responses an API keeps, newest first (F7.9).
+/// How many responses an API keeps, newest first (F7.9), when the settings
+/// do not say (D4).
 pub const HISTORY_LIMIT: usize = 10;
+/// D4: what the settings may keep of each API's. A store is asked for one
+/// of these; the bridge keeps an account's request to them.
+pub const HISTORY_SIZES: RangeInclusive<usize> = 5..=100;
+/// D4: how many of a project's newest responses its recent list shows.
+pub const RECENT_LIMIT: usize = 50;
 /// The biggest body an API's history keeps (#17). A bigger one shows when it
 /// arrives; the history keeps only its size.
 pub const HISTORY_BODY_LIMIT: usize = 2 * 1024 * 1024;
@@ -547,6 +554,17 @@ impl HttpResponse {
 
     /// What the history keeps of this response: all of it, or, for a body
     /// over [`HISTORY_BODY_LIMIT`], everything but the body (#17).
+    /// D4: this entry as a list of them shows it: its body, what it sent
+    /// and the times its stream came at left out, its size kept.
+    pub fn summary(self) -> HttpResponse {
+        HttpResponse {
+            body: Vec::new(),
+            sent: None,
+            stream: None,
+            ..self
+        }
+    }
+
     pub fn for_history(&self) -> HttpResponse {
         if self.body.len() <= HISTORY_BODY_LIMIT {
             return self.clone();

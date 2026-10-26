@@ -34,7 +34,7 @@ use cyberapi_core::model::{
     VariableCategory,
 };
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
-use cyberapi_core::response::HttpResponse;
+use cyberapi_core::response::{HISTORY_LIMIT, HISTORY_SIZES, HttpResponse, RECENT_LIMIT};
 use cyberapi_core::response::{StreamEnd, StreamInfo};
 use cyberapi_core::sync::{ConfigAt, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
@@ -114,6 +114,10 @@ impl StreamReply {
 pub enum SendReply {
     Ok(Box<Exchange>),
     Err(SendError),
+}
+
+fn history_limit() -> usize {
+    HISTORY_LIMIT
 }
 
 /// One Store trait method and its arguments.
@@ -240,6 +244,10 @@ pub enum Call {
     HistoryAdd {
         // Boxed: a response is far bigger than any other call.
         response: Box<HttpResponse>,
+        /// D4: how many the API keeps. A page from before sends none: the
+        /// default.
+        #[serde(default = "history_limit")]
+        keep: usize,
     },
     HistoryList {
         collection: CollectionId,
@@ -248,6 +256,10 @@ pub enum Call {
     HistoryLatest {
         collection: CollectionId,
         apis: Vec<ItemId>,
+    },
+    HistoryRecent {
+        collection: CollectionId,
+        limit: usize,
     },
     HistoryClear {
         collection: CollectionId,
@@ -366,6 +378,7 @@ impl Call {
             | Self::HistoryAdd { .. }
             | Self::HistoryList { .. }
             | Self::HistoryLatest { .. }
+            | Self::HistoryRecent { .. }
             | Self::HistoryClear { .. }
             | Self::HistoryClearAll
             | Self::CookiesList
@@ -486,9 +499,14 @@ pub async fn dispatch(storage: &Storage, directory: &dyn DirectoryStore, call: C
             prefs: value,
         } => reply(prefs.set_workspace(collection, value).await),
         Call::PrefsClearWorkspaces => reply(prefs.clear_workspaces().await),
-        Call::HistoryAdd { response } => reply(history.add(*response).await),
+        // D4: an account keeps no more than the settings offer.
+        Call::HistoryAdd { response, keep } => {
+            let keep = keep.clamp(*HISTORY_SIZES.start(), *HISTORY_SIZES.end());
+            reply(history.add(*response, keep).await)
+        }
         Call::HistoryList { collection, api } => reply(history.list(collection, api).await),
         Call::HistoryLatest { collection, apis } => reply(history.latest(collection, apis).await),
+        Call::HistoryRecent { collection, limit } => reply(history.recent(collection, limit.min(RECENT_LIMIT)).await),
         Call::HistoryClear { collection, api } => reply(history.clear(collection, api).await),
         Call::HistoryClearAll => reply(history.clear_all().await),
         Call::CookiesList => reply(cookies.list().await),
@@ -850,10 +868,14 @@ impl PrefStore for BridgeStore {
 }
 
 impl HistoryStore for BridgeStore {
-    fn add(&self, response: HttpResponse) -> StoreFuture<HttpResponse> {
+    fn add(&self, response: HttpResponse, keep: usize) -> StoreFuture<HttpResponse> {
         self.call(Call::HistoryAdd {
             response: Box::new(response),
+            keep,
         })
+    }
+    fn recent(&self, collection: CollectionId, limit: usize) -> StoreFuture<Vec<HttpResponse>> {
+        self.call(Call::HistoryRecent { collection, limit })
     }
     fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
         self.call(Call::HistoryList { collection, api })
@@ -1097,6 +1119,13 @@ mod tests {
             serde_json::to_string(&Call::CollectionsList).expect("serialize"),
             r#"{"call":"collectionsList"}"#
         );
+    }
+
+    /// D4: a page from before says nothing of how many to keep: the default.
+    #[test]
+    fn a_response_kept_without_a_count_keeps_the_default() {
+        let call: Call = serde_json::from_str(r#"{"call":"historyAdd","args":{"response":{"id":""}}}"#).expect("parse");
+        assert!(matches!(call, Call::HistoryAdd { keep, .. } if keep == HISTORY_LIMIT));
     }
 
     #[test]

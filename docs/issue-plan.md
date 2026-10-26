@@ -167,7 +167,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | B1 | 导出 OpenAPI 3.0（YAML）：地址前缀变量的值或主机成为 servers，`{{id}}` 路径段成为路径参数，Query / 请求头带示例，请求体带示例和推断的 schema，目录路径成为 tag，认证成为 securitySchemes（不写值） | 已完成 |
 | B5 | 导入 HAR（每个调用一个接口，跳过页面资源、非 HTTP 地址和重复的，多个主机时各一个目录）、Hoppscotch 集合 / 全部导出 / 环境（`<<var>>` 换成 `{{var}}`）、Bruno 单个 `.bru` 请求或环境文件、OpenCollection YAML（整份导出或单个请求；环境成为命名环境）；各层认证照 B4；`{{process.env.X}}` 换成 `{{env(X)}}` | 已完成 |
 | B6 | 复制为代码加 Node axios、PHP Guzzle、Rust reqwest（blocking）、Java HttpClient、C# HttpClient、Swift URLSession；菜单分三组（命令行、脚本、编译型），cURL 仍在第一个；跟随重定向、不校验证书照设置写，Digest 在 Guzzle、.NET、URLSession 里写成库自己的应答，其余写一行注释。axios、reqwest、URLSession 的代码对本地服务器实际跑过 | 已完成 |
-| D4 | 历史：保留条数可设、项目的最近发送、两条历史对比 | |
+| D4 | 历史：每个接口保留的条数在设置的“数据”里改（5–100，默认 10，`SendPrefs.history_size`；`HistoryStore::add` 带上条数，bridge 限在这个范围里，旧页面不带时按 10）；项目的“最近发送”（`HistoryStore::recent`，最近 50 条、不带响应体；树面板的项目菜单和响应区的历史菜单里打开，点一条打开接口并显示那条响应）；“对比两条响应”按行对比响应体（`cyberapi_core::diff`，JSON 先缩进，未变的折叠，过长时只比前 20000 行） | 已完成 |
 | A3 + A2 | 运行器，运行中提取变量 | |
 | A4 | `cyberapi run` 命令行 | |
 | F2 | 命令面板 | |

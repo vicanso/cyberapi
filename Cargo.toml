@@ -90,6 +90,9 @@ serde-saphyr = "2.0.0"
 jsonpath-rust = "1.0.12"
 # A1's "matches" assertions: pure Rust, already under jsonpath-rust.
 regex = "1.13.1"
+# D4's comparison of two responses. Pure Rust, already in the tree; given no
+# timeout it reads no clock, which a page has not.
+similar = { version = "2.7.0", default-features = false, features = ["text"] }
 sha2 = "0.11.1"
 rust-i18n = "4.2.4"
 snafu = "0.9.2"

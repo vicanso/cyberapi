@@ -35,7 +35,7 @@ use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody, ReplyReader};
 use cyberapi_core::model::{ApiSetting, ContentType, HttpMethod, HttpRequest, KvParam};
 use cyberapi_core::prefs::RequestSettings;
-use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
+use cyberapi_core::response::HttpResponse;
 use cyberapi_core::send::PrepareError;
 use cyberapi_core::sse;
 use cyberapi_core::template::{Answers, TemplateError};
@@ -221,6 +221,9 @@ pub struct ApiState {
     history: Load,
     /// The response the panel shows: the newest unless one was chosen.
     shown: Option<String>,
+    /// D4: one asked for from the project's recent list before the history
+    /// was read: chosen once it is.
+    wanted: Option<String>,
     /// A GraphQL endpoint's schema being asked for.
     asking_schema: Option<Task<()>>,
     /// gRPC definitions being loaded.
@@ -281,6 +284,7 @@ impl ApiState {
             responses: Vec::new(),
             history: Load::Loading,
             shown: None,
+            wanted: None,
             asking_schema: None,
             loading_grpc: None,
             own_grpc: RefCell::new(None),
@@ -293,6 +297,11 @@ impl ApiState {
 
     pub fn api(&self) -> &ItemId {
         &self.api
+    }
+
+    /// The project it is of, for what lists the project's (D4).
+    pub fn workspace(&self) -> &WeakEntity<WorkspaceState> {
+        &self.workspace
     }
 
     /// Whether the editor holds a change the store has not had.
@@ -357,6 +366,9 @@ impl ApiState {
                 Ok(responses) => {
                     this.responses = responses.into_iter().map(Arc::new).collect();
                     this.history = Load::Loaded;
+                    if let Some(id) = this.wanted.take() {
+                        this.choose_response(&id, cx);
+                    }
                     // One chosen that is gone (kept again under a new id)
                     // gives way to the newest.
                     if this
@@ -688,7 +700,7 @@ impl ApiState {
                     self.save(response.file_name(), response.body.clone(), cx);
                 }
                 self.responses.insert(0, Arc::new(response));
-                self.responses.truncate(HISTORY_LIMIT);
+                self.responses.truncate(self.sender.sending.history_size());
                 self.shown = None;
                 // What a `get` path's fields were read from is not the last.
                 let api = self.api.clone();
@@ -729,6 +741,20 @@ impl ApiState {
             let _ = this.update(cx, |_, cx| cx.emit(event));
         })
         .detach();
+    }
+
+    /// D4: a response from the project's recent list, chosen as one from
+    /// the API's history is — now, or once the history is read.
+    pub fn show_response(&mut self, id: String, cx: &mut Context<Self>) {
+        match self.history {
+            Load::Loading => self.wanted = Some(id),
+            _ => self.choose_response(&id, cx),
+        }
+    }
+
+    /// D4: two responses of the history, by id, to compare.
+    pub fn response(&self, id: &str) -> Option<Arc<HttpResponse>> {
+        self.responses.iter().find(|response| response.id == id).cloned()
     }
 
     /// F7.10: shows a response of the history and puts its request back in
