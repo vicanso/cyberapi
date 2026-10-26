@@ -195,6 +195,8 @@ fn operation(
     let mut request = HttpRequest {
         method: HttpMethod::parse_lenient(method),
         uri: format!("{prefix}{path}"),
+        // F3.
+        description: text(op, "description").trim().to_string(),
         ..Default::default()
     };
     let parameters: Vec<&Value> = shared

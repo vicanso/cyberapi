@@ -573,6 +573,8 @@ impl ResponsePanel {
             .live()
             .map(|live| (live.status, live.events.len(), live.body.len(), live.stopping));
         let shown_id = response.map(|r| r.id.clone());
+        // F3: a viewer's examples would be kept nowhere.
+        let editable = api.editable();
         let this = cx.entity().downgrade();
         let history_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             // F7.10: picking one also puts its request back (#68).
@@ -591,8 +593,20 @@ impl ResponsePanel {
                 )
             });
             let (clear, compare, recent) = (this.clone(), this.clone(), this.clone());
+            let example = this.clone();
             let comparable = entries.len() >= 2;
             menu.separator()
+                // F3: the response shown, kept with the API.
+                .when(editable && shown_id.is_some(), |menu| {
+                    menu.item(
+                        PopupMenuItem::new(t!("docs.keep_example").to_string()).on_click(move |_, window, cx| {
+                            if let Some(this) = example.upgrade() {
+                                let api = this.read(cx).api.clone();
+                                keep_example(api, window, cx);
+                            }
+                        }),
+                    )
+                })
                 // D4.
                 .when(comparable, |menu| {
                     menu.item(
@@ -1680,6 +1694,34 @@ impl ResponsePanel {
             })
             .into_any_element()
     }
+}
+
+/// F3: asks for a name and keeps the response shown as an example; says
+/// why when it cannot be one.
+fn keep_example(api: Entity<ApiState>, window: &mut Window, cx: &mut App) {
+    let suggested = api
+        .read(cx)
+        .shown_response()
+        .and_then(|shown| shown.status)
+        .map(|status| format!("{status} {}", status_text(status)))
+        .unwrap_or_default();
+    crate::views::name_dialog::open_name_dialog_with(
+        window,
+        cx,
+        t!("docs.keep_example_title").to_string().into(),
+        t!("docs.example_name").to_string().into(),
+        suggested,
+        t!("common.save").to_string().into(),
+        move |name, window, cx| {
+            let kept = api.update(cx, |api, cx| api.keep_example(&name, cx));
+            let note = if kept {
+                Notification::success(t!("docs.example_kept").to_string())
+            } else {
+                Notification::warning(t!("docs.example_refused").to_string())
+            };
+            window.push_notification(note, cx);
+        },
+    );
 }
 
 /// #69: an item for each client a request is copied as, cURL first; B6:

@@ -14,7 +14,7 @@ use super::{ImportBundle, ImportEnvironment, ImportItem, api, content_type_of, g
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
 use crate::model::FolderSettings;
-use crate::model::{ContentType, KvParam};
+use crate::model::{ContentType, Example, KvParam};
 use serde_json::Value;
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -104,6 +104,7 @@ fn item(value: &Value) -> Option<ImportItem> {
             settings: FolderSettings {
                 auth: value.get("auth").and_then(auth).unwrap_or_default(),
                 headers: Vec::new(),
+                description: description(value.get("description")),
             },
         });
     };
@@ -197,9 +198,45 @@ fn item(value: &Value) -> Option<ImportItem> {
     if let Some(own) = request.get("auth").and_then(auth) {
         built.auth = own;
     }
+    // F3: what it is for, and its saved responses as examples.
+    built.description = description(request.get("description"));
+    built.examples = value
+        .get("response")
+        .and_then(Value::as_array)
+        .map(|responses| responses.iter().filter_map(example).collect())
+        .unwrap_or_default();
     Some(ImportItem::Api {
         name,
         request: Box::new(built),
+    })
+}
+
+/// F3: a description: text, or `{content}`.
+fn description(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(object @ Value::Object(_)) => text(object, "content").trim().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// F3: a saved response as an example; one with no status code is none.
+fn example(response: &Value) -> Option<Example> {
+    let status = response.get("code").and_then(Value::as_u64)?;
+    Some(Example {
+        name: text(response, "name").trim().to_string(),
+        status: u16::try_from(status).ok()?,
+        headers: response
+            .get("header")
+            .and_then(Value::as_array)
+            .map(|headers| {
+                headers
+                    .iter()
+                    .map(|header| (text(header, "key").to_string(), text(header, "value").to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        body: text(response, "body").to_string(),
     })
 }
 

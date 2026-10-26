@@ -498,6 +498,14 @@ async fn requests_are_saved(storage: &Storage) {
             target: "$.token".into(),
             ..Default::default()
         }],
+        // What it is for, and an example (F3).
+        description: "Signs in.\n\n- user\n- password".into(),
+        examples: vec![cyberapi_core::model::Example {
+            name: "signed in".into(),
+            status: 200,
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: r#"{"token": "中文"}"#.into(),
+        }],
         // What a newer version keeps in a request comes back as it went
         // (`docs/batch4-design.md` §2.1).
         extra: HttpRequest::from_json_lenient(r#"{"laterField": {"kept": [1, "two"]}}"#).extra,
@@ -537,6 +545,8 @@ async fn settings_are_kept(storage: &Storage) {
             value: "users".into(),
             enabled: true,
         }],
+        // F3: what it is for.
+        description: "The team's own.".into(),
     };
     let set = tree
         .set_folder_settings(collection.id.clone(), users.item.id.clone(), settings.clone())

@@ -236,7 +236,7 @@ fn tool_list(token: &McpToken) -> Vec<Json> {
         }),
         json!({
             "name": "get_api",
-            "description": "An API's saved request: method, URL, query, headers, the headers of the folders it is in, how it signs in (its own or inherited, and from where), body, and the assertions its answers are checked against (subject: status, header, json (a JSONPath), body, latency in ms or size in bytes; op; expected). A URL or value may use the project's variables, written {{NAME}}.",
+            "description": "An API's saved request: method, URL, query, headers, the headers of the folders it is in, how it signs in (its own or inherited, and from where), body, the assertions its answers are checked against (subject: status, header, json (a JSONPath), body, latency in ms or size in bytes; op; expected), what it is for (description) and answers kept as examples of what it returns. A URL or value may use the project's variables, written {{NAME}}.",
             "inputSchema": { "type": "object", "properties": { "project": project, "api": api }, "required": ["project", "api"] },
             "annotations": read,
         }),
@@ -509,6 +509,17 @@ async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
         "body": body,
         // A1: what its answers are checked against.
         "assertions": request.assertions,
+        // F3: what it is for, and what it returned when kept as examples.
+        "description": request.description,
+        "examples": request
+            .examples
+            .iter()
+            .map(|example| json!({
+                "name": example.name,
+                "status": example.status,
+                "body": cut(&masked_body(&example.body), MAX_TEXT_CHARS),
+            }))
+            .collect::<Vec<_>>(),
     }))
 }
 

@@ -477,6 +477,8 @@ pub enum RequestTab {
     Assertions,
     /// The API's own sending settings (#71).
     Settings,
+    /// What it is for, and its examples (F3).
+    Docs,
 }
 
 impl RequestTab {
@@ -485,7 +487,14 @@ impl RequestTab {
     /// its message and metadata, and no query.
     pub fn for_request(request: &HttpRequest) -> &'static [Self] {
         if request.method == HttpMethod::Grpc {
-            &[Self::Body, Self::Headers, Self::Auth, Self::Assertions, Self::Settings]
+            &[
+                Self::Body,
+                Self::Headers,
+                Self::Auth,
+                Self::Assertions,
+                Self::Settings,
+                Self::Docs,
+            ]
         } else if request.has_body_tab() {
             &[
                 Self::Body,
@@ -494,9 +503,17 @@ impl RequestTab {
                 Self::Auth,
                 Self::Assertions,
                 Self::Settings,
+                Self::Docs,
             ]
         } else {
-            &[Self::Query, Self::Headers, Self::Auth, Self::Assertions, Self::Settings]
+            &[
+                Self::Query,
+                Self::Headers,
+                Self::Auth,
+                Self::Assertions,
+                Self::Settings,
+                Self::Docs,
+            ]
         }
     }
 
@@ -508,6 +525,7 @@ impl RequestTab {
             Self::Auth => "auth",
             Self::Assertions => "assertions",
             Self::Settings => "settings",
+            Self::Docs => "docs",
         }
     }
 
@@ -519,6 +537,7 @@ impl RequestTab {
             "auth" => Some(Self::Auth),
             "assertions" => Some(Self::Assertions),
             "settings" => Some(Self::Settings),
+            "docs" => Some(Self::Docs),
             _ => None,
         }
     }
@@ -682,7 +701,8 @@ mod tests {
                 RequestTab::Headers,
                 RequestTab::Auth,
                 RequestTab::Assertions,
-                RequestTab::Settings
+                RequestTab::Settings,
+                RequestTab::Docs
             ]
         );
         // An API's own settings (#71) are kept as the tab it was on, and its

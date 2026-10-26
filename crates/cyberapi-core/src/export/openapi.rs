@@ -68,6 +68,10 @@ pub fn openapi(data: &TreeData, folder: Option<&ItemId>, title: &str, variables:
         }
         let mut operation = Map::new();
         operation.insert("summary".into(), json!(api.name));
+        // F3.
+        if !request.description.trim().is_empty() {
+            operation.insert("description".into(), json!(request.description.trim()));
+        }
         if !tag.is_empty() {
             operation.insert("tags".into(), json!([tag]));
             if !tags.contains(tag) {
@@ -81,7 +85,7 @@ pub fn openapi(data: &TreeData, folder: Option<&ItemId>, title: &str, variables:
         if let Some(body) = request_body(request) {
             operation.insert("requestBody".into(), body);
         }
-        operation.insert("responses".into(), json!({"200": {"description": "OK"}}));
+        operation.insert("responses".into(), responses(request));
         let effective = inherit::inherited(data, &api.id).auth(&request.auth).clone();
         if effective != global {
             let security = match scheme(&effective) {
@@ -210,6 +214,46 @@ fn parameters(request: &HttpRequest, path: &[String]) -> Vec<Value> {
 }
 
 /// The JSON Schema of an example, as far as the example tells it.
+/// F3: an operation's responses — its examples, each under its status, a
+/// JSON one with a schema read off it; a plain 200 when it keeps none.
+fn responses(request: &crate::model::HttpRequest) -> Value {
+    let mut out = Map::new();
+    for example in &request.examples {
+        let status = example.status.to_string();
+        let entry = out.entry(status.clone()).or_insert_with(|| {
+            json!({"description": if example.name.is_empty() { crate::response::status_text(example.status).to_string() } else { example.name.clone() }})
+        });
+        let media = example
+            .content_type()
+            .map(|value| value.split(';').next().unwrap_or_default().trim().to_string())
+            .filter(|media| !media.is_empty())
+            .unwrap_or_else(|| "text/plain".into());
+        let content = entry
+            .as_object_mut()
+            .map(|entry| entry.entry("content").or_insert_with(|| json!({})));
+        let Some(Value::Object(content)) = content else {
+            continue;
+        };
+        if content.contains_key(&media) {
+            continue;
+        }
+        let value = serde_json::from_str::<Value>(&example.body)
+            .ok()
+            .filter(|_| media.contains("json"))
+            .unwrap_or_else(|| json!(example.body));
+        let mut body = Map::new();
+        if value.is_object() || value.is_array() {
+            body.insert("schema".into(), schema_of(&value));
+        }
+        body.insert("example".into(), value);
+        content.insert(media, Value::Object(body));
+    }
+    if out.is_empty() {
+        out.insert("200".into(), json!({"description": "OK"}));
+    }
+    Value::Object(out)
+}
+
 fn schema_of(value: &Value) -> Value {
     match value {
         Value::Null => json!({"nullable": true}),

@@ -103,6 +103,8 @@ fn request(resource: &Value) -> ImportItem {
     if let Some(own) = resource.get("authentication").and_then(auth) {
         built.auth = own;
     }
+    // F3.
+    built.description = text(resource, "description").trim().to_string();
     ImportItem::Api {
         name,
         request: Box::new(built),
@@ -172,6 +174,7 @@ fn children(resources: &[Value], parent: &str) -> Vec<ImportItem> {
                 settings: FolderSettings {
                     auth: resource.get("authentication").and_then(auth).unwrap_or_default(),
                     headers: Vec::new(),
+                    description: text(resource, "description").trim().to_string(),
                 },
             }),
             _ => None,

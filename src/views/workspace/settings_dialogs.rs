@@ -1,6 +1,7 @@
 //! What a folder and the project set for their APIs (#66): a folder's auth
-//! and the headers every API in it sends, the project's auth. Kept when
-//! Save is clicked; a viewer reads them and closes.
+//! and the headers every API in it sends, the project's auth — and what
+//! the folder is for (F3). Kept when Save is clicked; a viewer reads them
+//! and closes.
 
 use super::auth_editor::{AuthEditor, AuthFor};
 use super::request_editor::{COMMON_HEADERS, HEADER_EXAMPLE};
@@ -12,6 +13,7 @@ use cyberapi_core::ItemId;
 use cyberapi_core::model::{FolderSettings, ProjectSettings};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
+use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, v_flex};
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, IntoElement, ParentElement as _, Render,
@@ -54,14 +56,27 @@ fn footer(
 }
 
 struct FolderSettingsView {
+    description: Entity<EditorState>,
     auth: Entity<AuthEditor>,
     headers: Entity<KvEditor>,
 }
 
 impl Render for FolderSettingsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let border = cx.theme().border;
         v_flex()
             .gap_5()
+            .child(section(
+                t!("docs.description").to_string(),
+                t!("folder_settings.description_hint").to_string(),
+                div()
+                    .h(px(96.))
+                    .border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .child(Editor::new(&self.description).w_full().h_full().bordered(false)),
+                cx,
+            ))
             .child(section(
                 t!("editor.auth").to_string(),
                 t!("folder_settings.auth_hint").to_string(),
@@ -94,7 +109,16 @@ pub fn open_folder_settings(workspace: &Entity<WorkspaceState>, id: ItemId, wind
         };
         KvEditor::new(&folder.settings.headers, options, window, cx).hints(hints)
     });
+    let description = cx.new(|cx| {
+        let mut editor = EditorState::new(window, cx)
+            .line_number(false)
+            .soft_wrap(true)
+            .placeholder(t!("docs.placeholder").to_string());
+        editor.set_value(folder.settings.description.clone(), window, cx);
+        editor
+    });
     let view = cx.new(|_| FolderSettingsView {
+        description: description.clone(),
         auth: auth.clone(),
         headers: headers.clone(),
     });
@@ -103,10 +127,12 @@ pub fn open_folder_settings(workspace: &Entity<WorkspaceState>, id: ItemId, wind
     window.open_dialog(cx, move |dialog, _, _| {
         let save = {
             let (auth, headers, workspace, id) = (auth.clone(), headers.clone(), workspace.clone(), id.clone());
+            let description = description.clone();
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                 let settings = FolderSettings {
                     auth: auth.read(cx).auth(cx),
                     headers: headers.read(cx).list(cx),
+                    description: description.read(cx).value().trim_end().to_string(),
                 };
                 if let Some(workspace) = workspace.upgrade() {
                     workspace.update(cx, |state, cx| state.set_folder_settings(id.clone(), settings, cx));

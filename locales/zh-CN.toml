@@ -261,6 +261,7 @@ change_type_description = "切换后会清空当前的 Body。"
 change_type_ok = "清空并切换"
 manage_environments = "管理环境变量…"
 remove_again = "再点一次删除"
+docs = "说明"
 
 [response]
 copy_body = "复制响应体"
@@ -823,6 +824,7 @@ menu = "目录设置…"
 title = "目录设置：%{name}"
 auth_hint = "这个目录及其子目录里选“继承”的接口使用的认证。"
 headers_hint = "这个目录及其子目录里的每个接口都会发送这些请求头；里层目录和接口自己的同名请求头优先。"
+description_hint = "这个目录是做什么的，写给打开它的人看。纯文本，Markdown 原样显示。"
 
 [project_auth]
 menu = "项目认证…"
@@ -920,3 +922,14 @@ command = "命令"
 project = "项目"
 keys = "↑ ↓ 移动，回车选中，Esc 关闭"
 reading = "正在读取其他项目…"
+
+[docs]
+description = "说明"
+placeholder = "这个接口做什么、需要什么、返回什么……纯文本，Markdown 原样显示。"
+examples = "示例"
+no_examples = "还没有示例：在响应旁的历史菜单（时钟）里把一次响应存为示例。"
+keep_example = "存为示例…"
+keep_example_title = "把响应存为示例"
+example_name = "说明它是什么情况：找到、找不到……"
+example_kept = "已存为示例，见“说明”标签页。"
+example_refused = "只有带状态码、响应体是 256 KB 以内文本的响应才能存为示例。"

@@ -261,6 +261,7 @@ change_type_description = "The body is emptied for the new type."
 change_type_ok = "Empty and change"
 manage_environments = "Manage environment variables…"
 remove_again = "Click again to remove"
+docs = "Docs"
 
 [response]
 copy_body = "Copy the body"
@@ -823,6 +824,7 @@ menu = "Folder settings…"
 title = "Folder settings: %{name}"
 auth_hint = "How the APIs in this folder and the folders in it sign in when they inherit."
 headers_hint = "Every API in this folder, and in the folders in it, sends these; a folder inside's of the same name, and an API's own, win."
+description_hint = "What the folder is for, for whoever opens it. Plain text; Markdown shows as written."
 
 [project_auth]
 menu = "Project auth…"
@@ -920,3 +922,14 @@ command = "Command"
 project = "Project"
 keys = "↑ ↓ to move, Enter to pick, Esc to close"
 reading = "Reading the other projects…"
+
+[docs]
+description = "Description"
+placeholder = "What it is for, what it needs, what it returns… Plain text; Markdown shows as written."
+examples = "Examples"
+no_examples = "None yet: keep a response as one from the history menu (the clock) beside the response."
+keep_example = "Keep as an example…"
+keep_example_title = "Keep the response as an example"
+example_name = "What it shows: found, not found…"
+example_kept = "Kept as an example, in the Docs tab."
+example_refused = "Only an answer with a status and a text body under 256 KB can be an example."

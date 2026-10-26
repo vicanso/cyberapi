@@ -33,7 +33,7 @@ use cyberapi_core::auth::Auth;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody, ReplyReader};
-use cyberapi_core::model::{ApiSetting, ContentType, HttpMethod, HttpRequest, KvParam};
+use cyberapi_core::model::{ApiSetting, ContentType, Example, HttpMethod, HttpRequest, KvParam};
 use cyberapi_core::prefs::RequestSettings;
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::send::PrepareError;
@@ -312,6 +312,12 @@ impl ApiState {
         &self.api
     }
 
+    /// Whether the reader may change the project's requests: a viewer's
+    /// edits stay their own (§9.2).
+    pub fn editable(&self) -> bool {
+        self.editable
+    }
+
     /// The project it is of, for what lists the project's (D4).
     pub fn workspace(&self) -> &WeakEntity<WorkspaceState> {
         &self.workspace
@@ -537,6 +543,33 @@ impl ApiState {
         let outcomes = Rc::new(assertions::check_all(assertions, response, json.as_deref()));
         *self.checks.borrow_mut() = Some((response.id.clone(), assertions.clone(), outcomes.clone()));
         Some(outcomes)
+    }
+
+    /// F3: what the API is for, as the editor has it.
+    pub fn set_description(&mut self, description: String, cx: &mut Context<Self>) {
+        if self.request.description != description {
+            self.request.description = description;
+            self.save_later(cx);
+        }
+    }
+
+    /// F3: the response shown kept as an example named `name`; `false` when
+    /// it cannot be one — no status, no text, or too long.
+    pub fn keep_example(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
+        let Some(example) = self.shown_response().and_then(|shown| Example::of(shown, name)) else {
+            return false;
+        };
+        self.request.examples.push(example);
+        self.save_later(cx);
+        true
+    }
+
+    /// F3: the example at `at` no longer kept.
+    pub fn remove_example(&mut self, at: usize, cx: &mut Context<Self>) {
+        if at < self.request.examples.len() {
+            self.request.examples.remove(at);
+            self.save_later(cx);
+        }
     }
 
     /// A2: the API's extractions, as the editor has them.

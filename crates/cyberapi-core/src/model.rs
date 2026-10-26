@@ -66,6 +66,9 @@ pub struct FolderSettings {
     pub auth: Auth,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<KvParam>,
+    /// F3: what the folder is for, as plain text. Its own, not its APIs'.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 impl FolderSettings {
@@ -139,6 +142,12 @@ pub struct HttpRequest {
     /// What a run takes from its answers for the requests after it (A2).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extractions: Vec<crate::assertions::Extraction>,
+    /// F3: what the API is for, as plain text (Markdown shows as written).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// F3: answers kept as examples of what it returns, with the project.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<Example>,
     /// What a newer version keeps in a request that this one does not
     /// read, written back as it came (`docs/batch4-design.md` §2.1): a
     /// request saved here keeps it.
@@ -165,6 +174,8 @@ struct StoredRequest {
     settings: RequestSettings,
     assertions: Vec<crate::assertions::Assertion>,
     extractions: Vec<crate::assertions::Extraction>,
+    description: String,
+    examples: Vec<Example>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -186,6 +197,8 @@ impl From<StoredRequest> for HttpRequest {
             settings: stored.settings,
             assertions: stored.assertions,
             extractions: stored.extractions,
+            description: stored.description,
+            examples: stored.examples,
             extra: stored.extra,
         }
     }
@@ -209,6 +222,49 @@ impl HttpRequest {
         // A struct of strings, enums and vectors of them cannot fail to
         // serialize.
         serde_json::to_string(self).unwrap_or_default()
+    }
+}
+
+/// F3: an answer kept with an API as an example of what it returns: what
+/// its status, headers and body were, the body as text.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Example {
+    pub name: String,
+    pub status: u16,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+}
+
+impl Example {
+    /// The most of a body an example keeps: it goes everywhere the
+    /// project does.
+    pub const BODY_LIMIT: usize = 256 * 1024;
+
+    /// `response` as an example named `name`; `None` for one with no
+    /// status, a body that is no text, or one longer than
+    /// [`Self::BODY_LIMIT`].
+    pub fn of(response: &crate::response::HttpResponse, name: &str) -> Option<Self> {
+        let status = response.status?;
+        if response.body.len() > Self::BODY_LIMIT || response.body_omitted.is_some() {
+            return None;
+        }
+        let body = String::from_utf8(response.body.clone()).ok()?;
+        Some(Self {
+            name: name.trim().to_string(),
+            status,
+            headers: response.headers.clone(),
+            body,
+        })
+    }
+
+    /// Its `Content-Type`, if it says one.
+    pub fn content_type(&self) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.as_str())
     }
 }
 

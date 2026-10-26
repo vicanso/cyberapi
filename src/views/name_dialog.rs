@@ -49,7 +49,33 @@ pub fn open_name_dialog(
     ok_label: SharedString,
     on_ok: impl Fn(String, &mut App) + 'static,
 ) {
-    let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+    open_name_dialog_with(
+        window,
+        cx,
+        title,
+        placeholder,
+        String::new(),
+        ok_label,
+        move |name, _, cx| on_ok(name, cx),
+    );
+}
+
+/// As [`open_name_dialog`], the field starting with `value`, and `on_ok`
+/// given the window, to say how it went.
+pub fn open_name_dialog_with(
+    window: &mut Window,
+    cx: &mut App,
+    title: SharedString,
+    placeholder: SharedString,
+    value: String,
+    ok_label: SharedString,
+    on_ok: impl Fn(String, &mut Window, &mut App) + 'static,
+) {
+    let input = cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder(placeholder)
+            .default_value(value)
+    });
     let missing = Rc::new(Cell::new(false));
     let on_ok = Rc::new(on_ok);
     let field = input.clone();
@@ -63,7 +89,7 @@ pub fn open_name_dialog(
                     window.refresh();
                     return false;
                 }
-                on_ok(name, cx);
+                on_ok(name, window, cx);
                 true
             }
         };

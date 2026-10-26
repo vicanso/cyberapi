@@ -122,6 +122,7 @@ mod tests {
             FolderSettings {
                 auth: bearer("users"),
                 headers: vec![kv("X-Team", "users", true), kv("X-Off", "1", false)],
+                description: String::new(),
             },
         );
         set(
@@ -130,6 +131,7 @@ mod tests {
             FolderSettings {
                 auth: Auth::Inherit,
                 headers: vec![kv("X-Team", "profile", true)],
+                description: String::new(),
             },
         );
         set(
@@ -138,6 +140,7 @@ mod tests {
             FolderSettings {
                 auth: Auth::None,
                 headers: vec![],
+                description: String::new(),
             },
         );
         tree.settings = ProjectSettings {

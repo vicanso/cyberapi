@@ -267,6 +267,8 @@ fn settings(value: &Value) -> FolderSettings {
     FolderSettings {
         auth: value.get("auth").and_then(auth).unwrap_or_default(),
         headers: pairs(value.get("headers")),
+        // F3.
+        description: text(value, "description").trim().to_string(),
     }
 }
 
@@ -332,6 +334,7 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
                     settings: FolderSettings {
                         auth: Auth::Inherit,
                         headers: own.headers,
+                        description: String::new(),
                     },
                 }];
             }

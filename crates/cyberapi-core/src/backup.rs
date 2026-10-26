@@ -298,6 +298,7 @@ mod tests {
                 settings: FolderSettings {
                     auth: Auth::Bearer { token: "t".into() },
                     headers: vec![],
+                    description: String::new(),
                 },
                 created_at: at(),
                 updated_at: at(),

@@ -79,9 +79,33 @@ fn item(item: &Item<'_>) -> Value {
             if let Some(auth) = auth(&folder.settings.auth) {
                 out["auth"] = auth;
             }
+            // F3.
+            if !folder.settings.description.trim().is_empty() {
+                out["description"] = json!(folder.settings.description.trim());
+            }
             out
         }
-        Item::Api(api) => json!({"name": api.name, "request": request(&api.request)}),
+        Item::Api(api) => {
+            let mut out = json!({"name": api.name, "request": request(&api.request)});
+            // F3: its examples, as Postman's saved responses.
+            if !api.request.examples.is_empty() {
+                out["response"] = api
+                    .request
+                    .examples
+                    .iter()
+                    .map(|example| {
+                        json!({
+                            "name": example.name,
+                            "code": example.status,
+                            "status": crate::response::status_text(example.status),
+                            "header": example.headers.iter().map(|(key, value)| json!({"key": key, "value": value})).collect::<Vec<_>>(),
+                            "body": example.body,
+                        })
+                    })
+                    .collect();
+            }
+            out
+        }
     }
 }
 
@@ -166,6 +190,10 @@ fn request(request: &HttpRequest) -> Value {
         None
     };
     let mut out = json!({"method": request.method.as_str(), "header": headers, "url": url});
+    // F3.
+    if !request.description.trim().is_empty() {
+        out["description"] = json!(request.description.trim());
+    }
     if let Some(body) = body {
         out["body"] = body;
     }
@@ -216,6 +244,7 @@ mod tests {
                         place: KeyPlace::Header,
                     },
                     headers: Vec::new(),
+                    description: "Orders, made and listed.".into(),
                 },
                 created_at: Default::default(),
                 updated_at: Default::default(),
@@ -244,6 +273,13 @@ mod tests {
                             username: "u".into(),
                             password: "p".into(),
                         },
+                        description: "Makes an order.".into(),
+                        examples: vec![crate::model::Example {
+                            name: "made".into(),
+                            status: 201,
+                            headers: vec![("Content-Type".into(), "application/json".into())],
+                            body: "{\"id\": 7}".into(),
+                        }],
                         ..Default::default()
                     },
                 ),
@@ -307,6 +343,10 @@ mod tests {
         assert_eq!(requests[1].content_type, ContentType::Json);
         assert_eq!(requests[1].body, "{\"sku\": \"a\"}");
         assert_eq!(requests[1].auth, shop().apis[1].request.auth);
+        // F3: what it is for, and its examples.
+        assert_eq!(requests[1].description, "Makes an order.");
+        assert_eq!(requests[1].examples, shop().apis[1].request.examples);
+        assert_eq!(settings.description, "Orders, made and listed.");
     }
 
     /// A folder alone signs in as it does, its own or from above.

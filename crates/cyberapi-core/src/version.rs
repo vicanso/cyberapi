@@ -32,7 +32,9 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 /// 7: an API, folder or project signs in with Digest (C2, `Auth::Digest`).
 /// 8: what a run takes from an API's answers (A2,
 ///    `HttpRequest.extractions`).
-pub const MODEL: u32 = 8;
+/// 9: what APIs and folders are for, and an API's examples (F3,
+///    `HttpRequest.description` / `examples`, `FolderSettings.description`).
+pub const MODEL: u32 = 9;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

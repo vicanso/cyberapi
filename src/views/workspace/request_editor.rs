@@ -79,6 +79,8 @@ pub struct RequestEditor {
     settings: Entity<super::request_settings::RequestSettingsView>,
     /// A1: what its answers are checked against.
     assertions: Entity<super::assertions_editor::AssertionsEditor>,
+    /// F3.
+    docs: Entity<super::docs_editor::DocsEditor>,
     /// The response whose GraphQL errors the query marks, and the query it
     /// was sent with (#70).
     marked: Option<(String, String)>,
@@ -319,6 +321,10 @@ impl RequestEditor {
             let api = api.clone();
             cx.new(|cx| super::assertions_editor::AssertionsEditor::new(api, window, cx))
         };
+        let docs = {
+            let api = api.clone();
+            cx.new(|cx| super::docs_editor::DocsEditor::new(api, window, cx))
+        };
         let mut subscriptions = vec![
             cx.observe(&api, |this, _, cx| {
                 this.follow_sending(cx);
@@ -451,6 +457,7 @@ impl RequestEditor {
             headers,
             auth,
             assertions,
+            docs,
             ticker: None,
             json_problem: None,
             json_tree,
@@ -905,6 +912,10 @@ impl RequestEditor {
         self.assertions = {
             let api = self.api.clone();
             cx.new(|cx| super::assertions_editor::AssertionsEditor::new(api, window, cx))
+        };
+        self.docs = {
+            let api = self.api.clone();
+            cx.new(|cx| super::docs_editor::DocsEditor::new(api, window, cx))
         };
         self.auth = {
             let (api, workspace) = (self.api.clone(), self.workspace.clone());
@@ -1447,6 +1458,8 @@ impl RequestEditor {
                 ),
                 // #71: how many it sets of its own.
                 RequestTab::Settings => (t!("editor.settings"), overridden(&request.settings)),
+                // F3: how many examples it keeps.
+                RequestTab::Docs => (t!("editor.docs"), request.examples.len()),
             };
             if count > 0 {
                 format!("{name} ({count})")
@@ -1791,6 +1804,7 @@ impl Render for RequestEditor {
                 .into_any_element(),
             RequestTab::Settings => self.settings.clone().into_any_element(),
             RequestTab::Assertions => self.assertions.clone().into_any_element(),
+            RequestTab::Docs => self.docs.clone().into_any_element(),
             RequestTab::Auth => div()
                 .id("request-auth")
                 .size_full()
