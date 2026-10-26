@@ -452,6 +452,10 @@ pub struct WorkspacePrefs {
     /// The API last selected, restored on the next visit (F3.8). Kept per
     /// project; the old app kept one for all of them (#20).
     pub selected: Option<ItemId>,
+    /// F1: the APIs open as tabs, in their order. The one in the editor
+    /// is the selection, or a pin opened over it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub open: Vec<ItemId>,
     /// Pinned APIs, in pin order (M12). The application keeps the list on
     /// the machine and writes this empty; the field stays so a document
     /// from before that still parses, and is copied across once.

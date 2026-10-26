@@ -4,9 +4,9 @@
 
 use super::dashboard::{FocusSearch, KEY_CONTEXT as DASHBOARD};
 use super::workspace::{
-    FindApi, FocusUrl, KEY_CONTEXT as WORKSPACE, NewApi, NewFolder, OpenPalette, PasteCurl, Pin1, Pin9, ROOT_CONTEXT,
-    Send as SendAction, TREE_CONTEXT as TREE, TreeClose, TreeDuplicate, TreeNext, TreeOpen, TreePrevious, TreeRemove,
-    TreeRename, TreeToggle,
+    CloseTab, FindApi, FocusUrl, KEY_CONTEXT as WORKSPACE, NewApi, NewFolder, NextTab, OpenPalette, PasteCurl, Pin1,
+    Pin9, PreviousTab, ROOT_CONTEXT, Send as SendAction, TREE_CONTEXT as TREE, TreeClose, TreeDuplicate, TreeNext,
+    TreeOpen, TreePrevious, TreeRemove, TreeRename, TreeToggle,
 };
 use crate::this_build;
 use gpui_kit::component::kbd::Kbd;
@@ -49,6 +49,18 @@ fn shortcuts(window: &mut Window, cx: &mut App) -> impl IntoElement {
             t!("shortcuts.focus_url").to_string(),
             keys(&FocusUrl, WORKSPACE, window),
         ));
+    }
+    // F1: a browser keeps these for its own tabs.
+    if browser_keys {
+        workspace.push((
+            t!("shortcuts.close_tab").to_string(),
+            keys(&CloseTab, WORKSPACE, window),
+        ));
+        workspace.push((t!("shortcuts.switch_tab").to_string(), {
+            let mut both = keys(&NextTab, WORKSPACE, window);
+            both.extend(keys(&PreviousTab, WORKSPACE, window));
+            both
+        }));
     }
     if browser_keys {
         workspace.push((t!("shortcuts.pins").to_string(), {

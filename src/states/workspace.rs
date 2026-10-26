@@ -28,7 +28,7 @@ use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::import::{ImportBundle, ImportEnvironment, ImportItem};
 use cyberapi_core::inherit::{self, Inherited};
 use cyberapi_core::model::{
-    ApiSetting, Collection, Environment, Folder, FolderSettings, HttpMethod, ProjectSettings, Variable,
+    ApiSetting, Collection, Environment, Folder, FolderSettings, HttpMethod, HttpRequest, ProjectSettings, Variable,
     VariableCategory,
 };
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
@@ -47,6 +47,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
+
+/// F1: the most tabs open at once; opening one more closes the one shown
+/// longest ago. Each open tab's editor is kept, with its answers.
+pub const MAX_TABS: usize = 16;
 
 /// What the view should tell the reader about.
 #[derive(Clone, Debug)]
@@ -138,6 +142,13 @@ pub struct WorkspaceState {
     saves: Arc<Mutex<()>>,
     /// The opened API's editor, while one is open.
     api: Option<Entity<ApiState>>,
+    /// F1: the editors of the open tabs shown this session, the opened one
+    /// too, kept while their tab is: a tab shown again has its edits, its
+    /// answers and the request on its way as they were.
+    kept: HashMap<ItemId, Entity<ApiState>>,
+    /// F1: the open tabs in the order they were shown, the latest last:
+    /// past `MAX_TABS`, the one shown longest ago closes.
+    shown: Vec<ItemId>,
     /// A pin opened over the tree's selection (F12.2): the editor shows it
     /// while the tree keeps its row. This session's only.
     pin_open: Option<ItemId>,
@@ -249,6 +260,8 @@ impl WorkspaceState {
             gate: Arc::default(),
             saves: Arc::default(),
             api: None,
+            kept: HashMap::new(),
+            shown: Vec::new(),
             created: None,
             pin_open: None,
             environment: Vec::new(),
@@ -490,7 +503,7 @@ impl WorkspaceState {
 
     fn keeps_changes(&self, cx: &gpui_kit::App) -> bool {
         self.copy.as_ref().is_some_and(|copy| copy.copy.unsynced())
-            || self.api.as_ref().is_some_and(|api| api.read(cx).has_unsaved())
+            || self.kept.values().any(|api| api.read(cx).has_unsaved())
     }
 
     /// The server's content becomes the copy, level with it.
@@ -523,25 +536,27 @@ impl WorkspaceState {
         });
     }
 
-    /// The copy is the server's content now. The editor starts again from
-    /// it when its request changed — or always, when the reader gave their
-    /// changes up (`forget`).
+    /// The copy is the server's content now. An open tab's editor starts
+    /// again from it when its request changed — or always, when the reader
+    /// gave their changes up (`forget`).
     fn took(&mut self, at: ConfigAt, forget: bool, cx: &mut Context<Self>) {
         let data = at.config.tree();
         self.collection.name = at.config.name;
         self.collection.description = at.config.description;
-        let editor = self.api.as_ref().map(|api| api.read(cx).api().clone());
         let request = |data: &TreeData, id: &ItemId| {
             data.apis
                 .iter()
                 .find(|api| &api.id == id)
                 .map(|api| api.request.clone())
         };
-        if let Some(id) = editor
-            && (forget || request(&self.data, &id) != request(&data, &id))
-            && let Some(api) = self.api.take()
-        {
-            api.update(cx, |api, _| api.forget_unsaved());
+        let stale: Vec<ItemId> = self
+            .kept
+            .keys()
+            .filter(|id| forget || request(&self.data, id) != request(&data, id))
+            .cloned()
+            .collect();
+        for id in &stale {
+            self.start_again(id, cx);
         }
         if self.load == Load::Loaded {
             self.set_data(data, cx);
@@ -651,7 +666,7 @@ impl WorkspaceState {
         };
         copy.busy = true;
         copy.push = Some(over);
-        if let Some(api) = self.api.clone() {
+        for api in self.kept.values() {
             api.update(cx, |api, cx| api.save_now(cx));
         }
         self.push_when_settled(cx);
@@ -694,11 +709,11 @@ impl WorkspaceState {
                 .detach();
                 copy.behind = false;
                 // What the page kept of APIs now on the server goes into
-                // its history, and the open API reads its history again.
+                // its history, and the open tabs read their history again.
                 let keep = copy.copy.keep_waiting(&copy.server);
                 run_store(cx, keep, |this, result, cx| match result {
                     Ok(true) => {
-                        if let Some(api) = this.api.clone() {
+                        for api in this.kept.values() {
                             api.update(cx, |api, cx| api.reload_history(cx));
                         }
                     }
@@ -1037,16 +1052,14 @@ impl WorkspaceState {
         sender
     }
 
-    /// A3: a run sent `apis`: their last answers are new, and the one open
-    /// reads its history again.
+    /// A3: a run sent `apis`: their last answers are new, and those open
+    /// read their history again.
     pub fn ran(&mut self, apis: &[ItemId], cx: &mut Context<Self>) {
         for api in apis {
             self.answers.remove(api);
-        }
-        if let Some(state) = &self.api
-            && apis.contains(state.read(cx).api())
-        {
-            state.update(cx, |state, cx| state.reload_history(cx));
+            if let Some(state) = self.kept.get(api) {
+                state.update(cx, |state, cx| state.reload_history(cx));
+            }
         }
     }
 
@@ -1146,18 +1159,189 @@ impl WorkspaceState {
     /// Opens the editor of the opened API, or closes it when none is open
     /// (or the open one is gone). The editor of an API that stays open is
     /// kept, with what it holds.
+    /// The opened API's editor, and its tab (F1): one kept from before,
+    /// or a new one beside the tab shown till now. Tabs of APIs that are
+    /// gone close; past `MAX_TABS`, the one shown longest ago does.
     fn sync_api(&mut self, cx: &mut Context<Self>) {
+        if self.load == Load::Loaded {
+            let apis: HashSet<&ItemId> = self.data.apis.iter().map(|api| &api.id).collect();
+            let before = self.prefs.open.len();
+            self.prefs.open.retain(|id| apis.contains(id));
+            self.kept.retain(|id, _| apis.contains(id));
+            self.shown.retain(|id| apis.contains(id));
+            if self.prefs.open.len() != before {
+                self.save_prefs(cx);
+            }
+        }
         let selected = self.opened_api().cloned();
         let current = self.api.as_ref().map(|api| api.read(cx).api().clone());
-        match selected {
-            Some(api) if current.as_ref() != Some(&api.id) => {
-                let (sender, workspace) = (self.sender.clone(), cx.entity().downgrade());
-                let editable = self.editable();
-                self.api = Some(cx.new(|cx| ApiState::new(sender, workspace, &api, editable, cx)));
-            }
-            Some(_) => {}
-            None => self.api = None,
+        let Some(api) = selected else {
+            self.api = None;
+            return;
+        };
+        if !self.prefs.open.contains(&api.id) {
+            let beside = current
+                .as_ref()
+                .and_then(|current| self.prefs.open.iter().position(|open| open == current))
+                .map_or(self.prefs.open.len(), |at| at + 1);
+            self.prefs.open.insert(beside, api.id.clone());
+            self.save_prefs(cx);
         }
+        self.shown.retain(|shown| shown != &api.id);
+        self.shown.push(api.id.clone());
+        if current.as_ref() != Some(&api.id) {
+            // Leaving a tab saves what its editor still waits to.
+            if let Some(left) = &self.api {
+                left.update(cx, |left, cx| left.save_now(cx));
+            }
+            let state = match self.kept.get(&api.id) {
+                Some(kept) => kept.clone(),
+                None => {
+                    let (sender, workspace) = (self.sender.clone(), cx.entity().downgrade());
+                    let editable = self.editable();
+                    let state = cx.new(|cx| ApiState::new(sender, workspace, &api, editable, cx));
+                    self.kept.insert(api.id.clone(), state.clone());
+                    state
+                }
+            };
+            self.api = Some(state);
+        }
+        self.limit_tabs(&api.id, cx);
+    }
+
+    /// F1: past `MAX_TABS`, the tab shown longest ago closes — one never
+    /// shown this session first — but not `opened`, nor one whose request
+    /// is on its way.
+    fn limit_tabs(&mut self, opened: &ItemId, cx: &mut Context<Self>) {
+        while self.prefs.open.len() > MAX_TABS {
+            let shown_at = |id: &ItemId| self.shown.iter().position(|shown| shown == id);
+            let sending = |id: &ItemId| {
+                self.kept
+                    .get(id)
+                    .is_some_and(|api| api.read(cx).sending_since().is_some())
+            };
+            let oldest = self
+                .prefs
+                .open
+                .iter()
+                .filter(|id| *id != opened && !sending(id))
+                .min_by_key(|id| shown_at(id).map_or(0, |at| at + 1))
+                .cloned();
+            let Some(oldest) = oldest else { return };
+            self.forget_tab(&oldest);
+            self.save_prefs(cx);
+        }
+    }
+
+    /// F1: the tab and its editor gone; unsaved edits are saved as the
+    /// editor goes, and a request on its way stops.
+    fn forget_tab(&mut self, id: &ItemId) {
+        self.prefs.open.retain(|open| open != id);
+        self.shown.retain(|shown| shown != id);
+        self.kept.remove(id);
+    }
+
+    /// An open tab's editor made again from the API as kept: its edits not
+    /// saved yet are given up.
+    fn start_again(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        if let Some(api) = self.kept.remove(id) {
+            api.update(cx, |api, _| api.forget_unsaved());
+        }
+        if self.api.as_ref().is_some_and(|api| api.read(cx).api() == id) {
+            self.api = None;
+        }
+    }
+
+    /// F1: the open tabs' APIs, in order, that still exist.
+    pub fn tabs(&self) -> Vec<&ApiSetting> {
+        self.prefs
+            .open
+            .iter()
+            .filter_map(|id| self.data.apis.iter().find(|api| &api.id == id))
+            .collect()
+    }
+
+    /// F1: whether `id`'s tab has a request on its way.
+    pub fn tab_sending(&self, id: &ItemId, cx: &gpui_kit::App) -> bool {
+        self.kept
+            .get(id)
+            .is_some_and(|api| api.read(cx).sending_since().is_some())
+    }
+
+    /// F1: `id`'s tab closed. Closing the one opened opens the one after
+    /// it, else the one before; with none left, nothing is.
+    pub fn close_tab(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        let Some(at) = self.prefs.open.iter().position(|open| open == id) else {
+            return;
+        };
+        let opened = self.opened() == Some(id);
+        let next = self.tab_beside(at, &|other| other == id);
+        self.forget_tab(id);
+        if opened {
+            self.pin_open = None;
+            self.api = None;
+            match next {
+                Some(next) => self.prefs.selected = Some(next),
+                None => self.prefs.selected = None,
+            }
+        }
+        self.sync_api(cx);
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    /// F1: the tab after the one at `at`, else the one before it, of those
+    /// not `going`.
+    fn tab_beside(&self, at: usize, going: &dyn Fn(&ItemId) -> bool) -> Option<ItemId> {
+        let open = &self.prefs.open;
+        open.iter()
+            .skip(at + 1)
+            .chain(open.iter().take(at).rev())
+            .find(|id| !going(id))
+            .cloned()
+    }
+
+    /// F1: every tab closed but `id`'s, which is opened.
+    pub fn close_other_tabs(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        let others: Vec<ItemId> = self.prefs.open.iter().filter(|open| *open != id).cloned().collect();
+        for other in &others {
+            self.forget_tab(other);
+        }
+        if self.opened() != Some(id) {
+            self.select(id, cx);
+        }
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    /// F1: every tab closed; nothing is open.
+    pub fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
+        for id in self.prefs.open.clone() {
+            self.forget_tab(&id);
+        }
+        self.pin_open = None;
+        self.prefs.selected = None;
+        self.sync_api(cx);
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    /// F1: the tab `by` places after the opened one (before it, below
+    /// zero), round the ends.
+    pub fn step_tab(&mut self, by: isize, cx: &mut Context<Self>) {
+        let count = self.prefs.open.len() as isize;
+        let Some(at) = self
+            .opened()
+            .and_then(|opened| self.prefs.open.iter().position(|open| open == opened))
+        else {
+            return;
+        };
+        if count < 2 {
+            return;
+        }
+        let next = (at as isize + by).rem_euclid(count) as usize;
+        let id = self.prefs.open[next].clone();
+        self.select(&id, cx);
     }
 
     /// An API's request was saved: the tree's copy follows (its method label).
@@ -1247,8 +1431,9 @@ impl WorkspaceState {
         run_store(cx, self.sender.storage.tree().load(id.clone()), |this, result, cx| {
             match result {
                 Ok(data) => {
-                    this.set_data(data, cx);
+                    // Loaded first: the open tabs are checked against it.
                     this.load = Load::Loaded;
+                    this.set_data(data, cx);
                     if let Some(import) = this.waiting_import.take() {
                         this.import(None, Arc::unwrap_or_clone(import), cx);
                     }
@@ -1543,9 +1728,9 @@ impl WorkspaceState {
         let Some(stored) = self.data.apis.iter().find(|api| &api.id == id) else {
             return;
         };
-        let request = match &self.api {
-            Some(open) if open.read(cx).api() == id => open.read(cx).request().clone(),
-            _ => stored.request.clone(),
+        let request = match self.kept.get(id) {
+            Some(open) => open.read(cx).request().clone(),
+            None => stored.request.clone(),
         };
         let items = vec![ImportItem::Api {
             name,
@@ -1635,18 +1820,23 @@ impl WorkspaceState {
     /// name (`import::merge`); an environment variable it has is not added
     /// twice.
     pub fn import_again(&mut self, parent: Option<ItemId>, bundle: ImportBundle, update: bool, cx: &mut Context<Self>) {
-        // The open API as its editor holds it: an edit not saved yet is what
-        // updating starts from.
-        let open = self.api.as_ref().map(|api| {
-            let api = api.read(cx);
-            (api.api().clone(), api.request().clone())
-        });
+        // The open tabs as their editors hold them: an edit not saved yet is
+        // what updating starts from.
+        let open: Vec<(ItemId, HttpRequest)> = self
+            .kept
+            .values()
+            .map(|api| {
+                let api = api.read(cx);
+                (api.api().clone(), api.request().clone())
+            })
+            .collect();
         let mut data = std::borrow::Cow::Borrowed(&self.data);
-        if let Some((id, request)) = &open
-            && data.apis.iter().any(|api| &api.id == id && &api.request != request)
-            && let Some(api) = data.to_mut().apis.iter_mut().find(|api| &api.id == id)
-        {
-            api.request = request.clone();
+        for (id, request) in &open {
+            if data.apis.iter().any(|api| &api.id == id && &api.request != request)
+                && let Some(api) = data.to_mut().apis.iter_mut().find(|api| &api.id == id)
+            {
+                api.request = request.clone();
+            }
         }
         let merge = cyberapi_core::import::merge::merge(&data, parent.as_ref(), &bundle.items, update);
         self.import_settings(bundle.auth, bundle.environments, cx);
@@ -1682,10 +1872,8 @@ impl WorkspaceState {
                     Ok(setting) => {
                         this.api_saved(setting, cx);
                         // Its editor starts again from what the import made.
-                        if this.api.as_ref().is_some_and(|api| api.read(cx).api() == &id)
-                            && let Some(api) = this.api.take()
-                        {
-                            api.update(cx, |api, _| api.forget_unsaved());
+                        if this.kept.contains_key(&id) {
+                            this.start_again(&id, cx);
                             this.sync_api(cx);
                         }
                     }
@@ -1907,11 +2095,17 @@ impl WorkspaceState {
         let call = self.sender.storage.tree().delete(self.collection.id.clone(), id);
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(removal) => {
+                let gone = |id: &ItemId| removal.folders.contains(id) || removal.apis.contains(id);
+                // F1: the open tab beside the opened API takes its place.
+                let beside = this
+                    .opened()
+                    .filter(|opened| gone(opened))
+                    .and_then(|opened| this.prefs.open.iter().position(|open| open == opened))
+                    .and_then(|at| this.tab_beside(at, &gone));
                 this.data.apply_removal(&removal);
                 this.tree = Tree::build(&this.data);
-                let gone = |id: &ItemId| removal.folders.contains(id) || removal.apis.contains(id);
-                if this.prefs.selected.as_ref().is_some_and(gone) {
-                    this.prefs.selected = None;
+                if this.prefs.selected.as_ref().is_some_and(gone) || beside.is_some() {
+                    this.prefs.selected = beside;
                 }
                 if this.pin_open.as_ref().is_some_and(gone) {
                     this.pin_open = None;
@@ -2601,6 +2795,113 @@ mod tests {
         assert_eq!(editing(&state, cx), Some(login.clone()));
         state.update(cx, |state, cx| state.set_pinned(&login, false, cx));
         assert_eq!(editing(&state, cx), Some(ping));
+    }
+
+    /// F1: each API opened is a tab beside the one before; a tab shown
+    /// again has its editor as it was; closing opens the one beside it; the
+    /// tabs come back with the project, and those of APIs deleted go.
+    #[gpui_kit::test]
+    async fn opened_apis_stay_open_as_tabs(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        for name in ["a", "b", "c"] {
+            state.update(cx, |state, cx| state.create_api(None, name.into(), cx));
+            cx.run_until_parked();
+        }
+        let (a, b, c) = (find(&state, "a", cx), find(&state, "b", cx), find(&state, "c", cx));
+        let tabs = |state: &Entity<WorkspaceState>, cx: &mut TestAppContext| -> Vec<String> {
+            state.read_with(cx, |state, _| state.tabs().iter().map(|api| api.name.clone()).collect())
+        };
+        let opened = |state: &Entity<WorkspaceState>, cx: &mut TestAppContext| {
+            state.read_with(cx, |state, _| state.opened().cloned())
+        };
+        assert_eq!(tabs(&state, cx), ["a", "b", "c"]);
+
+        // Shown again: the same editor, its edits and all.
+        state.update(cx, |state, cx| state.select(&a, cx));
+        let editor_a = editor(&state, cx);
+        editor_a.update(cx, |api, cx| api.set_uri("http://a.test/".into(), cx));
+        state.update(cx, |state, cx| state.select(&b, cx));
+        state.update(cx, |state, cx| state.select(&a, cx));
+        assert_eq!(editor(&state, cx).entity_id(), editor_a.entity_id());
+
+        // A new one goes beside the one open.
+        state.update(cx, |state, cx| state.create_api(None, "d".into(), cx));
+        cx.run_until_parked();
+        let d = find(&state, "d", cx);
+        assert_eq!(tabs(&state, cx), ["a", "d", "b", "c"]);
+
+        // Next and previous, round the ends.
+        state.update(cx, |state, cx| state.step_tab(2, cx));
+        assert_eq!(opened(&state, cx), Some(c.clone()));
+        state.update(cx, |state, cx| state.step_tab(1, cx));
+        assert_eq!(opened(&state, cx), Some(a.clone()));
+
+        // Closing the open one opens the one after it, else the one before.
+        state.update(cx, |state, cx| state.close_tab(&a, cx));
+        assert_eq!(
+            (tabs(&state, cx), opened(&state, cx)),
+            (vec!["d".into(), "b".into(), "c".into()], Some(d.clone()))
+        );
+        state.update(cx, |state, cx| state.close_tab(&c, cx));
+        assert_eq!(opened(&state, cx), Some(d.clone()), "not the open one");
+        state.update(cx, |state, cx| state.select(&b, cx));
+        state.update(cx, |state, cx| state.close_tab(&b, cx));
+        assert_eq!(
+            (tabs(&state, cx), opened(&state, cx)),
+            (vec!["d".to_string()], Some(d.clone()))
+        );
+        // What its editor held is saved as it closes.
+        cx.run_until_parked();
+        assert_eq!(stored(&storage, &collection, &a).uri, "http://a.test/");
+
+        // They come back with the project.
+        let again = open(&storage, collection.clone(), cx);
+        assert_eq!(tabs(&again, cx), ["d"]);
+        assert_eq!(opened(&again, cx), Some(d.clone()));
+
+        // The others, or all.
+        state.update(cx, |state, cx| state.select(&a, cx));
+        state.update(cx, |state, cx| state.select(&c, cx));
+        assert_eq!(tabs(&state, cx), ["d", "a", "c"]);
+        state.update(cx, |state, cx| state.close_other_tabs(&a, cx));
+        assert_eq!(
+            (tabs(&state, cx), opened(&state, cx)),
+            (vec!["a".to_string()], Some(a.clone()))
+        );
+        state.update(cx, |state, cx| state.close_all_tabs(cx));
+        assert!(tabs(&state, cx).is_empty());
+        assert!(state.read_with(cx, |state, _| state.api().is_none()), "nothing open");
+
+        // A deleted API's tab goes, and the one beside it opens.
+        state.update(cx, |state, cx| state.select(&b, cx));
+        state.update(cx, |state, cx| state.select(&c, cx));
+        state.update(cx, |state, cx| state.delete(c.clone(), cx));
+        cx.run_until_parked();
+        assert_eq!((tabs(&state, cx), opened(&state, cx)), (vec!["b".to_string()], Some(b)));
+    }
+
+    /// F1: past `MAX_TABS`, the tab shown longest ago closes.
+    #[gpui_kit::test]
+    async fn past_the_limit_the_tab_shown_longest_ago_closes(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection, cx);
+        for at in 0..MAX_TABS {
+            state.update(cx, |state, cx| state.create_api(None, format!("api {at}"), cx));
+            cx.run_until_parked();
+        }
+        // The first shown again: the second is the one shown longest ago.
+        let first = find(&state, "api 0", cx);
+        state.update(cx, |state, cx| state.select(&first, cx));
+        state.update(cx, |state, cx| state.create_api(None, "one more".into(), cx));
+        cx.run_until_parked();
+        let names: Vec<String> =
+            state.read_with(cx, |state, _| state.tabs().iter().map(|api| api.name.clone()).collect());
+        assert_eq!(names.len(), MAX_TABS);
+        assert!(!names.contains(&"api 1".to_string()), "{names:?}");
+        assert!(names.contains(&"api 0".to_string()) && names.contains(&"one more".to_string()));
     }
 
     /// A document that still carries pins (the old place) is copied onto

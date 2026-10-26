@@ -1300,6 +1300,8 @@ async fn workspace_prefs_are_per_collection(storage: &Storage) {
     let prefs = WorkspacePrefs {
         expanded: vec![ItemId::from("f1"), ItemId::from("f2")],
         selected: Some(login.item.id.clone()),
+        // F1: the open tabs, in order.
+        open: vec![ItemId::from("a2"), login.item.id.clone()],
         pinned: vec![login.item.id.clone()],
         filters: [(login.item.id.clone(), "$.data[*].name".to_string())]
             .into_iter()

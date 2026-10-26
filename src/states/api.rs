@@ -26,7 +26,7 @@
 //! by project, never saved: the next send's dialog starts with it, and the
 //! request's code, schema and reflection take it.
 
-use super::{Load, WorkspaceState, run_store};
+use super::{Load, WorkspaceState, run_serial, run_store};
 use crate::this_build;
 use cyberapi_core::assertions::{self, Assertion, Extraction, Outcomes, Problem, Subject};
 use cyberapi_core::auth::Auth;
@@ -224,6 +224,9 @@ pub struct ApiState {
     /// failed, so the next one goes out whatever it holds.
     saved: Option<HttpRequest>,
     save_task: Option<Task<()>>,
+    /// The saves, one at a time in the order made: each writes the whole
+    /// request, and one that landed after a later one would undo it.
+    saves: Arc<async_lock::Mutex<()>>,
     sending: Option<Sending>,
     /// The event stream being answered, while it comes.
     live: Option<LiveStream>,
@@ -291,6 +294,7 @@ impl ApiState {
             request: api.request.clone(),
             saved: Some(api.request.clone()),
             save_task: None,
+            saves: Arc::default(),
             sending: None,
             live: None,
             last_send: None,
@@ -637,7 +641,7 @@ impl ApiState {
             .save_request(self.collection.clone(), self.api.clone(), request.clone());
         // Marked saved now, so a change while the call is out saves again.
         self.saved = Some(request.clone());
-        run_store(cx, call, move |this, result, cx| match result {
+        run_serial(cx, &self.saves, call, move |this, result, cx| match result {
             Ok(setting) => {
                 let _ = this
                     .workspace
@@ -810,7 +814,13 @@ impl ApiState {
     pub fn show_response(&mut self, id: String, cx: &mut Context<Self>) {
         match self.history {
             Load::Loading => self.wanted = Some(id),
-            _ => self.choose_response(&id, cx),
+            _ if self.responses.iter().any(|response| response.id == id) => self.choose_response(&id, cx),
+            // F1: an editor kept open since before the response was: its
+            // history read again first.
+            _ => {
+                self.wanted = Some(id);
+                self.load_history(cx);
+            }
         }
     }
 

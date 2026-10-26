@@ -20,6 +20,7 @@ mod response_panel;
 mod run_dialog;
 mod schema_browser;
 mod settings_dialogs;
+mod tabs;
 mod tree_panel;
 mod versions_dialog;
 
@@ -46,7 +47,7 @@ use gpui_kit::component::{ActiveTheme as _, Icon, IconName, WindowExt as _, h_fl
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EntityId, FocusHandle, Focusable, Hsla, InteractiveElement as _,
-    IntoElement, KeyBinding, ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, px,
+    IntoElement, KeyBinding, ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, div, px,
 };
 pub use pins::PinsBar;
 pub use project_title::ProjectTitle;
@@ -54,6 +55,7 @@ pub use project_title::ProjectTitle;
 use request_editor::{RequestEditor, RequestEditorEvent};
 use response_panel::ResponsePanel;
 use rust_i18n::t;
+use tabs::TabsBar;
 use tree_panel::TreePanel;
 pub(crate) use tree_panel::{
     Close as TreeClose, Duplicate as TreeDuplicate, KEY_CONTEXT as TREE_CONTEXT, Next as TreeNext, Open as TreeOpen,
@@ -61,6 +63,9 @@ pub(crate) use tree_panel::{
 };
 
 gpui_kit::actions!(workspace, [NewApi, NewFolder, Send, PasteCurl, FindApi, FocusUrl]);
+
+// F1: the open tabs from the keyboard.
+gpui_kit::actions!(workspace, [CloseTab, NextTab, PreviousTab]);
 
 // F12.2 from the keyboard: Cmd/Ctrl and a pin's number selects it.
 gpui_kit::actions!(workspace, [Pin1, Pin2, Pin3, Pin4, Pin5, Pin6, Pin7, Pin8, Pin9]);
@@ -101,6 +106,11 @@ pub fn bind_keys(cx: &mut App) {
         // field that cannot search hands the same keys on as its `Search`.
         KeyBinding::new("secondary-f", FindApi, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-l", FocusUrl, Some(KEY_CONTEXT)),
+        // F1: as a browser's. On a Mac the menu's Close Window takes Cmd-W
+        // first, and the workspace answers its action instead.
+        KeyBinding::new("secondary-w", CloseTab, Some(KEY_CONTEXT)),
+        KeyBinding::new("ctrl-tab", NextTab, Some(KEY_CONTEXT)),
+        KeyBinding::new("ctrl-shift-tab", PreviousTab, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-1", Pin1, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-2", Pin2, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-3", Pin3, Some(KEY_CONTEXT)),
@@ -395,6 +405,7 @@ pub struct WorkspaceView {
     state: Entity<WorkspaceState>,
     tree: Entity<TreePanel>,
     pins: Entity<PinsBar>,
+    tabs: Entity<TabsBar>,
     title_name: Entity<ProjectTitle>,
     selected: Option<Selected>,
     columns: Entity<ResizableState>,
@@ -422,6 +433,7 @@ impl WorkspaceView {
         let id = state.read(cx).collection().id.clone();
         let tree = cx.new(|cx| TreePanel::new(state.clone(), window, cx));
         let pins = cx.new(|cx| PinsBar::new(state.clone(), cx));
+        let tabs = cx.new(|cx| TabsBar::new(state.clone(), cx));
         let title_name = cx.new(|cx| ProjectTitle::new(state.clone(), cx));
         let subscriptions = vec![
             cx.observe_in(&state, window, |this, _, window, cx| {
@@ -511,6 +523,7 @@ impl WorkspaceView {
             state,
             tree,
             pins,
+            tabs,
             title_name,
             selected: None,
             columns,
@@ -632,6 +645,15 @@ impl WorkspaceView {
         self.tree.update(cx, |tree, cx| tree.focus_search(window, cx));
     }
 
+    /// F1: the open tab closed; with none open, the window's own close.
+    fn close_tab(&mut self, cx: &mut Context<Self>) {
+        let opened = self.state.read(cx).opened().cloned();
+        match opened {
+            Some(opened) => self.state.update(cx, |state, cx| state.close_tab(&opened, cx)),
+            None => cx.propagate(),
+        }
+    }
+
     fn select_pin(&mut self, index: usize, cx: &mut Context<Self>) {
         let id = self.state.read(cx).pinned().get(index).map(|api| api.id.clone());
         if let Some(id) = id {
@@ -745,7 +767,12 @@ impl Render for WorkspaceView {
                     resizable_panel()
                         .size(px(editor_width))
                         .size_range(px(280.)..px(4000.))
-                        .child(selected.editor.clone()),
+                        .child(
+                            v_flex()
+                                .size_full()
+                                .child(self.tabs.clone())
+                                .child(div().w_full().flex_1().min_h_0().child(selected.editor.clone())),
+                        ),
                 )
                 .child(
                     resizable_panel()
@@ -782,6 +809,12 @@ impl Render for WorkspaceView {
                     let _ = editor.update(cx, |editor, cx| editor.send(window, cx));
                 }
             })
+            .on_action(cx.listener(|this, _: &CloseTab, _, cx| this.close_tab(cx)))
+            .on_action(cx.listener(|this, _: &crate::CloseWindow, _, cx| this.close_tab(cx)))
+            .on_action(cx.listener(|this, _: &NextTab, _, cx| this.state.update(cx, |state, cx| state.step_tab(1, cx))))
+            .on_action(
+                cx.listener(|this, _: &PreviousTab, _, cx| this.state.update(cx, |state, cx| state.step_tab(-1, cx))),
+            )
             .on_action(cx.listener(|this, _: &FindApi, window, cx| this.find_api(window, cx)))
             .on_action(cx.listener(|this, _: &Search, window, cx| this.find_api(window, cx)))
             .on_action(move |_: &FocusUrl, window, cx| {

@@ -10,7 +10,7 @@ macOS, Windows and Linux, drawn on the GPU with GPUI. A project with thousands o
 
 ## Projects, folders and APIs
 
-Search by name or pinyin, drag to reorder, duplicate, move to a folder, copy an API's config; pin the APIs you use most (⌘/Ctrl-1…9); group projects on the home page. ⌘/Ctrl-Enter sends, ⌘/Ctrl-N adds an API, ⌘/Ctrl-F finds an API and ⌘/Ctrl-L goes to its address, the arrow keys walk the tree, Delete and ⌘/Ctrl-D delete and duplicate there, and a list shows every shortcut. ⌘/Ctrl-K opens the command palette on any page: find an API in any project — by name, folder or method, pinyin too — and open it there, open a project, switch the environment, or run a command (new API, import, run, recent responses, settings…).
+Search by name or pinyin, drag to reorder, duplicate, move to a folder, copy an API's config; pin the APIs you use most (⌘/Ctrl-1…9); each API you open stays open as a tab above the editor — with its edits, its responses and a request still on its way when you switch back — up to 16, the one shown longest ago closing first; close one with its button, a middle click or ⌘/Ctrl-W (the others or all from its menu), switch with Ctrl-Tab / Ctrl-Shift-Tab, and find them open again next time; group projects on the home page. ⌘/Ctrl-Enter sends, ⌘/Ctrl-N adds an API, ⌘/Ctrl-F finds an API and ⌘/Ctrl-L goes to its address, the arrow keys walk the tree, Delete and ⌘/Ctrl-D delete and duplicate there, and a list shows every shortcut. ⌘/Ctrl-K opens the command palette on any page: find an API in any project — by name, folder or method, pinyin too — and open it there, open a project, switch the environment, or run a command (new API, import, run, recent responses, settings…).
 
 ## Requests
 
