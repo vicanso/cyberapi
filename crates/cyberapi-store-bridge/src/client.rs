@@ -105,6 +105,7 @@ impl Transport for EngineTransport {
             streams: false,
             // The environment's proxy, as curl would take it (#60).
             proxy: Default::default(),
+            digest: None,
         };
         let call = self.engine.send(request);
         Box::pin(async move {

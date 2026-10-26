@@ -43,6 +43,13 @@ pub fn curl(
     if prepared.accept_invalid_certs {
         parts.push("-k".to_string());
     }
+    if let Some(login) = &prepared.digest {
+        parts.push("--digest".to_string());
+        parts.push(format!(
+            "-u {}",
+            quote(&format!("{}:{}", login.username, login.password))
+        ));
+    }
     // curl, too, prefers HTTP/2 over TLS and speaks HTTP/1.1 otherwise.
     match prepared.http_version {
         HttpVersion::Auto => {}

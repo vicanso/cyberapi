@@ -122,6 +122,13 @@ fn httpie(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool)
     if prepared.accept_invalid_certs {
         words.push("--verify=no".into());
     }
+    if let Some(login) = &prepared.digest {
+        words.push("--auth-type=digest".into());
+        words.push(format!(
+            "--auth={}",
+            shell(&format!("{}:{}", login.username, login.password))
+        ));
+    }
     if parts.fields.is_some() {
         words.push("--multipart".into());
     }
@@ -163,6 +170,9 @@ fn fetch(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool) 
     if prepared.accept_invalid_certs {
         lines.push("// Certificates are not checked: in Node, run this with NODE_TLS_REJECT_UNAUTHORIZED=0.".into());
     }
+    if let Some(login) = &prepared.digest {
+        lines.push(unanswered_digest("//", &login.username, "fetch"));
+    }
     if let Some(fields) = &parts.fields {
         lines.push("const body = new FormData();".into());
         for (name, field) in fields {
@@ -200,14 +210,32 @@ fn fetch(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool) 
     lines.join("\n")
 }
 
+/// C2: a comment for a library that answers no Digest challenge itself.
+fn unanswered_digest(comment: &str, username: &str, library: &str) -> String {
+    format!(
+        "{comment} It signs in with Digest as {}, which {library} does not answer by itself.",
+        string(username)
+    )
+}
+
 fn python(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool) -> String {
-    let mut lines = vec![
-        "import requests".to_string(),
+    let mut lines = vec!["import requests".to_string()];
+    if prepared.digest.is_some() {
+        lines.push("from requests.auth import HTTPDigestAuth".to_string());
+    }
+    lines.extend([
         String::new(),
         "response = requests.request(".to_string(),
         format!("    {},", string(prepared.method.as_str())),
         format!("    {},", string(&prepared.url)),
-    ];
+    ]);
+    if let Some(login) = &prepared.digest {
+        lines.push(format!(
+            "    auth=HTTPDigestAuth({}, {}),",
+            string(&login.username),
+            string(&login.password)
+        ));
+    }
     if !parts.headers.is_empty() {
         lines.push("    headers={".into());
         for (name, value) in &parts.headers {
@@ -276,6 +304,9 @@ fn go(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool) -> 
     let mut lines = vec!["package main".to_string(), String::new(), "import (".to_string()];
     lines.extend(imports.iter().map(|import| format!("\t{import}")));
     lines.extend([")".to_string(), String::new(), "func main() {".to_string()]);
+    if let Some(login) = &prepared.digest {
+        lines.push(unanswered_digest("\t//", &login.username, "net/http"));
+    }
     let body = if let Some(fields) = &parts.fields {
         lines.push("\tvar body bytes.Buffer".into());
         lines.push("\tform := multipart.NewWriter(&body)".into());
@@ -395,6 +426,36 @@ mod tests {
             ..Default::default()
         };
         (prepared, request)
+    }
+
+    /// C2: what answers a Digest challenge, where the target can.
+    #[test]
+    fn digest_is_answered_where_the_target_can() {
+        let prepared = PreparedRequest {
+            method: HttpMethod::Get,
+            url: "https://cam.test/ISAPI/System/deviceInfo".into(),
+            digest: Some(crate::digest::DigestLogin {
+                username: "admin".into(),
+                password: "it's".into(),
+            }),
+            ..Default::default()
+        };
+        let request = HttpRequest::default();
+        let of = |target| code(target, &prepared, &request, false);
+        assert!(
+            of(CodeTarget::Curl).contains(r"--digest -u 'admin:it'\''s'"),
+            "{}",
+            of(CodeTarget::Curl)
+        );
+        assert!(of(CodeTarget::Httpie).contains(r"--auth-type=digest --auth='admin:it'\''s'"));
+        let python = of(CodeTarget::Python);
+        assert!(python.starts_with("import requests\nfrom requests.auth import HTTPDigestAuth\n"));
+        assert!(
+            python.contains(r#"    auth=HTTPDigestAuth("admin", "it's"),"#),
+            "{python}"
+        );
+        assert!(of(CodeTarget::Fetch).contains(r#"// It signs in with Digest as "admin", which fetch does not"#));
+        assert!(of(CodeTarget::Go).contains(r#"	// It signs in with Digest as "admin", which net/http does not"#));
     }
 
     #[test]

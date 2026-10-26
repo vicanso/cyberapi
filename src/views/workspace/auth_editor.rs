@@ -48,7 +48,13 @@ pub enum AuthFor {
 
 /// The project has nothing to inherit: its "none" is kept as inheriting,
 /// which is the same and leaves it nothing to keep.
-const PROJECT_KINDS: [AuthKind; 4] = [AuthKind::None, AuthKind::Basic, AuthKind::Bearer, AuthKind::ApiKey];
+const PROJECT_KINDS: [AuthKind; 5] = [
+    AuthKind::None,
+    AuthKind::Basic,
+    AuthKind::Bearer,
+    AuthKind::ApiKey,
+    AuthKind::Digest,
+];
 
 pub struct AuthEditor {
     owner: AuthFor,
@@ -75,6 +81,7 @@ fn kind_label(kind: AuthKind) -> String {
         AuthKind::Basic => t!("editor.auth_basic"),
         AuthKind::Bearer => t!("editor.auth_bearer"),
         AuthKind::ApiKey => t!("editor.auth_api_key"),
+        AuthKind::Digest => t!("editor.auth_digest"),
     }
     .to_string()
 }
@@ -130,6 +137,10 @@ impl AuthEditor {
         let (mut username, mut password, mut token, mut name, mut value, mut place_now) = Default::default();
         match &auth {
             Auth::Basic {
+                username: user,
+                password: secret,
+            }
+            | Auth::Digest {
                 username: user,
                 password: secret,
             } => (username, password) = (user.clone(), secret.clone()),
@@ -236,6 +247,10 @@ impl AuthEditor {
             },
             AuthKind::Bearer => Auth::Bearer {
                 token: text(&self.templated[TOKEN]),
+            },
+            AuthKind::Digest => Auth::Digest {
+                username: text(&self.templated[USERNAME]),
+                password: text(&self.templated[PASSWORD]),
             },
             AuthKind::ApiKey => Auth::ApiKey {
                 name: text(&self.key_name),
@@ -419,6 +434,7 @@ impl Render for AuthEditor {
             AuthKind::None if matches!(self.owner, AuthFor::Project) => t!("editor.auth_none_project_hint"),
             AuthKind::None => t!("editor.auth_none_hint"),
             AuthKind::Basic => t!("editor.auth_basic_hint"),
+            AuthKind::Digest => t!("editor.auth_digest_hint"),
             AuthKind::Bearer => t!("editor.auth_bearer_hint"),
             AuthKind::ApiKey if grpc => t!("editor.auth_api_key_grpc_hint"),
             AuthKind::ApiKey => t!("editor.auth_api_key_hint"),
@@ -429,7 +445,7 @@ impl Render for AuthEditor {
         let narrow = |select: Select<Vec<Choice>>| div().w(rems(12.)).child(select.small());
         let mut rows = vec![row(t!("editor.auth_kind").to_string(), narrow(Select::new(&self.kind)))];
         match kind {
-            AuthKind::Basic => {
+            AuthKind::Basic | AuthKind::Digest => {
                 rows.push(row(t!("editor.user").to_string(), self.templated_field(USERNAME, cx)));
                 rows.push(row(
                     t!("editor.password").to_string(),

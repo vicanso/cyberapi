@@ -442,6 +442,9 @@ fn auth_json(auth: &Auth) -> Json {
             json!({ "type": "basic", "username": username, "password": masked("password", password) })
         }
         Auth::Bearer { token } => json!({ "type": "bearer", "token": masked("token", token) }),
+        Auth::Digest { username, password } => {
+            json!({ "type": "digest", "username": username, "password": masked("password", password) })
+        }
         Auth::ApiKey { name, value, place } => json!({
             "type": "apiKey",
             "name": name,

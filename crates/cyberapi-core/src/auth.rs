@@ -6,6 +6,7 @@
 //! enabled entry was Basic's user and password — reads as `Basic`; nothing
 //! writes it any more.
 
+use crate::digest::DigestLogin;
 use crate::model::KvParam;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,14 @@ pub enum Auth {
     Bearer {
         #[serde(default)]
         token: String,
+    },
+    /// C2: a user and a password, answering the server's challenge
+    /// (`crate::digest`).
+    Digest {
+        #[serde(default)]
+        username: String,
+        #[serde(default)]
+        password: String,
     },
     /// A key under a name of the API's choosing.
     ApiKey {
@@ -59,12 +68,13 @@ pub enum Signed {
 
 impl Auth {
     /// The kinds, in the order the editor offers them.
-    pub const KINDS: [AuthKind; 5] = [
+    pub const KINDS: [AuthKind; 6] = [
         AuthKind::Inherit,
         AuthKind::None,
         AuthKind::Basic,
         AuthKind::Bearer,
         AuthKind::ApiKey,
+        AuthKind::Digest,
     ];
 
     pub fn is_inherit(&self) -> bool {
@@ -78,12 +88,16 @@ impl Auth {
             Self::Basic { .. } => AuthKind::Basic,
             Self::Bearer { .. } => AuthKind::Bearer,
             Self::ApiKey { .. } => AuthKind::ApiKey,
+            Self::Digest { .. } => AuthKind::Digest,
         }
     }
 
     /// Whether it signs in itself, rather than inheriting or not at all.
     pub fn signs(&self) -> bool {
-        matches!(self, Self::Basic { .. } | Self::Bearer { .. } | Self::ApiKey { .. })
+        matches!(
+            self,
+            Self::Basic { .. } | Self::Bearer { .. } | Self::ApiKey { .. } | Self::Digest { .. }
+        )
     }
 
     /// What the old list said: its first enabled entry, Basic's user and
@@ -98,22 +112,23 @@ impl Auth {
         }
     }
 
-    /// The texts that are templates: Basic's user and password, the token,
-    /// the key's value.
+    /// The texts that are templates: Basic's and Digest's user and
+    /// password, the token, the key's value.
     pub fn templates(&self) -> Vec<&str> {
         match self {
-            Self::Basic { username, password } => vec![username, password],
+            Self::Basic { username, password } | Self::Digest { username, password } => vec![username, password],
             Self::Bearer { token } => vec![token],
             Self::ApiKey { value, .. } => vec![value],
             Self::Inherit | Self::None => Vec::new(),
         }
     }
 
-    /// The name of the header it sends, if it sends one. A call with no
-    /// query (gRPC: `query` false) sends its key as a header too.
+    /// The name of the header it sends, if it sends one — Digest's goes
+    /// once the server asks for it. A call with no query (gRPC: `query`
+    /// false) sends its key as a header too.
     pub fn header_name(&self, query: bool) -> Option<&str> {
         match self {
-            Self::Basic { .. } | Self::Bearer { .. } => Some("Authorization"),
+            Self::Basic { .. } | Self::Bearer { .. } | Self::Digest { .. } => Some("Authorization"),
             Self::ApiKey { name, place, .. } if *place == KeyPlace::Header || !query => {
                 Some(name.trim()).filter(|name| !name.is_empty())
             }
@@ -141,10 +156,11 @@ impl Auth {
 
     /// What it adds to a request, its templates rendered by `render`: a
     /// header, a query parameter, or nothing (inheriting, none, a key with
-    /// no name). A call with no query takes its key as a header.
+    /// no name, Digest until the server asks). A call with no query takes
+    /// its key as a header.
     pub fn sign<E>(&self, query: bool, render: impl Fn(&str) -> Result<String, E>) -> Result<Option<Signed>, E> {
         Ok(match self {
-            Self::Inherit | Self::None => None,
+            Self::Inherit | Self::None | Self::Digest { .. } => None,
             Self::Basic { username, password } => {
                 let pair = format!("{}:{}", render(username)?, render(password)?);
                 Some(Signed::Header {
@@ -172,6 +188,19 @@ impl Auth {
     }
 }
 
+impl Auth {
+    /// C2: Digest's user and password, rendered by `render`.
+    pub fn digest_login<E>(&self, render: impl Fn(&str) -> Result<String, E>) -> Result<Option<DigestLogin>, E> {
+        Ok(match self {
+            Self::Digest { username, password } => Some(DigestLogin {
+                username: render(username)?,
+                password: render(password)?,
+            }),
+            _ => None,
+        })
+    }
+}
+
 /// An [`Auth`]'s kind, without its values: what the editor's list picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AuthKind {
@@ -180,6 +209,7 @@ pub enum AuthKind {
     Basic,
     Bearer,
     ApiKey,
+    Digest,
 }
 
 #[cfg(test)]

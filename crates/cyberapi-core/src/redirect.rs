@@ -63,6 +63,8 @@ pub fn next(request: &PreparedRequest, status: u16, headers: &[(String, String)]
     }
     if origin(&from) != origin(&to) {
         drop_headers(&mut next, &ORIGIN_HEADERS);
+        // A Digest login, like the Authorization it would make.
+        next.digest = None;
     }
     next.url = to.to_string();
     Some(next)
@@ -100,6 +102,10 @@ mod tests {
             http_version: HttpVersion::Http2,
             streams: false,
             proxy: Default::default(),
+            digest: Some(crate::digest::DigestLogin {
+                username: "a".into(),
+                password: "b".into(),
+            }),
         }
     }
 
@@ -174,8 +180,10 @@ mod tests {
         ] {
             let next = next(&request, 307, &location(elsewhere)).expect("followed");
             assert_eq!(names(&next), vec!["X-Trace"], "{elsewhere}");
+            assert_eq!(next.digest, None, "a Digest login too: {elsewhere}");
         }
         let same = next(&request, 307, &location("https://api.test:443/v1/me")).expect("followed");
+        assert!(same.digest.is_some());
         assert_eq!(
             names(&same),
             vec!["Host", "authorization", "X-Trace"],

@@ -18,6 +18,7 @@
 use cyberapi_core::Timestamp;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::cookie::{cookie_header, parse_set_cookie};
+use cyberapi_core::digest::{self, Unanswered as DigestUnanswered};
 use cyberapi_core::environments;
 use cyberapi_core::graphql::GraphQlBody;
 use cyberapi_core::graphql_schema::{INTROSPECTION_QUERY, Schema};
@@ -153,6 +154,10 @@ pub async fn send_watched(
     let started = Instant::now();
     let mut earlier = Duration::ZERO;
     let mut hops = 0;
+    // C2: this hop's Authorization is the answer to its Digest challenge;
+    // why one was not answered.
+    let mut answered_digest = false;
+    let mut digest_notice = None;
     let (sent, answered) = loop {
         let sent_to = prepared.url.clone();
         let answered = match &watch {
@@ -163,6 +168,19 @@ pub async fn send_watched(
             break (prepared, answered);
         };
         keep_cookies(&sender, exchange, &sent_to).await;
+        match answer_digest(&prepared, exchange) {
+            Some(Ok(signed)) => {
+                answered_digest = true;
+                earlier += exchange.stats.total;
+                prepared = signed;
+                continue;
+            }
+            Some(Err(why)) => {
+                digest_notice = Some(why);
+                break (prepared, answered);
+            }
+            None => {}
+        }
         let next = (sender.sending.follow_redirects && grpc.is_none())
             .then(|| redirect::next(&prepared, exchange.status, &exchange.headers))
             .flatten();
@@ -174,6 +192,12 @@ pub async fn send_watched(
         }
         hops += 1;
         earlier += exchange.stats.total;
+        // Its nonce and its URI were this hop's: the next is asked anew.
+        if answered_digest {
+            next.headers
+                .retain(|(name, _)| !name.eq_ignore_ascii_case("authorization"));
+            answered_digest = false;
+        }
         if from_jar {
             next.headers.retain(|(name, _)| !name.eq_ignore_ascii_case("cookie"));
         }
@@ -210,7 +234,7 @@ pub async fn send_watched(
                     Ok(json) => (json.map(String::into_bytes).unwrap_or_default(), None, exchange.stream),
                     Err(why) => (exchange.body, Some(why), exchange.stream),
                 },
-                None => (exchange.body, None, exchange.stream),
+                None => (exchange.body, digest_notice, exchange.stream),
             };
             HttpResponse {
                 api: api.clone(),
@@ -294,7 +318,14 @@ pub async fn introspect(
             .await
             .map_err(|failure| failure.to_string())?;
     }
-    let exchange = sender.engine.send(prepared).await.map_err(|error| error.to_string())?;
+    let mut exchange = sender
+        .engine
+        .send(prepared.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(Ok(signed)) = answer_digest(&prepared, &exchange) {
+        exchange = sender.engine.send(signed).await.map_err(|error| error.to_string())?;
+    }
     match Schema::from_introspection(&exchange.body) {
         Ok(schema) => Ok(schema),
         Err(why) if !(200..300).contains(&exchange.status) => Err(format!("{} ({why})", exchange.status)),
@@ -368,6 +399,49 @@ pub async fn code(
         &request,
         sender.sending.follow_redirects,
     ))
+}
+
+/// C2: `prepared` again, with the answer to the Digest challenge of
+/// `exchange` — a 401 to a request that signs in with Digest and has not
+/// answered one yet. `None` when there is none to answer; `Err` says why a
+/// challenge is not answered.
+fn answer_digest(prepared: &PreparedRequest, exchange: &Exchange) -> Option<Result<PreparedRequest, String>> {
+    let login = prepared.digest.as_ref()?;
+    if exchange.status != 401 || prepared.header("authorization").is_some() {
+        return None;
+    }
+    let challenge = match digest::challenge(&exchange.headers) {
+        Ok(challenge) => challenge,
+        Err(DigestUnanswered::NotAsked) => return None,
+        Err(DigestUnanswered::Unsupported(what)) => {
+            return Some(Err(format!(
+                "The server asks for Digest with {what}, which CyberAPI does not answer."
+            )));
+        }
+    };
+    let url = url::Url::parse(&prepared.url).ok()?;
+    let uri = match url.query() {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_string(),
+    };
+    let cnonce = format!(
+        "{:016x}{:016x}",
+        getrandom::u64().unwrap_or_default(),
+        getrandom::u64().unwrap_or_else(|_| now_nanos())
+    );
+    let mut signed = prepared.clone();
+    signed.headers.push((
+        "Authorization".into(),
+        digest::authorization(&challenge, prepared.method.as_str(), &uri, login, &cnonce),
+    ));
+    Some(Ok(signed))
+}
+
+fn now_nanos() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_nanos() as u64)
+        .unwrap_or_default()
 }
 
 /// Why reflection at one path gave no definitions.
@@ -1249,6 +1323,89 @@ mod tests {
             *machine.0.lock().expect("asked"),
             [vec!["TOKEN".to_string()], vec!["MISSING".to_string()]]
         );
+    }
+
+    /// C2: a 401 that asks for Digest is answered once, and the answer is
+    /// what the history keeps; a request with its own Authorization, or a
+    /// challenge not answered, ends at the 401.
+    #[test]
+    fn a_digest_challenge_is_answered_once() {
+        struct Camera {
+            qop: &'static str,
+            asked: Mutex<Vec<PreparedRequest>>,
+        }
+        impl HttpEngine for Camera {
+            fn send(&self, request: PreparedRequest) -> SendFuture {
+                self.asked.lock().expect("asked").push(request.clone());
+                let answer = match request.header("authorization") {
+                    Some(signed) if signed.starts_with("Digest ") => ok(200, "{}"),
+                    _ => Ok(Exchange {
+                        status: 401,
+                        headers: vec![(
+                            "www-authenticate".into(),
+                            format!(
+                                r#"Digest realm="cam", nonce="n1", qop="{}", algorithm=SHA-256"#,
+                                self.qop
+                            ),
+                        )],
+                        ..Default::default()
+                    }),
+                };
+                Box::pin(async move { answer })
+            }
+        }
+        let setup = setup(ok(200, "{}"));
+        let api = new_api(&setup, "camera");
+        let send_to = |setup: &Setup, qop: &'static str, headers: Vec<KvParam>| {
+            let camera = Arc::new(Camera {
+                qop,
+                asked: Mutex::default(),
+            });
+            let sender = Sender {
+                engine: camera.clone(),
+                ..setup.sender.clone()
+            };
+            let response = pollster::block_on(send(
+                sender,
+                setup.collection.clone(),
+                api.clone(),
+                HttpRequest {
+                    uri: "http://cam.test/ISAPI/info?x=1".into(),
+                    headers,
+                    auth: cyberapi_core::auth::Auth::Digest {
+                        username: "admin".into(),
+                        password: "secret".into(),
+                    },
+                    ..Default::default()
+                },
+                Answers::default(),
+            ))
+            .expect("sent");
+            let asked = camera.asked.lock().expect("asked").clone();
+            (response, asked)
+        };
+
+        let (response, asked) = send_to(&setup, "auth", Vec::new());
+        assert_eq!(response.status, Some(200));
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[0].header("authorization"), None, "asked first without");
+        let signed = asked[1].header("authorization").expect("signed");
+        assert!(
+            signed.starts_with(r#"Digest username="admin", realm="cam", nonce="n1", uri="/ISAPI/info?x=1", algorithm=SHA-256, response=""#),
+            "{signed}"
+        );
+        let sent = response.sent.expect("sent");
+        let header = sent.headers.iter().find(|h| h.name == "Authorization").expect("kept");
+        assert_eq!(header.from, HeaderSource::Auth);
+
+        // The request's own Authorization wins: no Digest.
+        let (response, asked) = send_to(&setup, "auth", vec![kv("Authorization", "Bearer mine")]);
+        assert_eq!((response.status, asked.len()), (Some(401), 1));
+
+        // A challenge it does not answer: the 401, and why.
+        let (response, asked) = send_to(&setup, "auth-int", Vec::new());
+        assert_eq!((response.status, asked.len()), (Some(401), 1));
+        assert!(response.notice.expect("why").contains("qop auth-int"));
     }
 
     #[test]

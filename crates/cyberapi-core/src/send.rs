@@ -17,6 +17,7 @@
 //! no query.
 
 use crate::auth::Signed;
+use crate::digest::DigestLogin;
 use crate::graphql::GraphQlBody;
 use crate::grpc::{self, GrpcBody};
 use crate::inherit::Inherited;
@@ -55,6 +56,10 @@ pub struct PreparedRequest {
     /// page asks of it goes direct, within its address rules.
     #[serde(skip)]
     pub proxy: ProxyPrefs,
+    /// C2: what answers a server's Digest challenge, should it ask. Never
+    /// sent to the bridge: the answer goes, as a header.
+    #[serde(skip)]
+    pub digest: Option<DigestLogin>,
 }
 
 impl PreparedRequest {
@@ -530,6 +535,8 @@ pub fn grpc_call(
         http_version: HttpVersion::Http2,
         streams: false,
         proxy: cx.proxy.clone(),
+        // gRPC servers ask for no Digest.
+        digest: None,
     })
 }
 
@@ -629,6 +636,15 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         headers.set_default("Content-Type", &content_type);
     }
 
+    // C2: unless the request names its own Authorization (#3).
+    let digest = match headers
+        .0
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+    {
+        true => None,
+        false => cx.inherited.auth(&request.auth).digest_login(render)?,
+    };
     Ok(PreparedRequest {
         method: request.method,
         url: url.to_string(),
@@ -639,6 +655,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         http_version: cx.http_version,
         proxy: cx.proxy.clone(),
         streams: false,
+        digest,
     })
 }
 
