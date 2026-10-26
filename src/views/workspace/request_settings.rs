@@ -197,12 +197,26 @@ impl Render for RequestSettingsView {
                 cx,
             ));
         }
-        for (label, input) in [
-            (t!("settings.timeout_connect"), &self.connect),
-            (t!("settings.timeout_write"), &self.write),
-            (t!("settings.timeout_read"), &self.read),
+        // #76: what each bounds, the write and read timeouts being one limit.
+        for (label, description, input) in [
+            (
+                t!("settings.timeout_connect"),
+                t!("editor.timeout_connect_desc"),
+                &self.connect,
+            ),
+            (
+                t!("settings.timeout_write"),
+                t!("editor.timeout_write_desc"),
+                &self.write,
+            ),
+            (t!("settings.timeout_read"), t!("editor.timeout_read_desc"), &self.read),
         ] {
-            rows.push(setting_row(label.to_string(), None, Input::new(input).small(), cx));
+            rows.push(setting_row(
+                label.to_string(),
+                Some(description.to_string()),
+                Input::new(input).small(),
+                cx,
+            ));
         }
         if !grpc {
             rows.push(setting_row(
