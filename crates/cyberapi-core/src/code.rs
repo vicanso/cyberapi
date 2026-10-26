@@ -193,6 +193,13 @@ fn fetch(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool) 
     if !parts.headers.is_empty() {
         lines.push("    headers: {".into());
         for (name, value) in &parts.headers {
+            // #77: Node sends it; a browser drops it, unasked.
+            if name.eq_ignore_ascii_case("cookie") {
+                lines.push(
+                    "        // A browser drops this header; there, credentials: \"include\" sends the browser's own cookies."
+                        .into(),
+                );
+            }
             lines.push(format!("        {}: {},", string(name), string(value)));
         }
         lines.push("    },".into());
@@ -511,6 +518,32 @@ mod tests {
         assert_eq!(
             code(CodeTarget::Httpie, &insecure, &request, true),
             "http --verbose --follow --verify=no --multipart POST 'https://api.test/upload' 'a=1' 'f@/tmp/x.png'"
+        );
+    }
+
+    /// #77: a browser's fetch drops a Cookie header it is given.
+    #[test]
+    fn fetch_says_a_browser_drops_its_cookie_header() {
+        let prepared = PreparedRequest {
+            method: HttpMethod::Get,
+            url: "http://127.0.0.1:8765/echo".into(),
+            headers: vec![
+                ("X-Pm".into(), "1".into()),
+                ("Cookie".into(), "a=1; session=abc".into()),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            code(CodeTarget::Fetch, &prepared, &HttpRequest::default(), true),
+            r#"const response = await fetch("http://127.0.0.1:8765/echo", {
+    method: "GET",
+    headers: {
+        "X-Pm": "1",
+        // A browser drops this header; there, credentials: "include" sends the browser's own cookies.
+        "Cookie": "a=1; session=abc",
+    },
+});
+console.log(response.status, await response.text());"#
         );
     }
 
