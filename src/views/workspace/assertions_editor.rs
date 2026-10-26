@@ -1,17 +1,19 @@
 //! An API's assertions (A1): one a row — what of the answer, the header or
 //! path when it names one, how it compares, and with what — each marked
-//! with how the response the panel shows holds up to it.
+//! with how the response the panel shows holds up to it. Under them, what a
+//! run takes from the answer for the requests after it (A2): a name, what
+//! of the answer, and what it would take from the response shown.
 
 use crate::states::ApiState;
 use crate::views::settings::Choice;
-use cyberapi_core::assertions::{Assertion, Checked, Op, Problem, Subject, TYPES};
+use cyberapi_core::assertions::{Assertion, Checked, Extraction, Op, Problem, Subject, TYPES};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -102,9 +104,21 @@ struct Row {
     _ops: Subscription,
 }
 
+/// A2: an extraction's row.
+struct Take {
+    id: usize,
+    enabled: bool,
+    subject: Subject,
+    subjects: Choices,
+    name: Entity<InputState>,
+    target: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
+}
+
 pub struct AssertionsEditor {
     api: Entity<ApiState>,
     rows: Vec<Row>,
+    takes: Vec<Take>,
     next: usize,
     _subscriptions: Vec<Subscription>,
 }
@@ -112,18 +126,221 @@ pub struct AssertionsEditor {
 impl AssertionsEditor {
     pub fn new(api: Entity<ApiState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let assertions = api.read(cx).request().assertions.clone();
+        let extractions = api.read(cx).request().extractions.clone();
         // A new response, or new assertions: the marks change.
         let subscriptions = vec![cx.observe(&api, |_, _, cx| cx.notify())];
         let mut editor = Self {
             api,
             rows: Vec::new(),
+            takes: Vec::new(),
             next: 0,
             _subscriptions: subscriptions,
         };
         for assertion in &assertions {
             editor.push_row(assertion, window, cx);
         }
+        for extraction in &extractions {
+            editor.push_take(extraction, window, cx);
+        }
         editor
+    }
+
+    fn push_take(&mut self, extraction: &Extraction, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.next;
+        self.next += 1;
+        let subject_index = Subject::ALL
+            .iter()
+            .position(|each| *each == extraction.subject)
+            .unwrap_or(0);
+        let subjects = Self::choices(
+            Subject::ALL.iter().map(|subject| subject_label(*subject)).collect(),
+            subject_index,
+            window,
+            cx,
+        );
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("token")
+                .default_value(extraction.name.clone())
+        });
+        let target = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(target_placeholder(extraction.subject))
+                .default_value(extraction.target.clone())
+        });
+        let changed = |this: &mut Self, _: Entity<InputState>, event: &InputEvent, cx: &mut Context<Self>| {
+            if matches!(event, InputEvent::Change) {
+                this.write_takes(cx);
+            }
+        };
+        let subscriptions = vec![
+            cx.subscribe_in(
+                &subjects,
+                window,
+                move |this, _, event: &SelectEvent<Vec<Choice>>, window, cx| {
+                    if let SelectEvent::Confirm(Some(index)) = event
+                        && let Some(subject) = Subject::ALL.get(*index)
+                        && let Some(take) = this.takes.iter_mut().find(|take| take.id == id)
+                    {
+                        take.subject = *subject;
+                        take.target.update(cx, |input, cx| {
+                            input.set_placeholder(target_placeholder(*subject), window, cx)
+                        });
+                        this.write_takes(cx);
+                    }
+                },
+            ),
+            cx.subscribe(&name, changed),
+            cx.subscribe(&target, changed),
+        ];
+        self.takes.push(Take {
+            id,
+            enabled: extraction.enabled,
+            subject: extraction.subject,
+            subjects,
+            name,
+            target,
+            _subscriptions: subscriptions,
+        });
+    }
+
+    /// The extractions, as the API keeps them.
+    fn extractions(&self, cx: &App) -> Vec<Extraction> {
+        self.takes.iter().map(|take| Self::extraction(take, cx)).collect()
+    }
+
+    fn extraction(take: &Take, cx: &App) -> Extraction {
+        Extraction {
+            enabled: take.enabled,
+            name: take.name.read(cx).value().trim().to_string(),
+            subject: take.subject,
+            target: if take.subject.has_target() {
+                take.target.read(cx).value().trim().to_string()
+            } else {
+                String::new()
+            },
+        }
+    }
+
+    fn write_takes(&mut self, cx: &mut Context<Self>) {
+        let extractions = self.extractions(cx);
+        self.api.update(cx, |api, cx| api.set_extractions(extractions, cx));
+        cx.notify();
+    }
+
+    /// What the row would take from the response shown, said.
+    fn taken(&self, take: &Take, cx: &App) -> Option<(String, bool)> {
+        let extraction = Self::extraction(take, cx);
+        if !extraction.enabled || (extraction.subject.has_target() && extraction.target.is_empty()) {
+            return None;
+        }
+        match self.api.read(cx).taken(&extraction)? {
+            Ok(Some(value)) => Some((t!("assertions.taken", value = value).to_string(), true)),
+            Ok(None) => Some((t!("assertions.absent").to_string(), false)),
+            Err(problem) => Some((problem_text(&problem), false)),
+        }
+    }
+
+    fn render_takes(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (border, muted, warning) = (theme.border, theme.muted_foreground, theme.warning);
+        let rows: Vec<AnyElement> = self
+            .takes
+            .iter()
+            .map(|take| {
+                let id = take.id;
+                let taken = self.taken(take, cx);
+                v_flex()
+                    .id(("extraction", id))
+                    .py_1()
+                    .gap_0p5()
+                    .border_t_1()
+                    .border_color(border)
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                Checkbox::new(("extraction-enabled", id))
+                                    .checked(take.enabled)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(take) = this.takes.iter_mut().find(|take| take.id == id) {
+                                            take.enabled = !take.enabled;
+                                        }
+                                        this.write_takes(cx);
+                                    })),
+                            )
+                            .child(
+                                h_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_1p5()
+                                    .when(!take.enabled, |this| this.opacity(0.45))
+                                    .child(div().w(px(130.)).flex_none().child(Input::new(&take.name).small()))
+                                    .child(div().w(px(120.)).flex_none().child(Select::new(&take.subjects).small()))
+                                    .when(take.subject.has_target(), |this| {
+                                        this.child(div().flex_1().min_w_0().child(Input::new(&take.target).small()))
+                                    })
+                                    .when(!take.subject.has_target(), |this| this.child(div().flex_1())),
+                            )
+                            .child(
+                                Button::new(("extraction-remove", id))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .tooltip(SharedString::from(t!("common.delete").to_string()))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.takes.retain(|take| take.id != id);
+                                        this.write_takes(cx);
+                                    })),
+                            ),
+                    )
+                    .when_some(taken, |this, (text, found)| {
+                        this.child(
+                            div()
+                                .pl_7()
+                                .text_xs()
+                                .truncate()
+                                .text_color(if found { muted } else { warning })
+                                .child(text),
+                        )
+                    })
+                    .into_any_element()
+            })
+            .collect();
+        let empty = rows.is_empty();
+        v_flex()
+            .gap_2()
+            .pt_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_semibold()
+                    .child(t!("assertions.extract").to_string()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(t!("assertions.extract_hint").to_string()),
+            )
+            .when(!empty, |this| {
+                this.child(v_flex().border_b_1().border_color(border).children(rows))
+            })
+            .child(
+                h_flex().child(
+                    Button::new("extraction-add")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Plus)
+                        .label(t!("assertions.add_extract").to_string())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.push_take(&Extraction::default(), window, cx);
+                            this.write_takes(cx);
+                        })),
+                ),
+            )
+            .into_any_element()
     }
 
     fn choices(labels: Vec<String>, chosen: usize, window: &mut Window, cx: &mut Context<Self>) -> Choices {
@@ -439,5 +656,6 @@ impl Render for AssertionsEditor {
                         .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
                 ),
             )
+            .child(self.render_takes(cx))
     }
 }

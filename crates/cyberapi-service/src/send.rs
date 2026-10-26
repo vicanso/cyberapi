@@ -141,8 +141,31 @@ pub async fn send_watched(
     answers: Answers,
     watch: Option<Watch>,
 ) -> Result<HttpResponse, SendFailure> {
+    send_with(sender, collection, api, request, answers, watch, &[]).await
+}
+
+/// As [`send_watched`]; a run's `values` (A3, `cyberapi_core::run`) stand
+/// for the project's variables of the same names.
+pub(crate) async fn send_with(
+    sender: Sender,
+    collection: CollectionId,
+    api: ItemId,
+    request: HttpRequest,
+    answers: Answers,
+    watch: Option<Watch>,
+    values: &[(String, String)],
+) -> Result<HttpResponse, SendFailure> {
     let sender = sender.for_request(&request);
-    let (mut prepared, globals) = prepare(&sender, &collection, &request, &answers, Unanswered::Stops, None).await?;
+    let (mut prepared, globals) = prepare(
+        &sender,
+        &collection,
+        &request,
+        &answers,
+        Unanswered::Stops,
+        None,
+        values,
+    )
+    .await?;
     let grpc = (request.method == HttpMethod::Grpc).then(|| GrpcBody::read(&request.body));
     // The jar's cookies go to each hop's own address. A Cookie the request
     // names itself stays with the origin it was written for; past it, the
@@ -318,7 +341,7 @@ pub async fn introspect(
         .to_body(),
         ..request
     };
-    let (mut prepared, _) = prepare(&sender, &collection, &asking, &answers, Unanswered::Stops, None)
+    let (mut prepared, _) = prepare(&sender, &collection, &asking, &answers, Unanswered::Stops, None, &[])
         .await
         .map_err(|failure| failure.to_string())?;
     if prepared.header("cookie").is_none() {
@@ -398,7 +421,7 @@ pub async fn code(
     target: CodeTarget,
 ) -> Result<String, SendFailure> {
     let sender = sender.for_request(&request);
-    let (mut prepared, _) = prepare(&sender, &collection, &request, &answers, Unanswered::Stands, None).await?;
+    let (mut prepared, _) = prepare(&sender, &collection, &request, &answers, Unanswered::Stands, None, &[]).await?;
     if prepared.header("cookie").is_none() {
         add_cookies(&sender, &mut prepared).await?;
     }
@@ -540,6 +563,7 @@ async fn ask_reflection(
         answers,
         Unanswered::Stops,
         Some((path, body)),
+        &[],
     )
     .await
     .map_err(|failure| failed(failure.to_string()))?;
@@ -625,6 +649,7 @@ async fn prepare(
     answers: &Answers,
     unanswered: Unanswered,
     grpc_call: Option<(&str, Vec<u8>)>,
+    values: &[(String, String)],
 ) -> Result<(PreparedRequest, Vec<String>), SendFailure> {
     let store = |source| SendFailure::Store { source };
     let mut variables: Vec<Variable> = Vec::new();
@@ -643,8 +668,14 @@ async fn prepare(
         );
     }
 
-    // #61: the shared variables, and the environment's in their place.
+    // #61: the shared variables, and the environment's in their place; A3:
+    // a run's in theirs.
     let variables = environments::effective(&variables, sender.environment.as_ref().map(|found| &found.id));
+    let variables = if values.is_empty() {
+        variables
+    } else {
+        cyberapi_core::run::with_values(&variables, values)
+    };
     let needs = send::needs(request, &variables, &sender.inherited);
     let missing = answers.unanswered(&needs.prompts);
     if unanswered == Unanswered::Stops && !missing.is_empty() {
@@ -1154,6 +1185,94 @@ mod tests {
 
     fn setup_refusing() -> Setup {
         setup(ok(200, r#"{"errors": [{"message": "introspection is off"}]}"#))
+    }
+
+    /// A3: each pass sends the APIs in order; a row's values and what one
+    /// API takes from its answer (A2) are read by the requests after it,
+    /// in place of the project's; every send is kept in the history.
+    #[test]
+    fn a_run_hands_what_one_takes_to_the_next() {
+        use cyberapi_core::assertions::{Assertion, Extraction, Op, Subject};
+        let setup = setup(ok(200, "{}"));
+        variable(&setup, VariableCategory::Environment, "HOST", "https://api.test");
+        variable(&setup, VariableCategory::Custom, "user", "from the project");
+        let login = new_api(&setup, "login");
+        let me = new_api(&setup, "me");
+        setup.engine.routes.lock().expect("routes").insert(
+            "https://api.test/login".into(),
+            ok(200, r#"{"token": "t-9"}"#).expect("an answer"),
+        );
+        let steps = vec![
+            crate::RunStep {
+                api: login.clone(),
+                request: HttpRequest {
+                    method: HttpMethod::Post,
+                    uri: "{{HOST}}/login".into(),
+                    content_type: ContentType::Json,
+                    body: r#"{"user": "{{value(user)}}"}"#.into(),
+                    extractions: vec![Extraction {
+                        name: "token".into(),
+                        subject: Subject::Json,
+                        target: "$.token".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                inherited: Inherited::default(),
+            },
+            crate::RunStep {
+                api: me.clone(),
+                request: HttpRequest {
+                    uri: "{{HOST}}/me".into(),
+                    headers: vec![kv("Authorization", "Bearer {{value(token)}}")],
+                    assertions: vec![Assertion {
+                        subject: Subject::Status,
+                        op: Op::Equals,
+                        expected: "201".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                inherited: Inherited::default(),
+            },
+        ];
+        let rows = vec![
+            vec![("user".to_string(), "ann".to_string())],
+            vec![("user".to_string(), "bob".to_string())],
+        ];
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let telling = told.clone();
+        pollster::block_on(crate::run(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            steps,
+            rows,
+            Answers::default(),
+            Arc::new(move |result| telling.lock().expect("told").push(result)),
+        ));
+        let sent = setup.engine.sent.lock().expect("sent").clone();
+        let bodies: Vec<String> = sent
+            .iter()
+            .map(|prepared| String::from_utf8_lossy(&prepared.body).into_owned())
+            .collect();
+        assert_eq!(
+            bodies,
+            [r#"{"user": "ann"}"#, "", r#"{"user": "bob"}"#, ""],
+            "each pass in order, the row's value read"
+        );
+        assert_eq!(sent[1].header("Authorization"), Some("Bearer t-9"), "the token taken");
+        let told = told.lock().expect("told").clone();
+        let places: Vec<(usize, usize)> = told.iter().map(|result| (result.pass, result.step)).collect();
+        assert_eq!(places, [(0, 0), (0, 1), (1, 0), (1, 1)]);
+        assert_eq!(told[0].extracted, [("token".to_string(), "t-9".to_string())]);
+        assert!(told[0].held(), "answered, nothing to check");
+        assert!(!told[1].held(), "a 200 where 201 was asked");
+        assert!(
+            told[0].response.as_ref().expect("answered").body.is_empty(),
+            "told as a list shows it"
+        );
+        let kept = pollster::block_on(setup.storage.history().list(setup.collection.clone(), login)).expect("list");
+        assert_eq!(kept.len(), 2, "every send kept");
     }
 
     #[test]

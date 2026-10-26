@@ -3,6 +3,11 @@
 //! header, a value its JSON holds, its body, how long it took, how big it
 //! was. The API keeps them in its request; the panel checks whichever
 //! response it shows against the ones the API has now.
+//!
+//! A2: what is taken from an answer the same way — an [`Extraction`] —
+//! under a name the requests after it in a run (A3) read as
+//! `{{value(name)}}` (or as a URI's `{{name}}` prefix). Only a run uses
+//! it: the value is the run's, never written to the project.
 
 use crate::response::HttpResponse;
 use serde::{Deserialize, Serialize};
@@ -202,13 +207,26 @@ fn number_text(number: f64) -> String {
 /// Checks `assertion` against `response`, whose body read as JSON is `json`
 /// (`None` when it is no JSON): read once for every check of it.
 pub fn check(assertion: &Assertion, response: &HttpResponse, json: Option<&Value>) -> Result<Checked, Problem> {
+    let found = found(assertion.subject, &assertion.target, response, json)?;
+    let actual = found.as_ref().map(Found::shown);
+    let passed = compare(assertion.op, found.as_ref(), assertion.expected.trim())?;
+    Ok(Checked { passed, actual })
+}
+
+/// What `subject` (named by `target`) is in `response`: `None` for nothing.
+fn found<'a>(
+    subject: Subject,
+    target: &str,
+    response: &'a HttpResponse,
+    json: Option<&Value>,
+) -> Result<Option<Found<'a>>, Problem> {
     let Some(status) = response.status else {
         return Err(Problem::NoResponse);
     };
-    if assertion.subject.has_target() && assertion.target.trim().is_empty() {
+    if subject.has_target() && target.trim().is_empty() {
         return Err(Problem::NoTarget);
     }
-    let found = match assertion.subject {
+    Ok(match subject {
         Subject::Status => {
             let code = response.grpc_status().map_or(u32::from(status), |grpc| grpc.code);
             Some(Found::Number(f64::from(code)))
@@ -217,7 +235,7 @@ pub fn check(assertion: &Assertion, response: &HttpResponse, json: Option<&Value
         Subject::Size => Some(Found::Number(response.size() as f64)),
         Subject::Body => (!response.body.is_empty()).then(|| Found::Text(String::from_utf8_lossy(&response.body))),
         Subject::Header => {
-            let name = assertion.target.trim();
+            let name = target.trim();
             let values: Vec<&str> = response
                 .headers
                 .iter()
@@ -228,17 +246,66 @@ pub fn check(assertion: &Assertion, response: &HttpResponse, json: Option<&Value
         }
         Subject::Json => {
             let doc = json.ok_or(Problem::NotJson)?;
-            let matches = crate::json_filter::filter(doc, &assertion.target).map_err(Problem::Path)?;
+            let matches = crate::json_filter::filter(doc, target).map_err(Problem::Path)?;
             match matches {
                 Value::Array(mut found) if found.len() == 1 => found.pop().map(Found::Json),
                 Value::Array(found) if found.is_empty() => None,
                 found => Some(Found::Json(found)),
             }
         }
-    };
-    let actual = found.as_ref().map(Found::shown);
-    let passed = compare(assertion.op, found.as_ref(), assertion.expected.trim())?;
-    Ok(Checked { passed, actual })
+    })
+}
+
+/// A2: a value taken from an answer during a run, as the editor's row holds
+/// it: what of the answer, and the header or path when it names one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Extraction {
+    pub enabled: bool,
+    /// What the requests after it read it as: `{{value(name)}}`.
+    pub name: String,
+    pub subject: Subject,
+    pub target: String,
+}
+
+impl Default for Extraction {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            name: String::new(),
+            subject: Subject::Json,
+            target: String::new(),
+        }
+    }
+}
+
+/// A2: what `extraction` takes from `response` (`json` as for [`check`]):
+/// a JSON string without its quotes, any other value as JSON; `None` for
+/// nothing there.
+pub fn extract(
+    extraction: &Extraction,
+    response: &HttpResponse,
+    json: Option<&Value>,
+) -> Result<Option<String>, Problem> {
+    Ok(found(extraction.subject, &extraction.target, response, json)?.map(|found| found.text().into_owned()))
+}
+
+/// A2: what every enabled, named extraction takes from `response`, by name;
+/// what is not there, or cannot be read, is left out.
+pub fn extract_all(extractions: &[Extraction], response: &HttpResponse) -> Vec<(String, String)> {
+    let json = extractions
+        .iter()
+        .any(|extraction| extraction.enabled && extraction.subject == Subject::Json)
+        .then(|| response.body_json())
+        .flatten();
+    extractions
+        .iter()
+        .filter(|extraction| extraction.enabled && !extraction.name.trim().is_empty())
+        .filter_map(|extraction| {
+            let value = extract(extraction, response, json.as_ref()).ok()??;
+            Some((extraction.name.trim().to_string(), value))
+        })
+        .collect()
 }
 
 fn compare(op: Op, found: Option<&Found>, expected: &str) -> Result<bool, Problem> {
@@ -407,6 +474,60 @@ mod tests {
         assert!(passes(Subject::Size, "", Equals, &size.to_string()));
         let checked = holds(Subject::Status, "", Equals, "201").expect("checked");
         assert_eq!(checked.actual.as_deref(), Some("201"));
+    }
+
+    /// A2: a value as the requests after it read it; what is not there,
+    /// or not named, is left out.
+    #[test]
+    fn a_run_takes_values_from_an_answer() {
+        let take = |name: &str, subject: Subject, target: &str| Extraction {
+            name: name.into(),
+            subject,
+            target: target.into(),
+            ..Default::default()
+        };
+        let extractions = [
+            take("id", Subject::Json, "$.id"),
+            take("name", Subject::Json, "$.name"),
+            take("tags", Subject::Json, "$.tags"),
+            take("type", Subject::Header, "content-type"),
+            take("status", Subject::Status, ""),
+            take("gone", Subject::Json, "$.missing"),
+            take("", Subject::Json, "$.id"),
+            Extraction {
+                enabled: false,
+                ..take("off", Subject::Status, "")
+            },
+        ];
+        assert_eq!(
+            extract_all(&extractions, &response()),
+            [
+                ("id".to_string(), "7".to_string()),
+                ("name".to_string(), "tree".to_string()),
+                ("tags".to_string(), r#"["a","b"]"#.to_string()),
+                ("type".to_string(), "application/json".to_string()),
+                ("status".to_string(), "201".to_string()),
+            ]
+        );
+        let failed = HttpResponse {
+            status: None,
+            ..response()
+        };
+        assert!(
+            extract_all(&extractions, &failed).is_empty(),
+            "no answer, nothing taken"
+        );
+        assert_eq!(
+            extract(
+                &take("x", Subject::Json, "$["),
+                &response(),
+                response().body_json().as_ref()
+            )
+            .map(|_| ()),
+            Err(Problem::Path(
+                crate::json_filter::filter(&serde_json::json!({}), "$[").expect_err("bad path")
+            ))
+        );
     }
 
     #[test]

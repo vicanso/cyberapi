@@ -42,7 +42,7 @@ use cyberapi_service::Sender;
 use cyberapi_store::{Storage, StoreError, StoreFuture};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
-use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, Task};
+use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -956,6 +956,33 @@ impl WorkspaceState {
     /// `api` answered: the answer its fields were read from is not the last.
     pub fn forget_answer(&mut self, api: &ItemId) {
         self.answers.remove(api);
+    }
+
+    /// A3: what a run sends with: the stores and engine of this project,
+    /// the settings now, and the reader's environment. Each API's own
+    /// inherited part is the run's to fill.
+    pub fn run_sender(&self, cx: &App) -> Sender {
+        let mut sender = self.sender.clone();
+        if let Some(store) = cx.try_global::<AppStore>() {
+            let prefs = store.state().read(cx).prefs();
+            sender.timeouts = prefs.timeouts;
+            sender.sending = prefs.sending.clone();
+        }
+        sender.environment = self.current_environment().cloned();
+        sender
+    }
+
+    /// A3: a run sent `apis`: their last answers are new, and the one open
+    /// reads its history again.
+    pub fn ran(&mut self, apis: &[ItemId], cx: &mut Context<Self>) {
+        for api in apis {
+            self.answers.remove(api);
+        }
+        if let Some(state) = &self.api
+            && apis.contains(state.read(cx).api())
+        {
+            state.update(cx, |state, cx| state.reload_history(cx));
+        }
     }
 
     /// The schema of the GraphQL endpoint at `uri`, if an API asked for it.
@@ -3145,6 +3172,65 @@ mod tests {
         api.update(cx, |api, cx| api.clear_history(cx));
         cx.run_until_parked();
         assert!(api.read_with(cx, |api, _| api.shown_response().is_none()));
+    }
+
+    /// A3: a run sends the APIs in the tree's order, once for each row,
+    /// and says how each went; what it sent is in the histories.
+    #[gpui_kit::test]
+    async fn a_run_sends_in_order_and_says_how_each_went(cx: &mut TestAppContext) {
+        use cyberapi_core::assertions::{Assertion, Op, Subject};
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        for (name, uri) in [("a", "http://a.test/1"), ("b", "http://b.test/2")] {
+            state.update(cx, |state, cx| state.create_api(None, name.into(), cx));
+            cx.run_until_parked();
+            let api = editor(&state, cx);
+            api.update(cx, |api, cx| api.set_uri(uri.into(), cx));
+            if name == "b" {
+                api.update(cx, |api, cx| {
+                    api.set_assertions(
+                        vec![Assertion {
+                            subject: Subject::Status,
+                            op: Op::Equals,
+                            expected: "201".into(),
+                            ..Default::default()
+                        }],
+                        cx,
+                    )
+                });
+            }
+            cx.executor().advance_clock(SAVE_DELAY);
+            cx.run_until_parked();
+        }
+        let run = cx.new(|cx| super::super::RunState::new(state.clone(), None, cx));
+        let names: Vec<String> = run.read_with(cx, |run, _| run.planned().iter().map(|p| p.name.clone()).collect());
+        assert_eq!(names, ["b", "a"], "the tree's order: a new API goes first");
+        run.update(cx, |run, cx| run.start("n\n1\n2", HashMap::new(), cx))
+            .expect("the data reads");
+        assert!(run.read_with(cx, |run, _| run.running()));
+        for _ in 0..10 {
+            cx.executor().advance_clock(Duration::from_millis(60));
+            cx.run_until_parked();
+        }
+        run.read_with(cx, |run, _| {
+            assert!(!run.running(), "over");
+            assert_eq!(run.passes(), 2);
+            let places: Vec<(usize, usize)> = run.results().iter().map(|r| (r.pass, r.step)).collect();
+            assert_eq!(places, [(0, 0), (0, 1), (1, 0), (1, 1)]);
+            assert_eq!(run.tally(), (2, 2), "b's 200 is not the 201 it asks for");
+        });
+        let a = find(&state, "a", cx);
+        let kept = storage.history().list(collection.id.clone(), a).await.expect("list");
+        assert_eq!(kept.len(), 2, "each send kept");
+        // Data that does not read starts nothing.
+        let started = run.update(cx, |run, cx| run.start("[1", HashMap::new(), cx));
+        assert!(started.is_err());
+        assert_eq!(
+            run.read_with(cx, |run, _| run.results().len()),
+            4,
+            "the last run still shown"
+        );
     }
 
     /// D4: the project's newest responses, any API's; one picked opens its

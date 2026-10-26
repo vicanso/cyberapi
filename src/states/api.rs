@@ -28,7 +28,7 @@
 
 use super::{Load, WorkspaceState, run_store};
 use crate::this_build;
-use cyberapi_core::assertions::{self, Assertion, Outcomes};
+use cyberapi_core::assertions::{self, Assertion, Extraction, Outcomes, Problem, Subject};
 use cyberapi_core::auth::Auth;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::graphql_schema::Schema;
@@ -65,6 +65,19 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(200);
 struct Typed(HashMap<CollectionId, HashMap<String, String>>);
 
 impl Global for Typed {}
+
+/// Keeps what was typed for `collection`'s `prompt`s, for the next time
+/// one asks (D1).
+pub fn remember_typed(collection: &CollectionId, prompts: &HashMap<String, String>, cx: &mut App) {
+    if prompts.is_empty() {
+        return;
+    }
+    cx.default_global::<Typed>()
+        .0
+        .entry(collection.clone())
+        .or_default()
+        .extend(prompts.clone());
+}
 
 /// What was typed for the `prompt`s of `collection`'s requests while the app
 /// runs, by label.
@@ -343,7 +356,7 @@ impl ApiState {
     }
 
     /// The history read again: answers the page kept until a sync are in
-    /// it now (#52).
+    /// it now (#52), or a run sent the API (A3).
     pub fn reload_history(&mut self, cx: &mut Context<Self>) {
         self.load_history(cx);
     }
@@ -526,6 +539,29 @@ impl ApiState {
         Some(outcomes)
     }
 
+    /// A2: the API's extractions, as the editor has them.
+    pub fn set_extractions(&mut self, extractions: Vec<Extraction>, cx: &mut Context<Self>) {
+        if self.request.extractions != extractions {
+            self.request.extractions = extractions;
+            self.save_later(cx);
+        }
+    }
+
+    /// A2: what `extraction` would take from the shown response, for the
+    /// editor to show; `None` with no response, or while one streams in.
+    pub fn taken(&self, extraction: &Extraction) -> Option<Result<Option<String>, Problem>> {
+        if self.live.is_some() {
+            return None;
+        }
+        let response = self.shown_response()?;
+        let json = if extraction.subject == Subject::Json {
+            self.json_of(response)
+        } else {
+            None
+        };
+        Some(assertions::extract(extraction, response, json.as_deref()))
+    }
+
     fn json_of(&self, response: &HttpResponse) -> Option<Arc<serde_json::Value>> {
         if let Some((id, json)) = &*self.checked_json.borrow()
             && id == &response.id
@@ -609,14 +645,7 @@ impl ApiState {
             return;
         }
         self.save_now(cx);
-        if !answers.prompts.is_empty() {
-            let typed = cx
-                .default_global::<Typed>()
-                .0
-                .entry(self.collection.clone())
-                .or_default();
-            typed.extend(answers.prompts.clone());
-        }
+        remember_typed(&self.collection, &answers.prompts, cx);
         let (told, mut telling) = mpsc::unbounded::<Progress>();
         let (stop, stopped) = stop_signal();
         let watch = Watch {

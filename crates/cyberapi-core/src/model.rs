@@ -136,6 +136,9 @@ pub struct HttpRequest {
     /// What its answers are checked against (A1).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub assertions: Vec<crate::assertions::Assertion>,
+    /// What a run takes from its answers for the requests after it (A2).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extractions: Vec<crate::assertions::Extraction>,
     /// What a newer version keeps in a request that this one does not
     /// read, written back as it came (`docs/batch4-design.md` §2.1): a
     /// request saved here keeps it.
@@ -161,6 +164,7 @@ struct StoredRequest {
     authentication: Option<serde_json::Value>,
     settings: RequestSettings,
     assertions: Vec<crate::assertions::Assertion>,
+    extractions: Vec<crate::assertions::Extraction>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -181,6 +185,7 @@ impl From<StoredRequest> for HttpRequest {
             auth,
             settings: stored.settings,
             assertions: stored.assertions,
+            extractions: stored.extractions,
             extra: stored.extra,
         }
     }

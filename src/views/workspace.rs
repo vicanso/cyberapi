@@ -15,6 +15,7 @@ mod recent_dialog;
 mod request_editor;
 mod request_settings;
 mod response_panel;
+mod run_dialog;
 mod schema_browser;
 mod settings_dialogs;
 mod tree_panel;

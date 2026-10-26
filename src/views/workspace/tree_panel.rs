@@ -976,8 +976,17 @@ fn project_menu(
     } else {
         menu
     };
-    // D4: anyone sends, so anyone has a history.
-    let for_recent = state.clone();
+    // A3, D4: anyone sends, so anyone runs and has a history.
+    let (for_recent, for_run) = (state.clone(), state.clone());
+    let menu = menu.item(
+        PopupMenuItem::new(t!("run.project").to_string())
+            .icon(Icons::Play)
+            .on_click(move |_, window, cx| {
+                if let Some(state) = for_run.upgrade() {
+                    super::run_dialog::open_run_dialog(state, None, window, cx);
+                }
+            }),
+    );
     let menu = menu.item(
         PopupMenuItem::new(t!("recent.open").to_string())
             .icon(Icons::Clock)
@@ -1012,6 +1021,17 @@ fn item_menu(
             let (for_import, into) = (state.clone(), id.clone());
             let (for_paste, paste_into) = (state.clone(), id.clone());
             let (for_export, exported) = (state.clone(), id.clone());
+            let (for_run, run) = (state.clone(), id.clone());
+            // A3: a viewer sends too.
+            let menu = menu.item(
+                PopupMenuItem::new(t!("run.folder").to_string())
+                    .icon(Icons::Play)
+                    .on_click(move |_, window, cx| {
+                        if let Some(state) = for_run.upgrade() {
+                            super::run_dialog::open_run_dialog(state, Some(run.clone()), window, cx);
+                        }
+                    }),
+            );
             let menu = if editable {
                 menu.item(
                     PopupMenuItem::new(t!("workspace.new_api").to_string())

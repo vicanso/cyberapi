@@ -3,6 +3,8 @@
 //! the browser run the same code.
 
 pub mod backup;
+mod run;
 mod send;
 
+pub use run::{RunStep, StepResult, run};
 pub use send::{SendFailure, Sender, code, fetch_text, introspect, reflect, send, send_watched};

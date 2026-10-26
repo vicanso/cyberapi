@@ -35,6 +35,7 @@ pub mod prefs;
 pub mod proxy;
 pub mod redirect;
 pub mod response;
+pub mod run;
 pub mod search;
 pub mod send;
 pub mod sse;

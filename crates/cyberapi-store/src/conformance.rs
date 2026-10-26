@@ -492,6 +492,12 @@ async fn requests_are_saved(storage: &Storage) {
             op: cyberapi_core::assertions::Op::Exists,
             ..Default::default()
         }],
+        // What a run takes from its answers (A2).
+        extractions: vec![cyberapi_core::assertions::Extraction {
+            name: "token".into(),
+            target: "$.token".into(),
+            ..Default::default()
+        }],
         // What a newer version keeps in a request comes back as it went
         // (`docs/batch4-design.md` §2.1).
         extra: HttpRequest::from_json_lenient(r#"{"laterField": {"kept": [1, "two"]}}"#).extra,

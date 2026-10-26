@@ -10,17 +10,19 @@ mod dashboard;
 #[cfg(test)]
 mod desktop_copies;
 mod directory;
+mod run;
 mod server;
 mod update;
 mod variables;
 mod workspace;
 
-pub use api::{ApiEvent, ApiState, GrpcDefinitions};
+pub use api::{ApiEvent, ApiState, GrpcDefinitions, typed_prompts};
 pub use app::{AppEvent, AppState, AppStore, Route};
 pub use cookies::{CookieKey, CookiesEvent, CookiesState, cookie_key};
 pub use copy::ServerCopy;
 pub use dashboard::{DashboardEvent, DashboardState};
 pub use directory::{DirectoryDone, DirectoryEvent, DirectoryState};
+pub use run::{Planned, RunState};
 pub use server::{ServerEvent, ServerState, ServerStatus, SignInFailure};
 pub use update::{Delivery, Installer, UpdateEvent, UpdateInfo, UpdatePhase, UpdateState};
 pub use variables::{VariablesEvent, VariablesState};
