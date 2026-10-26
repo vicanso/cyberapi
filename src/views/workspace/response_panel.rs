@@ -100,6 +100,11 @@ struct Found {
     outcome: Option<Result<Arc<serde_json::Value>, NotFiltered>>,
 }
 
+/// What a filter found that is nothing: no match.
+fn no_match(matches: &serde_json::Value) -> bool {
+    matches.as_array().is_some_and(Vec::is_empty)
+}
+
 #[derive(Clone)]
 enum NotFiltered {
     /// The path does not read: why.
@@ -358,11 +363,12 @@ impl ResponsePanel {
 
     /// The editor's and the tree's filter: the active one's path once it
     /// found what to show; the whole body when there is none, or it found
-    /// nothing to show; what they hold now while it runs.
+    /// nothing to show — no match, which the status line says (#74); what
+    /// they hold now while it runs.
     fn wanted_filter(&self, cx: &App) -> Option<String> {
         let path = self.active_filter(cx)?;
         match self.found_now(cx).map(|found| &found.outcome) {
-            Some(Some(Ok(_))) => Some(path),
+            Some(Some(Ok(matches))) if !no_match(matches) => Some(path),
             Some(None) => self.shown_filter.clone(),
             _ => None,
         }
@@ -425,7 +431,6 @@ impl ResponsePanel {
             return;
         }
         self.shown_pretty = pretty;
-        self.shown_filter = filtered.clone();
         if changed {
             // Another response opens fitted, as a picture.
             self.zoom = None;
@@ -438,6 +443,10 @@ impl ResponsePanel {
             });
         }
         let matches = self.matches(cx).filter(|_| filtered.is_some());
+        // #74: the filter the editor shows the matches of — none while it
+        // runs on a new response, whose whole body shows meanwhile, so the
+        // matches replace it once found.
+        self.shown_filter = filtered.filter(|_| matches.is_some());
         let (language, text, clipped, hex) = match (&shown, matches) {
             // #63: what the filter found, indented.
             (Some(_), Some(matches)) => {
@@ -1184,8 +1193,10 @@ impl ResponsePanel {
     /// #63: the filter's field, and what it found.
     fn render_filter(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (muted, danger) = (theme.muted_foreground, theme.danger);
+        let (muted, danger, warning) = (theme.muted_foreground, theme.danger, theme.warning);
         let status = match self.found_now(cx).map(|found| &found.outcome) {
+            // #74: said so the whole body is not taken for what it found.
+            Some(Some(Ok(matches))) if no_match(matches) => Some((t!("response.filter_no_match").to_string(), warning)),
             Some(Some(Ok(matches))) => Some((
                 crate::i18n::counted("response.filter_matches", matches.as_array().map_or(0, Vec::len)),
                 muted,
