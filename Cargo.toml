@@ -22,6 +22,8 @@ path = "src/main.rs"
 
 [workspace]
 members = ["crates/*", "cyberapi-bridge", "cyberapi-web"]
+# Patched copies of dependencies ([patch.crates-io] below), not ours to lint.
+exclude = ["patches/accesskit_macos"]
 # A bare `cargo build` builds the desktop binary only. `cyberapi-web` is built
 # from its own directory, where its `rust-toolchain.toml` selects the nightly
 # its wasm target needs.
@@ -255,3 +257,10 @@ strip = "none"
 [profile.web-release]
 inherits = "release"
 opt-level = "s"
+
+[patch.crates-io]
+# 0.26.3 with AccessKit's fix (#835, released in 0.27.2, which GPUI cannot
+# take yet): closing a window crashed on Macs with a Touch Bar. Remove it once
+# GPUI's macOS backends use accesskit_macos 0.27.2 or later; see
+# patches/README.md.
+accesskit_macos = { path = "patches/accesskit_macos" }
