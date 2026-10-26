@@ -23,6 +23,7 @@ use async_lock::Mutex;
 use cyberapi_core::auth::Auth;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::environments;
+use cyberapi_core::export::ExportFormat;
 use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::import::{ImportBundle, ImportEnvironment, ImportItem};
 use cyberapi_core::inherit::{self, Inherited};
@@ -1698,15 +1699,46 @@ impl WorkspaceState {
         .detach();
     }
 
-    pub fn export(&self, folder: Option<&ItemId>) -> (String, String) {
+    /// F11.1 / F11.2, B1, B2: the project, or a folder with what is in it,
+    /// in `format`, and the file name it is saved as. A Postman collection
+    /// takes the variables every environment shares; an OpenAPI document
+    /// reads its servers in the reader's environment.
+    pub fn export(&self, folder: Option<&ItemId>, format: ExportFormat) -> (String, String) {
         let name = folder
             .and_then(|id| self.tree.get(id))
             .map(|node| node.name().to_string())
             .unwrap_or_else(|| self.collection.name.clone());
-        (
-            format!("cyberapi-{name}.json"),
-            cyberapi_core::import::export(&self.data, folder),
-        )
+        let pairs = |variables: Vec<&Variable>| -> Vec<(String, String)> {
+            variables
+                .into_iter()
+                .map(|variable| (variable.name.clone(), variable.value.clone()))
+                .collect()
+        };
+        match format {
+            ExportFormat::CyberApi => (
+                format!("cyberapi-{name}.json"),
+                cyberapi_core::import::export(&self.data, folder),
+            ),
+            ExportFormat::Postman => {
+                let shared = pairs(
+                    self.environment
+                        .iter()
+                        .filter(|variable| variable.enabled && variable.environment.is_none())
+                        .collect(),
+                );
+                (
+                    format!("{name}.postman_collection.json"),
+                    cyberapi_core::export::postman(&self.data, folder, &name, &shared),
+                )
+            }
+            ExportFormat::OpenApi => {
+                let effective = self.environments();
+                (
+                    format!("{name}.openapi.yaml"),
+                    cyberapi_core::export::openapi(&self.data, folder, &name, &pairs(effective.iter().collect())),
+                )
+            }
+        }
     }
 
     /// F3.6. The view asks first. What was removed leaves the reader's state

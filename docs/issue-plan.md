@@ -163,8 +163,8 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | 编号 | 内容 | 状态 |
 |---|---|---|
 | B4 | 导入时带上认证和环境：Postman 请求 / 目录 / 集合与 Insomnia 请求 / 目录的 Basic、Bearer、API key、Digest；OpenAPI / Swagger 的安全方案成为项目认证（值留空）；Postman 环境文件、Insomnia 子环境成为命名环境。项目已有认证时保留项目的，同名环境只补没有的变量 | 已完成 |
-| B2 | 导出 Postman Collection v2.1 | |
-| B1 | 导出 OpenAPI 3.0 | |
+| B2 | 导出 Postman Collection v2.1：目录层级、Query / 请求头（含关掉的）、各种请求体、各层认证；共用变量成为集合变量；自己的 Postman 导入能原样读回 | 已完成 |
+| B1 | 导出 OpenAPI 3.0（YAML）：地址前缀变量的值或主机成为 servers，`{{id}}` 路径段成为路径参数，Query / 请求头带示例，请求体带示例和推断的 schema，目录路径成为 tag，认证成为 securitySchemes（不写值） | 已完成 |
 | B5 | 导入 HAR、Hoppscotch、Bruno `.bru` / OpenCollection | |
 | B6 | 更多“复制为代码”目标 | |
 | D4 | 历史：保留条数可设、项目的最近发送、两条历史对比 | |

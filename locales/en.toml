@@ -563,6 +563,9 @@ project = "Export the project"
 folder = "Export this folder"
 saved = "Saved as %{path}"
 copied = "The export is on the clipboard."
+as_cyberapi = "CyberAPI (all of it comes back on import)"
+as_postman = "Postman Collection v2.1"
+as_openapi = "OpenAPI 3 (YAML)"
 
 [backup]
 back_up = "Back up data"

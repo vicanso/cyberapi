@@ -14,6 +14,7 @@ use crate::this_build;
 use crate::views::marked::marked;
 use cyberapi_core::ItemId;
 use cyberapi_core::code::CodeTarget;
+use cyberapi_core::export::ExportFormat;
 use cyberapi_core::model::HttpMethod;
 use cyberapi_core::tree::{DropPosition, ItemKind, Placement, Row};
 use gpui_kit::assets::IconName as Icons;
@@ -500,8 +501,8 @@ impl TreePanel {
                         }
                         .to_string(),
                     )
-                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                        project_menu(menu, &state, editable)
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
+                        project_menu(menu, &state, editable, window, cx)
                     }),
             )
             .child(
@@ -881,7 +882,7 @@ impl TreePanel {
                     .on_drop(cx.listener(|this, dragged: &DraggedItem, _, cx| this.on_drop(dragged, cx)))
                     // Below the rows, what the header's button offers: a row
                     // takes its own right-click first.
-                    .context_menu(move |menu, _, _| project_menu(menu, &state, editable));
+                    .context_menu(move |menu, window, cx| project_menu(menu, &state, editable, window, cx));
                 // The list keeps its own handle (a drop is placed by its
                 // offset), so its scrollbar is laid over it rather than the
                 // kit's scroll wrapper, which brings a handle of its own.
@@ -900,7 +901,46 @@ impl TreePanel {
 /// What can be added to the project, and its export (F11.1): the menu of
 /// the header's button, and of the tree where no row is. A viewer's only
 /// item is the export.
-fn project_menu(menu: PopupMenu, state: &WeakEntity<WorkspaceState>, editable: bool) -> PopupMenu {
+/// B1 / B2: export as this app's own format, a Postman collection or an
+/// OpenAPI document.
+fn export_menu(
+    menu: PopupMenu,
+    label: String,
+    state: &WeakEntity<WorkspaceState>,
+    folder: Option<ItemId>,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let state = state.clone();
+    menu.submenu_with_icon(
+        Some(Icon::new(Icons::Download)),
+        label,
+        window,
+        cx,
+        move |menu, _, _| {
+            ExportFormat::ALL.iter().fold(menu, |menu, format| {
+                let (state, folder, format) = (state.clone(), folder.clone(), *format);
+                let label = match format {
+                    ExportFormat::CyberApi => t!("export.as_cyberapi"),
+                    ExportFormat::Postman => t!("export.as_postman"),
+                    ExportFormat::OpenApi => t!("export.as_openapi"),
+                };
+                menu.item(
+                    PopupMenuItem::new(label.to_string())
+                        .on_click(move |_, window, cx| export(&state, folder.clone(), format, window, cx)),
+                )
+            })
+        },
+    )
+}
+
+fn project_menu(
+    menu: PopupMenu,
+    state: &WeakEntity<WorkspaceState>,
+    editable: bool,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
     let (for_api, for_folder) = (state.clone(), state.clone());
     let (for_import, for_export) = (state.clone(), state.clone());
     let for_paste = state.clone();
@@ -937,11 +977,7 @@ fn project_menu(menu: PopupMenu, state: &WeakEntity<WorkspaceState>, editable: b
         menu
     };
     // F11.1: a viewer may export too.
-    menu.item(
-        PopupMenuItem::new(t!("export.project").to_string())
-            .icon(Icons::Download)
-            .on_click(move |_, window, cx| export(&for_export, None, window, cx)),
-    )
+    export_menu(menu, t!("export.project").to_string(), &for_export, None, window, cx)
 }
 
 /// An item's menu (F3.9 / F3.10). A viewer only pins and exports.
@@ -995,10 +1031,13 @@ fn item_menu(
             } else {
                 menu
             };
-            menu.item(
-                PopupMenuItem::new(t!("export.folder").to_string())
-                    .icon(Icons::Download)
-                    .on_click(move |_, window, cx| export(&for_export, Some(exported.clone()), window, cx)),
+            export_menu(
+                menu,
+                t!("export.folder").to_string(),
+                &for_export,
+                Some(exported),
+                window,
+                cx,
             )
         }
         ItemKind::Api => {

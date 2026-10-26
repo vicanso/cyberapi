@@ -563,6 +563,9 @@ project = "导出项目"
 folder = "导出此目录"
 saved = "已保存为 %{path}"
 copied = "导出内容已复制到剪贴板。"
+as_cyberapi = "CyberAPI 格式（可完整导回）"
+as_postman = "Postman 集合 v2.1"
+as_openapi = "OpenAPI 3（YAML）"
 
 [backup]
 back_up = "备份数据"

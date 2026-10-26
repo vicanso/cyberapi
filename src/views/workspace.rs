@@ -255,9 +255,15 @@ fn tell_unsent_body(method: HttpMethod, window: &mut Window, cx: &mut App) {
 
 /// M11: the project or a folder as a file in the downloads folder — or, in
 /// a page, on the clipboard.
-fn export(state: &WeakEntity<WorkspaceState>, folder: Option<ItemId>, window: &mut Window, cx: &mut App) {
+fn export(
+    state: &WeakEntity<WorkspaceState>,
+    folder: Option<ItemId>,
+    format: cyberapi_core::export::ExportFormat,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(state) = state.upgrade() else { return };
-    let (name, json) = state.read(cx).export(folder.as_ref());
+    let (name, json) = state.read(cx).export(folder.as_ref(), format);
     if !crate::this_build::saves_files() {
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(json));
         window.push_notification(Notification::success(t!("export.copied").to_string()), cx);
