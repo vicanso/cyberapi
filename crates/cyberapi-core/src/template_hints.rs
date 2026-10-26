@@ -29,27 +29,28 @@ pub struct Function {
     pub alias: Option<&'static str>,
     /// Whether it reads a parameter: `timestamp()` and `openFile()` do not.
     pub takes_parameter: bool,
-    /// Whether it needs this machine's files, which a page has none of.
-    pub uses_files: bool,
+    /// Whether it reads this machine — its files, its environment
+    /// variables — which a page has none of.
+    pub on_machine: bool,
 }
 
 const fn function(
     name: &'static str,
     alias: Option<&'static str>,
     takes_parameter: bool,
-    uses_files: bool,
+    on_machine: bool,
 ) -> Function {
     Function {
         name,
         alias,
         takes_parameter,
-        uses_files,
+        on_machine,
     }
 }
 
 /// Every function [`crate::template::evaluate`] knows, the ones a request
 /// reaches for most first.
-pub const FUNCTIONS: [Function; 16] = [
+pub const FUNCTIONS: [Function; 17] = [
     function("value", None, true, false),
     function("get", Some("g"), true, false),
     function("timestamp", Some("ts"), false, false),
@@ -66,6 +67,7 @@ pub const FUNCTIONS: [Function; 16] = [
     function("readTextFile", Some("rtf"), true, true),
     function("readFile", Some("rf"), true, true),
     function("openFile", Some("of"), false, true),
+    function("env", None, true, true),
 ];
 
 /// An API `get` can read, as the list names it.
@@ -132,8 +134,8 @@ pub struct Sources {
     /// The enabled custom variables, name and value.
     pub custom: Vec<(String, String)>,
     pub apis: Vec<ApiHint>,
-    /// Whether the functions that read files are offered.
-    pub files: bool,
+    /// Whether the functions that read this machine are offered.
+    pub machine: bool,
     /// The JSON of the last answer of the API [`path_api`] names, when it
     /// has one.
     pub response: Option<Arc<Json>>,
@@ -266,7 +268,7 @@ pub fn hints(text: &str, caret: usize, sources: &Sources) -> Vec<Hint> {
         // A name is an identifier: its start, or its alias's.
         Spot::Function(typed) => FUNCTIONS
             .iter()
-            .filter(|function| sources.files || !function.uses_files)
+            .filter(|function| sources.machine || !function.on_machine)
             .filter(|function| {
                 [Some(function.name), function.alias]
                     .into_iter()
@@ -455,7 +457,7 @@ mod tests {
                     place: String::new(),
                 },
             ],
-            files: true,
+            machine: true,
             response: None,
         }
     }
@@ -511,12 +513,12 @@ mod tests {
             ["readTextFile", "readFile"],
             "in a chain"
         );
-        // A page has no files to read.
+        // A page has no files or environment variables to read.
         let page = Sources {
-            files: false,
+            machine: false,
             ..sources()
         };
-        assert_eq!(labels("{{|", &page).len(), FUNCTIONS.len() - 3);
+        assert_eq!(labels("{{|", &page).len(), FUNCTIONS.len() - 4);
     }
 
     #[test]

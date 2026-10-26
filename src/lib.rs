@@ -21,6 +21,8 @@ mod paths;
 mod pins_local;
 mod root;
 mod server_local;
+#[cfg(not(target_family = "wasm"))]
+mod shell_env;
 pub mod states;
 #[cfg(not(target_family = "wasm"))]
 mod syntax;

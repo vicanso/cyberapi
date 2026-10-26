@@ -22,6 +22,9 @@
 //! the local time's offset come in [`Inputs`] too. `prompt(label, start?)`
 //! (D1) is what the reader types as the request is sent: the caller asks
 //! for each [`Needs::prompts`] names and hands the answers in [`Answers`].
+//! `env(NAME)` (D2) is one of this machine's environment variables, read by
+//! the caller's [`EnvReader`] for each [`Needs::env`] names: the desktop's;
+//! a page has none, and the bridge never gives its own.
 
 use base64::Engine as _;
 use chrono::format::{Item, StrftimeItems};
@@ -80,6 +83,12 @@ pub enum TemplateError {
         text: String,
         expected: &'static str,
     },
+    /// D2: `env(NAME)` of a variable this machine has not set.
+    #[snafu(display("the environment variable {name} is not set"))]
+    EnvUnset { name: String },
+    /// D2: `env` where no machine's variables are read: why.
+    #[snafu(display("env({name}): {message}"))]
+    EnvUnread { name: String, message: String },
 }
 
 /// Reads a file for `readFile` / `readTextFile`, and a multipart field's
@@ -97,6 +106,40 @@ impl FileReader for NoFiles {
     }
 }
 
+/// Reads this machine's environment variables for `env` (D2). A page has
+/// none, and the bridge never reads its own: an editor of a project would
+/// read the server's secrets.
+pub trait EnvReader {
+    /// `names`, each one's value or `None` where it is not set; or why none
+    /// can be read here.
+    fn read(&self, names: &[String]) -> Env;
+}
+
+/// No variables: every `env` fails with `message`.
+pub struct NoEnv(pub &'static str);
+
+impl EnvReader for NoEnv {
+    fn read(&self, _: &[String]) -> Env {
+        Env::Unread(self.0.to_string())
+    }
+}
+
+/// What `env` reads (D2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Env {
+    /// The variables [`Needs::env`] named: each one's value, or `None`
+    /// where it is not set.
+    Read(HashMap<String, Option<String>>),
+    /// None can be read here, and why.
+    Unread(String),
+}
+
+impl Default for Env {
+    fn default() -> Self {
+        Self::Read(HashMap::new())
+    }
+}
+
 /// What the expressions of some text need from the world.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Needs {
@@ -107,6 +150,8 @@ pub struct Needs {
     /// What `prompt` asks the reader for, each label once, in the order
     /// first written, with the first start written for it.
     pub prompts: Vec<Prompt>,
+    /// The environment variables `env` reads, each once.
+    pub env: Vec<String>,
 }
 
 impl Needs {
@@ -119,6 +164,11 @@ impl Needs {
         self.picks_file |= other.picks_file;
         for prompt in other.prompts {
             self.ask(prompt);
+        }
+        for name in other.env {
+            if !self.env.contains(&name) {
+                self.env.push(name);
+            }
         }
     }
 
@@ -195,6 +245,8 @@ pub struct Inputs {
     pub responses: HashMap<String, Json>,
     /// What the reader answered for `openFile` and `prompt`.
     pub answers: Answers,
+    /// This machine's environment variables, for `env`.
+    pub env: Env,
     /// The local time's offset from UTC, in seconds, for `now`.
     pub utc_offset: i32,
     /// What `uuid`, `random` and `randomString` draw from.
@@ -291,12 +343,17 @@ pub fn needs(text: &str) -> Needs {
                 _ => {}
             }
         }
-        // A prompt that runs first is asked by its parameters; one fed by
-        // another function's result has no label until it runs.
-        if expr.chain.last().is_some_and(|name| name == "prompt")
-            && let Some(prompt) = Prompt::of(&expr.params)
-        {
-            needs.ask(prompt);
+        // A prompt or an env that runs first is known by its parameters;
+        // one fed by another function's result has no label or name until
+        // it runs.
+        match (expr.chain.last().map(String::as_str), expr.params.as_slice()) {
+            (Some("prompt"), params) => {
+                if let Some(prompt) = Prompt::of(params) {
+                    needs.ask(prompt);
+                }
+            }
+            (Some("env"), [name]) if !name.is_empty() && !needs.env.contains(name) => needs.env.push(name.clone()),
+            _ => {}
         }
     }
     needs
@@ -378,6 +435,7 @@ pub fn evaluate(expr: &Expr, inputs: &Inputs, files: &dyn FileReader) -> Result<
                     None => prompt.start.unwrap_or(prompt.label),
                 })
             }
+            "env" => Value::Text(env(&value, inputs)?),
             "timestamp" | "ts" => Value::Text(inputs.now.to_string()),
             "uuid" => Value::Text(uuid(&inputs.draws)),
             "random" => Value::Text(random(&value, &inputs.draws)?.to_string()),
@@ -527,6 +585,26 @@ fn hmac_sha256(value: &Value) -> Result<String, TemplateError> {
     Ok(hex(&mac.finalize().into_bytes()))
 }
 
+/// The environment variable `env(NAME)` names: one gathered beforehand, by
+/// the name written in it.
+fn env(value: &Value, inputs: &Inputs) -> Result<String, TemplateError> {
+    let [name] = params(value)
+        .try_into()
+        .map_err(|_| params_error("env", value, "a variable's name"))?;
+    match &inputs.env {
+        Env::Unread(message) => Err(TemplateError::EnvUnread {
+            name,
+            message: message.clone(),
+        }),
+        Env::Read(read) => match read.get(&name) {
+            Some(Some(found)) => Ok(found.clone()),
+            Some(None) => Err(TemplateError::EnvUnset { name }),
+            // Named by another function's result: not looked for.
+            None => Err(params_error("env", value, "a variable's name, as written")),
+        },
+    }
+}
+
 fn read(value: &Value, files: &dyn FileReader) -> Result<Vec<u8>, TemplateError> {
     let (file, dir) = value.file_params();
     files
@@ -590,6 +668,10 @@ mod tests {
                 file: Some("/tmp/x.png".into()),
                 prompts: HashMap::from([("code".to_string(), "123456".to_string())]),
             },
+            env: Env::Read(HashMap::from([
+                ("TOKEN".to_string(), Some("t-env".to_string())),
+                ("UNSET".to_string(), None),
+            ])),
             utc_offset: 8 * 3600,
             draws: Draws::new(7),
         }
@@ -759,7 +841,38 @@ mod tests {
                 responses: vec!["api-1".into(), "api-3".into()],
                 picks_file: true,
                 prompts: Vec::new(),
+                env: Vec::new(),
             }
+        );
+    }
+
+    #[test]
+    fn env_reads_what_was_gathered_by_its_name() {
+        assert_eq!(run("Bearer {{env(TOKEN)}}").as_deref(), Ok("Bearer t-env"));
+        assert_eq!(run("{{md5.env(TOKEN)}}"), run("{{md5(t-env)}}"), "in a chain");
+        assert_eq!(
+            run("{{env(UNSET)}}"),
+            Err(TemplateError::EnvUnset { name: "UNSET".into() })
+        );
+        assert!(
+            matches!(run("{{env(OTHER)}}"), Err(TemplateError::Params { .. })),
+            "not gathered"
+        );
+        assert!(matches!(run("{{env()}}"), Err(TemplateError::Params { .. })));
+        let page = Inputs {
+            env: NoEnv("a page has none").read(&["TOKEN".into()]),
+            ..inputs()
+        };
+        assert_eq!(
+            render("{{env(TOKEN)}}", &page, &Files),
+            Err(TemplateError::EnvUnread {
+                name: "TOKEN".into(),
+                message: "a page has none".into()
+            })
+        );
+        assert_eq!(
+            needs("{{env(A)}} {{base64.env(B)}} {{env(A)}} {{env.value(C)}}").env,
+            ["A", "B"]
         );
     }
 

@@ -852,9 +852,9 @@ impl WorkspaceState {
     }
 
     /// M6: what a template's `{{` offers: the enabled custom variables and
-    /// the APIs, the ones near the opened API first. `files`: whether this
-    /// build reads files.
-    pub fn hint_sources(&self, files: bool) -> template_hints::Sources {
+    /// the APIs, the ones near the opened API first. `machine`: whether
+    /// this build reads this machine's files and environment variables.
+    pub fn hint_sources(&self, machine: bool) -> template_hints::Sources {
         template_hints::Sources {
             custom: self
                 .in_environment(&self.custom)
@@ -863,7 +863,7 @@ impl WorkspaceState {
                 .map(|variable| (variable.name.clone(), variable.value.clone()))
                 .collect(),
             apis: template_hints::apis(&self.tree, self.opened()),
-            files,
+            machine,
             response: None,
         }
     }
@@ -1735,6 +1735,7 @@ mod tests {
             storage: storage.clone(),
             engine: Arc::new(Engine { answers }),
             files: Arc::new(NoFiles("no files in tests")),
+            env: Arc::new(cyberapi_core::template::NoEnv("no environment in tests")),
             user_agent: "CyberAPI/test".into(),
             timeouts: Timeouts::default(),
             sending: SendPrefs::default(),
@@ -1911,7 +1912,7 @@ mod tests {
             .collect();
         assert_eq!(apis, [("login", "users"), ("ping", "")], "the one being edited last");
         assert_eq!(sources.apis[0].id, login.as_str());
-        assert!(sources.files);
+        assert!(sources.machine);
 
         storage
             .variables()

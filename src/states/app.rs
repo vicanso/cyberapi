@@ -142,6 +142,7 @@ impl AppStore {
             storage: self.storage.clone(),
             engine: self.engine.clone(),
             files: this_build::files(),
+            env: this_build::env(),
             user_agent: this_build::user_agent(),
             timeouts: self.state.read(cx).prefs().timeouts,
             sending: self.state.read(cx).prefs().sending.clone(),

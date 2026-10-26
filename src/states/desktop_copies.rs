@@ -200,6 +200,7 @@ impl Machine {
             storage: self.local.storage(),
             engine: Arc::new(Answers),
             files: Arc::new(NoFiles("no files in tests")),
+            env: Arc::new(cyberapi_core::template::NoEnv("no environment in tests")),
             user_agent: "CyberAPI/test".into(),
             timeouts: Timeouts::default(),
             sending: SendPrefs::default(),

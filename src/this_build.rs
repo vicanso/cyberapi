@@ -296,6 +296,19 @@ pub fn files() -> Arc<dyn FileReader + Send + Sync> {
     ))
 }
 
+/// What reads this machine's environment variables for `env` (D2): the
+/// app's own and the login shell's (`shell_env`). A page has none.
+#[cfg(not(target_family = "wasm"))]
+pub fn env() -> Arc<dyn cyberapi_core::template::EnvReader + Send + Sync> {
+    Arc::new(crate::shell_env::ShellEnv)
+}
+#[cfg(target_family = "wasm")]
+pub fn env() -> Arc<dyn cyberapi_core::template::EnvReader + Send + Sync> {
+    Arc::new(cyberapi_core::template::NoEnv(
+        "the browser build cannot read environment variables",
+    ))
+}
+
 /// `.proto` files compiled for a gRPC call's definitions: what they import
 /// is looked for beside each, then in the folders above it (an import
 /// names a file from the root of its tree); Google's own are built in. A

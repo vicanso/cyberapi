@@ -38,7 +38,7 @@ use cyberapi_core::prefs::RequestSettings;
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::send::PrepareError;
 use cyberapi_core::sse;
-use cyberapi_core::template::Answers;
+use cyberapi_core::template::{Answers, TemplateError};
 use cyberapi_core::{CollectionId, ItemId};
 use cyberapi_http::{Progress, Watch, stop_signal};
 use cyberapi_service::{SendFailure, Sender};
@@ -84,6 +84,11 @@ fn not_sent(failure: SendFailure) -> ApiEvent {
         SendFailure::Prepare {
             source: PrepareError::GraphQlVariables { message },
         } => ApiEvent::GraphQlVariables(message),
+        SendFailure::Prepare {
+            source: PrepareError::Template {
+                source: TemplateError::EnvUnset { name },
+            },
+        } => ApiEvent::EnvUnset(name),
         other => ApiEvent::NotSent(other.to_string()),
     }
 }
@@ -98,6 +103,9 @@ pub enum ApiEvent {
     /// enabled one is named as (#50). Its name, and the named environment
     /// it was sent in (#61), for the view to say.
     NoEnvironment { name: String, within: Option<String> },
+    /// Nothing was sent: `env(NAME)` (D2) names a variable this machine has
+    /// not set.
+    EnvUnset(String),
     /// Nothing was sent: a GraphQL body's variables are not a JSON object
     /// once their templates ran. Why, for the view to say.
     GraphQlVariables(String),

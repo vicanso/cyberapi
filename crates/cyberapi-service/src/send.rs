@@ -28,7 +28,7 @@ use cyberapi_core::prefs::{SendPrefs, Timeouts};
 use cyberapi_core::redirect::{self, MAX_REDIRECTS};
 use cyberapi_core::response::{Exchange, HttpResponse};
 use cyberapi_core::send::{self, PrepareError, PreparedRequest};
-use cyberapi_core::template::{Answers, Draws, FileReader, Inputs};
+use cyberapi_core::template::{Answers, Draws, Env, EnvReader, FileReader, Inputs};
 use cyberapi_core::{CollectionId, ItemId};
 use cyberapi_http::{HttpEngine, SendError, Watch};
 use cyberapi_store::{Storage, StoreError};
@@ -71,6 +71,9 @@ pub struct Sender {
     pub engine: Arc<dyn HttpEngine>,
     /// For `readFile` and multipart files; the browser build has none.
     pub files: Arc<dyn FileReader + Send + Sync>,
+    /// For `env` (D2): the desktop's variables; a page and the bridge have
+    /// none.
+    pub env: Arc<dyn EnvReader + Send + Sync>,
     pub user_agent: String,
     pub timeouts: Timeouts,
     pub sending: SendPrefs,
@@ -592,6 +595,11 @@ async fn prepare(
             .filter_map(|response| Some((response.api.to_string(), response.body_json()?)))
             .collect(),
         answers: answers.clone(),
+        env: if needs.env.is_empty() {
+            Env::default()
+        } else {
+            sender.env.read(&needs.env)
+        },
         utc_offset: chrono::Local::now().offset().local_minus_utc(),
         // The clock, should the system have no randomness to give.
         draws: Draws::new(getrandom::u64().unwrap_or(since_epoch.as_nanos() as u64)),
@@ -625,7 +633,7 @@ mod tests {
     use cyberapi_core::model::{ContentType, HttpMethod, KvParam};
     use cyberapi_core::response::{HeaderSource, HttpStats};
     use cyberapi_core::response::{StreamEnd, StreamInfo};
-    use cyberapi_core::template::{BaseDir, TemplateError};
+    use cyberapi_core::template::{BaseDir, NoEnv, TemplateError};
     use cyberapi_http::SendFuture;
     use cyberapi_store::{MemoryStore, NewCollection, NewVariable};
     use pretty_assertions::assert_eq;
@@ -694,6 +702,7 @@ mod tests {
             storage: storage.clone(),
             engine: engine.clone(),
             files: Arc::new(Files),
+            env: Arc::new(NoEnv("no environment in tests")),
             user_agent: "CyberAPI/test".into(),
             timeouts: Timeouts::default(),
             sending: SendPrefs::default(),
@@ -1186,6 +1195,59 @@ mod tests {
         assert!(
             curl.contains("X-Code: code") && curl.contains("X-Tenant: acme"),
             "{curl}"
+        );
+    }
+
+    #[test]
+    fn env_is_read_for_the_names_written_and_an_unset_one_stops_the_send() {
+        struct Machine(Mutex<Vec<Vec<String>>>);
+        impl EnvReader for Machine {
+            fn read(&self, names: &[String]) -> Env {
+                self.0.lock().expect("asked").push(names.to_vec());
+                Env::Read(
+                    names
+                        .iter()
+                        .map(|name| (name.clone(), (name == "TOKEN").then(|| "t-env".to_string())))
+                        .collect(),
+                )
+            }
+        }
+        let mut setup = setup(ok(200, "{}"));
+        let machine = Arc::new(Machine(Mutex::default()));
+        setup.sender.env = machine.clone();
+        let api = new_api(&setup, "me");
+        let send_with = |headers: Vec<KvParam>| {
+            pollster::block_on(send(
+                setup.sender.clone(),
+                setup.collection.clone(),
+                api.clone(),
+                HttpRequest {
+                    uri: "https://api.test/me".into(),
+                    headers,
+                    ..Default::default()
+                },
+                Answers::default(),
+            ))
+        };
+        send_with(vec![kv("Authorization", "Bearer {{env(TOKEN)}}")]).expect("sent");
+        let sent = setup.engine.sent.lock().expect("sent").pop().expect("sent");
+        assert_eq!(sent.header("Authorization"), Some("Bearer t-env"));
+
+        assert_eq!(
+            send_with(vec![kv("X-Key", "{{env(MISSING)}}")]),
+            Err(SendFailure::Prepare {
+                source: PrepareError::Template {
+                    source: TemplateError::EnvUnset { name: "MISSING".into() }
+                }
+            })
+        );
+        assert!(setup.engine.sent.lock().expect("sent").is_empty(), "not sent");
+
+        // A request without env asks the machine nothing.
+        send_with(vec![kv("X-Plain", "1")]).expect("sent");
+        assert_eq!(
+            *machine.0.lock().expect("asked"),
+            [vec!["TOKEN".to_string()], vec!["MISSING".to_string()]]
         );
     }
 

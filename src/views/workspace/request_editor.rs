@@ -339,6 +339,10 @@ impl RequestEditor {
                     .to_string();
                     window.push_notification(Notification::error(message), cx);
                 }
+                ApiEvent::EnvUnset(name) => {
+                    let message = t!("editor.env_unset", name = name).to_string();
+                    window.push_notification(Notification::error(message), cx);
+                }
                 ApiEvent::GraphQlVariables(reason) => {
                     let message = t!("editor.graphql_variables_broken", reason = reason).to_string();
                     window.push_notification(Notification::error(message), cx);

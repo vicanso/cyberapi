@@ -33,7 +33,7 @@ use cyberapi_core::mcp::{
 };
 use cyberapi_core::model::{ApiSetting, Collection, ContentType, Environment, HttpMethod, KvParam, VariableCategory};
 use cyberapi_core::response::{BodyKind, HttpResponse};
-use cyberapi_core::template::{Answers, NoFiles};
+use cyberapi_core::template::{Answers, NoEnv, NoFiles};
 use cyberapi_core::version;
 use cyberapi_service::Sender;
 use cyberapi_store::Storage;
@@ -663,6 +663,11 @@ async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, argumen
         storage: storage.clone(),
         engine: bridge.inner.engine.clone(),
         files: Arc::new(NoFiles("a request an AI assistant sends cannot read files")),
+        // Never the bridge's own: any editor of a project would read the
+        // server's secrets.
+        env: Arc::new(NoEnv(
+            "a request an AI assistant sends cannot read environment variables",
+        )),
         user_agent: format!("CyberAPI/{} (mcp)", version::VERSION),
         timeouts: prefs.timeouts,
         sending: prefs.sending,
