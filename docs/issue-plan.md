@@ -150,4 +150,8 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 |---|---|---|
 | 修复 | 首页显示期间按 `SERVER_POLL` 重新列服务器项目、窗口获得焦点和点刷新按钮时也列：团队新加的项目、别人改的接口数不用离开首页就能看到 126b92b | 已完成 |
 | G1 | 本机项目上传成服务器项目：卡片菜单“上传到服务器…”，选团队或个人空间；同一个 id，原地变成副本，历史、固定、环境选择都保留；项目里的设置菜单没有加入口 470de4a 及之后 | 已完成 |
-| 修复 | 带 Touch Bar 的 Mac 上关闭窗口（如设置窗口）就崩溃（`_NSTouchBarFinderObservation invalidate` 抛 `NSRangeException`），zedis 同样。原因在 accesskit_macos 0.26.3，上游 PR #835 已修、发布在 0.27.2，但 GPUI 后端还用不上；先用 `patches/accesskit_macos`（0.26.3 加 #835 的修复）。用 Xcode 的 Touch Bar 模拟器复现并验证，细节见 `patches/README.md`。诊断开关 `CYBERAPI_NO_ACCESSIBILITY` 在 272d8c1 | 已修复，未提交 |
+| 修复 | 带 Touch Bar 的 Mac 上关闭窗口（如设置窗口）就崩溃（`_NSTouchBarFinderObservation invalidate` 抛 `NSRangeException`），zedis 同样。原因在 accesskit_macos 0.26.3，上游 PR #835 已修、发布在 0.27.2，但 GPUI 后端还用不上；先用 `patches/accesskit_macos`（0.26.3 加 #835 的修复）。用 Xcode 的 Touch Bar 模拟器复现并验证，细节见 `patches/README.md`。诊断开关 `CYBERAPI_NO_ACCESSIBILITY` 在 272d8c1 | 已完成 2403289 |
+| #74 | 接口记住的 JSONPath 过滤在新响应上没有匹配时，Pretty 显示整个响应体、Tree 显示空：编辑器记下的“显示的是过滤结果”不对，过滤在后台跑完后 Pretty 不刷新。现在没有匹配时两个视图都显示完整响应体，状态行用警告色说明 a3d64d1 | 已完成 |
+| #75 | GraphQL 格式化后光标回到开头，从 Schema 浏览器插入的字段写到了 `query` 前面。格式化后光标留在原来的词旁；插入的字段在选择集里就写在光标处，否则写在光标所在的选择集或第一个操作的末尾 57900fa | 已完成 |
+| #76 | 接口“设置”标签里的超时没有说明：加上每项的说明，写超时和读超时相加是一个总限时 a6fbf82 | 已完成 |
+| #77 | 复制为 JavaScript fetch 时带的 `Cookie` 头会被浏览器丢掉：在这个头上面加一行注释 f3e50af | 已完成 |
