@@ -98,10 +98,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .thread_name("cyberapi-http")
         .enable_all()
         .build()?;
-    // The reader's proxy, or the environment's (#60).
+    // The reader's proxy, or the environment's (#60); the reader's client
+    // certificates and authorities (C5).
     let engine: Arc<dyn HttpEngine> = Arc::new(
         cyberapi_http::NativeEngine::new(runtime.handle().clone(), cyberapi_http::TargetPolicy::Anywhere)
-            .with_proxies(),
+            .with_proxies()
+            .with_certificates(),
     );
     // A diagnosis switch: the app without AccessKit. On a Mac with a Touch
     // Bar, closing a second window crashed: AccessKit's adapter, dropped with

@@ -16,6 +16,7 @@
 //! server for the definitions its calls are encoded with.
 
 use cyberapi_core::Timestamp;
+use cyberapi_core::certificates;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::cookie::{cookie_header, parse_set_cookie};
 use cyberapi_core::digest::{self, Unanswered as DigestUnanswered};
@@ -198,6 +199,8 @@ pub async fn send_watched(
                 .retain(|(name, _)| !name.eq_ignore_ascii_case("authorization"));
             answered_digest = false;
         }
+        // C5: the certificate for where it goes now.
+        next.tls = certificates::tls_for(&sender.sending.certificates, &next.url);
         if from_jar {
             next.headers.retain(|(name, _)| !name.eq_ignore_ascii_case("cookie"));
         }
@@ -357,6 +360,7 @@ pub async fn fetch_text(sender: Sender, url: String) -> Result<String, String> {
         ..Default::default()
     };
     for _ in 0..=MAX_REDIRECTS {
+        prepared.tls = certificates::tls_for(&sender.sending.certificates, &prepared.url);
         let exchange = sender
             .engine
             .send(prepared.clone())
@@ -692,11 +696,12 @@ async fn prepare(
         inherited: &sender.inherited,
         environment: sender.environment.as_ref().map(|found| found.name.as_str()),
     };
-    let prepared = match grpc_call {
+    let mut prepared = match grpc_call {
         Some((path, body)) => send::grpc_call(request, &cx, path, body),
         None => send::prepare(request, &cx),
     }
     .map_err(|source| SendFailure::Prepare { source })?;
+    prepared.tls = certificates::tls_for(&sender.sending.certificates, &prepared.url);
     Ok((prepared, send::global_header_names(&variables)))
 }
 

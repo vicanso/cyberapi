@@ -673,7 +673,12 @@ async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, argumen
         )),
         user_agent: format!("CyberAPI/{} (mcp)", version::VERSION),
         timeouts: prefs.timeouts,
-        sending: prefs.sending,
+        // C5: the bridge's engine reads no certificate files; none are
+        // named to it either.
+        sending: cyberapi_core::prefs::SendPrefs {
+            certificates: Default::default(),
+            ..prefs.sending
+        },
         inherited,
         environment,
     };

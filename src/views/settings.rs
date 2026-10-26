@@ -4,6 +4,7 @@
 //! window of its own on the desktop; a dialog over the page in the browser,
 //! which has one canvas a tab.
 
+mod certificates;
 #[cfg(not(target_family = "wasm"))]
 mod window;
 
@@ -837,6 +838,11 @@ impl SettingsView {
             ]
             .into_iter()
             .chain(self.proxy_rows(&prefs.sending.proxy, cx))
+            // C5: certificates are files, which a page reads none of.
+            .chain(match this_build::reads_files() {
+                true => certificates::rows(&prefs.sending.certificates, cx),
+                false => Vec::new(),
+            })
             .collect(),
             Section::Window => vec![
                 setting_row(

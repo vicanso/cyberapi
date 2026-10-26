@@ -948,3 +948,197 @@ async fn this_machine_and_the_bridge_go_straight_to_the_server() {
     assert!(direct.await.is_err(), "not through the proxy");
     assert!(asked.lock().expect("asked").is_empty());
 }
+
+/// C5: an authority, and from it a server certificate for `localhost` and
+/// a client's, kept as files: PEM, and the client's as PKCS#12 too.
+struct Pki {
+    dir: std::path::PathBuf,
+    ca: rustls::pki_types::CertificateDer<'static>,
+    server: (
+        rustls::pki_types::CertificateDer<'static>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    ),
+}
+
+impl Pki {
+    fn path(&self, name: &str) -> String {
+        self.dir.join(name).display().to_string()
+    }
+}
+
+/// `der` as PEM, under `label`.
+fn pem(label: &str, der: &[u8]) -> String {
+    use base64::Engine as _;
+    let text = base64::engine::general_purpose::STANDARD.encode(der);
+    let lines: Vec<&str> = text
+        .as_bytes()
+        .chunks(64)
+        .map(|line| std::str::from_utf8(line).expect("base64"))
+        .collect();
+    format!("-----BEGIN {label}-----\n{}\n-----END {label}-----\n", lines.join("\n"))
+}
+
+fn pki() -> Pki {
+    use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose};
+    let dir = std::env::temp_dir().join(format!(
+        "cyberapi-mtls-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("a folder");
+    let ca_key = KeyPair::generate().expect("a key");
+    let mut ca_params = CertificateParams::new(Vec::<String>::new()).expect("params");
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
+    let ca = ca_params.self_signed(&ca_key).expect("the authority");
+    let issuer = Issuer::new(ca_params, ca_key);
+    let made = |name: &str, purpose: ExtendedKeyUsagePurpose| {
+        let key = KeyPair::generate().expect("a key");
+        let mut params = CertificateParams::new(vec![name.to_string()]).expect("params");
+        params.extended_key_usages = vec![purpose];
+        (params.signed_by(&key, &issuer).expect("signed"), key)
+    };
+    let (server, server_key) = made("localhost", ExtendedKeyUsagePurpose::ServerAuth);
+    let (client, client_key) = made("client", ExtendedKeyUsagePurpose::ClientAuth);
+    let write = |name: &str, bytes: &[u8]| std::fs::write(dir.join(name), bytes).expect("written");
+    write("ca.pem", pem("CERTIFICATE", ca.der()).as_bytes());
+    write("client.pem", pem("CERTIFICATE", client.der()).as_bytes());
+    write("client.key", pem("PRIVATE KEY", &client_key.serialize_der()).as_bytes());
+    let mut store = p12_keystore::KeyStore::new();
+    store.add_entry(
+        "client",
+        p12_keystore::KeyStoreEntry::PrivateKeyChain(p12_keystore::PrivateKeyChain::new(
+            "1",
+            p12_keystore::PrivateKey::from_der(&client_key.serialize_der()).expect("a key"),
+            [
+                p12_keystore::Certificate::from_der(client.der()).expect("a certificate"),
+                p12_keystore::Certificate::from_der(ca.der()).expect("a certificate"),
+            ],
+        )),
+    );
+    write("client.p12", &store.writer("pw").write().expect("a PKCS#12 file"));
+    Pki {
+        dir,
+        ca: ca.der().clone(),
+        server: (
+            server.der().clone(),
+            rustls::pki_types::PrivateKeyDer::Pkcs8(server_key.serialize_der().into()),
+        ),
+    }
+}
+
+/// An HTTPS server for `localhost` that lets in only a client whose
+/// certificate the authority signed, and answers `in`.
+async fn serve_mutual(pki: &Pki) -> SocketAddr {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(pki.ca.clone()).expect("the authority");
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+        .build()
+        .expect("a verifier");
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("TLS versions")
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(vec![pki.server.0.clone()], pki.server.1.clone_key())
+        .expect("a server config");
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(stream) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let service = service_fn(|_: hyper::Request<hyper::body::Incoming>| async {
+                    hyper::Response::builder().body(Full::new(Bytes::from_static(b"in")))
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await;
+            });
+        }
+    });
+    address
+}
+
+/// C5: the desktop's engine presents the client certificate a request
+/// names — PEM or PKCS#12 — and trusts the authorities it lists; the
+/// bridge's reads none of those files.
+#[tokio::test]
+async fn a_client_certificate_gets_in() {
+    use cyberapi_core::certificates::{CertificateFormat, ClientCertificate, Tls};
+    let pki = pki();
+    let address = serve_mutual(&pki).await;
+    let to = |client: Option<ClientCertificate>| PreparedRequest {
+        tls: Tls {
+            client,
+            authorities: vec![pki.path("ca.pem")],
+        },
+        ..to(format!("https://localhost:{}/", address.port()), HttpVersion::Http1)
+    };
+    let checked = |request: PreparedRequest| PreparedRequest {
+        accept_invalid_certs: false,
+        ..request
+    };
+    let pem = ClientCertificate {
+        host: "localhost".into(),
+        format: CertificateFormat::Pem,
+        certificate: pki.path("client.pem"),
+        key: pki.path("client.key"),
+        password: String::new(),
+    };
+    let pkcs12 = ClientCertificate {
+        format: CertificateFormat::Pkcs12,
+        certificate: pki.path("client.p12"),
+        key: String::new(),
+        password: "pw".into(),
+        ..pem.clone()
+    };
+    let desktop = engine().with_certificates();
+    for client in [&pem, &pkcs12] {
+        let exchange = desktop.send(checked(to(Some(client.clone())))).await.expect("let in");
+        assert_eq!(
+            (exchange.status, exchange.body),
+            (200, b"in".to_vec()),
+            "{:?}",
+            client.format
+        );
+    }
+
+    // Without one, or with one it cannot read: no answer, and why.
+    assert!(
+        desktop.send(checked(to(None))).await.is_err(),
+        "no certificate, not let in"
+    );
+    let wrong = ClientCertificate {
+        password: "nope".into(),
+        ..pkcs12.clone()
+    };
+    match desktop.send(checked(to(Some(wrong)))).await {
+        Err(SendError::Tls { message }) => assert!(message.contains("client.p12"), "{message}"),
+        other => panic!("a wrong password: {other:?}"),
+    }
+    let missing = ClientCertificate {
+        key: pki.path("missing.key"),
+        ..pem.clone()
+    };
+    match desktop.send(checked(to(Some(missing)))).await {
+        Err(SendError::Tls { message }) => assert!(message.contains("missing.key"), "{message}"),
+        other => panic!("a missing key: {other:?}"),
+    }
+
+    // The bridge's engine reads no files: the authority is not trusted,
+    // and taking any certificate, it still has none to present.
+    assert!(matches!(
+        engine().send(checked(to(Some(pem.clone())))).await,
+        Err(SendError::Certificate { .. })
+    ));
+    assert!(engine().send(to(Some(pem))).await.is_err(), "no certificate presented");
+    let _ = std::fs::remove_dir_all(&pki.dir);
+}

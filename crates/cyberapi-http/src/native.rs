@@ -25,6 +25,11 @@
 //! request whole and tunnels the rest with `CONNECT`, a SOCKS5 proxy is
 //! asked to connect. The bridge's goes straight to every server, whatever a
 //! request says: a page must not reach past the bridge's address rules.
+//!
+//! One made [`NativeEngine::with_certificates`] (the desktop's, again)
+//! presents the client certificate a request names and trusts the
+//! authorities it lists besides the system's (C5, `client_tls`). The
+//! bridge's reads no such files: they would be its own machine's.
 
 use crate::{Exchange, HttpEngine, PreparedRequest, Progress, SendError, SendFuture, TargetPolicy, Watch};
 use bytes::Bytes;
@@ -60,6 +65,7 @@ pub struct NativeEngine {
     policy: TargetPolicy,
     body_limit: usize,
     proxies: bool,
+    certificates: bool,
 }
 
 impl NativeEngine {
@@ -69,6 +75,7 @@ impl NativeEngine {
             policy,
             body_limit: RESPONSE_LIMIT,
             proxies: false,
+            certificates: false,
         }
     }
 
@@ -76,6 +83,13 @@ impl NativeEngine {
     /// (#60): the desktop's engine, not the bridge's.
     pub fn with_proxies(mut self) -> Self {
         self.proxies = true;
+        self
+    }
+
+    /// Reads the certificate files each request names (C5): the desktop's
+    /// engine, not the bridge's.
+    pub fn with_certificates(mut self) -> Self {
+        self.certificates = true;
         self
     }
 
@@ -102,7 +116,10 @@ impl NativeEngine {
         let task = self.runtime.spawn(exchange(
             request,
             self.policy.clone(),
-            self.proxies,
+            Desktop {
+                proxies: self.proxies,
+                certificates: self.certificates,
+            },
             Reading {
                 limit: self.body_limit,
                 watch,
@@ -137,12 +154,33 @@ fn tls_config(accept_invalid_certs: bool, version: HttpVersion) -> Arc<rustls::C
     static ANY: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     let base = if accept_invalid_certs { &ANY } else { &CHECKED };
     let mut config = (**base.get_or_init(|| Arc::new(client_config(!accept_invalid_certs)))).clone();
-    config.alpn_protocols = match version {
+    config.alpn_protocols = alpn(version);
+    Arc::new(config)
+}
+
+/// The protocols `version` allows a handshake to offer.
+pub(crate) fn alpn(version: HttpVersion) -> Vec<Vec<u8>> {
+    match version {
         HttpVersion::Auto => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
         HttpVersion::Http1 => vec![b"http/1.1".to_vec()],
         HttpVersion::Http2 => vec![b"h2".to_vec()],
-    };
-    Arc::new(config)
+    }
+}
+
+/// The system's roots, as the old app used; Mozilla's when the system
+/// offers none. Read once.
+pub(crate) fn system_roots() -> &'static rustls::RootCertStore {
+    static ROOTS: OnceLock<rustls::RootCertStore> = OnceLock::new();
+    ROOTS.get_or_init(|| {
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in rustls_native_certs::load_native_certs().certs {
+            let _ = roots.add(cert);
+        }
+        if roots.is_empty() {
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        }
+        roots
+    })
 }
 
 fn client_config(check_certs: bool) -> rustls::ClientConfig {
@@ -151,16 +189,9 @@ fn client_config(check_certs: bool) -> rustls::ClientConfig {
         .with_safe_default_protocol_versions()
         .expect("ring supports the default TLS versions");
     if check_certs {
-        // The system's roots, as the old app used; Mozilla's when the
-        // system offers none.
-        let mut roots = rustls::RootCertStore::empty();
-        for cert in rustls_native_certs::load_native_certs().certs {
-            let _ = roots.add(cert);
-        }
-        if roots.is_empty() {
-            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        }
-        builder.with_root_certificates(roots).with_no_client_auth()
+        builder
+            .with_root_certificates(system_roots().clone())
+            .with_no_client_auth()
     } else {
         builder
             .dangerous()
@@ -172,7 +203,7 @@ fn client_config(check_certs: bool) -> rustls::ClientConfig {
 /// Takes the certificate a server presents, whoever issued it and whatever
 /// name it is for, and still checks the server signs with its key.
 #[derive(Debug)]
-struct AnyCertificate(Arc<CryptoProvider>);
+pub(crate) struct AnyCertificate(pub(crate) Arc<CryptoProvider>);
 
 impl ServerCertVerifier for AnyCertificate {
     fn verify_server_cert(
@@ -227,10 +258,16 @@ struct Reading {
     watch: Option<Watch>,
 }
 
+/// What only the desktop's engine does.
+struct Desktop {
+    proxies: bool,
+    certificates: bool,
+}
+
 async fn exchange(
     request: PreparedRequest,
     policy: TargetPolicy,
-    proxies: bool,
+    desktop: Desktop,
     reading: Reading,
 ) -> Result<Exchange, SendError> {
     let started = Instant::now();
@@ -249,7 +286,7 @@ async fn exchange(
     let port = url.port_or_known_default().unwrap_or(if https { 443 } else { 80 });
     let connect_limit = seconds(timeouts.connect);
     let proxy_failed = |message: String| SendError::Proxy { message };
-    let via = if proxies {
+    let via = if desktop.proxies {
         cyberapi_core::proxy::choose(&request.proxy, &url, |name| std::env::var(name).ok()).map_err(proxy_failed)?
     } else {
         None
@@ -382,10 +419,14 @@ async fn exchange(
             Host::Ipv6(ip) => Ok(ServerName::IpAddress(std::net::IpAddr::V6(*ip).into())),
         }
         .map_err(|error| invalid(error.to_string()))?;
+        let config = if desktop.certificates && !request.tls.is_plain() {
+            crate::client_tls::config(&request.tls, !request.accept_invalid_certs, request.http_version)?
+        } else {
+            tls_config(request.accept_invalid_certs, request.http_version)
+        };
         let tls = timeout(
             connect_limit,
-            tokio_rustls::TlsConnector::from(tls_config(request.accept_invalid_certs, request.http_version))
-                .connect(name, stream),
+            tokio_rustls::TlsConnector::from(config).connect(name, stream),
         )
         .await
         .map_err(|_| timed_out("TLS", timeouts.connect))?

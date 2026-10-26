@@ -7,6 +7,7 @@ pub mod access;
 pub mod assertions;
 pub mod auth;
 pub mod backup;
+pub mod certificates;
 pub mod code;
 pub mod collection;
 pub mod cookie;

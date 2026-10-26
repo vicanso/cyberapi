@@ -9,6 +9,7 @@
 //! (F14.8, F14.9), and an HTTP version other than curl's own choice is named
 //! (F14.10).
 
+use crate::certificates::CertificateFormat;
 use crate::model::{ContentType, HttpMethod, HttpRequest};
 use crate::prefs::HttpVersion;
 use crate::send::{PreparedRequest, form_fields};
@@ -49,6 +50,28 @@ pub fn curl(
             "-u {}",
             quote(&format!("{}:{}", login.username, login.password))
         ));
+    }
+    // C5: the client certificate, and the authority when it is one file
+    // (curl takes one bundle).
+    if let Some(client) = &prepared.tls.client {
+        match client.format {
+            CertificateFormat::Pem => {
+                parts.push(format!("--cert {}", quote(&client.certificate)));
+                parts.push(format!("--key {}", quote(&client.key)));
+            }
+            CertificateFormat::Pkcs12 => {
+                parts.push("--cert-type P12".to_string());
+                parts.push(format!(
+                    "--cert {}",
+                    quote(&format!("{}:{}", client.certificate, client.password))
+                ));
+            }
+        }
+    }
+    if let [authority] = prepared.tls.authorities.as_slice()
+        && !prepared.accept_invalid_certs
+    {
+        parts.push(format!("--cacert {}", quote(authority)));
     }
     // curl, too, prefers HTTP/2 over TLS and speaks HTTP/1.1 otherwise.
     match prepared.http_version {

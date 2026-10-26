@@ -106,6 +106,7 @@ mod tests {
                 username: "a".into(),
                 password: "b".into(),
             }),
+            tls: Default::default(),
         }
     }
 

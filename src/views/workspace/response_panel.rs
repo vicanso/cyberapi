@@ -1083,7 +1083,14 @@ impl ResponsePanel {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(t!("response.untrusted_certificate").to_string())
+                    // C5: the desktop can trust the server's authority.
+                    .child(
+                        match crate::this_build::reads_files() {
+                            true => t!("response.untrusted_certificate_desktop"),
+                            false => t!("response.untrusted_certificate"),
+                        }
+                        .to_string(),
+                    )
             });
             return v_flex()
                 .p_3()

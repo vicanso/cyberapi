@@ -157,6 +157,8 @@ pub struct SendPrefs {
     /// #60: on the desktop; a page's requests go from the bridge, which
     /// takes no proxy from them.
     pub proxy: crate::proxy::ProxyPrefs,
+    /// C5: on the desktop, as the proxy.
+    pub certificates: crate::certificates::CertificatePrefs,
 }
 
 /// What one API overrides of the settings' sending (#71): each it leaves
@@ -198,6 +200,7 @@ impl RequestSettings {
             accept_invalid_certs: self.accept_invalid_certs.unwrap_or(sending.accept_invalid_certs),
             http_version: self.http_version.unwrap_or(sending.http_version),
             proxy: sending.proxy.clone(),
+            certificates: sending.certificates.clone(),
         }
     }
 }

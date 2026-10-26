@@ -428,6 +428,44 @@ mod tests {
         (prepared, request)
     }
 
+    /// C5: cURL presents the client certificate and trusts the authority.
+    #[test]
+    fn curl_takes_the_certificates() {
+        use crate::certificates::{CertificateFormat, ClientCertificate, Tls};
+        let request = HttpRequest::default();
+        let with = |client: ClientCertificate, authorities: Vec<String>| {
+            let prepared = PreparedRequest {
+                method: HttpMethod::Get,
+                url: "https://api.test/".into(),
+                tls: Tls {
+                    client: Some(client),
+                    authorities,
+                },
+                ..Default::default()
+            };
+            code(CodeTarget::Curl, &prepared, &request, false)
+        };
+        let pem = ClientCertificate {
+            host: "api.test".into(),
+            certificate: "/certs/me.pem".into(),
+            key: "/certs/me.key".into(),
+            ..Default::default()
+        };
+        assert!(
+            with(pem.clone(), vec!["/certs/ca.pem".into()])
+                .contains("--cert '/certs/me.pem' --key '/certs/me.key' --cacert '/certs/ca.pem'")
+        );
+        let bundle = ClientCertificate {
+            format: CertificateFormat::Pkcs12,
+            certificate: "/certs/me.p12".into(),
+            password: "pw".into(),
+            ..pem
+        };
+        let two = with(bundle, vec!["a.pem".into(), "b.pem".into()]);
+        assert!(two.contains("--cert-type P12 --cert '/certs/me.p12:pw'"), "{two}");
+        assert!(!two.contains("--cacert"), "curl takes one bundle: {two}");
+    }
+
     /// C2: what answers a Digest challenge, where the target can.
     #[test]
     fn digest_is_answered_where_the_target_can() {

@@ -18,6 +18,8 @@
 //! stops it — what came by then is the exchange, with how it ended.
 
 #[cfg(not(target_family = "wasm"))]
+mod client_tls;
+#[cfg(not(target_family = "wasm"))]
 mod native;
 mod policy;
 #[cfg(not(target_family = "wasm"))]

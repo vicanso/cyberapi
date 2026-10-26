@@ -14,7 +14,7 @@ Search by name or pinyin, drag to reorder, duplicate, move to a folder, copy an 
 
 ## Requests
 
-Query, headers, auth — Basic, a bearer token, an API key in a header or the query, or Digest (cameras and routers ask for it), its values templates, set on the API or inherited from its folder or the project — and JSON, form, multipart, XML or plain-text bodies; bulk-edit any list as text. A folder's headers go with every API in it. A query typed into the URL moves to the Query table. Timeouts, HTTP/1.1 or HTTP/2, redirects followed or not, and self-signed certificates accepted when you say so; an API can set any of these for itself in its Settings tab. On the desktop, requests go through an HTTP or SOCKS5 proxy, set in the settings or taken from `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`.
+Query, headers, auth — Basic, a bearer token, an API key in a header or the query, or Digest (cameras and routers ask for it), its values templates, set on the API or inherited from its folder or the project — and JSON, form, multipart, XML or plain-text bodies; bulk-edit any list as text. A folder's headers go with every API in it. A query typed into the URL moves to the Query table. Timeouts, HTTP/1.1 or HTTP/2, redirects followed or not, and self-signed certificates accepted when you say so; an API can set any of these for itself in its Settings tab. On the desktop, requests go through an HTTP or SOCKS5 proxy, set in the settings or taken from `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`; client certificates (PEM, or PKCS#12 with its password) are presented to the hosts they are for, and authorities besides the system's — a company's own, say — trusted.
 
 ## GraphQL
 

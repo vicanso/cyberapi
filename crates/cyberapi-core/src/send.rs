@@ -60,6 +60,11 @@ pub struct PreparedRequest {
     /// sent to the bridge: the answer goes, as a header.
     #[serde(skip)]
     pub digest: Option<DigestLogin>,
+    /// C5: the client certificate and the authorities its handshake takes
+    /// (`certificates::tls_for`). Never sent to the bridge, which reads no
+    /// files of its own for anyone.
+    #[serde(skip)]
+    pub tls: crate::certificates::Tls,
 }
 
 impl PreparedRequest {
@@ -537,6 +542,7 @@ pub fn grpc_call(
         proxy: cx.proxy.clone(),
         // gRPC servers ask for no Digest.
         digest: None,
+        tls: Default::default(),
     })
 }
 
@@ -656,6 +662,8 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         proxy: cx.proxy.clone(),
         streams: false,
         digest,
+        // By host, as each hop goes (the service's).
+        tls: Default::default(),
     })
 }
 
