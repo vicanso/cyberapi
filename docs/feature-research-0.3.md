@@ -347,6 +347,25 @@
 5. **功能膨胀、许可或价格突变。** 例如 Thunder Client 加限制、Bruno 改收费。Apache-2.0 加自托管要保持清楚。
 6. **强制或坏掉的自动更新。** 例如 Bruno [#7856](https://github.com/usebruno/bruno/issues/7856) 自己把自己卸载了。CyberAPI 的更新只在读者点击后下载并核对校验和，macOS 原地替换前会核对 bundle 标识；这一条要一直测。
 
+## 9. 实施时先替你定下的（2026-10-26 起，都可以改）
+
+维护者要求“需要你决定的先写进文档，尽可能多做”。下面每一条是动手前写下的：用的是哪种做法、为什么，以及要改的话改哪里。没写在这里的，按第 5 节的建议做。
+
+- **B4 导入带认证和环境：** 照 issue-plan 里已经定的：项目已有认证时保留项目的；同名环境只补上没有的变量。OpenAPI 的 `securitySchemes` 只建结构，值留空。
+- **B1 导出 OpenAPI：** 导出 3.0.3（比 3.1 被更多工具接受），JSON 或 YAML 由保存的扩展名决定。`servers` 取当前环境里地址前缀变量的值；请求体的示例取接口自己的请求体；认证只写类型，不写值（不把密钥带出去）。
+- **B2 导出 Postman：** Collection v2.1；认证的值、变量的值照导出（这是读者自己的数据，导出给自己用），和现有的 CyberAPI 导出一致。
+- **B5 新导入格式：** 先做 HAR、Hoppscotch、Bruno 单个 `.bru` 文件和 OpenCollection YAML。Bruno 整个目录要选文件夹，先不做；Paw 文件格式没查清，先不做。
+- **B6 复制为代码：** 加 Rust reqwest、Node axios、Java HttpClient、C# HttpClient、PHP Guzzle、Swift URLSession。目标多了以后菜单分组，cURL 仍在第一个。
+- **D4 历史：** 每个接口保留的条数可在设置里改（5–100，默认仍是 10），桌面和网页都是读者自己的设置；项目级“最近发送”列出最近 50 条；两条历史的对比先做响应体的文本对比。
+- **A2 提取：** 只在一次运行里有效，不写回项目、不同步（第 5.1 节的建议）。
+- **A3 运行器：** 串行发送；数据文件支持 CSV 和 JSON 数组，每行跑一遍；运行中发出的请求照常记进历史（每个接口仍只留最近的几条）；运行结果只显示、不存。
+- **A4 `cyberapi run`：** 只读 CyberAPI 的导出文件（可进 git），不打开本机库（不和桌面版争锁），也不连 bridge（以后要的话再加机器令牌）。环境用 `--env` 选，输出终端摘要和 JUnit XML。
+- **F3 说明与示例：** 说明是纯文本（Markdown 原样显示，不渲染，组件库的渲染能力还没查），示例跟着项目同步，数据模型编号加一。
+- **H1 MCP 写入（第 7 节 Q6）：** 令牌签发时单独勾选“允许修改”，账号对项目至少是编辑者；先只做新建和修改接口，不做删除。
+- **C4 OAuth 2.0：** 令牌属于读者，像 Cookie 一样按账号存，不同步、不进备份。先做 client credentials 和 password 两种，不需要浏览器；授权码 + PKCE 之后再说。
+- **F1 标签页（第 7 节 Q4）：** 保存方式不变，仍是自动保存；临时请求先不做。
+- **G4 项目历史版本：** 每次整份替换（同步）之前把旧的存一份，每个项目留最近 50 份；先只在 bridge 上做，桌面本机项目不做。
+
 ## 附录 A：竞品功能的主要来源
 
 - 协议：[Postman protocols](https://learning.postman.com/docs/use/send-requests/protocols/protocols.md)、[Insomnia gRPC](https://developer.konghq.com/insomnia/grpc-requests/)、[Bruno gRPC streams](https://docs.usebruno.com/send-requests/grpc/grpc-streams.md)、[Yaak gRPC](https://yaak.app/docs/request-types/grpc-requests)、[Hoppscotch](https://docs.hoppscotch.io/llms.txt)、[Apidog](https://docs.apidog.com/llms.txt)、[Requestly](https://docs.requestly.com/llms.txt)、[Kreya](https://kreya.app/)。
