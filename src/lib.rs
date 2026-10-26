@@ -213,9 +213,11 @@ pub fn launch(cx: &mut App, storage: Storage, engine: Arc<dyn HttpEngine>, prefs
     if this_build::mac_page() {
         views::bind_mac_page_keys(cx);
         views::bind_dashboard_mac_page_keys(cx);
+        views::bind_palette_mac_page_keys(cx);
     }
     views::bind_workspace_keys(cx);
     views::bind_dashboard_keys(cx);
+    views::bind_palette_keys(cx);
     open_main_window(cx, |window, cx| cx.new(|cx| CyberApi::new(window, cx)));
 }
 

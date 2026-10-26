@@ -8,6 +8,7 @@ mod compare_dialog;
 mod event_stream;
 mod import_dialog;
 mod move_dialog;
+mod palette;
 mod pins;
 mod project_title;
 mod prompt_dialog;
@@ -207,6 +208,10 @@ fn new_item(
 }
 
 pub use import_dialog::{open_import_dialog, open_import_project_dialog};
+pub use palette::{
+    OpenPalette, ROOT_CONTEXT, bind_keys as bind_palette_keys, bind_mac_page_keys as bind_palette_mac_page_keys,
+    open_palette,
+};
 pub use settings_dialogs::open_project_auth;
 
 /// F10.5: the cURL command on the clipboard as a new API in `parent`, opened.

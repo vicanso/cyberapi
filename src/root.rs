@@ -4,9 +4,9 @@ use crate::APP_NAME;
 use crate::i18n;
 use crate::states::{AppEvent, AppStore, Route, WorkspaceState};
 use crate::views::{
-    DashboardView, WorkspaceView, follow_update, open_accounts_dialog, open_cookies_dialog, open_mcp_dialog,
-    open_password_dialog, open_project_auth, open_settings, open_shortcuts_dialog, open_teams_dialog,
-    open_variables_dialog, update_chip,
+    DashboardView, OpenPalette, ROOT_CONTEXT, WorkspaceView, follow_update, open_accounts_dialog, open_cookies_dialog,
+    open_mcp_dialog, open_palette, open_password_dialog, open_project_auth, open_settings, open_shortcuts_dialog,
+    open_teams_dialog, open_variables_dialog, update_chip,
 };
 use cyberapi_core::model::VariableCategory;
 #[cfg(not(target_family = "wasm"))]
@@ -21,8 +21,8 @@ use gpui_kit::component::{
     try_parse_color, v_flex,
 };
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions,
-    Render, Styled as _, Subscription, WeakEntity, Window, div, hsla, px,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, WeakEntity, Window, div, hsla, px,
 };
 #[cfg(not(target_family = "wasm"))]
 use gpui_kit::{Pixels, Task};
@@ -262,9 +262,15 @@ impl CyberApi {
                 // A project made from an import takes it in as it opens (#65).
                 let state = AppStore::global(cx).state().clone();
                 let import = state.update(cx, |state, _| state.take_import(&collection.id));
+                // F2: opened at one of its APIs.
+                let selecting = state.update(cx, |state, _| state.take_selecting(&collection.id));
                 let view = cx.new(|cx| WorkspaceView::new(collection, window, cx));
                 if let Some(import) = import {
                     view.update(cx, |view, cx| view.import_when_loaded(import, cx));
+                }
+                if let Some(api) = selecting {
+                    let workspace = view.read(cx).state().clone();
+                    workspace.update(cx, |workspace, cx| workspace.select_when_loaded(api, cx));
                 }
                 Page::Workspace(view)
             }
@@ -637,6 +643,15 @@ impl Render for CyberApi {
         };
         let theme = cx.theme();
         v_flex()
+            .key_context(ROOT_CONTEXT)
+            // F2: ⌘/Ctrl-K, on every page.
+            .on_action(cx.listener(|this, _: &OpenPalette, window, cx| {
+                let workspace = match &this.page {
+                    Page::Workspace(view) => Some(view.read(cx).state().clone()),
+                    Page::Dashboard(_) => None,
+                };
+                open_palette(workspace, window, cx);
+            }))
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)

@@ -4,9 +4,9 @@
 
 use super::dashboard::{FocusSearch, KEY_CONTEXT as DASHBOARD};
 use super::workspace::{
-    FindApi, FocusUrl, KEY_CONTEXT as WORKSPACE, NewApi, NewFolder, PasteCurl, Pin1, Pin9, Send as SendAction,
-    TREE_CONTEXT as TREE, TreeClose, TreeDuplicate, TreeNext, TreeOpen, TreePrevious, TreeRemove, TreeRename,
-    TreeToggle,
+    FindApi, FocusUrl, KEY_CONTEXT as WORKSPACE, NewApi, NewFolder, OpenPalette, PasteCurl, Pin1, Pin9, ROOT_CONTEXT,
+    Send as SendAction, TREE_CONTEXT as TREE, TreeClose, TreeDuplicate, TreeNext, TreeOpen, TreePrevious, TreeRemove,
+    TreeRename, TreeToggle,
 };
 use crate::this_build;
 use gpui_kit::component::kbd::Kbd;
@@ -78,10 +78,20 @@ fn shortcuts(window: &mut Window, cx: &mut App) -> impl IntoElement {
             keys(&TreeDuplicate, TREE, window),
         ));
     }
-    let projects = vec![(
+    let mut projects = vec![(
         t!("shortcuts.search_projects").to_string(),
         keys(&FocusSearch, DASHBOARD, window),
     )];
+    // F2: a browser on Windows or Linux takes Ctrl-K for its own search.
+    if browser_keys {
+        projects.insert(
+            0,
+            (
+                t!("shortcuts.palette").to_string(),
+                keys(&OpenPalette, ROOT_CONTEXT, window),
+            ),
+        );
+    }
     let muted = cx.theme().muted_foreground;
     let section = |title: String, rows: Vec<(String, Vec<AnyElement>)>| {
         v_flex()

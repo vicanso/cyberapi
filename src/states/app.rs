@@ -12,7 +12,7 @@ use cyberapi_core::model::Collection;
 use cyberapi_core::prefs::{AppPrefs, ColumnWidths, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
 #[cfg(not(target_family = "wasm"))]
 use cyberapi_core::prefs::{MonitorPlacement, remember_monitor};
-use cyberapi_core::{CollectionId, Timestamp};
+use cyberapi_core::{CollectionId, ItemId, Timestamp};
 use cyberapi_http::HttpEngine;
 use cyberapi_service::Sender;
 use cyberapi_service::backup::{self, BackupFailure};
@@ -51,6 +51,7 @@ impl AppStore {
             me: None,
             opening: None,
             importing: None,
+            selecting: None,
             save_task: None,
             saves: Arc::default(),
         });
@@ -205,6 +206,8 @@ pub struct AppState {
     opening: Option<Collection>,
     /// What to import into a project made from it, once that opens (#65).
     importing: Option<(CollectionId, Arc<ImportBundle>)>,
+    /// F2: the API to select in a project as it opens.
+    selecting: Option<(CollectionId, ItemId)>,
     /// A save waiting for a drag or a resize to settle.
     save_task: Option<Task<()>>,
     /// The saves of the settings, one at a time in the order made: each
@@ -304,6 +307,24 @@ impl AppState {
     pub fn open_importing(&mut self, collection: Collection, import: Arc<ImportBundle>, cx: &mut Context<Self>) {
         self.importing = Some((collection.id.clone(), import));
         self.open_collection(collection, cx);
+    }
+
+    /// F2: a project opened at one of its APIs, as the command palette
+    /// picks one.
+    pub fn open_at(&mut self, collection: Collection, api: ItemId, cx: &mut Context<Self>) {
+        self.selecting = Some((collection.id.clone(), api));
+        self.open_collection(collection, cx);
+    }
+
+    /// The API to select in `id` as it opens, once.
+    pub fn take_selecting(&mut self, id: &CollectionId) -> Option<ItemId> {
+        match self.selecting.take() {
+            Some((selecting, api)) if selecting == *id => Some(api),
+            other => {
+                self.selecting = other;
+                None
+            }
+        }
     }
 
     /// What to import into `id` as it opens, once.
@@ -755,6 +776,23 @@ mod tests {
             assert_eq!(state.take_import(&other.id), None, "another project's");
             assert_eq!(state.take_import(&shop.id), Some(bundle));
             assert_eq!(state.take_import(&shop.id), None, "once");
+        });
+    }
+
+    /// F2: a project opened at one of its APIs: only it selects it, once.
+    #[gpui_kit::test]
+    async fn a_project_opened_at_an_api_selects_it_once(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let shop = create(&store, "shop");
+        let other = create(&store, "other");
+        let (state, _) = launch(&store, cx);
+        let api = ItemId::new("login");
+        state.update(cx, |state, cx| state.open_at(shop.clone(), api.clone(), cx));
+        state.update(cx, |state, _| {
+            assert_eq!(state.route(), &Route::Workspace(shop.clone()));
+            assert_eq!(state.take_selecting(&other.id), None, "another project's");
+            assert_eq!(state.take_selecting(&shop.id), Some(api));
+            assert_eq!(state.take_selecting(&shop.id), None, "once");
         });
     }
 

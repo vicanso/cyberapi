@@ -125,6 +125,11 @@ pub struct WorkspaceState {
     /// What to import once the tree has loaded: a project made from an
     /// import (#65).
     waiting_import: Option<Arc<ImportBundle>>,
+    /// F2: the API to select once the tree and the reader's state of it
+    /// are read — the state names a selection of its own.
+    waiting_select: Option<ItemId>,
+    /// The reader's state of the tree has been read, or could not be.
+    prefs_read: bool,
     keyword: String,
     /// The tree's changes, one at a time.
     gate: Arc<Mutex<()>>,
@@ -236,6 +241,8 @@ impl WorkspaceState {
             prefs: WorkspacePrefs::default(),
             load: Load::Loading,
             waiting_import: None,
+            waiting_select: None,
+            prefs_read: false,
             keyword: String::new(),
             gate: Arc::default(),
             saves: Arc::default(),
@@ -1187,6 +1194,7 @@ impl WorkspaceState {
                     if let Some(import) = this.waiting_import.take() {
                         this.import(None, Arc::unwrap_or_clone(import), cx);
                     }
+                    this.select_waiting(cx);
                 }
                 Err(error) => this.load = Load::Failed(error),
             }
@@ -1213,8 +1221,27 @@ impl WorkspaceState {
                 // a closed tree.
                 Err(error) => warn!(%error, "the workspace state could not be read"),
             }
+            this.prefs_read = true;
+            this.select_waiting(cx);
             cx.notify();
         });
+    }
+
+    /// F2: `api` selected as soon as the project has loaded.
+    pub fn select_when_loaded(&mut self, api: ItemId, cx: &mut Context<Self>) {
+        self.waiting_select = Some(api);
+        self.select_waiting(cx);
+    }
+
+    fn select_waiting(&mut self, cx: &mut Context<Self>) {
+        if self.load != Load::Loaded || !self.prefs_read {
+            return;
+        }
+        if let Some(api) = self.waiting_select.take()
+            && self.data.apis.iter().any(|found| found.id == api)
+        {
+            self.select(&api, cx);
+        }
     }
 
     fn set_data(&mut self, data: TreeData, cx: &mut Context<Self>) {
@@ -3172,6 +3199,34 @@ mod tests {
         api.update(cx, |api, cx| api.clear_history(cx));
         cx.run_until_parked();
         assert!(api.read_with(cx, |api, _| api.shown_response().is_none()));
+    }
+
+    /// F2: an API asked for while the project loads is selected once it
+    /// and the reader's state of it are read, over the selection kept.
+    #[gpui_kit::test]
+    async fn an_api_asked_for_while_loading_is_selected(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_api(None, "a".into(), cx));
+        state.update(cx, |state, cx| state.create_api(None, "b".into(), cx));
+        cx.run_until_parked();
+        let (a, b) = (find(&state, "a", cx), find(&state, "b", cx));
+        assert_eq!(
+            state.read_with(cx, |state, _| state.opened_api().map(|api| api.id.clone())),
+            Some(b)
+        );
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        drop(state);
+        let state = cx.new(|cx| WorkspaceState::new(sender(&storage, true), collection.clone(), cx));
+        state.update(cx, |state, cx| state.select_when_loaded(a.clone(), cx));
+        cx.run_until_parked();
+        assert_eq!(
+            state.read_with(cx, |state, _| state.opened_api().map(|api| api.id.clone())),
+            Some(a),
+            "the one asked for, not the one kept"
+        );
     }
 
     /// A3: a run sends the APIs in the tree's order, once for each row,

@@ -120,6 +120,10 @@ mod tests {
             IconName::Users,
             IconName::WandSparkles,
             IconName::FolderOpen,
+            IconName::Folder,
+            IconName::Globe,
+            IconName::Search,
+            IconName::Settings,
         ] {
             let path = icon.path();
             assert!(Assets.load(&path).ok().flatten().is_some(), "{path} is missing");
