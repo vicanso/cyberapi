@@ -43,8 +43,8 @@ fn address(text: &str) -> Option<&str> {
 
 /// F10.1: what the clipboard holds, when it looks like something to import
 /// — JSON, formatted, a cURL command, an OpenAPI or Swagger document in
-/// YAML (#59), or an address to fetch one from (B3), as it is; nothing
-/// otherwise.
+/// YAML (#59), a Bruno file or an OpenCollection document (B5), or an
+/// address to fetch one from (B3), as it is; nothing otherwise.
 fn importable(text: &str) -> String {
     let trimmed = text.trim();
     if let Some(address) = address(trimmed) {
@@ -58,7 +58,7 @@ fn importable(text: &str) -> String {
         (trimmed.starts_with('{') && trimmed.ends_with('}')) || (trimmed.starts_with('[') && trimmed.ends_with(']'));
     if !looks_json {
         return match import::detect(trimmed) {
-            Ok((Format::Swagger | Format::OpenApi, _)) => trimmed.to_string(),
+            Ok((Format::Swagger | Format::OpenApi | Format::Bruno | Format::OpenCollection, _)) => trimmed.to_string(),
             _ => String::new(),
         };
     }
@@ -89,6 +89,11 @@ fn format_name(format: Format) -> &'static str {
         Format::Insomnia => "Insomnia",
         Format::Swagger => "Swagger 2.0",
         Format::OpenApi => "OpenAPI 3",
+        Format::Har => "HAR",
+        Format::Hoppscotch => "Hoppscotch",
+        Format::HoppscotchEnvironment => "Hoppscotch environment",
+        Format::Bruno => "Bruno",
+        Format::OpenCollection => "OpenCollection",
         Format::CyberApi => "CyberAPI",
     }
 }
@@ -761,6 +766,11 @@ mod tests {
         let openapi = "openapi: 3.0.1\ninfo:\n  title: Pets\npaths: {}";
         assert_eq!(importable(&format!("\n{openapi}\n")), openapi);
         assert_eq!(importable("name: tree\nage: 3"), "");
+        // B5: Bruno's files, its own text or OpenCollection's YAML.
+        let bru = "meta {\n  name: a\n}\n\nget {\n  url: https://a.test\n}";
+        assert_eq!(importable(&format!("{bru}\n")), bru);
+        let collection = "opencollection: 1.0.0\ninfo:\n  name: Shop\nitems: []";
+        assert_eq!(importable(collection), collection);
         assert_eq!(importable(""), "");
         // A character of several bytes across the fourth: no panic.
         assert_eq!(importable("新建接口"), "");

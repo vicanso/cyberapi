@@ -39,7 +39,7 @@
 - 👥 **Built for teams** — a self-hosted web version from the same code; the desktop app signs in, works offline and syncs when you choose.
 - 🤖 **Ready for AI assistants** — Claude Code, Cursor and other MCP clients read your APIs, secrets masked, and send them when you allow.
 
-Coming from Postman, Insomnia or Swagger? **Import the collection, or just paste a cURL command.**
+Coming from Postman, Insomnia, Hoppscotch, Bruno or Swagger? **Import the collection, or just paste a cURL command.**
 
 📖 **[Every feature in detail →](./docs/FEATURES.md)**
 

@@ -8,6 +8,12 @@
 //! environment, with `resources` an Insomnia export; any other JSON is
 //! CyberAPI's own export.
 //!
+//! B5: also a HAR archive (`log.entries`), a Hoppscotch collection
+//! (`folders` and `requests`, or a list of them) or environment (`name` and
+//! `variables`), a Bruno `.bru` file (text whose first block is `meta {`, a
+//! method's or `vars {`) and an OpenCollection document (`opencollection`,
+//! or one request's `info` with its `http` or `graphql`), Bruno's YAML.
+//!
 //! B4: besides its items, an import brings how the project signs in (a
 //! Postman collection's auth, an OpenAPI document's security, its values
 //! left empty) and named environments (a Postman environment, Insomnia's
@@ -18,10 +24,14 @@
 //! so importing a file twice clashed, and retried APIs left their folders
 //! pointing at the old ids (#7). A store gives every item a new id.
 
+mod bruno;
 mod curl;
+mod har;
+mod hoppscotch;
 mod insomnia;
 pub mod merge;
 mod openapi;
+mod opencollection;
 mod own;
 mod postman;
 
@@ -151,6 +161,12 @@ pub enum Format {
     Insomnia,
     Swagger,
     OpenApi,
+    /// B5.
+    Har,
+    Hoppscotch,
+    HoppscotchEnvironment,
+    Bruno,
+    OpenCollection,
     CyberApi,
 }
 
@@ -172,6 +188,9 @@ pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportE
     if trimmed.get(..4).is_some_and(|start| start.eq_ignore_ascii_case("curl")) {
         return Ok((Format::Curl, None));
     }
+    if bruno::is_bru(text) {
+        return Ok((Format::Bruno, None));
+    }
     let json = document(text)?;
     let format = match &json {
         serde_json::Value::Object(map) if map.contains_key("swagger") => Format::Swagger,
@@ -184,6 +203,10 @@ pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportE
             Format::PostmanEnvironment
         }
         serde_json::Value::Object(map) if map.contains_key("resources") => Format::Insomnia,
+        serde_json::Value::Object(map) if map.get("log").is_some_and(|log| log.get("entries").is_some()) => Format::Har,
+        json if opencollection::is_opencollection(json) => Format::OpenCollection,
+        json if hoppscotch::is_collection(json) => Format::Hoppscotch,
+        json if hoppscotch::is_environment(json) => Format::HoppscotchEnvironment,
         _ => Format::CyberApi,
     };
     Ok((format, Some(json)))
@@ -214,10 +237,15 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     let name = json.as_ref().and_then(|json| json_name(format, json));
     let bundle = match (format, json) {
         (Format::Curl, _) => curl::parse(text)?,
+        (Format::Bruno, _) => bruno::parse(text),
         (Format::Postman, Some(json)) => postman::parse(&json),
         (Format::PostmanEnvironment, Some(json)) => postman::parse_environment(&json),
         (Format::Insomnia, Some(json)) => insomnia::parse(&json),
         (Format::Swagger | Format::OpenApi, Some(json)) => openapi::parse(&json),
+        (Format::Har, Some(json)) => har::parse(&json),
+        (Format::Hoppscotch, Some(json)) => hoppscotch::parse(&json),
+        (Format::HoppscotchEnvironment, Some(json)) => hoppscotch::parse_environment(&json),
+        (Format::OpenCollection, Some(json)) => opencollection::parse(&json),
         (_, Some(json)) => own::parse_value(&json),
         (_, None) => ImportBundle::default(),
     };
@@ -227,14 +255,17 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     Ok(ImportBundle { name, ..bundle })
 }
 
-/// A collection's own name: Postman's `info.name`, an OpenAPI or Swagger
-/// document's `info.title`, an Insomnia export's workspace's name.
+/// A collection's own name: Postman's and OpenCollection's `info.name`,
+/// an OpenAPI or Swagger document's `info.title`, an Insomnia export's
+/// workspace's name, a Hoppscotch collection's `name`.
 fn json_name(format: Format, json: &serde_json::Value) -> Option<String> {
     fn text(value: Option<&serde_json::Value>) -> Option<&str> {
         value.and_then(serde_json::Value::as_str).map(str::trim)
     }
     let name = match format {
         Format::Postman => text(json.pointer("/info/name")),
+        Format::OpenCollection if json.get("opencollection").is_some() => text(json.pointer("/info/name")),
+        Format::Hoppscotch => hoppscotch::name(json).map(str::trim),
         Format::Swagger | Format::OpenApi => text(json.pointer("/info/title")),
         Format::Insomnia => json
             .get("resources")
@@ -242,7 +273,13 @@ fn json_name(format: Format, json: &serde_json::Value) -> Option<String> {
             .iter()
             .find(|resource| text(resource.get("_type")) == Some("workspace"))
             .and_then(|workspace| text(workspace.get("name"))),
-        Format::Curl | Format::PostmanEnvironment | Format::CyberApi => None,
+        Format::Curl
+        | Format::PostmanEnvironment
+        | Format::Har
+        | Format::HoppscotchEnvironment
+        | Format::Bruno
+        | Format::OpenCollection
+        | Format::CyberApi => None,
     };
     name.filter(|name| !name.is_empty()).map(str::to_string)
 }
@@ -376,6 +413,28 @@ mod tests {
         assert_eq!(format(r#"{"openapi": "3.0.1"}"#), Ok(Format::OpenApi));
         assert_eq!(format(r#"{"info": {}, "item": []}"#), Ok(Format::Postman));
         assert_eq!(format(r#"{"resources": []}"#), Ok(Format::Insomnia));
+        assert_eq!(format(r#"{"log": {"entries": []}}"#), Ok(Format::Har));
+        assert_eq!(
+            format(r#"{"name": "a", "folders": [], "requests": []}"#),
+            Ok(Format::Hoppscotch)
+        );
+        assert_eq!(
+            format(r#"[{"name": "a", "folders": [], "requests": []}]"#),
+            Ok(Format::Hoppscotch)
+        );
+        assert_eq!(
+            format(r#"{"name": "dev", "variables": [{"key": "a", "value": "1"}]}"#),
+            Ok(Format::HoppscotchEnvironment)
+        );
+        assert_eq!(format("meta {\n  name: a\n}\nget {\n  url: /a\n}\n"), Ok(Format::Bruno));
+        assert_eq!(
+            format("opencollection: 1.0.0\ninfo:\n  name: a\n"),
+            Ok(Format::OpenCollection)
+        );
+        assert_eq!(
+            format("info:\n  name: a\n  type: http\nhttp:\n  url: /a\n"),
+            Ok(Format::OpenCollection)
+        );
         assert_eq!(format("[]"), Ok(Format::CyberApi));
         assert!(matches!(format("hello"), Err(ImportError::Unreadable { .. })));
         // A character of several bytes across the fourth is text, not a panic.

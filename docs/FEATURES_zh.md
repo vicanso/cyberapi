@@ -18,7 +18,7 @@ Query、请求头、认证（Basic、Bearer 令牌、放在请求头或查询参
 
 ## GraphQL
 
-GraphQL 请求体分开编辑查询、变量和操作名，带语法高亮；POST 以 JSON 发送，GET 以查询参数发送，响应里的 `errors` 显示在响应体上方，并在查询中标出所指的位置。“格式化”会缩进查询（保留注释）和变量。获取接口的 Schema 后，编辑查询时会补全字段、参数和枚举值；还能浏览 Schema 里的类型、字段、参数和说明，点击字段即写进查询。通过 HTTP 发送的订阅，若服务器以事件流返回（GraphQL Yoga、graphql-sse），结果会边收边显示。Postman、Insomnia 里的 GraphQL 请求导入后仍是 GraphQL。
+GraphQL 请求体分开编辑查询、变量和操作名，带语法高亮；POST 以 JSON 发送，GET 以查询参数发送，响应里的 `errors` 显示在响应体上方，并在查询中标出所指的位置。“格式化”会缩进查询（保留注释）和变量。获取接口的 Schema 后，编辑查询时会补全字段、参数和枚举值；还能浏览 Schema 里的类型、字段、参数和说明，点击字段即写进查询。通过 HTTP 发送的订阅，若服务器以事件流返回（GraphQL Yoga、graphql-sse），结果会边收边显示。Postman、Insomnia、Hoppscotch、Bruno 里的 GraphQL 请求导入后仍是 GraphQL。
 
 ## gRPC
 
@@ -46,7 +46,7 @@ GraphQL 请求体分开编辑查询、变量和操作名，带语法高亮；POS
 
 ## cURL 和导入
 
-粘贴 cURL 命令即新建接口，任何请求都能复制为 cURL、HTTPie、JavaScript `fetch`、Python `requests` 或 Go `net/http` 代码；可把 Postman、Insomnia、Swagger 2 / OpenAPI 3（JSON 或 YAML）和 cURL 导入到项目里，或在首页直接导入为新项目，认证（Basic、Bearer、API Key、Digest）和环境一起带进来（Postman 环境文件、Insomnia 的子环境成为命名环境，OpenAPI 的安全方案成为项目认证、值由你填），内容可以粘贴、选文件，也可以填地址取回（网页版经服务器取，受“请求能发往哪里”限制）；重新导入时可以只添加新的接口（放进同名目录），也可以同时更新项目里已有的接口（方法和路径相同的），它们的认证、断言和设置保留；可按接口、目录或项目导出，目录和项目还能导出为 Postman 集合（v2.1）或 OpenAPI 3（YAML，地址前缀变量成为 servers，请求体带示例和推断出的 schema，认证只写类型、不写值）。
+粘贴 cURL 命令即新建接口，任何请求都能复制为 cURL、HTTPie、JavaScript `fetch`、Python `requests` 或 Go `net/http` 代码；可把 Postman、Insomnia、Hoppscotch（单个集合、“全部导出”或环境）、Bruno（`.bru` 请求或环境文件，或 OpenCollection YAML 导出）、Swagger 2 / OpenAPI 3（JSON 或 YAML）、浏览器开发者工具导出的 HAR（其中的接口调用，不含页面加载的图片、脚本和样式，每个主机一个目录）和 cURL 导入到项目里，或在首页直接导入为新项目，认证（Basic、Bearer、API Key、Digest）和环境一起带进来（Postman、Hoppscotch 的环境文件，Insomnia 的子环境，OpenCollection 的环境成为命名环境；Bruno 的 `{{process.env.NAME}}` 变成 `{{env(NAME)}}`；OpenAPI 的安全方案成为项目认证、值由你填），内容可以粘贴、选文件，也可以填地址取回（网页版经服务器取，受“请求能发往哪里”限制）；重新导入时可以只添加新的接口（放进同名目录），也可以同时更新项目里已有的接口（方法和路径相同的），它们的认证、断言和设置保留；可按接口、目录或项目导出，目录和项目还能导出为 Postman 集合（v2.1）或 OpenAPI 3（YAML，地址前缀变量成为 servers，请求体带示例和推断出的 schema，认证只写类型、不写值）。
 
 ## 数据
 

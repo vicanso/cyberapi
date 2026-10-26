@@ -39,7 +39,7 @@
 - 👥 **团队协作** —— 同一份代码的网页版可自行部署；桌面版登录后离线编辑，想同步时再同步。
 - 🤖 **接入 AI 助手** —— Claude Code、Cursor 等 MCP 客户端可以读取你的接口（敏感值打码），经你允许还能发送。
 
-从 Postman、Insomnia 或 Swagger 过来？**导入集合，或者直接粘贴 cURL 命令。**
+从 Postman、Insomnia、Hoppscotch、Bruno 或 Swagger 过来？**导入集合，或者直接粘贴 cURL 命令。**
 
 📖 **[完整功能说明 →](./docs/FEATURES_zh.md)**
 
