@@ -101,7 +101,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         cyberapi_http::NativeEngine::new(runtime.handle().clone(), cyberapi_http::TargetPolicy::Anywhere)
             .with_proxies(),
     );
-    gpui_kit::application().with_assets(assets::Assets).run(move |cx| {
+    // A diagnosis switch: the app without AccessKit. On a Mac with a Touch
+    // Bar, closing a second window crashed: AccessKit's adapter, dropped with
+    // the window, sets its view's class back, under the Touch Bar's KVO
+    // observers of the same view. Set, it tells whether that is the clash.
+    let app = if std::env::var_os("CYBERAPI_NO_ACCESSIBILITY").is_some() {
+        gpui_kit::Application::new_inaccessible(gpui_kit::platform::current_platform(false))
+    } else {
+        gpui_kit::application()
+    };
+    app.with_assets(assets::Assets).run(move |cx| {
         // Must come before anything that uses a component.
         gpui_kit::init(cx);
         syntax::register_languages();
