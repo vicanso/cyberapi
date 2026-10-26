@@ -140,7 +140,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | B4 | 导入时带上认证和环境：Postman 请求 / 目录 / 集合级与 Insomnia 的 Basic、Bearer、API key，OpenAPI 的 `securitySchemes`（值留空）；Postman 环境文件、Insomnia 子环境成为命名环境。已定：项目已有认证时保留项目的；同名环境只补上没有的变量 | 暂缓 |
 | C1 | 签名类认证（AWS SigV4、OAuth 1.0、Hawk、JWT、Akamai EdgeGrid） | 暂缓：每家的签名都有些不同，维护者决定先不做（2026-10-26） |
 | C2 | Digest 认证 | |
-| D1 | `prompt()` 模板函数 | |
+| D1 | `prompt()` 模板函数：`prompt(说明, 预填)`，发送前一个弹框问齐，同一个说明只问一次，取消即不发送；填过的按项目记到应用退出（不存盘），下次预填，复制为代码、获取 Schema、gRPC 反射也用它；MCP 的发送遇到它报错 | 已完成 |
 | D2 | `env()` 模板函数（仅桌面） | |
 | C5 | 客户端证书与自定义 CA（桌面） | |
 

@@ -21,6 +21,10 @@
 //! server's reflection, or `.proto` files on the desktop. The project keeps
 //! the ones loaded for an address, for every API sent there; the API keeps
 //! the files its chosen service needs.
+//!
+//! What was typed for a request's `prompt`s (D1) is kept while the app runs,
+//! by project, never saved: the next send's dialog starts with it, and the
+//! request's code, schema and reflection take it.
 
 use super::{Load, WorkspaceState, run_store};
 use crate::this_build;
@@ -34,14 +38,16 @@ use cyberapi_core::prefs::RequestSettings;
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::send::PrepareError;
 use cyberapi_core::sse;
+use cyberapi_core::template::Answers;
 use cyberapi_core::{CollectionId, ItemId};
 use cyberapi_http::{Progress, Watch, stop_signal};
 use cyberapi_service::{SendFailure, Sender};
 use cyberapi_store::StoreError;
 use futures::StreamExt as _;
 use futures::channel::{mpsc, oneshot};
-use gpui_kit::{App, AppContext as _, Context, EventEmitter, Task, WeakEntity};
+use gpui_kit::{App, AppContext as _, Context, EventEmitter, Global, Task, WeakEntity};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -53,6 +59,21 @@ use web_time::Instant;
 pub const SAVE_DELAY: Duration = Duration::from_millis(300);
 /// A send this soon after the last one is the same click (F5.1).
 const DOUBLE_CLICK: Duration = Duration::from_millis(200);
+
+/// D1: what was typed for each `prompt`, by project, while the app runs.
+#[derive(Default)]
+struct Typed(HashMap<CollectionId, HashMap<String, String>>);
+
+impl Global for Typed {}
+
+/// What was typed for the `prompt`s of `collection`'s requests while the app
+/// runs, by label.
+pub fn typed_prompts(collection: &CollectionId, cx: &App) -> HashMap<String, String> {
+    cx.try_global::<Typed>()
+        .and_then(|typed| typed.0.get(collection))
+        .cloned()
+        .unwrap_or_default()
+}
 
 /// Why nothing was sent, as the view hears it.
 fn not_sent(failure: SendFailure) -> ApiEvent {
@@ -544,9 +565,10 @@ impl ApiState {
         });
     }
 
-    /// F5.1: sends, or cancels the request on its way. `picked_file` answers
-    /// the `openFile` the request needs, if it needs one.
-    pub fn send_or_cancel(&mut self, picked_file: Option<String>, cx: &mut Context<Self>) {
+    /// F5.1: sends, or cancels the request on its way. `answers` are the
+    /// reader's to the `openFile` and the `prompt`s the request needs; what
+    /// was typed is kept for the next time.
+    pub fn send_or_cancel(&mut self, answers: Answers, cx: &mut Context<Self>) {
         if self.last_send.is_some_and(|last| last.elapsed() < DOUBLE_CLICK) {
             return;
         }
@@ -567,6 +589,14 @@ impl ApiState {
             return;
         }
         self.save_now(cx);
+        if !answers.prompts.is_empty() {
+            let typed = cx
+                .default_global::<Typed>()
+                .0
+                .entry(self.collection.clone())
+                .or_default();
+            typed.extend(answers.prompts.clone());
+        }
         let (told, mut telling) = mpsc::unbounded::<Progress>();
         let (stop, stopped) = stop_signal();
         let watch = Watch {
@@ -583,7 +613,7 @@ impl ApiState {
             self.collection.clone(),
             self.api.clone(),
             self.request.clone(),
-            picked_file,
+            answers,
             Some(watch),
         );
         let task = cx.spawn(async move |this, cx| {
@@ -718,6 +748,14 @@ impl ApiState {
     /// would otherwise wait for the next launch (#42). A workspace opened on
     /// its own, as the state tests do, has no app state and keeps the
     /// settings it set.
+    /// What was typed for the project's `prompt`s while the app runs.
+    pub fn typed(&self, cx: &App) -> Answers {
+        Answers {
+            file: None,
+            prompts: typed_prompts(&self.collection, cx),
+        }
+    }
+
     fn sender(&mut self, cx: &App) -> Sender {
         if let Some(store) = cx.try_global::<super::AppStore>() {
             let prefs = store.state().read(cx).prefs();
@@ -752,7 +790,12 @@ impl ApiState {
             return;
         }
         let uri = self.request.uri.clone();
-        let call = cyberapi_service::introspect(self.sender(cx), self.collection.clone(), self.request.clone());
+        let call = cyberapi_service::introspect(
+            self.sender(cx),
+            self.collection.clone(),
+            self.request.clone(),
+            self.typed(cx),
+        );
         self.asking_schema = Some(cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(call).await;
             let _ = this.update(cx, |this, cx| {
@@ -808,7 +851,12 @@ impl ApiState {
     /// Asks the server's reflection for its definitions, with the request's
     /// address and metadata.
     pub fn load_grpc_reflection(&mut self, cx: &mut Context<Self>) {
-        let call = cyberapi_service::reflect(self.sender(cx), self.collection.clone(), self.request.clone());
+        let call = cyberapi_service::reflect(
+            self.sender(cx),
+            self.collection.clone(),
+            self.request.clone(),
+            self.typed(cx),
+        );
         self.load_grpc(call, FROM_REFLECTION.to_string(), cx);
     }
 
@@ -905,7 +953,13 @@ impl ApiState {
 
     /// F7.8 / #69: the request as the editor holds it, as code.
     pub fn copy_code(&mut self, target: CodeTarget, cx: &mut Context<Self>) {
-        let call = cyberapi_service::code(self.sender(cx), self.collection.clone(), self.request.clone(), target);
+        let call = cyberapi_service::code(
+            self.sender(cx),
+            self.collection.clone(),
+            self.request.clone(),
+            self.typed(cx),
+            target,
+        );
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(call).await;
             let _ = this.update(cx, |_, cx| match result {

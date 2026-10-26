@@ -19,7 +19,9 @@
 //!
 //! Functions the old app did not have (#67): `uuid`, `random`,
 //! `randomString`, `now`, `hmacSha256`, `urlEncode`. Their randomness and
-//! the local time's offset come in [`Inputs`] too.
+//! the local time's offset come in [`Inputs`] too. `prompt(label, start?)`
+//! (D1) is what the reader types as the request is sent: the caller asks
+//! for each [`Needs::prompts`] names and hands the answers in [`Answers`].
 
 use base64::Engine as _;
 use chrono::format::{Item, StrftimeItems};
@@ -102,6 +104,9 @@ pub struct Needs {
     pub responses: Vec<String>,
     /// `openFile` asks the reader for a file.
     pub picks_file: bool,
+    /// What `prompt` asks the reader for, each label once, in the order
+    /// first written, with the first start written for it.
+    pub prompts: Vec<Prompt>,
 }
 
 impl Needs {
@@ -112,6 +117,69 @@ impl Needs {
             }
         }
         self.picks_file |= other.picks_file;
+        for prompt in other.prompts {
+            self.ask(prompt);
+        }
+    }
+
+    /// A label asked twice is asked once, with the first start written.
+    fn ask(&mut self, prompt: Prompt) {
+        match self.prompts.iter_mut().find(|asked| asked.label == prompt.label) {
+            Some(asked) => {
+                if asked.start.is_none() {
+                    asked.start = prompt.start;
+                }
+            }
+            None => self.prompts.push(prompt),
+        }
+    }
+}
+
+/// One `prompt(label, start?)` (D1): the reader is asked for a value as the
+/// request is sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Prompt {
+    /// What the reader is asked; the answers go by it.
+    pub label: String,
+    /// What the field starts with when nothing was answered before.
+    pub start: Option<String>,
+}
+
+impl Prompt {
+    /// The label and start of `prompt`'s parameters: a label, then what to
+    /// start with, if anything.
+    fn of(params: &[String]) -> Option<Self> {
+        match params {
+            [label] if !label.is_empty() => Some(Self {
+                label: label.clone(),
+                start: None,
+            }),
+            [label, start] if !label.is_empty() => Some(Self {
+                label: label.clone(),
+                start: Some(start.clone()).filter(|start| !start.is_empty()),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// What the reader answered before a send.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Answers {
+    /// The file they picked for `openFile`, if they picked one.
+    pub file: Option<String>,
+    /// What they typed for each `prompt`, by its label.
+    pub prompts: HashMap<String, String>,
+}
+
+impl Answers {
+    /// The labels of `prompts` nothing was typed for.
+    pub fn unanswered<'a>(&self, prompts: &'a [Prompt]) -> Vec<&'a str> {
+        prompts
+            .iter()
+            .filter(|prompt| !self.prompts.contains_key(&prompt.label))
+            .map(|prompt| prompt.label.as_str())
+            .collect()
     }
 }
 
@@ -125,8 +193,8 @@ pub struct Inputs {
     /// The last response's JSON of each API [`Needs::responses`] named that
     /// has one.
     pub responses: HashMap<String, Json>,
-    /// The file the reader picked for `openFile`, if they picked one.
-    pub picked_file: Option<String>,
+    /// What the reader answered for `openFile` and `prompt`.
+    pub answers: Answers,
     /// The local time's offset from UTC, in seconds, for `now`.
     pub utc_offset: i32,
     /// What `uuid`, `random` and `randomString` draw from.
@@ -223,6 +291,13 @@ pub fn needs(text: &str) -> Needs {
                 _ => {}
             }
         }
+        // A prompt that runs first is asked by its parameters; one fed by
+        // another function's result has no label until it runs.
+        if expr.chain.last().is_some_and(|name| name == "prompt")
+            && let Some(prompt) = Prompt::of(&expr.params)
+        {
+            needs.ask(prompt);
+        }
     }
     needs
 }
@@ -288,10 +363,21 @@ pub fn evaluate(expr: &Expr, inputs: &Inputs, files: &dyn FileReader) -> Result<
             "base64" | "b64" => Value::Text(base64::engine::general_purpose::STANDARD.encode(value.into_bytes())),
             "md5" => Value::Text(hex(&md5::Md5::digest(value.into_text().as_bytes()))),
             "sha256" => Value::Text(hex(&sha2::Sha256::digest(value.into_text().as_bytes()))),
-            "openFile" | "of" => match &inputs.picked_file {
+            "openFile" | "of" => match &inputs.answers.file {
                 Some(file) => Value::Text(file.clone()),
                 None => value,
             },
+            // Unanswered — the code of a request is not asked for — its
+            // start stands, or else its label.
+            "prompt" => {
+                let Some(prompt) = Prompt::of(&params(&value)) else {
+                    return Err(params_error("prompt", &value, "a label, then what to start with"));
+                };
+                Value::Text(match inputs.answers.prompts.get(&prompt.label) {
+                    Some(answer) => answer.clone(),
+                    None => prompt.start.unwrap_or(prompt.label),
+                })
+            }
             "timestamp" | "ts" => Value::Text(inputs.now.to_string()),
             "uuid" => Value::Text(uuid(&inputs.draws)),
             "random" => Value::Text(random(&value, &inputs.draws)?.to_string()),
@@ -500,7 +586,10 @@ mod tests {
                 "api-1".to_string(),
                 serde_json::json!({"data": [{"name": "tree", "tags": {"a": 1}}]}),
             )]),
-            picked_file: Some("/tmp/x.png".into()),
+            answers: Answers {
+                file: Some("/tmp/x.png".into()),
+                prompts: HashMap::from([("code".to_string(), "123456".to_string())]),
+            },
             utc_offset: 8 * 3600,
             draws: Draws::new(7),
         }
@@ -669,7 +758,49 @@ mod tests {
             Needs {
                 responses: vec!["api-1".into(), "api-3".into()],
                 picks_file: true,
+                prompts: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn a_prompt_is_answered_by_its_label() {
+        assert_eq!(run("{{prompt(code)}}").as_deref(), Ok("123456"));
+        assert_eq!(run("{{base64.prompt(code)}}").as_deref(), Ok("MTIzNDU2"));
+        // Unanswered, as in a request's code: its start, or its label.
+        assert_eq!(
+            run("{{prompt(tenant, acme)}} {{prompt(tenant)}}").as_deref(),
+            Ok("acme tenant")
+        );
+        assert!(matches!(run("{{prompt()}}"), Err(TemplateError::Params { .. })));
+        assert!(matches!(run("{{prompt(a, b, c)}}"), Err(TemplateError::Params { .. })));
+    }
+
+    #[test]
+    fn needs_asks_each_label_once_with_the_first_start_written() {
+        let mut needs = needs("{{prompt(code, 1)}} {{prompt(tenant)}} {{base64.prompt(code, 2)}} {{prompt.value(x)}}");
+        needs.add(super::needs("{{prompt(tenant, acme)}} {{prompt(region)}}"));
+        assert_eq!(
+            needs.prompts,
+            [
+                Prompt {
+                    label: "code".into(),
+                    start: Some("1".into())
+                },
+                Prompt {
+                    label: "tenant".into(),
+                    start: Some("acme".into())
+                },
+                Prompt {
+                    label: "region".into(),
+                    start: None
+                },
+            ]
+        );
+        let answers = Answers {
+            file: None,
+            prompts: HashMap::from([("tenant".to_string(), "x".to_string())]),
+        };
+        assert_eq!(answers.unanswered(&needs.prompts), ["code", "region"]);
     }
 }

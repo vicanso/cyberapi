@@ -4,6 +4,7 @@
 
 // The action, named apart from the `Send` trait.
 use super::auth_editor::{AuthEditor, AuthFor};
+use super::prompt_dialog::open_prompt_dialog;
 use super::{KEY_CONTEXT, Send as SendAction, method_color};
 use crate::json_view_local::JsonView;
 use crate::states::{ApiEvent, ApiState, AppStore, WorkspaceState};
@@ -19,6 +20,7 @@ use cyberapi_core::import::{request_from_curl, split_url};
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
 use cyberapi_core::prefs::RequestTab;
 use cyberapi_core::send::{self, form_fields, unsent_body};
+use cyberapi_core::template::Answers;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::ANIMATION_DURATION;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
@@ -36,6 +38,7 @@ use gpui_kit::{
     ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Task, Window, div, px, relative, rems,
 };
 use rust_i18n::t;
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// The headers one types most, offered in the header list's menu: the
@@ -1100,18 +1103,37 @@ impl RequestEditor {
         }
     }
 
-    /// F5.1: sends — after asking for the file an `openFile` needs — or
-    /// cancels the request on its way.
+    /// F5.1: sends — after asking for what its `prompt`s (D1) and its
+    /// `openFile` need — or cancels the request on its way.
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush(cx);
         let api = self.api.read(cx);
+        if api.sending_since().is_some() {
+            self.api
+                .update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
+            return;
+        }
         let workspace = self.workspace.read(cx);
         let inherited = workspace.inherited(api.api());
-        let picks_file = api.sending_since().is_none()
-            && this_build::reads_files()
-            && send::needs(api.request(), &workspace.global_headers(), &inherited).picks_file;
+        let needs = send::needs(api.request(), &workspace.global_headers(), &inherited);
+        let picks_file = needs.picks_file && this_build::reads_files();
+        if needs.prompts.is_empty() {
+            self.pick_and_send(picks_file, HashMap::new(), cx);
+            return;
+        }
+        let typed = api.typed(cx).prompts;
+        let editor = cx.entity().downgrade();
+        open_prompt_dialog(window, cx, needs.prompts, &typed, move |prompts, _, cx| {
+            let _ = editor.update(cx, |editor, cx| editor.pick_and_send(picks_file, prompts, cx));
+        });
+    }
+
+    /// Sends with what was typed for its `prompt`s — after asking for the
+    /// file an `openFile` needs, when it needs one.
+    fn pick_and_send(&mut self, picks_file: bool, prompts: HashMap<String, String>, cx: &mut Context<Self>) {
         if !picks_file {
-            self.api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+            self.api
+                .update(cx, |api, cx| api.send_or_cancel(Answers { file: None, prompts }, cx));
             return;
         }
         let picked = cx.prompt_for_paths(PathPromptOptions {
@@ -1121,16 +1143,15 @@ impl RequestEditor {
             prompt: None,
         });
         let api = self.api.downgrade();
-        window
-            .spawn(cx, async move |cx| {
-                let path = match picked.await {
-                    Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                    _ => None,
-                };
-                let path = path.map(|path| path.display().to_string());
-                let _ = api.update(cx, |api, cx| api.send_or_cancel(path, cx));
-            })
-            .detach();
+        cx.spawn(async move |_, cx| {
+            let file = match picked.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                _ => None,
+            };
+            let file = file.map(|path| path.display().to_string());
+            let _ = api.update(cx, |api, cx| api.send_or_cancel(Answers { file, prompts }, cx));
+        })
+        .detach();
     }
 
     /// Ticks while a request is out, for the time it has taken.

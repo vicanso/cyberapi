@@ -30,7 +30,7 @@ An event stream (`text/event-stream`) shows as it comes — each event with its 
 
 ## Variables and functions
 
-Environment variables, custom variables and global headers per project, shared by every environment or set per named environment (dev, staging, prod…), which you switch beside the project's name — your choice alone, not your team's. Template functions such as `{{g(api, data.token)}}` (a field of another API's latest response), `{{value(name)}}`, `{{timestamp()}}`, `{{now(%Y-%m-%d)}}`, `{{uuid()}}`, `{{random(1, 100)}}`, `{{randomString(16)}}`, `{{md5(…)}}`, `{{sha256(…)}}`, `{{hmacSha256(key, data)}}`, `{{urlEncode(…)}}`, `{{base64.readFile(…)}}`, `{{readTextFile(…)}}` and `{{openFile()}}` (a file picked as you send), with hints while you type.
+Environment variables, custom variables and global headers per project, shared by every environment or set per named environment (dev, staging, prod…), which you switch beside the project's name — your choice alone, not your team's. Template functions such as `{{g(api, data.token)}}` (a field of another API's latest response), `{{value(name)}}`, `{{timestamp()}}`, `{{now(%Y-%m-%d)}}`, `{{uuid()}}`, `{{random(1, 100)}}`, `{{randomString(16)}}`, `{{md5(…)}}`, `{{sha256(…)}}`, `{{hmacSha256(key, data)}}`, `{{urlEncode(…)}}`, `{{base64.readFile(…)}}`, `{{readTextFile(…)}}` and `{{openFile()}}` (a file picked as you send) and `{{prompt(label)}}` (a value asked for as you send, such as a one-time code, remembered until the app quits), with hints while you type.
 
 ## Responses
 

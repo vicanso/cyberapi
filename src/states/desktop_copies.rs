@@ -477,7 +477,7 @@ async fn the_accounts_server_projects_are_copied_and_synced(cx: &mut TestAppCont
     let api = workspace.read_with(cx, |state, _| state.api().cloned().expect("an editor"));
     api.update(cx, |api, cx| {
         api.set_uri("http://api.test/login".into(), cx);
-        api.send_or_cancel(None, cx);
+        api.send_or_cancel(cyberapi_core::template::Answers::default(), cx);
     });
     cx.run_until_parked();
     let login = api.read_with(cx, |api, _| api.api().clone());

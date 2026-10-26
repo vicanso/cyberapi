@@ -31,6 +31,7 @@ use cyberapi_core::model::{
 };
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
 use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, Step};
+use cyberapi_core::template::Answers;
 use cyberapi_core::template_hints;
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
 use cyberapi_core::{EnvironmentId, ItemId};
@@ -1607,7 +1608,11 @@ impl WorkspaceState {
             environment: self.current_environment().cloned(),
             ..self.sender.clone()
         };
-        let call = cyberapi_service::code(sender, self.collection.id.clone(), api.request.clone(), target);
+        let answers = Answers {
+            file: None,
+            prompts: super::api::typed_prompts(&self.collection.id, cx),
+        };
+        let call = cyberapi_service::code(sender, self.collection.id.clone(), api.request.clone(), answers, target);
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(call).await;
             let _ = this.update(cx, |_, cx| match result {
@@ -2559,10 +2564,62 @@ mod tests {
             .detach();
         });
         api.update(cx, |api, cx| api.set_uri("{{host}}/echo".into(), cx));
-        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
         cx.run_until_parked();
         assert_eq!(heard.borrow().as_slice(), ["no host"]);
         assert!(api.read_with(cx, |api, _| api.responses().is_empty()), "nothing sent");
+    }
+
+    /// D1: what was typed for a prompt is kept while the app runs, for its
+    /// project alone, and the request's code takes it.
+    #[gpui_kit::test]
+    async fn what_was_typed_for_a_prompt_is_kept_for_its_project(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = cx.new(|cx| WorkspaceState::new(sender(&storage, true), collection.clone(), cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.create_api(None, "verify".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| api.set_uri("http://example.test/".into(), cx));
+        let query = vec![KvParam {
+            key: "code".into(),
+            value: "{{prompt(code)}}".into(),
+            enabled: true,
+        }];
+        api.update(cx, |api, cx| api.set_query(query, cx));
+        let answers = Answers {
+            file: None,
+            prompts: HashMap::from([("code".to_string(), "123456".to_string())]),
+        };
+        api.update(cx, |api, cx| api.send_or_cancel(answers, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            api.read_with(cx, |api, cx| api.typed(cx).prompts),
+            HashMap::from([("code".to_string(), "123456".to_string())])
+        );
+        let elsewhere = cyberapi_core::CollectionId::new("another");
+        assert!(
+            cx.read(|cx| super::super::api::typed_prompts(&elsewhere, cx))
+                .is_empty()
+        );
+
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let into = heard.clone();
+        cx.update(|cx| {
+            cx.subscribe(&state, move |_, event, _| {
+                if let WorkspaceEvent::Code(_, code) = event {
+                    into.borrow_mut().push(code.clone());
+                }
+            })
+            .detach();
+        });
+        let id = state
+            .read_with(cx, |state, _| state.selected().cloned())
+            .expect("selected");
+        state.update(cx, |state, cx| state.copy_code(&id, CodeTarget::Curl, cx));
+        cx.run_until_parked();
+        assert!(heard.borrow()[0].contains("code=123456"), "{:?}", heard.borrow());
     }
 
     /// A GraphQL endpoint's schema, asked for by one API, is offered to
@@ -2738,7 +2795,7 @@ mod tests {
         cx.run_until_parked();
         let api = editor(&state, cx);
         api.update(cx, |api, cx| api.set_uri(" http://ping.test ".into(), cx));
-        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
         cx.run_until_parked();
         api.read_with(cx, |api, _| {
             assert_eq!(api.request().uri, "http://ping.test");
@@ -2752,16 +2809,16 @@ mod tests {
         let stuck = cx.new(|cx| WorkspaceState::new(sender(&storage, false), collection.clone(), cx));
         cx.run_until_parked();
         let api = editor(&stuck, cx);
-        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
         cx.run_until_parked();
         assert!(api.read_with(cx, |api, _| api.sending_since().is_some()));
-        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
         assert!(
             api.read_with(cx, |api, _| api.sending_since().is_some()),
             "a double click is one click"
         );
         std::thread::sleep(Duration::from_millis(210));
-        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
         api.read_with(cx, |api, _| {
             assert!(api.sending_since().is_none(), "cancelled");
             assert_eq!(api.responses().len(), 1, "a cancelled request leaves nothing");
@@ -2777,7 +2834,7 @@ mod tests {
         cx.run_until_parked();
         let api = editor(&state, cx);
         api.update(cx, |api, cx| api.set_uri("http://first.test".into(), cx));
-        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
         cx.run_until_parked();
         let first = api.read_with(cx, |api, _| api.responses()[0].id.clone());
         api.update(cx, |api, cx| api.set_uri("http://second.test".into(), cx));
@@ -2804,7 +2861,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(stored(&storage, &collection, &id).uri, "http://second.test");
         std::thread::sleep(Duration::from_millis(210));
-        api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+        api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
         cx.run_until_parked();
         assert_eq!(stored(&storage, &collection, &id).uri, "http://second.test");
         // nor by leaving the API.
@@ -3264,7 +3321,7 @@ mod tests {
                 .expect("selected");
             let api = editor(&state, cx);
             api.update(cx, |api, cx| api.set_uri("http://example.test/".into(), cx));
-            api.update(cx, |api, cx| api.send_or_cancel(None, cx));
+            api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
             cx.run_until_parked();
             let shown = api
                 .read_with(cx, |api, _| api.shown_response().cloned())

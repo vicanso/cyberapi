@@ -28,7 +28,7 @@ use cyberapi_core::prefs::{SendPrefs, Timeouts};
 use cyberapi_core::redirect::{self, MAX_REDIRECTS};
 use cyberapi_core::response::{Exchange, HttpResponse};
 use cyberapi_core::send::{self, PrepareError, PreparedRequest};
-use cyberapi_core::template::{Draws, FileReader, Inputs};
+use cyberapi_core::template::{Answers, Draws, FileReader, Inputs};
 use cyberapi_core::{CollectionId, ItemId};
 use cyberapi_http::{HttpEngine, SendError, Watch};
 use cyberapi_store::{Storage, StoreError};
@@ -48,6 +48,19 @@ pub enum SendFailure {
     /// not be loaded.
     #[snafu(display("{source}"))]
     Store { source: StoreError },
+    /// D1: a `prompt` nothing was typed for — an AI assistant's send, which
+    /// no one is asked — and the request does not go with a stand-in.
+    #[snafu(display("it asks for {} as it is sent, and nothing was typed for it", labels.join(", ")))]
+    Unanswered { labels: Vec<String> },
+}
+
+/// What a `prompt` nothing was typed for does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unanswered {
+    /// Nothing goes out.
+    Stops,
+    /// Its start, or else its label, stands: in the request's code.
+    Stands,
 }
 
 /// What sending needs besides the request: where to send it from, and the
@@ -99,16 +112,17 @@ fn boundary() -> String {
 }
 
 /// Sends `request` — the API's, as the editor holds it — and keeps the
-/// answer. `picked_file` is the reader's answer to an `openFile` the request
-/// needs (`cyberapi_core::send::needs` says so), asked for beforehand.
+/// answer. `answers` are the reader's to the `openFile` and the `prompt`s
+/// the request needs (`cyberapi_core::send::needs` says so), asked for
+/// beforehand: a prompt not answered stops it.
 pub async fn send(
     sender: Sender,
     collection: CollectionId,
     api: ItemId,
     request: HttpRequest,
-    picked_file: Option<String>,
+    answers: Answers,
 ) -> Result<HttpResponse, SendFailure> {
-    send_watched(sender, collection, api, request, picked_file, None).await
+    send_watched(sender, collection, api, request, answers, None).await
 }
 
 /// As [`send`]; an answer that is an event stream is told to `watch` as it
@@ -119,11 +133,11 @@ pub async fn send_watched(
     collection: CollectionId,
     api: ItemId,
     request: HttpRequest,
-    picked_file: Option<String>,
+    answers: Answers,
     watch: Option<Watch>,
 ) -> Result<HttpResponse, SendFailure> {
     let sender = sender.for_request(&request);
-    let (mut prepared, globals) = prepare(&sender, &collection, &request, picked_file, None).await?;
+    let (mut prepared, globals) = prepare(&sender, &collection, &request, &answers, Unanswered::Stops, None).await?;
     let grpc = (request.method == HttpMethod::Grpc).then(|| GrpcBody::read(&request.body));
     // The jar's cookies go to each hop's own address. A Cookie the request
     // names itself stays with the origin it was written for; past it, the
@@ -250,8 +264,14 @@ pub async fn send_watched(
 /// A GraphQL endpoint's schema, asked of it with the introspection query:
 /// the request as it is — its URL, headers, auth, the jar's cookies — with
 /// that query in place of its body, as a POST. Nothing goes into the
-/// history; a redirect is not followed. `Err` says why there is none.
-pub async fn introspect(sender: Sender, collection: CollectionId, request: HttpRequest) -> Result<Schema, String> {
+/// history; a redirect is not followed. `answers` are what the reader typed
+/// for its `prompt`s when it was last sent. `Err` says why there is none.
+pub async fn introspect(
+    sender: Sender,
+    collection: CollectionId,
+    request: HttpRequest,
+    answers: Answers,
+) -> Result<Schema, String> {
     let sender = sender.for_request(&request);
     let asking = HttpRequest {
         method: HttpMethod::Post,
@@ -263,7 +283,7 @@ pub async fn introspect(sender: Sender, collection: CollectionId, request: HttpR
         .to_body(),
         ..request
     };
-    let (mut prepared, _) = prepare(&sender, &collection, &asking, None, None)
+    let (mut prepared, _) = prepare(&sender, &collection, &asking, &answers, Unanswered::Stops, None)
         .await
         .map_err(|failure| failure.to_string())?;
     if prepared.header("cookie").is_none() {
@@ -325,15 +345,17 @@ pub async fn fetch_text(sender: Sender, url: String) -> Result<String, String> {
 
 /// F7.8 / #69: `request` as code — a cURL command, or the code of
 /// another client — prepared as sending would prepare it. An `openFile` in
-/// it is not asked: its parameter stands.
+/// it is not asked: its parameter stands. A `prompt` takes what was typed
+/// for it last (`answers`), or else its start or its label stands.
 pub async fn code(
     sender: Sender,
     collection: CollectionId,
     request: HttpRequest,
+    answers: Answers,
     target: CodeTarget,
 ) -> Result<String, SendFailure> {
     let sender = sender.for_request(&request);
-    let (mut prepared, _) = prepare(&sender, &collection, &request, None, None).await?;
+    let (mut prepared, _) = prepare(&sender, &collection, &request, &answers, Unanswered::Stands, None).await?;
     if prepared.header("cookie").is_none() {
         add_cookies(&sender, &mut prepared).await?;
     }
@@ -354,13 +376,19 @@ enum Unreflected {
 
 /// A gRPC server's definitions, asked of its reflection service with the
 /// request's address and metadata: version 1, or `v1alpha` where the
-/// server has only that. Nothing goes into the history. `Err` says why
+/// server has only that. Nothing goes into the history. `answers` are what
+/// the reader typed for its `prompt`s when it was last sent. `Err` says why
 /// there are none.
-pub async fn reflect(sender: Sender, collection: CollectionId, request: HttpRequest) -> Result<Definitions, String> {
+pub async fn reflect(
+    sender: Sender,
+    collection: CollectionId,
+    request: HttpRequest,
+    answers: Answers,
+) -> Result<Definitions, String> {
     let sender = sender.for_request(&request);
     let mut absent = String::new();
     for path in reflection::PATHS {
-        match reflect_at(&sender, &collection, &request, path).await {
+        match reflect_at(&sender, &collection, &request, &answers, path).await {
             Ok(definitions) => return Ok(definitions),
             Err(Unreflected::Absent(why)) => absent = why,
             Err(Unreflected::Failed(why)) => return Err(why),
@@ -373,9 +401,10 @@ async fn reflect_at(
     sender: &Sender,
     collection: &CollectionId,
     request: &HttpRequest,
+    answers: &Answers,
     path: &str,
 ) -> Result<Definitions, Unreflected> {
-    let services = ask_reflection(sender, collection, request, path, reflection::list_services())
+    let services = ask_reflection(sender, collection, request, answers, path, reflection::list_services())
         .await?
         .into_iter()
         .flat_map(|reply| match reply {
@@ -392,7 +421,7 @@ async fn reflect_at(
         if body.is_empty() {
             break;
         }
-        for reply in ask_reflection(sender, collection, request, path, body).await? {
+        for reply in ask_reflection(sender, collection, request, answers, path, body).await? {
             match reply {
                 reflection::Reply::Files(files) => {
                     for file in files {
@@ -413,13 +442,21 @@ async fn ask_reflection(
     sender: &Sender,
     collection: &CollectionId,
     request: &HttpRequest,
+    answers: &Answers,
     path: &str,
     body: Vec<u8>,
 ) -> Result<Vec<reflection::Reply>, Unreflected> {
     let failed = |why: String| Unreflected::Failed(why);
-    let (mut prepared, _) = prepare(sender, collection, request, None, Some((path, body)))
-        .await
-        .map_err(|failure| failed(failure.to_string()))?;
+    let (mut prepared, _) = prepare(
+        sender,
+        collection,
+        request,
+        answers,
+        Unanswered::Stops,
+        Some((path, body)),
+    )
+    .await
+    .map_err(|failure| failed(failure.to_string()))?;
     if prepared.header("cookie").is_none() {
         add_cookies(sender, &mut prepared)
             .await
@@ -499,7 +536,8 @@ async fn prepare(
     sender: &Sender,
     collection: &CollectionId,
     request: &HttpRequest,
-    picked_file: Option<String>,
+    answers: &Answers,
+    unanswered: Unanswered,
     grpc_call: Option<(&str, Vec<u8>)>,
 ) -> Result<(PreparedRequest, Vec<String>), SendFailure> {
     let store = |source| SendFailure::Store { source };
@@ -522,6 +560,12 @@ async fn prepare(
     // #61: the shared variables, and the environment's in their place.
     let variables = environments::effective(&variables, sender.environment.as_ref().map(|found| &found.id));
     let needs = send::needs(request, &variables, &sender.inherited);
+    let missing = answers.unanswered(&needs.prompts);
+    if unanswered == Unanswered::Stops && !missing.is_empty() {
+        return Err(SendFailure::Unanswered {
+            labels: missing.into_iter().map(str::to_string).collect(),
+        });
+    }
     let responses = if needs.responses.is_empty() {
         Vec::new()
     } else {
@@ -547,7 +591,7 @@ async fn prepare(
             .iter()
             .filter_map(|response| Some((response.api.to_string(), response.body_json()?)))
             .collect(),
-        picked_file,
+        answers: answers.clone(),
         utc_offset: chrono::Local::now().offset().local_minus_utc(),
         // The clock, should the system have no randomness to give.
         draws: Draws::new(getrandom::u64().unwrap_or(since_epoch.as_nanos() as u64)),
@@ -720,8 +764,13 @@ mod tests {
             .to_body(),
             ..Default::default()
         };
-        let schema =
-            pollster::block_on(introspect(setup.sender.clone(), setup.collection.clone(), request)).expect("a schema");
+        let schema = pollster::block_on(introspect(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            request,
+            Answers::default(),
+        ))
+        .expect("a schema");
         assert_eq!(schema.query.as_deref(), Some("Query"));
         let sent = setup.engine.sent.lock().expect("sent").clone();
         assert_eq!(
@@ -739,7 +788,12 @@ mod tests {
             uri: "https://api.test/graphql".into(),
             ..Default::default()
         };
-        let why = pollster::block_on(introspect(refused.sender.clone(), refused.collection.clone(), request));
+        let why = pollster::block_on(introspect(
+            refused.sender.clone(),
+            refused.collection.clone(),
+            request,
+            Answers::default(),
+        ));
         assert_eq!(why, Err("introspection is off".into()));
     }
 
@@ -834,8 +888,13 @@ mod tests {
             routes.insert(v1.clone(), grpc_answer(Vec::new(), "12", "unknown service"));
             routes.insert(v1alpha.clone(), grpc_answer([services, files].concat(), "0", ""));
         }
-        let definitions = pollster::block_on(reflect(setup.sender.clone(), setup.collection.clone(), request.clone()))
-            .expect("definitions");
+        let definitions = pollster::block_on(reflect(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            request.clone(),
+            Answers::default(),
+        ))
+        .expect("definitions");
         assert_eq!(
             definitions
                 .methods()
@@ -880,7 +939,7 @@ mod tests {
                 setup.collection.clone(),
                 api.clone(),
                 call.clone(),
-                None,
+                Answers::default(),
             ))
             .expect("sent")
         };
@@ -991,7 +1050,7 @@ mod tests {
             setup.collection.clone(),
             api.clone(),
             request,
-            None,
+            Answers::default(),
             Some(watch),
         ))
         .expect("sent");
@@ -1027,7 +1086,7 @@ mod tests {
                 uri: "{{HOST}}/login".into(),
                 ..Default::default()
             },
-            None,
+            Answers::default(),
         ))
         .expect("sent");
         assert_eq!(first.status, Some(200));
@@ -1047,7 +1106,10 @@ mod tests {
             setup.collection.clone(),
             me.clone(),
             request.clone(),
-            Some("/tmp/a.png".into()),
+            Answers {
+                file: Some("/tmp/a.png".into()),
+                ..Default::default()
+            },
         ))
         .expect("sent");
 
@@ -1072,6 +1134,62 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_goes_out_as_answered_and_never_unanswered() {
+        let setup = setup(ok(200, "{}"));
+        variable(
+            &setup,
+            VariableCategory::GlobalRequestHeader,
+            "X-Tenant",
+            "{{prompt(tenant, acme)}}",
+        );
+        let api = new_api(&setup, "verify");
+        let request = HttpRequest {
+            uri: "https://api.test/verify".into(),
+            headers: vec![kv("X-Code", "{{prompt(code)}}")],
+            ..Default::default()
+        };
+        let send_with = |prompts: &[(&str, &str)]| {
+            pollster::block_on(send(
+                setup.sender.clone(),
+                setup.collection.clone(),
+                api.clone(),
+                request.clone(),
+                Answers {
+                    file: None,
+                    prompts: prompts.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                },
+            ))
+        };
+        // An AI assistant's send asks no one: nothing goes out.
+        assert_eq!(
+            send_with(&[("code", "1")]),
+            Err(SendFailure::Unanswered {
+                labels: vec!["tenant".into()]
+            })
+        );
+        assert!(setup.engine.sent.lock().expect("sent").is_empty());
+
+        send_with(&[("code", "123456"), ("tenant", "beta")]).expect("sent");
+        let sent = setup.engine.sent.lock().expect("sent").pop().expect("sent");
+        assert_eq!(sent.header("X-Code"), Some("123456"));
+        assert_eq!(sent.header("X-Tenant"), Some("beta"));
+
+        // Its code takes what was typed, and the start or the label stands.
+        let curl = pollster::block_on(code(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            request.clone(),
+            Answers::default(),
+            CodeTarget::Curl,
+        ))
+        .expect("code");
+        assert!(
+            curl.contains("X-Code: code") && curl.contains("X-Tenant: acme"),
+            "{curl}"
+        );
+    }
+
+    #[test]
     fn cookies_come_back_with_later_requests() {
         let setup = setup(Ok(Exchange {
             status: 200,
@@ -1093,7 +1211,7 @@ mod tests {
                 setup.collection.clone(),
                 api.clone(),
                 request,
-                None,
+                Answers::default(),
             ))
             .expect("sent")
         };
@@ -1155,7 +1273,7 @@ mod tests {
                 body: "{}".into(),
                 ..Default::default()
             },
-            None,
+            Answers::default(),
         ))
         .expect("sent")
     }
@@ -1191,7 +1309,7 @@ mod tests {
             setup.collection.clone(),
             api,
             request.clone(),
-            None,
+            Answers::default(),
         ))
         .expect("sent");
         assert_eq!(answer.status, Some(200), "followed, as the API says");
@@ -1212,6 +1330,7 @@ mod tests {
             setup.sender.clone(),
             setup.collection.clone(),
             request,
+            Answers::default(),
             CodeTarget::Curl,
         ))
         .expect("code");
@@ -1248,7 +1367,7 @@ mod tests {
             setup.collection.clone(),
             api,
             request.clone(),
-            None,
+            Answers::default(),
         ))
         .expect("sent");
         let sent = setup.engine.sent.lock().expect("sent")[0].clone();
@@ -1272,6 +1391,7 @@ mod tests {
             setup.sender.clone(),
             setup.collection.clone(),
             request,
+            Answers::default(),
             CodeTarget::Curl,
         ))
         .expect("code");
@@ -1314,7 +1434,7 @@ mod tests {
                 setup.collection.clone(),
                 api.clone(),
                 request.clone(),
-                None,
+                Answers::default(),
             ))
         };
         send_in(&setup, &request).expect("sent");
@@ -1409,7 +1529,7 @@ mod tests {
                 headers: vec![kv("Cookie", "mine=1")],
                 ..Default::default()
             },
-            None,
+            Answers::default(),
         ))
         .expect("sent");
         let sent = setup.engine.sent.lock().expect("sent").clone();
@@ -1475,6 +1595,7 @@ mod tests {
                 setup.sender.clone(),
                 setup.collection.clone(),
                 request.clone(),
+                Answers::default(),
                 target,
             ))
             .expect("code")
@@ -1505,7 +1626,7 @@ mod tests {
                 uri: "http://down.test".into(),
                 ..Default::default()
             },
-            None,
+            Answers::default(),
         ))
         .expect("an answer, of a kind");
         assert_eq!(response.status, None);
@@ -1531,7 +1652,7 @@ mod tests {
                 uri: "http://big.test".into(),
                 ..Default::default()
             },
-            None,
+            Answers::default(),
         ))
         .expect("an answer");
         assert_eq!(response.body.len(), big.len());
@@ -1556,7 +1677,7 @@ mod tests {
                 body: "{{rf(missing.bin)}}".into(),
                 ..Default::default()
             },
-            None,
+            Answers::default(),
         ));
         assert_eq!(
             failure,
@@ -1589,7 +1710,7 @@ mod tests {
                     uri: "http://a.test".into(),
                     ..Default::default()
                 },
-                None,
+                Answers::default(),
             ))
             .expect("sent")
         };

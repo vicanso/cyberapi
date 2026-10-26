@@ -33,7 +33,7 @@ use cyberapi_core::mcp::{
 };
 use cyberapi_core::model::{ApiSetting, Collection, ContentType, Environment, HttpMethod, KvParam, VariableCategory};
 use cyberapi_core::response::{BodyKind, HttpResponse};
-use cyberapi_core::template::NoFiles;
+use cyberapi_core::template::{Answers, NoFiles};
 use cyberapi_core::version;
 use cyberapi_service::Sender;
 use cyberapi_store::Storage;
@@ -669,7 +669,7 @@ async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, argumen
         inherited,
         environment,
     };
-    let response = cyberapi_service::send(sender, collection.id, api.id, api.request, None)
+    let response = cyberapi_service::send(sender, collection.id, api.id, api.request, Answers::default())
         .await
         .map_err(failed)?;
     Ok(response_json(&response))
