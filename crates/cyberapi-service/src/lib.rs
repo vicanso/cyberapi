@@ -6,6 +6,7 @@ pub mod backup;
 mod oauth;
 mod run;
 mod send;
+pub mod socket;
 
 pub use oauth::Tokens;
 pub use run::{RunStep, StepResult, run};

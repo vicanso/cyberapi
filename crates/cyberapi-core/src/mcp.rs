@@ -266,17 +266,22 @@ const CONTENT_TYPES: [(&str, ContentType); 6] = [
 /// `url` (its query moves to the list, as the URL field does), `query` and
 /// `headers` (each replacing the list), `contentType`, `body` (text; a
 /// form's an object of fields) and `description`. What it does not give
-/// stays. A gRPC call is not written here.
+/// stays. A gRPC call or a WebSocket is not written here.
 pub fn written(request: &HttpRequest, arguments: &Value) -> Result<HttpRequest, String> {
     let mut out = request.clone();
     if out.method == HttpMethod::Grpc {
         return Err("a gRPC call is not written by an assistant".into());
     }
+    if out.method == HttpMethod::WebSocket {
+        return Err("a WebSocket is not written by an assistant".into());
+    }
     let given = |name: &str| arguments.get(name).filter(|value| !value.is_null());
     if let Some(method) = given("method") {
         let method = method.as_str().ok_or("method is text: GET, POST…")?;
         let parsed = HttpMethod::parse_lenient(method);
-        if parsed == HttpMethod::Grpc || !parsed.as_str().eq_ignore_ascii_case(method.trim()) {
+        if matches!(parsed, HttpMethod::Grpc | HttpMethod::WebSocket)
+            || !parsed.as_str().eq_ignore_ascii_case(method.trim())
+        {
             return Err(format!(
                 "{method:?} is no method: GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS"
             ));

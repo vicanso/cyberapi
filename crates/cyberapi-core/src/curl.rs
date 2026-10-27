@@ -33,9 +33,13 @@ pub fn curl(
     cookies: &[CurlCookie<'_>],
     follow_redirects: bool,
 ) -> String {
-    // A gRPC call is no cURL command: grpcurl makes it.
+    // A gRPC call is no cURL command: grpcurl makes it; websocat a
+    // WebSocket's (E1).
     if request.method == HttpMethod::Grpc {
         return crate::grpc::grpcurl(prepared, &crate::grpc::GrpcBody::read(&request.body));
+    }
+    if request.method == HttpMethod::WebSocket {
+        return crate::ws::websocat(prepared);
     }
     let mut parts = vec!["curl".to_string(), "-v".to_string()];
     if follow_redirects {

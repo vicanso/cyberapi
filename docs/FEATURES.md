@@ -24,6 +24,10 @@ A GraphQL body keeps the query, its variables and the operation name apart, high
 
 Unary and server-streaming calls: choose gRPC as the method, give the server's address, and pick a service's method from the server's reflection or from `.proto` files (desktop). The message is JSON — with an example to start from, and template functions — and the metadata are headers; the reply comes back as JSON with its status, and a stream of replies shows as it comes, each with its time, until it ends or you stop it. An API keeps the definitions its service needs, so it is sent anywhere, the web version included, without asking the server again. Copy a call as a grpcurl command. Client and bidirectional streaming are not supported yet.
 
+## WebSocket
+
+Choose WS as the method and give a `ws://` or `wss://` address (an `http(s)://` one is taken as its WebSocket): Connect opens it with the API's query, headers, cookies and sign-in — an OAuth 2.0 token too — through the proxy and with the client certificate the host takes, as any request goes. Once open, Send message (or ⌘/Ctrl-Enter) sends the Message tab's text, its template functions run each time; what is sent and what comes show as they go, each with its time, binary messages in base64. Disconnect, or the server closing it, keeps the whole conversation in the history; a server that will not open it answers as any request. Copy one as a websocat command. Desktop only for now: the web version's server does not relay WebSockets, and a run, the command line and an AI assistant pass WebSocket APIs by.
+
 ## Server-sent events
 
 An event stream (`text/event-stream`) shows as it comes — each event with its time, type, id and data, the one picked shown whole with the reconnection time it asked for — until the server ends it or you stop it; what came is kept in the history, as events or as it came. A language model's streamed reply, for instance.

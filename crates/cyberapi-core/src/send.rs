@@ -567,8 +567,13 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         return Ok(call);
     }
     check_environment(request, cx)?;
+    let socket = request.method == HttpMethod::WebSocket;
     // The URL, then the enabled query appended to what it already has.
-    let uri = with_scheme(&resolve_uri(&request.uri, cx.variables));
+    let uri = match socket {
+        // E1: a WebSocket's address.
+        true => crate::ws::address(&resolve_uri(&request.uri, cx.variables)),
+        false => with_scheme(&resolve_uri(&request.uri, cx.variables)),
+    };
     let mut url = url::Url::parse(&uri).map_err(|error| PrepareError::Url {
         uri: uri.clone(),
         message: error.to_string(),
@@ -648,6 +653,11 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         // A Content-Type the request names itself stays.
         headers.set_default("Content-Type", &content_type);
     }
+    // E1: a WebSocket's body is the message it sends next, not the
+    // handshake's.
+    if socket {
+        body = render(&strip_json_comments(&request.body))?.into_bytes();
+    }
 
     // C2: unless the request names its own Authorization (#3).
     let digest = match names_authorization(&headers) {
@@ -662,7 +672,8 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         body,
         timeouts: cx.timeouts.effective(),
         accept_invalid_certs: cx.accept_invalid_certs,
-        http_version: cx.http_version,
+        // A WebSocket upgrades an HTTP/1.1 connection.
+        http_version: if socket { HttpVersion::Http1 } else { cx.http_version },
         proxy: cx.proxy.clone(),
         streams: false,
         digest,
@@ -865,6 +876,32 @@ mod tests {
         let broken = "{\n  // the tenant\n  \"a\": 1\n  \"b\": 2\n}";
         let problem = json_problem(broken).expect("a problem");
         assert!(problem.contains("line 4 column 3"), "{problem}");
+    }
+
+    /// E1: a WebSocket goes to its `ws://` address over HTTP/1.1, signed
+    /// in as any request, its body the message rendered and no body type.
+    #[test]
+    fn a_websocket_is_prepared_with_its_message() {
+        let variables = [variable(
+            VariableCategory::Environment,
+            "HOST",
+            "https://chat.test",
+            true,
+        )];
+        let request = HttpRequest {
+            method: HttpMethod::WebSocket,
+            uri: "{{HOST}}/ws".into(),
+            query: vec![kv("room", "lobby")],
+            auth: Auth::Bearer { token: "t".into() },
+            body: "{\"at\": {{ts()}}}".into(),
+            ..Default::default()
+        };
+        let prepared = prepare_with(&request, &variables).expect("prepare");
+        assert_eq!(prepared.url, "wss://chat.test/ws?room=lobby");
+        assert_eq!(prepared.http_version, HttpVersion::Http1);
+        assert_eq!(prepared.header("authorization"), Some("Bearer t"));
+        assert_eq!(prepared.header("content-type"), None);
+        assert_eq!(String::from_utf8_lossy(&prepared.body), "{\"at\": 7}");
     }
 
     #[test]

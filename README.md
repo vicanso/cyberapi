@@ -33,7 +33,7 @@
 **Cyber API** is a native API client for HTTP, GraphQL, gRPC and server-sent events. [GPUI](https://www.gpui.rs/) — the engine behind the Zed editor — draws it on the GPU, so a project with thousands of APIs opens at once.
 
 - ⚡ **Native and instant** — macOS, Windows and Linux; no Electron, no web view.
-- 🧩 **Every kind of API** — REST; GraphQL with schema completion; gRPC from server reflection or `.proto` files; event streams shown as they arrive.
+- 🧩 **Every kind of API** — REST; GraphQL with schema completion; gRPC from server reflection or `.proto` files; WebSocket; event streams shown as they arrive.
 - 🔍 **See what really happened** — DNS, TCP, TLS and server time; the request exactly as it went out; JSON as a tree or narrowed by JSONPath; a history for every API.
 - 🔗 **Less copy and paste** — switch environments beside the project's name, let folders pass their auth down, and chain responses with `{{g(api, data.token)}}`.
 - 👥 **Built for teams** — a self-hosted web version from the same code; the desktop app signs in, works offline and syncs when you choose.

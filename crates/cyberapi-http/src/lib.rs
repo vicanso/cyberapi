@@ -16,6 +16,10 @@
 //! told as they come, and it is read until the server ends it, it goes
 //! quiet for the read timeout, it reaches the body limit or the reader
 //! stops it — what came by then is the exchange, with how it ended.
+//!
+//! E1: a WebSocket is opened ([`HttpEngine::open_socket`]) rather than
+//! sent: the desktop's engine upgrades an HTTP/1.1 connection and hands
+//! back a [`Socket`] to send on and hear from; the others cannot.
 
 #[cfg(not(target_family = "wasm"))]
 mod client_tls;
@@ -24,15 +28,19 @@ mod native;
 mod policy;
 #[cfg(not(target_family = "wasm"))]
 mod proxy;
+#[cfg(not(target_family = "wasm"))]
+mod socket;
 
 pub use cyberapi_core::response::Exchange;
 pub use cyberapi_core::send::PreparedRequest;
+pub use cyberapi_core::ws::Frame;
 #[cfg(not(target_family = "wasm"))]
 pub use native::NativeEngine;
 pub use policy::TargetPolicy;
 
+use cyberapi_core::response::HttpStats;
 use futures::FutureExt as _;
-use futures::channel::oneshot;
+use futures::channel::{mpsc, oneshot};
 use futures::future::Shared;
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
@@ -129,6 +137,49 @@ pub struct Watch {
     pub stop: Stop,
 }
 
+/// E1: what goes out on a WebSocket.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SocketOut {
+    Send(Frame),
+    /// The reader closes it: the server is told, and its answer awaited.
+    Close,
+}
+
+/// E1: what comes in on a WebSocket.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SocketIn {
+    Message(Frame),
+    /// It closed — the server closed it, or answered the reader's close —
+    /// with the code and reason its close said, if it said any.
+    Closed {
+        code: Option<u16>,
+        reason: String,
+    },
+    /// The connection failed.
+    Failed(String),
+}
+
+/// E1: an open WebSocket: the handshake's answer, and the two ways of it.
+/// Each thing that comes in comes with when, in milliseconds after it
+/// opened. Dropping `outgoing` closes it; it ends with a `Closed` or a
+/// `Failed`.
+pub struct Socket {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub stats: HttpStats,
+    pub outgoing: mpsc::UnboundedSender<SocketOut>,
+    pub incoming: mpsc::UnboundedReceiver<(SocketIn, u64)>,
+}
+
+/// What opening a WebSocket came to: the connection, or the server's
+/// answer when it would not upgrade.
+pub enum Opened {
+    Socket(Socket),
+    Refused(Exchange),
+}
+
+pub type OpenFuture = Pin<Box<dyn Future<Output = Result<Opened, SendError>> + Send + 'static>>;
+
 /// Sends prepared requests. Dropping the future cancels its request.
 pub trait HttpEngine: Send + Sync {
     fn send(&self, request: PreparedRequest) -> SendFuture;
@@ -139,6 +190,17 @@ pub trait HttpEngine: Send + Sync {
     fn send_watched(&self, request: PreparedRequest, watch: Watch) -> SendFuture {
         let _ = watch;
         self.send(request)
+    }
+
+    /// E1: a WebSocket opened with `request`. Only the desktop's engine
+    /// opens one; a page's bridge does not relay them (yet).
+    fn open_socket(&self, request: PreparedRequest) -> OpenFuture {
+        let _ = request;
+        Box::pin(async {
+            Err(SendError::Invalid {
+                message: "WebSocket connections are made by the desktop app only".into(),
+            })
+        })
     }
 }
 

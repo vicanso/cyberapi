@@ -3498,6 +3498,121 @@ mod tests {
         });
     }
 
+    /// E1: a WebSocket API connects, hears and sends messages as they go,
+    /// and once closed keeps what went each way as its answer.
+    #[gpui_kit::test]
+    async fn a_websocket_connects_and_keeps_its_messages(cx: &mut TestAppContext) {
+        use cyberapi_core::ws::{self, Frame};
+        use cyberapi_http::{OpenFuture, Opened, Socket, SocketIn, SocketOut};
+        use futures::channel::mpsc;
+        type Server = (
+            mpsc::UnboundedReceiver<SocketOut>,
+            mpsc::UnboundedSender<(SocketIn, u64)>,
+        );
+        struct Sockets(Arc<std::sync::Mutex<Option<Server>>>);
+        impl HttpEngine for Sockets {
+            fn send(&self, _: PreparedRequest) -> SendFuture {
+                Box::pin(std::future::pending())
+            }
+            fn open_socket(&self, _: PreparedRequest) -> OpenFuture {
+                let (outgoing, sent) = mpsc::unbounded();
+                let (told, incoming) = mpsc::unbounded();
+                *self.0.lock().expect("server") = Some((sent, told));
+                Box::pin(async move {
+                    Ok(Opened::Socket(Socket {
+                        status: 101,
+                        headers: Vec::new(),
+                        stats: Default::default(),
+                        outgoing,
+                        incoming,
+                    }))
+                })
+            }
+        }
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let server = Arc::new(std::sync::Mutex::new(None));
+        let sender = Sender {
+            engine: Arc::new(Sockets(server.clone())),
+            ..sender(&storage, true)
+        };
+        let state = cx.new(|cx| WorkspaceState::new(sender, collection.clone(), cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.create_api(None, "chat".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| {
+            api.set_method(HttpMethod::WebSocket, cx);
+            api.set_uri("ws://chat.test".into(), cx);
+            api.set_body("hi".into(), cx);
+        });
+        api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
+        cx.run_until_parked();
+        assert!(api.read_with(cx, |api, _| api.socket_open()), "open");
+        let (mut sent, told) = server.lock().expect("server").take().expect("opened");
+
+        told.unbounded_send((SocketIn::Message(Frame::Text("welcome".into())), 5))
+            .expect("open");
+        cx.run_until_parked();
+        api.update(cx, |api, cx| api.send_message(Answers::default(), cx));
+        cx.run_until_parked();
+        assert_eq!(sent.try_recv().ok(), Some(SocketOut::Send(Frame::Text("hi".into()))));
+        let live: Vec<(String, String)> = api.read_with(cx, |api, _| {
+            let live = api.live().expect("live");
+            assert_eq!(live.status, 101);
+            live.events
+                .iter()
+                .map(|event| (event.event.clone(), event.data.clone()))
+                .collect()
+        });
+        assert_eq!(
+            live,
+            [
+                (ws::RECEIVED.to_string(), "welcome".to_string()),
+                (ws::SENT.to_string(), "hi".to_string())
+            ]
+        );
+
+        // Closed: the server is told, and once it answers it is kept.
+        std::thread::sleep(Duration::from_millis(210));
+        api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
+        cx.run_until_parked();
+        assert_eq!(sent.try_recv().ok(), Some(SocketOut::Close));
+        assert!(api.read_with(cx, |api, _| api.live().is_some_and(|live| live.stopping)));
+        told.unbounded_send((
+            SocketIn::Closed {
+                code: Some(1000),
+                reason: String::new(),
+            },
+            9,
+        ))
+        .expect("open");
+        cx.run_until_parked();
+        api.read_with(cx, |api, _| {
+            assert!(!api.socket_open() && api.sending_since().is_none() && api.live().is_none());
+            let shown = api.shown_response().expect("kept");
+            assert_eq!(shown.status, Some(101));
+            assert_eq!(
+                shown
+                    .stream_events()
+                    .iter()
+                    .map(|event| event.data.as_str())
+                    .collect::<Vec<_>>(),
+                ["welcome", "hi"]
+            );
+        });
+        let api_id = api.read_with(cx, |api, _| api.api().clone());
+        assert_eq!(
+            storage
+                .history()
+                .list(collection.id, api_id)
+                .await
+                .expect("history")
+                .len(),
+            1
+        );
+    }
+
     #[gpui_kit::test]
     async fn choosing_a_response_puts_its_request_back(cx: &mut TestAppContext) {
         let storage = MemoryStore::new().storage();

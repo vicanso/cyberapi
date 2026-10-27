@@ -49,7 +49,10 @@ fn items<'a>(data: &'a TreeData, folder: Option<&ItemId>) -> Vec<Item<'a>> {
                 }
                 data.apis
                     .iter()
-                    .find(|api| &api.id == id && api.request.method != HttpMethod::Grpc)
+                    // Neither has a counterpart in the formats exported.
+                    .find(|api| {
+                        &api.id == id && !matches!(api.request.method, HttpMethod::Grpc | HttpMethod::WebSocket)
+                    })
                     .map(Item::Api)
             })
             .collect()

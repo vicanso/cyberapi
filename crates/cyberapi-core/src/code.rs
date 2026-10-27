@@ -78,7 +78,7 @@ impl CodeTarget {
 
 /// `request` is what the API holds, for its multipart fields.
 pub fn code(target: CodeTarget, prepared: &PreparedRequest, request: &HttpRequest, follow_redirects: bool) -> String {
-    if request.method == HttpMethod::Grpc || target == CodeTarget::Curl {
+    if matches!(request.method, HttpMethod::Grpc | HttpMethod::WebSocket) || target == CodeTarget::Curl {
         return curl(prepared, request, &[], follow_redirects);
     }
     let parts = Parts::of(prepared, request);

@@ -232,6 +232,7 @@ fn graphql_fields(
 fn uri_placeholder(method: HttpMethod) -> String {
     match method {
         HttpMethod::Grpc => t!("editor.grpc_uri_placeholder"),
+        HttpMethod::WebSocket => t!("editor.ws_uri_placeholder"),
         _ => t!("editor.uri_placeholder"),
     }
     .to_string()
@@ -1123,7 +1124,8 @@ impl RequestEditor {
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush(cx);
         let api = self.api.read(cx);
-        if api.sending_since().is_some() {
+        // E1: on an open WebSocket, the message goes.
+        if api.sending_since().is_some() && !api.socket_open() {
             self.api
                 .update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
             return;
@@ -1146,6 +1148,12 @@ impl RequestEditor {
     /// Sends with what was typed for its `prompt`s — after asking for the
     /// file an `openFile` needs, when it needs one.
     fn pick_and_send(&mut self, picks_file: bool, prompts: HashMap<String, String>, cx: &mut Context<Self>) {
+        // E1: a message on the open WebSocket; files are not asked for.
+        if self.api.read(cx).socket_open() {
+            self.api
+                .update(cx, |api, cx| api.send_message(Answers { file: None, prompts }, cx));
+            return;
+        }
         if !picks_file {
             self.api
                 .update(cx, |api, cx| api.send_or_cancel(Answers { file: None, prompts }, cx));
@@ -1394,6 +1402,8 @@ impl RequestEditor {
                 // tall once its own padding is in, and suffix is for an icon.
                 .child(
                     match sending {
+                        // E1: a WebSocket connects, and is closed or given up.
+                        _ if request.method == HttpMethod::WebSocket => self.socket_button(sending, cx),
                         // An event stream coming is stopped, and kept.
                         Some(started) => Button::new("request-send")
                             .danger()
@@ -1437,7 +1447,7 @@ impl RequestEditor {
         let grpc = request.method == HttpMethod::Grpc;
         let label = |tab: &RequestTab| {
             let (name, count) = match tab {
-                RequestTab::Body if grpc => (t!("editor.grpc_message"), 0),
+                RequestTab::Body if grpc || request.method == HttpMethod::WebSocket => (t!("editor.grpc_message"), 0),
                 RequestTab::Headers if grpc => (t!("editor.grpc_metadata"), count(&request.headers)),
                 RequestTab::Body => (
                     t!("editor.body"),
@@ -1611,10 +1621,104 @@ impl RequestEditor {
         self.save_graphql(cx);
     }
 
+    /// E1: a WebSocket's button: connect, give up connecting, or close it.
+    fn socket_button(&self, sending: Option<web_time::Instant>, cx: &mut Context<Self>) -> Button {
+        let open = self.api.read(cx).socket_open();
+        match sending {
+            Some(started) => Button::new("request-send")
+                .danger()
+                .small()
+                .label(format!(
+                    "{} {:.1}s",
+                    if open {
+                        t!("editor.ws_disconnect")
+                    } else {
+                        t!("editor.cancel_send")
+                    },
+                    started.elapsed().as_secs_f32()
+                ))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.api
+                        .update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
+                })),
+            None => Button::new("request-send")
+                .primary()
+                .small()
+                .icon(gpui_kit::assets::IconName::Plug)
+                .label(t!("editor.ws_connect").to_string())
+                // A page's bridge relays no WebSocket.
+                .disabled(!this_build::opens_sockets())
+                .tooltip(match this_build::opens_sockets() {
+                    true => t!("editor.ws_connect_about").to_string(),
+                    false => t!("editor.ws_desktop_only").to_string(),
+                })
+                .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
+        }
+    }
+
+    /// E1: a WebSocket's message: the text the next send sends, its
+    /// templates rendered then, and the button that sends it once open.
+    fn render_message(&self, cx: &mut Context<Self>) -> AnyElement {
+        let request = self.api.read(cx).request().clone();
+        let open = self.api.read(cx).socket_open();
+        let muted = cx.theme().muted_foreground;
+        let toolbar = h_flex()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .items_center()
+            .child(
+                Button::new("ws-send-message")
+                    .primary()
+                    .xsmall()
+                    .icon(gpui_kit::assets::IconName::Send)
+                    .label(t!("editor.ws_send_message").to_string())
+                    .disabled(!open)
+                    .tooltip_with_action(t!("editor.ws_send_message").to_string(), &SendAction, Some(KEY_CONTEXT))
+                    .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
+            )
+            .when(request.content_type == ContentType::Json, |this| {
+                this.child(
+                    Button::new("body-format")
+                        .ghost()
+                        .xsmall()
+                        .icon(gpui_kit::assets::IconName::WandSparkles)
+                        .label(t!("editor.format").to_string())
+                        .on_click(cx.listener(|this, _, window, cx| this.format_json(window, cx))),
+                )
+            })
+            .when(!open, |this| {
+                this.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(t!("editor.ws_message_hint").to_string()),
+                )
+            });
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .child(toolbar)
+            .child(
+                div().flex_1().min_h_0().relative().child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(Editor::new(&self.body).w_full().h_full().bordered(false)),
+                ),
+            )
+            .into_any_element()
+    }
+
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let request = self.api.read(cx).request().clone();
         if request.method == HttpMethod::Grpc {
             return self.render_grpc(cx);
+        }
+        if request.method == HttpMethod::WebSocket {
+            return self.render_message(cx);
         }
         let this = cx.entity().downgrade();
         let current = request.content_type;

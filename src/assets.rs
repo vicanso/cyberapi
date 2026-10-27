@@ -40,6 +40,7 @@ gpui_kit::assets::icon_assets!(
         Pin,
         PinOff,
         Play,
+        Plug,
         Send,
         Table,
         Terminal,

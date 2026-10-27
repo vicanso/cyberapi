@@ -31,7 +31,7 @@
 //! authorities it lists besides the system's (C5, `client_tls`). The
 //! bridge's reads no such files: they would be its own machine's.
 
-use crate::{Exchange, HttpEngine, PreparedRequest, Progress, SendError, SendFuture, TargetPolicy, Watch};
+use crate::{Exchange, HttpEngine, OpenFuture, PreparedRequest, Progress, SendError, SendFuture, TargetPolicy, Watch};
 use bytes::Bytes;
 use cyberapi_core::prefs::HttpVersion;
 use cyberapi_core::proxy::ProxyKind;
@@ -108,6 +108,28 @@ impl HttpEngine for NativeEngine {
 
     fn send_watched(&self, request: PreparedRequest, watch: Watch) -> SendFuture {
         self.spawned(request, Some(watch))
+    }
+
+    /// E1: dropped before it is open, the opening stops; once open, the
+    /// socket carries on until its `outgoing` goes.
+    fn open_socket(&self, request: PreparedRequest) -> OpenFuture {
+        let task = self.runtime.spawn(crate::socket::open(
+            request,
+            self.policy.clone(),
+            Desktop {
+                proxies: self.proxies,
+                certificates: self.certificates,
+            },
+        ));
+        let guard = AbortOnDrop(task.abort_handle());
+        Box::pin(async move {
+            let _guard = guard;
+            task.await.unwrap_or_else(|error| {
+                Err(SendError::Http {
+                    message: error.to_string(),
+                })
+            })
+        })
     }
 }
 
@@ -240,11 +262,11 @@ impl ServerCertVerifier for AnyCertificate {
     }
 }
 
-fn seconds(value: u32) -> Duration {
+pub(crate) fn seconds(value: u32) -> Duration {
     Duration::from_secs(u64::from(value))
 }
 
-fn timed_out(phase: &str, seconds: u32) -> SendError {
+pub(crate) fn timed_out(phase: &str, seconds: u32) -> SendError {
     SendError::Timeout {
         phase: phase.to_string(),
         seconds,
@@ -259,9 +281,9 @@ struct Reading {
 }
 
 /// What only the desktop's engine does.
-struct Desktop {
-    proxies: bool,
-    certificates: bool,
+pub(crate) struct Desktop {
+    pub proxies: bool,
+    pub certificates: bool,
 }
 
 async fn exchange(
@@ -271,9 +293,51 @@ async fn exchange(
     reading: Reading,
 ) -> Result<Exchange, SendError> {
     let started = Instant::now();
+    let url = Url::parse(&request.url).map_err(|error| SendError::Invalid {
+        message: format!("{}: {error}", request.url),
+    })?;
+    let dialed = dial(&request, &url, &policy, &desktop, false).await?;
+    over(
+        dialed.stream,
+        &request,
+        &url,
+        dialed.stats,
+        started,
+        dialed.h2,
+        dialed.forward,
+        reading,
+    )
+    .await
+}
+
+/// A connection's stream, plain or over TLS.
+pub(crate) trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
+
+/// A connection made for a request: its stream, its timings so far,
+/// whether TLS agreed on HTTP/2, and how a plain request goes to an HTTP
+/// proxy (#60).
+pub(crate) struct Dialed {
+    pub stream: Box<dyn Io>,
+    pub stats: HttpStats,
+    pub h2: bool,
+    forward: Option<Forward>,
+}
+
+/// Connects to where `url` (`http` or `https`) is — through the request's
+/// proxy, if the engine takes one — within the connect timeout: resolved,
+/// connected and TLS done, each timed. An HTTP proxy tunnels a plain request
+/// only for HTTP/2, or when `tunnel` asks (a WebSocket's).
+pub(crate) async fn dial(
+    request: &PreparedRequest,
+    url: &Url,
+    policy: &TargetPolicy,
+    desktop: &Desktop,
+    tunnel: bool,
+) -> Result<Dialed, SendError> {
     let timeouts = request.timeouts;
     let invalid = |message: String| SendError::Invalid { message };
-    let url = Url::parse(&request.url).map_err(|error| invalid(format!("{}: {error}", request.url)))?;
     let https = match url.scheme() {
         "http" => false,
         "https" => true,
@@ -287,7 +351,7 @@ async fn exchange(
     let connect_limit = seconds(timeouts.connect);
     let proxy_failed = |message: String| SendError::Proxy { message };
     let via = if desktop.proxies {
-        cyberapi_core::proxy::choose(&request.proxy, &url, |name| std::env::var(name).ok()).map_err(proxy_failed)?
+        cyberapi_core::proxy::choose(&request.proxy, url, |name| std::env::var(name).ok()).map_err(proxy_failed)?
     } else {
         None
     };
@@ -392,7 +456,7 @@ async fn exchange(
                     };
                     crate::proxy::socks5(&mut stream, proxy, &target, port).await
                 }
-                ProxyKind::Http if https || request.http_version == HttpVersion::Http2 => {
+                ProxyKind::Http if https || tunnel || request.http_version == HttpVersion::Http2 => {
                     crate::proxy::tunnel(&mut stream, proxy, &authority).await
                 }
                 ProxyKind::Http => {
@@ -449,10 +513,19 @@ async fn exchange(
                 message: "the server did not agree to HTTP/2".to_string(),
             });
         }
-        over(tls, &request, &url, stats, started, h2, None, reading).await
+        Ok(Dialed {
+            stream: Box::new(tls),
+            stats,
+            h2,
+            forward: None,
+        })
     } else {
-        let h2 = request.http_version == HttpVersion::Http2;
-        over(stream, &request, &url, stats, started, h2, forward, reading).await
+        Ok(Dialed {
+            stream: Box::new(stream),
+            stats,
+            h2: request.http_version == HttpVersion::Http2,
+            forward,
+        })
     }
 }
 
@@ -609,7 +682,7 @@ where
 
 /// Header names in lower case with their values, in the order they came;
 /// a value that is not UTF-8 read lossily (#11).
-fn pairs(map: &http::HeaderMap) -> Vec<(String, String)> {
+pub(crate) fn pairs(map: &http::HeaderMap) -> Vec<(String, String)> {
     map.iter()
         .map(|(name, value)| {
             (
@@ -674,7 +747,10 @@ async fn read_stream(
 
 /// The body, up to `limit` bytes, whether there was more, and the trailers
 /// after it.
-async fn read_body(mut body: Incoming, limit: usize) -> Result<(Vec<u8>, bool, Vec<(String, String)>), hyper::Error> {
+pub(crate) async fn read_body(
+    mut body: Incoming,
+    limit: usize,
+) -> Result<(Vec<u8>, bool, Vec<(String, String)>), hyper::Error> {
     let mut raw = Vec::new();
     let mut trailers = Vec::new();
     while let Some(frame) = body.frame().await {

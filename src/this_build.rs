@@ -56,6 +56,17 @@ pub fn reads_files() -> bool {
     false
 }
 
+/// E1: whether a WebSocket can be opened: the desktop's engine opens
+/// them; a page's bridge relays none.
+#[cfg(not(target_family = "wasm"))]
+pub fn opens_sockets() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn opens_sockets() -> bool {
+    false
+}
+
 /// Whether requests may go through a proxy (#60): the desktop's do; a
 /// page's go from the bridge, straight to their servers.
 #[cfg(not(target_family = "wasm"))]

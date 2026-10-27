@@ -55,11 +55,15 @@ pub enum SendFailure {
     /// no one is asked — and the request does not go with a stand-in.
     #[snafu(display("it asks for {} as it is sent, and nothing was typed for it", labels.join(", ")))]
     Unanswered { labels: Vec<String> },
+    /// E1: a WebSocket API is connected to (`crate::socket`), not sent: a
+    /// run, the command line and an AI assistant pass it by.
+    #[snafu(display("a WebSocket API is connected to in the desktop app, not sent"))]
+    WebSocket,
 }
 
 /// What a `prompt` nothing was typed for does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Unanswered {
+pub(crate) enum Unanswered {
     /// Nothing goes out.
     Stops,
     /// Its start, or else its label, stands: in the request's code.
@@ -159,6 +163,9 @@ pub(crate) async fn send_with(
     watch: Option<Watch>,
     values: &[(String, String)],
 ) -> Result<HttpResponse, SendFailure> {
+    if request.method == HttpMethod::WebSocket {
+        return Err(SendFailure::WebSocket);
+    }
     let sender = sender.for_request(&request);
     let (mut prepared, globals) = prepare(
         &sender,
@@ -317,28 +324,33 @@ pub(crate) async fn send_with(
             ..Default::default()
         },
     };
-    // A body too big for the history still shows now, in full (#17).
+    Ok(kept(&sender, response).await)
+}
+
+/// `response` in the API's history, with the id and time it was kept
+/// under. A body too big for the history still shows now, in full (#17).
+pub(crate) async fn kept(sender: &Sender, response: HttpResponse) -> HttpResponse {
     match sender
         .storage
         .history()
         .add(response.for_history(), sender.sending.history_size())
         .await
     {
-        Ok(kept) => Ok(HttpResponse {
+        Ok(kept) => HttpResponse {
             id: kept.id,
             created_at: kept.created_at,
             ..response
-        }),
+        },
         // The answer still shows, with an id and a time of its own so the
         // next is not taken for it; it is only not kept (an API only in a
         // page's draft is unknown to the server).
         Err(error) => {
             warn!(%error, "the response could not be kept");
-            Ok(HttpResponse {
+            HttpResponse {
                 id: unkept_id(),
                 created_at: now(),
                 ..response
-            })
+            }
         }
     }
 }
@@ -617,7 +629,7 @@ async fn ask_reflection(
 }
 
 /// F9.2: the answer's cookies are kept, an expired one removing its own.
-async fn keep_cookies(sender: &Sender, exchange: &Exchange, sent_to: &str) {
+pub(crate) async fn keep_cookies(sender: &Sender, exchange: &Exchange, sent_to: &str) {
     let Ok(url) = url::Url::parse(sent_to) else {
         return;
     };
@@ -635,7 +647,7 @@ async fn keep_cookies(sender: &Sender, exchange: &Exchange, sent_to: &str) {
 }
 
 /// F9.3: the jar's cookies for where `prepared` goes.
-async fn add_cookies(sender: &Sender, prepared: &mut PreparedRequest) -> Result<(), SendFailure> {
+pub(crate) async fn add_cookies(sender: &Sender, prepared: &mut PreparedRequest) -> Result<(), SendFailure> {
     let Ok(url) = url::Url::parse(&prepared.url) else {
         return Ok(());
     };
@@ -670,7 +682,7 @@ fn now() -> Timestamp {
 /// responses the template functions read, then
 /// `cyberapi_core::send::prepare` — or, given a path and its body, the gRPC
 /// call of that path at the request's address (`send::grpc_call`).
-async fn prepare(
+pub(crate) async fn prepare(
     sender: &Sender,
     collection: &CollectionId,
     request: &HttpRequest,

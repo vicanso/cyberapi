@@ -33,7 +33,7 @@
 **Cyber API** 是原生的 API 客户端，支持 HTTP、GraphQL、gRPC 和服务器推送事件。界面由 Zed 编辑器背后的 [GPUI](https://www.gpui.rs/) 在 GPU 上绘制，几千个接口的项目也是立即打开。
 
 - ⚡ **原生、即开** —— macOS、Windows、Linux；不是 Electron，也不套网页。
-- 🧩 **各种接口都能调** —— REST；GraphQL 按 Schema 补全；gRPC 从服务器反射或 `.proto` 文件取方法；事件流边收边显示。
+- 🧩 **各种接口都能调** —— REST；GraphQL 按 Schema 补全；gRPC 从服务器反射或 `.proto` 文件取方法；WebSocket；事件流边收边显示。
 - 🔍 **看清每一次请求** —— DNS、TCP、TLS、服务器各花多久；实际发出的请求原样可查；JSON 可看树形或用 JSONPath 过滤；每个接口都有历史。
 - 🔗 **少复制粘贴** —— 在项目名旁切换环境，认证由目录往下继承，用 `{{g(接口, data.token)}}` 把上一个响应接进下一个请求。
 - 👥 **团队协作** —— 同一份代码的网页版可自行部署；桌面版登录后离线编辑，想同步时再同步。

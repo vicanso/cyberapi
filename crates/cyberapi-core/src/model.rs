@@ -209,7 +209,9 @@ impl HttpRequest {
     /// one, a GraphQL query, which a GET sends as parameters, or a gRPC
     /// call's message.
     pub fn has_body_tab(&self) -> bool {
-        self.method.has_body() || self.content_type == ContentType::GraphQl || self.method == HttpMethod::Grpc
+        self.method.has_body()
+            || self.content_type == ContentType::GraphQl
+            || matches!(self.method, HttpMethod::Grpc | HttpMethod::WebSocket)
     }
 
     /// Reads `api_settings.setting`. What cannot be read is an empty request
@@ -331,11 +333,14 @@ pub enum HttpMethod {
     /// A gRPC unary call (`crate::grpc`): sent as HTTP/2 POSTs are, to a
     /// service's method, with a message its definitions encode.
     Grpc,
+    /// E1: a WebSocket connection (`crate::ws`), its body the message to
+    /// send next.
+    WebSocket,
 }
 
 impl HttpMethod {
     /// The methods the editor offers (F4.2), in its order.
-    pub const EDITABLE: [Self; 8] = [
+    pub const EDITABLE: [Self; 9] = [
         Self::Get,
         Self::Post,
         Self::Put,
@@ -344,6 +349,7 @@ impl HttpMethod {
         Self::Options,
         Self::Head,
         Self::Grpc,
+        Self::WebSocket,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -358,6 +364,7 @@ impl HttpMethod {
             Self::Connect => "CONNECT",
             Self::Trace => "TRACE",
             Self::Grpc => "gRPC",
+            Self::WebSocket => "WS",
         }
     }
 
@@ -373,6 +380,7 @@ impl HttpMethod {
             "CONNECT" => Self::Connect,
             "TRACE" => Self::Trace,
             "GRPC" => Self::Grpc,
+            "WS" => Self::WebSocket,
             _ => Self::Get,
         }
     }

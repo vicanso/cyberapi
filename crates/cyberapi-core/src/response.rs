@@ -284,13 +284,16 @@ impl HttpResponse {
     /// Whether it is a stream read as it came, shown as events: an event
     /// stream, or a gRPC call's streamed reply.
     pub fn is_stream(&self) -> bool {
-        crate::sse::is_event_stream(&self.headers) || (self.request.method == HttpMethod::Grpc && self.stream.is_some())
+        crate::sse::is_event_stream(&self.headers)
+            || (matches!(self.request.method, HttpMethod::Grpc | HttpMethod::WebSocket) && self.stream.is_some())
     }
 
     /// Its events, when it is a stream.
     pub fn stream_events(&self) -> Vec<crate::sse::Event> {
         if crate::sse::is_event_stream(&self.headers) {
             crate::sse::events(&self.body, self.stream.as_ref())
+        } else if self.request.method == HttpMethod::WebSocket {
+            crate::ws::events(&self.body, self.stream.as_ref())
         } else {
             let kind = crate::grpc::GrpcBody::read(&self.request.body)
                 .reply_type()

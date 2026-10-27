@@ -39,8 +39,10 @@ use cyberapi_core::response::HttpResponse;
 use cyberapi_core::send::PrepareError;
 use cyberapi_core::sse;
 use cyberapi_core::template::{Answers, TemplateError};
+use cyberapi_core::ws::{self, Frame};
 use cyberapi_core::{CollectionId, ItemId};
-use cyberapi_http::{Progress, Watch, stop_signal};
+use cyberapi_http::{Progress, SocketIn, SocketOut, Watch, stop_signal};
+use cyberapi_service::socket::{self, Connected, LiveSocket};
 use cyberapi_service::{SendFailure, Sender};
 use cyberapi_store::StoreError;
 use futures::StreamExt as _;
@@ -164,6 +166,17 @@ struct Sending {
 enum Reader {
     Events(sse::Parser),
     Replies(ReplyReader),
+    /// A WebSocket's messages, each an event as it goes or comes (E1).
+    Socket,
+}
+
+/// E1: an open WebSocket: what the reader sends goes out on it, and what
+/// went each way is kept, for the history once it ends.
+struct OpenSocket {
+    outgoing: mpsc::UnboundedSender<SocketOut>,
+    messages: Vec<(bool, Frame, u64)>,
+    /// When it opened: a message's time is after it.
+    opened: Instant,
 }
 
 /// An event stream's answer, or a gRPC call's streamed reply, as it comes.
@@ -203,8 +216,30 @@ impl LiveStream {
         let events = match &mut self.reader {
             Reader::Events(parser) => parser.feed(piece, at),
             Reader::Replies(replies) => replies.feed(piece, at),
+            Reader::Socket => Vec::new(),
         };
         self.events.extend(events);
+    }
+
+    /// E1: a WebSocket's, its messages added as they go and come.
+    fn socket(status: u16, headers: Vec<(String, String)>) -> Self {
+        Self {
+            status,
+            headers,
+            body: Vec::new(),
+            events: Vec::new(),
+            reader: Reader::Socket,
+            head: Instant::now(),
+            stopping: false,
+        }
+    }
+
+    /// E1: a message, `sent` or come, `at` milliseconds after it opened:
+    /// a line of the body as it will be kept, and an event.
+    fn message(&mut self, sent: bool, frame: &Frame, at: u64) {
+        let (line, _) = ws::transcript(&[(sent, frame.clone(), at)]);
+        self.body.extend(line);
+        self.events.push(ws::event(sent, frame, at));
     }
 }
 
@@ -230,6 +265,8 @@ pub struct ApiState {
     sending: Option<Sending>,
     /// The event stream being answered, while it comes.
     live: Option<LiveStream>,
+    /// E1: the WebSocket open, while it is.
+    socket: Option<OpenSocket>,
     last_send: Option<Instant>,
     /// Newest first (F7.9). Shared, so the panel takes one for each frame
     /// without copying its body.
@@ -297,6 +334,7 @@ impl ApiState {
             saves: Arc::default(),
             sending: None,
             live: None,
+            socket: None,
             last_send: None,
             responses: Vec::new(),
             history: Load::Loading,
@@ -416,9 +454,17 @@ impl ApiState {
     pub fn set_method(&mut self, method: HttpMethod, cx: &mut Context<Self>) {
         if self.request.method != method {
             let body = grpc::switched_body(&self.request.body, self.request.method, method);
-            let replaced = body != self.request.body;
+            let mut replaced = body != self.request.body;
             self.request.body = body;
             self.request.method = method;
+            // E1: a WebSocket's message is text; a form or a GraphQL body
+            // reads as the text it is kept as.
+            if method == HttpMethod::WebSocket
+                && (self.request.content_type.is_key_value() || self.request.content_type == ContentType::GraphQl)
+            {
+                self.request.content_type = ContentType::Json;
+                replaced = true;
+            }
             self.save_now(cx);
             let api = self.api.clone();
             let _ = self
@@ -666,6 +712,16 @@ impl ApiState {
             return;
         }
         self.last_send = Some(Instant::now());
+        // E1: an open WebSocket is closed — the server is told, and what
+        // went each way is kept once it answers.
+        if let Some(socket) = &self.socket {
+            let _ = socket.outgoing.unbounded_send(SocketOut::Close);
+            if let Some(live) = self.live.as_mut() {
+                live.stopping = true;
+            }
+            cx.notify();
+            return;
+        }
         if let Some(sending) = self.sending.as_mut() {
             // An event stream that has begun ends, and is kept; any other
             // request is dropped.
@@ -683,6 +739,9 @@ impl ApiState {
         }
         self.save_now(cx);
         remember_typed(&self.collection, &answers.prompts, cx);
+        if self.request.method == HttpMethod::WebSocket {
+            return self.connect(answers, cx);
+        }
         let (told, mut telling) = mpsc::unbounded::<Progress>();
         let (stop, stopped) = stop_signal();
         let watch = Watch {
@@ -734,6 +793,129 @@ impl ApiState {
         self.live.as_ref()
     }
 
+    /// E1: opens the WebSocket. Once open, what comes is heard till it
+    /// ends; then what went each way is kept, and shown as its answer.
+    fn connect(&mut self, answers: Answers, cx: &mut Context<Self>) {
+        let sender = self.sender(cx);
+        let call = socket::connect(
+            sender.clone(),
+            self.collection.clone(),
+            self.api.clone(),
+            self.request.clone(),
+            answers,
+        );
+        let task = cx.spawn(async move |this, cx| {
+            let opened = match cx.background_spawn(call).await {
+                Ok(Connected::Open(opened)) => opened,
+                Ok(Connected::Kept(response)) => {
+                    let _ = this.update(cx, |this, cx| this.answered(Ok(response), cx));
+                    return;
+                }
+                Err(failure) => {
+                    let _ = this.update(cx, |this, cx| this.answered(Err(failure), cx));
+                    return;
+                }
+            };
+            let LiveSocket {
+                status,
+                headers,
+                outgoing,
+                mut incoming,
+                head,
+            } = opened;
+            if this
+                .update(cx, |this, cx| {
+                    this.live = Some(LiveStream::socket(status, headers));
+                    this.socket = Some(OpenSocket {
+                        outgoing,
+                        messages: Vec::new(),
+                        opened: Instant::now(),
+                    });
+                    cx.notify();
+                })
+                .is_err()
+            {
+                return;
+            }
+            let mut last = SocketIn::Closed {
+                code: None,
+                reason: String::new(),
+            };
+            while let Some((came, at)) = incoming.next().await {
+                let SocketIn::Message(frame) = came else {
+                    last = came;
+                    break;
+                };
+                let heard = this.update(cx, |this, cx| {
+                    if let Some(socket) = this.socket.as_mut() {
+                        socket.messages.push((false, frame.clone(), at));
+                    }
+                    if let Some(live) = this.live.as_mut() {
+                        live.message(false, &frame, at);
+                    }
+                    cx.notify();
+                });
+                if heard.is_err() {
+                    return;
+                }
+            }
+            let Ok((messages, stopping)) = this.update(cx, |this, _| {
+                let messages = this.socket.take().map(|socket| socket.messages).unwrap_or_default();
+                (messages, this.live.as_ref().is_some_and(|live| live.stopping))
+            }) else {
+                return;
+            };
+            let ended = socket::ending(&last, stopping);
+            let kept = cx.background_spawn(socket::keep(sender, head, messages, ended)).await;
+            let _ = this.update(cx, |this, cx| this.answered(Ok(kept), cx));
+        });
+        self.sending = Some(Sending {
+            started: Instant::now(),
+            _task: task,
+            _follow: Task::ready(()),
+            stop: None,
+            replies: None,
+        });
+        cx.notify();
+    }
+
+    /// E1: whether the WebSocket is open, so a message can go.
+    pub fn socket_open(&self) -> bool {
+        self.socket.is_some()
+    }
+
+    /// E1: sends the body as it is now, its templates rendered, on the
+    /// open WebSocket. `answers` are the reader's to its `prompt`s.
+    pub fn send_message(&mut self, answers: Answers, cx: &mut Context<Self>) {
+        if self.socket.is_none() {
+            return;
+        }
+        self.save_now(cx);
+        remember_typed(&self.collection, &answers.prompts, cx);
+        let call = socket::message(self.sender(cx), self.collection.clone(), self.request.clone(), answers);
+        cx.spawn(async move |this, cx| {
+            let rendered = cx.background_spawn(call).await;
+            let _ = this.update(cx, |this, cx| match rendered {
+                Ok(text) => this.say(text, cx),
+                Err(failure) => cx.emit(not_sent(failure)),
+            });
+        })
+        .detach();
+    }
+
+    fn say(&mut self, text: String, cx: &mut Context<Self>) {
+        let Some(socket) = self.socket.as_mut() else { return };
+        let frame = Frame::Text(text);
+        let at = socket.opened.elapsed().as_millis() as u64;
+        if socket.outgoing.unbounded_send(SocketOut::Send(frame.clone())).is_ok() {
+            socket.messages.push((true, frame.clone(), at));
+            if let Some(live) = self.live.as_mut() {
+                live.message(true, &frame, at);
+            }
+        }
+        cx.notify();
+    }
+
     fn told(&mut self, told: Vec<Progress>, cx: &mut Context<Self>) {
         // Told after the answer came: it is shown already.
         if self.sending.is_none() {
@@ -758,6 +940,7 @@ impl ApiState {
     fn answered(&mut self, result: Result<HttpResponse, SendFailure>, cx: &mut Context<Self>) {
         self.sending = None;
         self.live = None;
+        self.socket = None;
         match result {
             Ok(response) => {
                 // F7.5: an answer that names its file is saved as it

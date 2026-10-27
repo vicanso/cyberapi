@@ -166,12 +166,13 @@ pub fn bind_mac_page_keys(cx: &mut App) {
 }
 
 /// The color of a method's label (§6): DELETE red, the methods with a body
-/// green, a gRPC call magenta, the rest blue.
+/// green, a gRPC call magenta, a WebSocket cyan (E1), the rest blue.
 pub fn method_color(method: HttpMethod, cx: &App) -> Hsla {
     let theme = cx.theme();
     match method {
         HttpMethod::Delete => theme.danger,
         HttpMethod::Grpc => theme.magenta,
+        HttpMethod::WebSocket => theme.cyan,
         method if method.has_body() => theme.success,
         _ => theme.info,
     }
