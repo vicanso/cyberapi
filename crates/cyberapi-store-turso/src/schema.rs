@@ -4,6 +4,10 @@
 //! so a copied `my_db.db` and a new file look the same (4.1). Everything this
 //! app adds is a numbered migration on top, recorded in `cyberapi_meta`; the
 //! old app's `versions` table is left as it is.
+//!
+//! One repair runs after them, whatever the version: the old app's own
+//! `environments` table, which migration 7 found in its way
+//! ([`repair_old_environments`]).
 
 use crate::backend;
 use cyberapi_store::StoreError;
@@ -130,15 +134,8 @@ const MIGRATIONS: &[&[&str]] = &[
     // project's order, and which one a variable is in; a variable with no
     // row is every environment's.
     &[
-        "CREATE TABLE IF NOT EXISTS environments (
-            id TEXT PRIMARY KEY NOT NULL,
-            collection TEXT NOT NULL,
-            name TEXT NOT NULL,
-            position INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )",
-        "CREATE INDEX IF NOT EXISTS environments_collection ON environments (collection)",
+        ENVIRONMENTS_TABLE,
+        ENVIRONMENTS_INDEX,
         "CREATE TABLE IF NOT EXISTS variable_environments (
             variable TEXT PRIMARY KEY NOT NULL,
             collection TEXT NOT NULL,
@@ -147,6 +144,18 @@ const MIGRATIONS: &[&[&str]] = &[
         "CREATE INDEX IF NOT EXISTS variable_environments_collection ON variable_environments (collection)",
     ],
 ];
+
+/// Migration 7's named environments (#61): also what the repair of the old
+/// app's table makes in its place.
+const ENVIRONMENTS_TABLE: &str = "CREATE TABLE IF NOT EXISTS environments (
+            id TEXT PRIMARY KEY NOT NULL,
+            collection TEXT NOT NULL,
+            name TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )";
+const ENVIRONMENTS_INDEX: &str = "CREATE INDEX IF NOT EXISTS environments_collection ON environments (collection)";
 
 /// The schema version this build writes.
 pub const CURRENT_VERSION: usize = MIGRATIONS.len();
@@ -177,7 +186,59 @@ pub async fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
         .map_err(backend)?;
         tx.commit().await.map_err(backend)?;
     }
-    Ok(())
+    repair_old_environments(conn).await
+}
+
+/// The Tauri app's first release (app-v0.1.0, 2022) kept environment
+/// variables in a table of its own named `environments`; the releases after
+/// it moved them to `variables` and left the table behind. Copied over, it
+/// stood in the way of migration 7's — `CREATE TABLE IF NOT EXISTS` kept
+/// it — and every read or write of a named environment failed (“table
+/// environments has no column named position”). Wherever it is found, a
+/// file copied now or one an earlier build took to schema 7, it is kept
+/// under another name with its rows, and the named environments get their
+/// table. Not a numbered migration: it makes what migration 7 should have,
+/// so a build that knows only 7 still opens the file.
+async fn repair_old_environments(conn: &mut Connection) -> Result<(), StoreError> {
+    let columns = columns_of(conn, "environments").await?;
+    if columns.is_empty() || columns.iter().any(|column| column == "position") {
+        return Ok(());
+    }
+    let mut kept = "legacy_environments".to_string();
+    let mut tries = 1;
+    while !columns_of(conn, &kept).await?.is_empty() {
+        tries += 1;
+        kept = format!("legacy_environments_{tries}");
+    }
+    tracing::warn!(
+        kept = %kept,
+        ?columns,
+        "the Tauri app's old environments table stood in the way of the named environments: kept under another name"
+    );
+    let tx = conn.transaction().await.map_err(backend)?;
+    // The index migration 7 put on the old table goes with it, by name.
+    tx.execute("DROP INDEX IF EXISTS environments_collection", ())
+        .await
+        .map_err(backend)?;
+    tx.execute(&format!("ALTER TABLE environments RENAME TO {kept}"), ())
+        .await
+        .map_err(backend)?;
+    tx.execute(ENVIRONMENTS_TABLE, ()).await.map_err(backend)?;
+    tx.execute(ENVIRONMENTS_INDEX, ()).await.map_err(backend)?;
+    tx.commit().await.map_err(backend)
+}
+
+/// A table's columns, by name; none for a table that is not there.
+async fn columns_of(conn: &Connection, table: &str) -> Result<Vec<String>, StoreError> {
+    let mut rows = conn
+        .query(&format!("PRAGMA table_info({table})"), ())
+        .await
+        .map_err(backend)?;
+    let mut columns = Vec::new();
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        columns.push(crate::rows::text(&row, 1));
+    }
+    Ok(columns)
 }
 
 pub async fn schema_version(conn: &Connection) -> Result<usize, StoreError> {

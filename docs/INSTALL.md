@@ -36,8 +36,10 @@ The desktop app looks for a newer release at start, at most once every two days;
 
 ## Coming from the Tauri version
 
-The macOS app has the same name and identifier as the earlier Tauri app, so installing it replaces the old one. On first launch it copies the old app's data, if there is one, and leaves the old files as they were. What is copied is the database (projects, folders, APIs, variables) and the cookies. What the old app kept in its web view is not: its settings (theme, language, timeouts), pinned APIs, open folders, chosen tabs, response history and the order of a project's top level. Those start afresh, and backups made by the old app restore as they always did.
+The macOS app has the same name and identifier as the earlier Tauri app, so installing it replaces the old one. On first launch it copies the old app's data, if there is one, and leaves the old files as they were. What is copied is the database (projects, folders, APIs, variables) and the cookies. What the old app kept in its web view is not: its settings (theme, language, timeouts), pinned APIs, open folders, chosen tabs, response history and the order of a project's top level. Those start afresh, and backups made by the old app restore as they always did. A database from the old app's first release (app-v0.1.0, 2022) still holds a table of environment variables that later releases left behind; it is kept, renamed `legacy_environments`, and no longer stands in the way of named environments (in 0.3.0 that table made every server project's copy fail with “table environments has no column named position”).
 
 ## Where the data lives
 
 The data lives in `CyberAPI` under the platform's data directory: `~/Library/Application Support` on macOS, `%APPDATA%` on Windows, and `~/.local/share` (as `cyberapi`) on Linux.
+
+The app writes a log there too, in `logs`: one file a day (`cyberapi.log.2026-10-27`), the last 7 kept — what it did, and every failure it showed you. **Settings → Local data → Show logs** opens the folder; send the files along when you report a problem. `RUST_LOG` sets how much is written (`info` unless set).

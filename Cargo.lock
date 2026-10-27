@@ -1950,6 +1950,7 @@ dependencies = [
  "tokio",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-graphql",
@@ -2071,6 +2072,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tracing",
  "turso",
  "ulid",
 ]

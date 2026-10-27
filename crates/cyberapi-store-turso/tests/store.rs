@@ -187,6 +187,92 @@ const LEGACY: &[&str] = &[
     "INSERT INTO variables VALUES ('v3', 'graphql', 'c1', 'odd', 'x', '1', '', '')",
 ];
 
+/// The table the Tauri app's first release (app-v0.1.0, 2022) kept
+/// environment variables in, which the releases after it left behind.
+const OLD_ENVIRONMENTS: &str = "CREATE TABLE IF NOT EXISTS environments (
+    id TEXT PRIMARY KEY NOT NULL check (id != ''),
+    collection TEXT NOT NULL check (collection != ''),
+    name TEXT DEFAULT '',
+    value TEXT DEFAULT '',
+    enabled TEXT DEFAULT '',
+    created_at TEXT DEFAULT '',
+    updated_at TEXT DEFAULT ''
+)";
+
+/// Migration 7's `CREATE TABLE IF NOT EXISTS` kept that old table in place
+/// of the named environments' (#61), and every write of one failed (“table
+/// environments has no column named position”). It gives way, its rows
+/// kept under another name — in a file copied now, and in one a build
+/// before the repair already took to schema 7.
+#[test]
+fn the_tauri_apps_old_environments_table_gives_way() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("my_db.db");
+    raw(&path, LEGACY);
+    raw(
+        &path,
+        &[
+            OLD_ENVIRONMENTS,
+            "INSERT INTO environments VALUES ('e1', 'c1', 'HOST', 'http://old', '1', '', '')",
+        ],
+    );
+    let c1 = CollectionId::from("c1");
+    let named = |path: &Path| -> Vec<String> {
+        let storage = open(path).storage();
+        pollster::block_on(async {
+            storage
+                .variables()
+                .create_environment(c1.clone(), "dev".into())
+                .await
+                .expect("a named environment");
+            storage
+                .variables()
+                .environments(c1.clone())
+                .await
+                .expect("the named environments")
+                .into_iter()
+                .map(|environment| environment.name)
+                .collect()
+        })
+    };
+    assert_eq!(named(&path), ["dev"]);
+    assert_eq!(
+        raw_text(&path, "SELECT value FROM legacy_environments"),
+        ["http://old"],
+        "the old rows kept"
+    );
+
+    // As a build before the repair left it: schema 7, the old table in place.
+    raw(
+        &path,
+        &[
+            "DROP INDEX IF EXISTS environments_collection",
+            "DROP TABLE environments",
+            "ALTER TABLE legacy_environments RENAME TO environments",
+            "CREATE INDEX IF NOT EXISTS environments_collection ON environments (collection)",
+        ],
+    );
+    assert_eq!(
+        raw_text(&path, "SELECT value FROM cyberapi_meta WHERE key = 'schema_version'"),
+        ["7"]
+    );
+    assert_eq!(named(&path), ["dev"]);
+    assert_eq!(raw_text(&path, "SELECT value FROM legacy_environments"), ["http://old"]);
+
+    // Repaired, a file stays as it is: the environments made are there.
+    let storage = open(&path).storage();
+    let kept = pollster::block_on(storage.variables().environments(c1)).expect("the named environments");
+    assert_eq!(kept.len(), 1);
+    assert_eq!(
+        raw_text(
+            &path,
+            "SELECT name FROM sqlite_master WHERE name LIKE 'legacy_environments%' AND type = 'table'"
+        ),
+        ["legacy_environments"],
+        "no second copy"
+    );
+}
+
 #[test]
 fn reads_what_the_tauri_app_wrote() {
     let dir = tempfile::tempdir().expect("temp dir");

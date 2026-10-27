@@ -942,6 +942,19 @@ impl SettingsView {
             })),
             cx,
         )];
+        // The log files, for a reader to send when something goes wrong.
+        if let Some(days) = this_build::log_days() {
+            rows.push(setting_row(
+                t!("settings.logs").to_string(),
+                Some(t!("settings.logs_desc", days = days).to_string()),
+                Button::new("settings-show-logs")
+                    .outline()
+                    .small()
+                    .label(t!("settings.show_logs").to_string())
+                    .on_click(|_, _, cx| this_build::show_logs(cx)),
+                cx,
+            ));
+        }
         // D4: what the history keeps, then clearing it.
         rows.push(setting_row(
             t!("settings.history_size").to_string(),

@@ -22,6 +22,8 @@ cyberapi-store = { workspace = true }
 directories = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# What opening a file had to repair (`schema::repair_old_environments`).
+tracing = { workspace = true }
 turso = { workspace = true }
 ulid = { workspace = true }
 

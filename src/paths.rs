@@ -11,6 +11,24 @@ pub const DATABASE_FILE: &str = "cyberapi.db";
 #[cfg(debug_assertions)]
 pub const DATABASE_FILE: &str = "cyberapi-dev.db";
 
+/// The log files' name in [`logs_dir`], each with its day after it
+/// (`cyberapi.log.2026-10-27`); a debug build's are its own, as its
+/// database is.
+#[cfg(not(debug_assertions))]
+pub const LOG_PREFIX: &str = "cyberapi.log";
+
+/// See [`LOG_PREFIX`].
+#[cfg(debug_assertions)]
+pub const LOG_PREFIX: &str = "cyberapi-dev.log";
+
+/// How many days of logs are kept: the oldest go as new ones come.
+pub const LOG_DAYS: usize = 7;
+
+/// Where the logs go: `logs` in the data directory.
+pub fn logs_dir() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("logs"))
+}
+
 /// This app's data directory: the platform's data directory plus `CyberAPI`
 /// (`cyberapi` on Linux, where directories are lower case). Never the Tauri
 /// app's `com.bigtree.cyberapi`, which a case-insensitive file system would

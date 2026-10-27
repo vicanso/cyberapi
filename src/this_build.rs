@@ -170,6 +170,28 @@ pub fn show_data(cx: &mut gpui_kit::App) {
 #[cfg(target_family = "wasm")]
 pub fn show_data(_: &mut gpui_kit::App) {}
 
+/// How many days of log files are kept; a page has no log files.
+#[cfg(not(target_family = "wasm"))]
+pub fn log_days() -> Option<usize> {
+    Some(crate::paths::LOG_DAYS)
+}
+#[cfg(target_family = "wasm")]
+pub fn log_days() -> Option<usize> {
+    None
+}
+
+/// Opens the logs' folder (`paths::logs_dir`), made first if no log was
+/// written yet. A page logs to the browser's console, and has none.
+#[cfg(not(target_family = "wasm"))]
+pub fn show_logs(cx: &mut gpui_kit::App) {
+    if let Some(dir) = crate::paths::logs_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        cx.open_with_system(&dir);
+    }
+}
+#[cfg(target_family = "wasm")]
+pub fn show_logs(_: &mut gpui_kit::App) {}
+
 /// Whether an export can be saved as a file (M11); a page copies it to the
 /// clipboard instead.
 #[cfg(not(target_family = "wasm"))]

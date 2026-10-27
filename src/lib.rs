@@ -98,7 +98,8 @@ pub type SignOut = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Se
 /// Everything the desktop `main` does.
 #[cfg(not(target_family = "wasm"))]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    init_logger();
+    // Kept to the end: what is queued for the log file is written out then.
+    let _log = init_logger();
     tracing::info!(version = %cyberapi_core::version::describe(), "cyberapi launch");
     // Before the platform starts: the first window needs the settings.
     let opened = open_desktop_storage();
@@ -146,13 +147,50 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// `RUST_LOG` picks the level; `info` without it.
+/// Logs go to the terminal, when there is one, and to a file a day in the
+/// data directory's `logs` (`paths::LOG_PREFIX` and the day), the last
+/// `paths::LOG_DAYS` kept: an app opened from the Dock or a file manager
+/// has no terminal, and a reader sends the files when something goes
+/// wrong. A panic is logged too, with where it happened. `RUST_LOG` picks
+/// the level; `info` without it. The guard writes out what is still
+/// queued when it goes: `run` keeps it to the end.
 #[cfg(not(target_family = "wasm"))]
-fn init_logger() {
-    use tracing_subscriber::EnvFilter;
+fn init_logger() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{EnvFilter, fmt};
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let file = paths::logs_dir().map(|dir| {
+        tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix(paths::LOG_PREFIX)
+            .max_log_files(paths::LOG_DAYS)
+            .build(&dir)
+            .map_err(|error| format!("{}: {error}", dir.display()))
+    });
+    let (file, guard, failed) = match file {
+        Some(Ok(appender)) => {
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            let layer = fmt::layer().with_ansi(false).with_writer(writer).with_filter(filter());
+            (Some(layer), Some(guard), None)
+        }
+        Some(Err(why)) => (None, None, Some(why)),
+        None => (None, None, None),
+    };
+    tracing_subscriber::registry()
+        .with(fmt::layer().with_filter(filter()))
+        .with(file)
+        .init();
+    if let Some(why) = failed {
+        tracing::warn!(%why, "the log files cannot be written: the terminal alone gets them");
+    }
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::error!(%info, %backtrace, "panicked");
+        report(info);
+    }));
+    guard
 }
 
 /// The data directory's database, with the Tauri app's data copied in on the

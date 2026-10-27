@@ -182,6 +182,8 @@ pollster = { workspace = true }
 sys-locale = { workspace = true }
 # The terminal logger. A tab logs to the browser console (`cyberapi-web`).
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+# And a log file a day in the data directory.
+tracing-appender = "0.2.5"
 # The runtime the HTTP engine sends on; gpui's executor is not tokio.
 tokio = { workspace = true }
 

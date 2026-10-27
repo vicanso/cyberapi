@@ -45,8 +45,19 @@ pub enum Load {
     Failed(StoreError),
 }
 
+/// A store call that failed, in the log with where it was made: the
+/// database or the server failing as a warning; the store's own answers —
+/// not found, not allowed, refused — as what the reader was told.
+fn log_failure(error: &StoreError, at: &'static std::panic::Location<'static>) {
+    match error {
+        StoreError::Backend { .. } => tracing::warn!(%error, %at, "a store call failed"),
+        _ => tracing::info!(%error, %at, "a store call was refused"),
+    }
+}
+
 /// Runs a store call off the main thread and hands its result back to the
-/// entity that asked, if it still exists.
+/// entity that asked, if it still exists. A failure is logged too.
+#[track_caller]
 pub(crate) fn run_store<T, R>(
     cx: &mut Context<T>,
     call: StoreFuture<R>,
@@ -55,8 +66,12 @@ pub(crate) fn run_store<T, R>(
     T: 'static,
     R: Send + 'static,
 {
+    let at = std::panic::Location::caller();
     cx.spawn(async move |this, cx| {
         let result = cx.background_spawn(call).await;
+        if let Err(error) = &result {
+            log_failure(error, at);
+        }
         // The entity is gone when its view closed meanwhile: nothing to tell.
         let _ = this.update(cx, |this, cx| done(this, result, cx));
     })
@@ -70,6 +85,7 @@ pub(crate) fn run_store<T, R>(
 /// …"): applied out of order — two requests racing over HTTP — they would
 /// leave the copy disagreeing with the store. The gate is fair, so the order
 /// of the calls is the order of the changes.
+#[track_caller]
 pub(crate) fn run_serial<T, R>(
     cx: &mut Context<T>,
     gate: &Arc<Mutex<()>>,
@@ -79,11 +95,15 @@ pub(crate) fn run_serial<T, R>(
     T: 'static,
     R: Send + 'static,
 {
+    let at = std::panic::Location::caller();
     let gate = gate.clone();
     let turn = gate.lock_arc();
     cx.spawn(async move |this, cx| {
         let _turn = turn.await;
         let result = cx.background_spawn(call).await;
+        if let Err(error) = &result {
+            log_failure(error, at);
+        }
         let _ = this.update(cx, |this, cx| done(this, result, cx));
     })
     .detach();
