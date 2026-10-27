@@ -26,6 +26,7 @@ use cyberapi_core::model::{
 use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
+use cyberapi_core::secrets::SecretValues;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
@@ -467,6 +468,11 @@ fn workspace_scope(collection: &CollectionId) -> String {
 /// C4: the reader's OAuth tokens, a document beside their settings.
 const OAUTH_SCOPE: &str = "oauth-tokens";
 
+/// D3: the reader's values of a project's secret variables.
+fn secrets_scope(collection: &CollectionId) -> String {
+    format!("secrets/{collection}")
+}
+
 /// A stored document, or its defaults when there is none or it cannot be
 /// read: a reader's preferences are not worth failing a launch over.
 async fn read_doc<T: DeserializeOwned + Default>(conn: &Connection, scope: &str) -> Result<T, StoreError> {
@@ -766,7 +772,9 @@ impl CollectionStore for TursoStore {
             ] {
                 execute(&tx, sql, (id.as_str(),)).await?;
             }
-            execute(&tx, "DELETE FROM prefs WHERE scope = ?1", (workspace_scope(&id),)).await?;
+            for scope in [workspace_scope(&id), secrets_scope(&id)] {
+                execute(&tx, "DELETE FROM prefs WHERE scope = ?1", (scope,)).await?;
+            }
             tx.commit().await.map_err(backend)
         })
     }
@@ -1426,6 +1434,22 @@ impl PrefStore for TursoStore {
             write_doc(&conn, OAUTH_SCOPE, &tokens).await
         })
     }
+
+    fn secret_values(&self, collection: CollectionId) -> StoreFuture<SecretValues> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            require_collection(&conn, &collection).await?;
+            read_doc(&conn, &secrets_scope(&collection)).await
+        })
+    }
+
+    fn set_secret_values(&self, collection: CollectionId, values: SecretValues) -> StoreFuture<()> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            require_collection(&conn, &collection).await?;
+            write_doc(&conn, &secrets_scope(&collection), &values).await
+        })
+    }
 }
 
 /// The project's API `api`, as a history's owner.
@@ -1928,6 +1952,10 @@ impl cyberapi_store::conformance::Probe for TursoStore {
                 (
                     "SELECT count(*) FROM prefs WHERE scope = ?1",
                     workspace_scope(&collection),
+                ),
+                (
+                    "SELECT count(*) FROM prefs WHERE scope = ?1",
+                    secrets_scope(&collection),
                 ),
             ] {
                 let count = query_one(&conn, sql, (key,), |row| rows::text(row, 0)).await?;

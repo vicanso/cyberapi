@@ -20,6 +20,7 @@ use cyberapi_core::model::{
 use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
+use cyberapi_core::secrets::SecretValues;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
@@ -55,6 +56,8 @@ struct State {
     workspaces: HashMap<CollectionId, WorkspacePrefs>,
     /// C4.
     oauth_tokens: KeptTokens,
+    /// D3, by project.
+    secret_values: HashMap<CollectionId, SecretValues>,
     /// Oldest first.
     responses: Vec<HttpResponse>,
     cookies: Vec<Cookie>,
@@ -408,6 +411,7 @@ impl CollectionStore for MemoryStore {
             state.top_orders.remove(&id);
             state.project_settings.remove(&id);
             state.workspaces.remove(&id);
+            state.secret_values.remove(&id);
             state.responses.retain(|response| response.collection != id);
             state.copies.retain(|binding| binding.collection != id);
             Ok(())
@@ -817,6 +821,21 @@ impl PrefStore for MemoryStore {
             Ok(())
         })
     }
+
+    fn secret_values(&self, collection: CollectionId) -> StoreFuture<SecretValues> {
+        self.run(move |state, _| {
+            state.collection(&collection)?;
+            Ok(state.secret_values.get(&collection).cloned().unwrap_or_default())
+        })
+    }
+
+    fn set_secret_values(&self, collection: CollectionId, values: SecretValues) -> StoreFuture<()> {
+        self.run(move |state, _| {
+            state.collection(&collection)?;
+            state.secret_values.insert(collection, values);
+            Ok(())
+        })
+    }
 }
 
 impl State {
@@ -1066,6 +1085,7 @@ impl crate::conformance::Probe for MemoryStore {
                         .filter(|environment| environment.collection == collection)
                         .count()
                     + usize::from(state.workspaces.contains_key(&collection))
+                    + usize::from(state.secret_values.contains_key(&collection))
                     + state
                         .responses
                         .iter()

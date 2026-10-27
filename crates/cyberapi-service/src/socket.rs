@@ -8,6 +8,7 @@
 use crate::oauth;
 use crate::send::{SendFailure, Sender, Unanswered, add_cookies, keep_cookies, kept, prepare};
 use cyberapi_core::response::{Exchange, HttpResponse, HttpStats, SentRequest, StreamEnd, StreamInfo};
+use cyberapi_core::secrets;
 use cyberapi_core::send::{self, PreparedRequest};
 use cyberapi_core::template::Answers;
 use cyberapi_core::ws::{self, Frame};
@@ -70,12 +71,16 @@ pub async fn connect(
     }
     let no_token = oauth::sign(&sender, &mut prepared, false).await.err();
     let jar = prepared.header("cookie").is_some() && prepared.header("cookie") != own_cookie.as_deref();
-    let sent = send::sent_request(&prepared, &request, &sender.inherited, &globals, jar, "HTTP/1.1");
+    let sent = secrets::mask_sent(
+        send::sent_request(&prepared, &request, &sender.inherited, &globals, jar, "HTTP/1.1"),
+        &sender.secrets,
+    );
+    let shown_url = secrets::mask(&prepared.url, &sender.secrets);
     let failed = |error: String| HttpResponse {
         api: api.clone(),
         collection: collection.clone(),
         request: request.clone(),
-        url: prepared.url.clone(),
+        url: shown_url.clone(),
         error: Some(error),
         latency: Duration::from_millis(1),
         sent: Some(sent.clone()),
@@ -102,7 +107,7 @@ pub async fn connect(
                     collection,
                     api,
                     request,
-                    url: prepared.url,
+                    url: shown_url,
                     status: socket.status,
                     headers: socket.headers,
                     stats: socket.stats,
@@ -116,7 +121,7 @@ pub async fn connect(
                 api,
                 collection,
                 request,
-                url: prepared.url,
+                url: shown_url,
                 status: Some(exchange.status),
                 headers: exchange.headers,
                 body_size: exchange.body_size,
@@ -285,6 +290,7 @@ mod tests {
             inherited: Default::default(),
             environment: None,
             tokens: Default::default(),
+            secrets: Default::default(),
         };
         (storage, engine, sender, collection, api)
     }

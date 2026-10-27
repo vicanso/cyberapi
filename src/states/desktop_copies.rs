@@ -216,6 +216,7 @@ impl Machine {
             inherited: Default::default(),
             environment: None,
             tokens: Default::default(),
+            secrets: Default::default(),
         }
     }
 

@@ -404,6 +404,10 @@ zoom_out = "Zoom out"
 settings = "Settings"
 
 [variables]
+secret_value = "Your own value"
+make_secret = "Make secret: each reader keeps their own value, and the project none"
+unmake_secret = "No longer secret: your value becomes the project's"
+secret_hint = "A secret variable's value is yours alone: kept on this machine (in the web version, with your account), never synced, exported or backed up. Teammates each fill in their own."
 env_title = "Environment variables"
 env_hint = "Picked as the start of a URI: {{NAME}}/path. With two enabled of one name, the first is used."
 custom_title = "Custom variables"

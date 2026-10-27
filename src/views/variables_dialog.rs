@@ -56,7 +56,8 @@ pub fn open_variables_dialog(
     };
     let weak = workspace.downgrade();
     let state = cx.new(|cx| VariablesState::new(storage, weak, collection, category, layer, cx));
-    let editor = cx.new(|cx| VariablesEditor::new(state, editable, window, cx));
+    let workspace = workspace.clone();
+    let editor = cx.new(|cx| VariablesEditor::new(state, workspace, editable, window, cx));
     let (title, _) = describe(category);
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
@@ -72,6 +73,8 @@ pub fn open_variables_dialog(
 struct Row {
     name: Entity<InputState>,
     value: Entity<InputState>,
+    /// D3: made for a secret variable: masked, the reader's own value.
+    secret: bool,
     _subscriptions: [Subscription; 2],
 }
 
@@ -94,9 +97,17 @@ struct VariablesEditor {
 }
 
 impl VariablesEditor {
-    fn new(state: Entity<VariablesState>, editable: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        state: Entity<VariablesState>,
+        workspace: Entity<WorkspaceState>,
+        editable: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let subscriptions = vec![
             cx.observe_in(&state, window, |this, _, window, cx| this.sync_rows(window, cx)),
+            // D3: which are secret is the project's settings.
+            cx.observe_in(&workspace, window, |this, _, window, cx| this.sync_rows(window, cx)),
             cx.subscribe_in(&state, window, |_, _, event, window, cx| match event {
                 VariablesEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);
@@ -311,15 +322,17 @@ impl VariablesEditor {
     }
 
     /// Inputs for variables that have none yet; a row keeps its inputs while
-    /// it is typed in.
+    /// it is typed in, and is made again when it turns secret or back (D3).
     fn sync_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let variables = self.state.read(cx).variables().to_vec();
         self.rows
             .retain(|id, _| variables.iter().any(|variable| &variable.id == id));
         for variable in variables {
-            if self.rows.contains_key(&variable.id) {
+            let secret = self.state.read(cx).is_secret(&variable.id, cx);
+            if self.rows.get(&variable.id).is_some_and(|row| row.secret == secret) {
                 continue;
             }
+            let shown = self.state.read(cx).shown_value(&variable, cx);
             let name = cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("variables.name").to_string())
@@ -327,8 +340,12 @@ impl VariablesEditor {
             });
             let value = cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder(t!("variables.value").to_string())
-                    .default_value(variable.value.clone())
+                    .placeholder(match secret {
+                        true => t!("variables.secret_value").to_string(),
+                        false => t!("variables.value").to_string(),
+                    })
+                    .masked(secret)
+                    .default_value(shown)
             });
             let (for_name, for_value) = (variable.id.clone(), variable.id.clone());
             let subscriptions = [
@@ -350,6 +367,7 @@ impl VariablesEditor {
                 Row {
                     name,
                     value,
+                    secret,
                     _subscriptions: subscriptions,
                 },
             );
@@ -372,8 +390,15 @@ impl Render for VariablesEditor {
         let stood_in_for: Vec<(String, String)> = state
             .stood_in_for()
             .into_iter()
-            .map(|variable| (variable.name.clone(), variable.value.clone()))
+            .map(|variable| {
+                let value = match state.is_secret(&variable.id, cx) {
+                    true => cyberapi_core::secrets::MASK.to_string(),
+                    false => variable.value.clone(),
+                };
+                (variable.name.clone(), value)
+            })
             .collect();
+        let any_secret = state.shown().any(|variable| state.is_secret(&variable.id, cx));
         let editable = self.editable;
         let muted = cx.theme().muted_foreground;
         let body: gpui_kit::AnyElement =
@@ -396,7 +421,7 @@ impl Render for VariablesEditor {
                     // The request's key / value table (`KvEditor`): fields in
                     // its cells without frames, the lines drawing the grid.
                     let cell = move || div().h_full().flex().items_center().border_l_1().border_color(border);
-                    let actions = move || h_flex().w(px(32.)).flex_none().justify_end().pr_0p5();
+                    let actions = move || h_flex().w(px(56.)).flex_none().justify_end().pr_0p5();
                     let header = h_flex()
                         .h(px(26.))
                         .bg(theme.muted)
@@ -422,6 +447,7 @@ impl Render for VariablesEditor {
                         state.shown().enumerate().filter_map(|(index, variable)| {
                             let row = self.rows.get(&variable.id)?;
                             let (toggle_id, delete_id) = (variable.id.clone(), variable.id.clone());
+                            let (secret, secret_id) = (row.secret, variable.id.clone());
                             Some(
                                 h_flex()
                                     .id(("variable", index))
@@ -448,22 +474,48 @@ impl Render for VariablesEditor {
                                             .child(cell().w(px(200.)).flex_none().child(
                                                 Input::new(&row.name).small().appearance(false).disabled(!editable),
                                             ))
-                                            .child(cell().flex_1().min_w_0().child(
-                                                Input::new(&row.value).small().appearance(false).disabled(!editable),
-                                            )),
+                                            // D3: a viewer types their own secret value too.
+                                            .child(
+                                                cell().flex_1().min_w_0().child(
+                                                    Input::new(&row.value)
+                                                        .small()
+                                                        .appearance(false)
+                                                        .disabled(!editable && !secret)
+                                                        .when(secret, |input| input.mask_toggle()),
+                                                ),
+                                            ),
                                     )
                                     .when(editable, |this| {
                                         this.child(
-                                            actions().child(
-                                                Button::new(("variable-delete", index))
-                                                    .xsmall()
-                                                    .ghost()
-                                                    .icon(IconName::Close)
-                                                    .tooltip(t!("common.delete").to_string())
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        this.remove(delete_id.clone(), cx);
-                                                    })),
-                                            ),
+                                            actions()
+                                                .child(
+                                                    Button::new(("variable-secret", index))
+                                                        .xsmall()
+                                                        .ghost()
+                                                        .icon(match secret {
+                                                            true => gpui_kit::assets::IconName::Lock,
+                                                            false => gpui_kit::assets::IconName::LockOpen,
+                                                        })
+                                                        .tooltip(match secret {
+                                                            true => t!("variables.unmake_secret").to_string(),
+                                                            false => t!("variables.make_secret").to_string(),
+                                                        })
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            this.state.update(cx, |state, cx| {
+                                                                state.set_secret(&secret_id, !secret, cx)
+                                                            });
+                                                        })),
+                                                )
+                                                .child(
+                                                    Button::new(("variable-delete", index))
+                                                        .xsmall()
+                                                        .ghost()
+                                                        .icon(IconName::Close)
+                                                        .tooltip(t!("common.delete").to_string())
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            this.remove(delete_id.clone(), cx);
+                                                        })),
+                                                ),
                                         )
                                     }),
                             )
@@ -506,6 +558,15 @@ impl Render for VariablesEditor {
                     .child(div().text_xs().child(layer_hint)),
             )
             .child(div().id("variables").max_h(px(420.)).overflow_y_scrollbar().child(body))
+            // D3: where a secret's value is kept.
+            .when(any_secret, |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(t!("variables.secret_hint").to_string()),
+                )
+            })
             .children(compared)
             .child(if editable {
                 h_flex()

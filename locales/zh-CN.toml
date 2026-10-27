@@ -404,6 +404,10 @@ zoom_out = "缩小"
 settings = "设置"
 
 [variables]
+secret_value = "你自己的值"
+make_secret = "设为秘密：每个人填自己的值，项目里不存"
+unmake_secret = "取消秘密：你的值成为项目里的值"
+secret_hint = "秘密变量的值只属于你：存在本机（网页版跟着你的账号），不同步、不导出、不进备份。队友各自填自己的值。"
 env_title = "环境变量"
 env_hint = "用作 URI 的开头：{{名称}}/路径。同名的有多个启用时取第一个。"
 custom_title = "自定义变量"

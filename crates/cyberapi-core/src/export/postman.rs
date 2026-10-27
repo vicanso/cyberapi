@@ -328,6 +328,7 @@ mod tests {
                 auth: Auth::Bearer {
                     token: "{{token}}".into(),
                 },
+                ..Default::default()
             },
         }
     }

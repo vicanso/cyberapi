@@ -584,6 +584,13 @@ impl SqlStore {
                 .map_err(db)?;
             total += usize::try_from(row.try_get::<i64, _>(0).map_err(db)?).unwrap_or(0);
         }
+        // D3: the accounts' secret values, a scope of their own.
+        let row = sqlx::query(self.dialect.sql(sql::PREFS_COUNT_SCOPE))
+            .bind(scoped::secrets_scope(collection))
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db)?;
+        total += usize::try_from(row.try_get::<i64, _>(0).map_err(db)?).unwrap_or(0);
         Ok(total)
     }
 }

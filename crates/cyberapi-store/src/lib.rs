@@ -40,6 +40,7 @@ use cyberapi_core::model::{
 use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
+use cyberapi_core::secrets::SecretValues;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig, ProjectVersion};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, EnvironmentId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
@@ -274,6 +275,12 @@ pub trait PrefStore: Send + Sync {
     fn oauth_tokens(&self) -> StoreFuture<KeptTokens>;
     /// Replaces them whole.
     fn set_oauth_tokens(&self, tokens: KeptTokens) -> StoreFuture<()>;
+    /// D3: the reader's values of the project's secret variables, never in
+    /// the project, its sync or a backup; they go with the project. None at
+    /// first.
+    fn secret_values(&self, collection: CollectionId) -> StoreFuture<SecretValues>;
+    /// Replaces them whole.
+    fn set_secret_values(&self, collection: CollectionId, values: SecretValues) -> StoreFuture<()>;
 }
 
 /// The reader's cookies (M9): every project's requests share them (F9.1);

@@ -33,11 +33,12 @@ use cyberapi_core::model::{
 };
 use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
 use cyberapi_core::response::{HttpResponse, RECENT_LIMIT};
+use cyberapi_core::secrets::{self, SecretValues};
 use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, ProjectVersion, Step};
 use cyberapi_core::template::Answers;
 use cyberapi_core::template_hints;
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
-use cyberapi_core::{EnvironmentId, ItemId};
+use cyberapi_core::{EnvironmentId, ItemId, VariableId};
 use cyberapi_service::Sender;
 use cyberapi_store::{Storage, StoreError, StoreFuture};
 use futures::StreamExt as _;
@@ -187,6 +188,11 @@ pub struct WorkspaceState {
     _poll: Option<Task<()>>,
     /// A response filter's save, waiting for the typing to settle.
     _filter_save: Option<Task<()>>,
+    /// D3: the reader's values of the project's secret variables, as read
+    /// and as typed since.
+    secrets: SecretValues,
+    /// Their save, waiting for the typing to settle.
+    secrets_save: Option<Task<()>>,
     /// A server project's beat, its poll started once the opening heard
     /// from the server or failed to: a first ask after a failed opening
     /// waits as one after any failure.
@@ -276,6 +282,8 @@ impl WorkspaceState {
             copy,
             _poll: poll.filter(|_| !is_copy).map(|every| Self::poll(every, cx)),
             _filter_save: None,
+            secrets: SecretValues::default(),
+            secrets_save: None,
             poll_every: poll,
         };
         state.reload(cx);
@@ -917,7 +925,22 @@ impl WorkspaceState {
         self.in_environment(&self.environment)
             .into_iter()
             .filter(|variable| variable.enabled)
+            .map(|variable| self.shown_secret(variable))
             .collect()
+    }
+
+    /// D3: a secret variable as shown: masked where the reader has a value.
+    fn shown_secret(&self, variable: Variable) -> Variable {
+        match self.is_secret(&variable.id) {
+            true => Variable {
+                value: match self.secrets.get(&variable.id) {
+                    Some(value) if !value.is_empty() => secrets::MASK.to_string(),
+                    _ => String::new(),
+                },
+                ..variable
+            },
+            false => variable,
+        }
     }
 
     /// The global request headers, enabled or not, as the reader's
@@ -988,9 +1011,10 @@ impl WorkspaceState {
         template_hints::Sources {
             custom: self
                 .in_environment(&self.custom)
-                .iter()
+                .into_iter()
                 .filter(|variable| variable.enabled)
-                .map(|variable| (variable.name.clone(), variable.value.clone()))
+                .map(|variable| self.shown_secret(variable))
+                .map(|variable| (variable.name, variable.value))
                 .collect(),
             apis: template_hints::apis(&self.tree, self.opened()),
             machine,
@@ -1049,6 +1073,7 @@ impl WorkspaceState {
             sender.sending = prefs.sending.clone();
         }
         sender.environment = self.current_environment().cloned();
+        sender.secrets = self.secrets();
         sender
     }
 
@@ -1086,10 +1111,104 @@ impl WorkspaceState {
 
     /// Reads the variables kept here again: the project changed.
     fn refresh_kept_variables(&mut self, cx: &mut Context<Self>) {
+        self.refresh_secrets(cx);
         self.refresh_environments(cx);
         self.refresh_variables(VariableCategory::Environment, cx);
         self.refresh_variables(VariableCategory::GlobalRequestHeader, cx);
         self.refresh_variables(VariableCategory::Custom, cx);
+    }
+
+    /// D3: reads the reader's secret values again — unless some typed are
+    /// still to be saved, which are newer.
+    fn refresh_secrets(&mut self, cx: &mut Context<Self>) {
+        let call = self.sender.storage.prefs().secret_values(self.collection.id.clone());
+        run_store(cx, call, |this, result, cx| match result {
+            Ok(values) if this.secrets_save.is_none() => {
+                this.secrets = values;
+                cx.notify();
+            }
+            Ok(_) => {}
+            Err(error) => warn!(%error, "the secret values could not be read"),
+        });
+    }
+
+    /// D3: the project's secret variables: their values are each reader's
+    /// own, and the project keeps none.
+    pub fn secret_variables(&self) -> &[VariableId] {
+        &self.data.settings.secret_variables
+    }
+
+    pub fn is_secret(&self, id: &VariableId) -> bool {
+        self.secret_variables().contains(id)
+    }
+
+    /// D3: the reader's own value of a secret variable.
+    pub fn secret_value(&self, id: &VariableId) -> Option<&str> {
+        self.secrets.get(id)
+    }
+
+    /// D3: the reader's values of the secret variables, for a send.
+    pub fn secrets(&self) -> SecretValues {
+        self.secrets.of(self.secret_variables())
+    }
+
+    /// D3: the reader's own value of a secret variable, saved once the
+    /// typing settles.
+    pub fn set_secret_value(&mut self, id: VariableId, value: String, cx: &mut Context<Self>) {
+        if self.secrets.get(&id) == Some(value.as_str()) {
+            return;
+        }
+        self.secrets.0.insert(id, value);
+        self.secrets_save = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(crate::states::api::SAVE_DELAY).await;
+            let _ = this.update(cx, |this, cx| this.save_secrets(cx));
+        }));
+        cx.notify();
+    }
+
+    /// D3: the reader's secret values saved now: each write is the whole
+    /// set, one at a time.
+    pub fn save_secrets(&mut self, cx: &mut Context<Self>) {
+        self.secrets_save = None;
+        let call = self
+            .sender
+            .storage
+            .prefs()
+            .set_secret_values(self.collection.id.clone(), self.secrets.clone());
+        run_serial(cx, &self.saves, call, |_, result, cx| {
+            if let Err(error) = result {
+                cx.emit(WorkspaceEvent::Failed(error));
+            }
+        });
+    }
+
+    /// D3: the secret values typed and still waiting, saved now.
+    pub fn flush_secrets(&mut self, cx: &mut Context<Self>) {
+        if self.secrets_save.is_some() {
+            self.save_secrets(cx);
+        }
+    }
+
+    /// D3: `variable` made secret — its value becomes the reader's own, and
+    /// the project keeps none — or not, the reader's value its own again.
+    /// The value its row keeps now; an editor's alone.
+    pub fn set_secret(&mut self, variable: &Variable, secret: bool, cx: &mut Context<Self>) -> Option<String> {
+        if !self.editable() || self.is_secret(&variable.id) == secret {
+            return None;
+        }
+        let id = variable.id.clone();
+        let mut settings = self.data.settings.clone();
+        let kept = if secret {
+            self.secrets.0.insert(id.clone(), variable.value.clone());
+            settings.secret_variables.push(id);
+            String::new()
+        } else {
+            settings.secret_variables.retain(|secret| secret != &id);
+            self.secrets.0.remove(&id).unwrap_or_default()
+        };
+        self.save_secrets(cx);
+        self.set_project_settings(settings, cx);
+        Some(kept)
     }
 
     /// Reads a category's variables again, when it is one kept here: they
@@ -1156,9 +1275,6 @@ impl WorkspaceState {
         }
     }
 
-    /// Opens the editor of the opened API, or closes it when none is open
-    /// (or the open one is gone). The editor of an API that stays open is
-    /// kept, with what it holds.
     /// The opened API's editor, and its tab (F1): one kept from before,
     /// or a new one beside the tab shown till now. Tabs of APIs that are
     /// gone close; past `MAX_TABS`, the one shown longest ago does.
@@ -1914,7 +2030,11 @@ impl WorkspaceState {
     /// it lacks.
     fn import_settings(&mut self, auth: Auth, environments: Vec<ImportEnvironment>, cx: &mut Context<Self>) {
         if auth.signs() && !self.data.settings.auth.signs() {
-            self.set_project_settings(ProjectSettings { auth }, cx);
+            let settings = ProjectSettings {
+                auth,
+                ..self.data.settings.clone()
+            };
+            self.set_project_settings(settings, cx);
         }
         let environments: Vec<ImportEnvironment> = environments
             .into_iter()
@@ -2030,6 +2150,7 @@ impl WorkspaceState {
         let sender = Sender {
             inherited: self.inherited(id),
             environment: self.current_environment().cloned(),
+            secrets: self.secrets(),
             ..self.sender.clone()
         };
         let answers = Answers {
@@ -2080,7 +2201,13 @@ impl WorkspaceState {
                 )
             }
             ExportFormat::OpenApi => {
-                let effective = self.environments();
+                // As the project keeps them: a secret one's value is no one's
+                // to export (D3).
+                let effective: Vec<Variable> = self
+                    .in_environment(&self.environment)
+                    .into_iter()
+                    .filter(|variable| variable.enabled)
+                    .collect();
                 (
                     format!("{name}.openapi.yaml"),
                     cyberapi_core::export::openapi(&self.data, folder, &name, &pairs(effective.iter().collect())),
@@ -2203,6 +2330,7 @@ mod tests {
             inherited: Default::default(),
             environment: None,
             tokens: Default::default(),
+            secrets: Default::default(),
         }
     }
 

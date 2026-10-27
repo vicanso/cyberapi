@@ -30,6 +30,7 @@ use cyberapi_core::model::{ContentType, Environment, HttpMethod, HttpRequest, Va
 use cyberapi_core::prefs::{SendPrefs, Timeouts};
 use cyberapi_core::redirect::{self, MAX_REDIRECTS};
 use cyberapi_core::response::{Exchange, HttpResponse};
+use cyberapi_core::secrets::{self, SecretValues};
 use cyberapi_core::send::{self, PrepareError, PreparedRequest};
 use cyberapi_core::template::{Answers, Draws, Env, EnvReader, FileReader, Inputs};
 use cyberapi_core::{CollectionId, ItemId};
@@ -96,6 +97,10 @@ pub struct Sender {
     /// C4: the OAuth tokens had so far, shared by every send of the app
     /// (or of the run, the call) that holds them.
     pub tokens: Arc<Tokens>,
+    /// D3: the reader's values of the project's secret variables, filled
+    /// in as it is sent and masked in what the history keeps. The caller
+    /// fills it, as `inherited`.
+    pub secrets: SecretValues,
 }
 
 impl Sender {
@@ -272,8 +277,12 @@ pub(crate) async fn send_with(
         .map(|exchange| exchange.stats.version.as_str())
         .unwrap_or_default();
     let jar = sent.header("cookie").is_some() && sent.header("cookie") != own_cookie.as_deref();
-    let sent_request = send::sent_request(&sent, &request, &sender.inherited, &globals, jar, version);
-    let sent_to = sent.url;
+    // D3: kept with the reader's secret values masked.
+    let sent_request = secrets::mask_sent(
+        send::sent_request(&sent, &request, &sender.inherited, &globals, jar, version),
+        &sender.secrets,
+    );
+    let sent_to = secrets::mask(&sent.url, &sender.secrets);
     let response = match answered {
         Ok(exchange) => {
             let mut headers = exchange.headers;
@@ -708,8 +717,10 @@ pub(crate) async fn prepare(
         );
     }
 
-    // #61: the shared variables, and the environment's in their place; A3:
-    // a run's in theirs.
+    // D3: the reader's values of the secret ones; #61: the shared
+    // variables, and the environment's in their place; A3: a run's in
+    // theirs.
+    let variables = secrets::fill(variables, &sender.secrets);
     let variables = environments::effective(&variables, sender.environment.as_ref().map(|found| &found.id));
     let variables = if values.is_empty() {
         variables
@@ -864,6 +875,7 @@ mod tests {
             inherited: Inherited::default(),
             environment: None,
             tokens: Default::default(),
+            secrets: Default::default(),
         };
         Setup {
             storage,
@@ -1795,6 +1807,55 @@ mod tests {
         // A run's live in memory alone.
         assert_eq!(send_with_tokens(Arc::new(Tokens::default())).status, Some(200));
         assert_eq!(*id.0.lock().expect("asked"), 2);
+    }
+
+    /// D3: a secret variable's value is the reader's, filled in as it is
+    /// sent; what the history keeps of the request has it masked.
+    #[test]
+    fn secret_values_are_filled_in_and_kept_masked() {
+        let setup = setup(ok(200, "{}"));
+        variable(&setup, VariableCategory::Custom, "key", "");
+        let key = pollster::block_on(
+            setup
+                .storage
+                .variables()
+                .list(setup.collection.clone(), VariableCategory::Custom),
+        )
+        .expect("variables")[0]
+            .id
+            .clone();
+        let api = new_api(&setup, "secret");
+        let sender = Sender {
+            secrets: SecretValues(std::collections::BTreeMap::from([(key, "s3cret-key".to_string())])),
+            ..setup.sender.clone()
+        };
+        let response = pollster::block_on(send(
+            sender,
+            setup.collection.clone(),
+            api.clone(),
+            HttpRequest {
+                uri: "http://a.test/x".into(),
+                headers: vec![kv("X-Key", "{{value(key)}}")],
+                query: vec![kv("k", "{{value(key)}}")],
+                ..Default::default()
+            },
+            Answers::default(),
+        ))
+        .expect("sent");
+        let asked = setup.engine.sent.lock().expect("sent")[0].clone();
+        assert_eq!(asked.header("x-key"), Some("s3cret-key"));
+        assert!(asked.url.ends_with("k=s3cret-key"), "{}", asked.url);
+        let kept = pollster::block_on(setup.storage.history().list(setup.collection.clone(), api)).expect("history");
+        for shown in [&response, &kept[0]] {
+            let sent = shown.sent.as_ref().expect("sent");
+            let header = sent.headers.iter().find(|h| h.name == "X-Key").expect("header");
+            assert_eq!(header.value, secrets::MASK);
+            assert!(
+                !sent.url.contains("s3cret") && !shown.url.contains("s3cret"),
+                "{}",
+                sent.url
+            );
+        }
     }
 
     #[test]

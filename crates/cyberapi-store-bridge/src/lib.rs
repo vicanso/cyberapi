@@ -37,6 +37,7 @@ use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HISTORY_SIZES, HttpResponse, RECENT_LIMIT};
 use cyberapi_core::response::{StreamEnd, StreamInfo};
+use cyberapi_core::secrets::SecretValues;
 use cyberapi_core::sync::{ConfigAt, ProjectConfig, ProjectVersion};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, EnvironmentId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
@@ -248,6 +249,14 @@ pub enum Call {
     PrefsSetOAuthTokens {
         tokens: KeptTokens,
     },
+    /// D3: the account's values of a project's secret variables.
+    PrefsSecretValues {
+        collection: CollectionId,
+    },
+    PrefsSetSecretValues {
+        collection: CollectionId,
+        values: SecretValues,
+    },
     HistoryAdd {
         // Boxed: a response is far bigger than any other call.
         response: Box<HttpResponse>,
@@ -392,6 +401,8 @@ impl Call {
             | Self::PrefsClearWorkspaces
             | Self::PrefsOAuthTokens
             | Self::PrefsSetOAuthTokens { .. }
+            | Self::PrefsSecretValues { .. }
+            | Self::PrefsSetSecretValues { .. }
             | Self::HistoryAdd { .. }
             | Self::HistoryList { .. }
             | Self::HistoryLatest { .. }
@@ -525,6 +536,8 @@ pub async fn dispatch(
         Call::PrefsClearWorkspaces => reply(prefs.clear_workspaces().await),
         Call::PrefsOAuthTokens => reply(prefs.oauth_tokens().await),
         Call::PrefsSetOAuthTokens { tokens } => reply(prefs.set_oauth_tokens(tokens).await),
+        Call::PrefsSecretValues { collection } => reply(prefs.secret_values(collection).await),
+        Call::PrefsSetSecretValues { collection, values } => reply(prefs.set_secret_values(collection, values).await),
         // D4: an account keeps no more than the settings offer.
         Call::HistoryAdd { response, keep } => {
             let keep = keep.clamp(*HISTORY_SIZES.start(), *HISTORY_SIZES.end());
@@ -905,6 +918,14 @@ impl PrefStore for BridgeStore {
 
     fn set_oauth_tokens(&self, tokens: KeptTokens) -> StoreFuture<()> {
         self.call(Call::PrefsSetOAuthTokens { tokens })
+    }
+
+    fn secret_values(&self, collection: CollectionId) -> StoreFuture<SecretValues> {
+        self.call(Call::PrefsSecretValues { collection })
+    }
+
+    fn set_secret_values(&self, collection: CollectionId, values: SecretValues) -> StoreFuture<()> {
+        self.call(Call::PrefsSetSecretValues { collection, values })
     }
 }
 

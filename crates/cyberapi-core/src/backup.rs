@@ -342,6 +342,8 @@ mod tests {
                         username: "u".into(),
                         password: "p".into(),
                     },
+                    // D3: which are secret goes along; their values do not.
+                    secret_variables: vec!["v1".into()],
                 },
             )],
         }

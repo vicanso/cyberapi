@@ -1057,6 +1057,8 @@ impl ApiState {
             let workspace = workspace.read(cx);
             self.sender.inherited = workspace.inherited(&self.api);
             self.sender.environment = workspace.current_environment().cloned();
+            // D3: the reader's values of the secret ones.
+            self.sender.secrets = workspace.secrets();
         }
         self.sender.clone()
     }

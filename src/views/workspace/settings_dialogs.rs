@@ -159,10 +159,12 @@ pub fn open_project_auth(workspace: &Entity<WorkspaceState>, window: &mut Window
         let save = {
             let (auth, workspace) = (auth.clone(), workspace.clone());
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                let settings = ProjectSettings {
-                    auth: auth.read(cx).auth(cx),
-                };
                 if let Some(workspace) = workspace.upgrade() {
+                    // The rest of the project's settings stay (D3).
+                    let settings = ProjectSettings {
+                        auth: auth.read(cx).auth(cx),
+                        ..workspace.read(cx).project_settings().clone()
+                    };
                     workspace.update(cx, |state, cx| state.set_project_settings(settings, cx));
                 }
                 true

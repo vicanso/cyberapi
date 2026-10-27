@@ -329,6 +329,8 @@ pub const PREF_UPSERT: Pair = Pair {
 };
 /// Every account's state of one project, when the project goes.
 pub const PREFS_DELETE_SCOPE: &str = "DELETE FROM prefs WHERE scope = $1";
+/// How many accounts keep a document of `scope`, for the conformance probe.
+pub const PREFS_COUNT_SCOPE: &str = "SELECT COUNT(*) FROM prefs WHERE scope = $1";
 /// The account's state of every project; its `app` settings stay.
 pub const PREFS_CLEAR_WORKSPACES: &str = "DELETE FROM prefs WHERE account = $1 AND scope LIKE 'workspace/%'";
 
@@ -496,6 +498,7 @@ mod tests {
         VARIABLE_ENVIRONMENT_INSERT,
         PREF_GET,
         PREFS_DELETE_SCOPE,
+        PREFS_COUNT_SCOPE,
         PREFS_CLEAR_WORKSPACES,
         RESPONSE_INSERT,
         RESPONSES_OF,

@@ -9,6 +9,9 @@
 //! It shows one layer at a time (#61): the variables every environment
 //! shares, or one named environment's. What is added goes into the layer
 //! shown. The environments themselves are made, renamed and deleted here.
+//!
+//! A secret variable's value (D3) is the reader's own, kept by the
+//! workspace: its row keeps none, and a viewer types theirs too.
 
 use super::{Load, WorkspaceState, run_store};
 use cyberapi_core::model::{Environment, Variable, VariableCategory};
@@ -54,6 +57,7 @@ impl VariablesState {
     ) -> Self {
         // Typing still waiting when the dialog goes is saved then.
         cx.on_release(|this, cx| {
+            let _ = this.workspace.update(cx, |workspace, cx| workspace.flush_secrets(cx));
             let calls: Vec<_> = this
                 .saving
                 .keys()
@@ -280,7 +284,50 @@ impl VariablesState {
     }
 
     pub fn set_value(&mut self, id: &VariableId, value: String, cx: &mut Context<Self>) {
+        if self.is_secret(id, cx) {
+            let id = id.clone();
+            let _ = self
+                .workspace
+                .update(cx, |workspace, cx| workspace.set_secret_value(id, value, cx));
+            return;
+        }
         self.edit(id, |variable| variable.value = value, false, cx);
+    }
+
+    /// D3: whether `id` is secret: its value is the reader's own.
+    pub fn is_secret(&self, id: &VariableId, cx: &gpui_kit::App) -> bool {
+        self.workspace
+            .upgrade()
+            .is_some_and(|workspace| workspace.read(cx).is_secret(id))
+    }
+
+    /// The value a row shows: the reader's own, for a secret one.
+    pub fn shown_value(&self, variable: &Variable, cx: &gpui_kit::App) -> String {
+        match self.workspace.upgrade() {
+            Some(workspace) if workspace.read(cx).is_secret(&variable.id) => workspace
+                .read(cx)
+                .secret_value(&variable.id)
+                .unwrap_or_default()
+                .to_string(),
+            _ => variable.value.clone(),
+        }
+    }
+
+    /// D3: `id` made secret, its value moved to the reader's own and the
+    /// row keeping none; or not, the reader's value the row's again.
+    pub fn set_secret(&mut self, id: &VariableId, secret: bool, cx: &mut Context<Self>) {
+        let Some(variable) = self.variables.iter().find(|variable| &variable.id == id).cloned() else {
+            return;
+        };
+        let kept = self
+            .workspace
+            .update(cx, |workspace, cx| workspace.set_secret(&variable, secret, cx))
+            .ok()
+            .flatten();
+        if let Some(kept) = kept {
+            self.edit(id, |variable| variable.value = kept, true, cx);
+            cx.notify();
+        }
     }
 
     /// F8.3.
@@ -363,6 +410,97 @@ mod tests {
     use super::*;
     use cyberapi_store::{MemoryStore, NewCollection};
     use gpui_kit::TestAppContext;
+
+    /// D3: a variable made secret keeps no value in the project — the
+    /// reader's is kept as theirs, typed there from then on — and made
+    /// public again takes the reader's value back.
+    #[gpui_kit::test]
+    async fn a_secret_value_is_the_readers_own(cx: &mut TestAppContext) {
+        use crate::states::WorkspaceState;
+        let storage = MemoryStore::new().storage();
+        let collection = storage
+            .collections()
+            .create(NewCollection {
+                name: "p".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("create");
+        let id = collection.id.clone();
+        storage
+            .variables()
+            .create(NewVariable {
+                collection: id.clone(),
+                category: VariableCategory::Custom,
+                name: "key".into(),
+                value: "abc".into(),
+                enabled: true,
+                environment: None,
+            })
+            .await
+            .expect("a variable");
+        struct NoEngine;
+        impl cyberapi_http::HttpEngine for NoEngine {
+            fn send(&self, _: cyberapi_http::PreparedRequest) -> cyberapi_http::SendFuture {
+                Box::pin(std::future::pending())
+            }
+        }
+        let sender = cyberapi_service::Sender {
+            storage: storage.clone(),
+            engine: std::sync::Arc::new(NoEngine),
+            files: std::sync::Arc::new(cyberapi_core::template::NoFiles("no files")),
+            env: std::sync::Arc::new(cyberapi_core::template::NoEnv("no environment")),
+            user_agent: "CyberAPI/test".into(),
+            timeouts: Default::default(),
+            sending: Default::default(),
+            inherited: Default::default(),
+            environment: None,
+            tokens: Default::default(),
+            secrets: Default::default(),
+        };
+        let workspace = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
+        cx.run_until_parked();
+        let state = cx.new(|cx| {
+            VariablesState::new(
+                storage.clone(),
+                workspace.downgrade(),
+                id.clone(),
+                VariableCategory::Custom,
+                None,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let variable = state.read_with(cx, |state, _| state.variables()[0].clone());
+        let stored = || {
+            pollster::block_on(storage.variables().list(id.clone(), VariableCategory::Custom)).expect("list")[0]
+                .value
+                .clone()
+        };
+        let kept = || pollster::block_on(storage.prefs().secret_values(id.clone())).expect("values");
+
+        state.update(cx, |state, cx| state.set_secret(&variable.id, true, cx));
+        cx.run_until_parked();
+        assert_eq!(stored(), "", "the project keeps none");
+        assert_eq!(kept().get(&variable.id), Some("abc"), "the reader's");
+        workspace.read_with(cx, |workspace, _| {
+            assert!(workspace.is_secret(&variable.id));
+            assert_eq!(workspace.secrets().get(&variable.id), Some("abc"));
+        });
+        assert!(state.read_with(cx, |state, cx| state.is_secret(&variable.id, cx)));
+        assert_eq!(state.read_with(cx, |state, cx| state.shown_value(&variable, cx)), "abc");
+
+        state.update(cx, |state, cx| state.set_value(&variable.id, "xyz".into(), cx));
+        cx.executor().advance_clock(SAVE_DELAY);
+        cx.run_until_parked();
+        assert_eq!((stored().as_str(), kept().get(&variable.id)), ("", Some("xyz")));
+
+        state.update(cx, |state, cx| state.set_secret(&variable.id, false, cx));
+        cx.run_until_parked();
+        assert_eq!(stored(), "xyz", "the reader's value is the project's again");
+        assert_eq!(kept().get(&variable.id), None);
+        assert!(!workspace.read_with(cx, |workspace, _| workspace.is_secret(&variable.id)));
+    }
 
     #[gpui_kit::test]
     async fn rows_are_variables_saved_as_they_change(cx: &mut TestAppContext) {

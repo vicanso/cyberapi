@@ -23,7 +23,6 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use cyberapi_core::EnvironmentId;
 use cyberapi_core::access::CollectionRole;
 use cyberapi_core::auth::{Auth, KeyPlace};
 use cyberapi_core::directory::McpToken;
@@ -38,6 +37,7 @@ use cyberapi_core::oauth::Grant;
 use cyberapi_core::response::{BodyKind, HttpResponse};
 use cyberapi_core::template::{Answers, NoEnv, NoFiles};
 use cyberapi_core::version;
+use cyberapi_core::{EnvironmentId, VariableId};
 use cyberapi_service::Sender;
 use cyberapi_store::Storage;
 use cyberapi_store_sql::Account;
@@ -409,7 +409,12 @@ async fn project(storage: &Storage, arguments: &Json) -> Result<Collection, Stri
 /// The project and the API `arguments` name.
 /// The API an assistant names, where it is, and what it takes from its
 /// folders and project (#66).
-async fn api(storage: &Storage, arguments: &Json) -> Result<(Collection, ApiSetting, String, Inherited), String> {
+/// The API `arguments` name: its project, itself, its path in the tree,
+/// what it takes from above, and the project's secret variables (D3).
+async fn api(
+    storage: &Storage,
+    arguments: &Json,
+) -> Result<(Collection, ApiSetting, String, Inherited, Vec<VariableId>), String> {
     let collection = project(storage, arguments).await?;
     let data = storage.tree().load(collection.id.clone()).await.map_err(failed)?;
     let api = find_api(&data, argument(arguments, "api")?)?.clone();
@@ -419,7 +424,7 @@ async fn api(storage: &Storage, arguments: &Json) -> Result<(Collection, ApiSett
         .map(|line| line.path)
         .unwrap_or_else(|| api.name.clone());
     let inherited = inherited(&data, &api.id);
-    Ok((collection, api, path, inherited))
+    Ok((collection, api, path, inherited, data.settings.secret_variables))
 }
 
 /// H1: an API made where `arguments` say, with the request they give.
@@ -582,7 +587,7 @@ fn auth_json(auth: &Auth) -> Json {
 }
 
 async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let (_, api, path, inherited) = api(storage, arguments).await?;
+    let (_, api, path, inherited, _) = api(storage, arguments).await?;
     let request = &api.request;
     // How it signs in as sent: its own, or what it inherits, and from where.
     let auth = auth_json(inherited.auth(&request.auth));
@@ -689,6 +694,14 @@ async fn chosen_environment(
 
 async fn get_variables(storage: &Storage, arguments: &Json) -> Result<Json, String> {
     let collection = project(storage, arguments).await?;
+    // D3: a secret one's value is each reader's own, and never given.
+    let secret = storage
+        .tree()
+        .load(collection.id.clone())
+        .await
+        .map_err(failed)?
+        .settings
+        .secret_variables;
     let environments = storage
         .variables()
         .environments(collection.id.clone())
@@ -712,13 +725,19 @@ async fn get_variables(storage: &Storage, arguments: &Json) -> Result<Json, Stri
             .map_err(failed)?;
         let listed = variables
             .iter()
-            .map(|variable| {
-                json!({
+            .map(|variable| match secret.contains(&variable.id) {
+                true => json!({
+                    "name": variable.name,
+                    "secret": true,
+                    "enabled": variable.enabled,
+                    "environment": named(&variable.environment),
+                }),
+                false => json!({
                     "name": variable.name,
                     "value": masked(&variable.name, &variable.value),
                     "enabled": variable.enabled,
                     "environment": named(&variable.environment),
-                })
+                }),
             })
             .collect();
         answer.insert(key.into(), Json::Array(listed));
@@ -782,7 +801,7 @@ async fn get_history(storage: &Storage, arguments: &Json) -> Result<Json, String
 }
 
 async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let (collection, api, _, inherited) = api(storage, arguments).await?;
+    let (collection, api, _, inherited, secret) = api(storage, arguments).await?;
     let environment = chosen_environment(storage, &collection, arguments).await?;
     if collection.role < CollectionRole::Editor {
         return Err(format!(
@@ -818,6 +837,14 @@ async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, argumen
         environment,
         // C4: a call's own; none is kept on the server.
         tokens: Default::default(),
+        // D3: the account's own values, which the assistant never reads:
+        // what the history keeps of the request has them masked.
+        secrets: storage
+            .prefs()
+            .secret_values(collection.id.clone())
+            .await
+            .unwrap_or_default()
+            .of(&secret),
     };
     let response = cyberapi_service::send(sender, collection.id, api.id, api.request, Answers::default())
         .await

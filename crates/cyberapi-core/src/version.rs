@@ -39,7 +39,8 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 /// 11: an API is a WebSocket connection (E1, `HttpMethod::WebSocket`).
 /// 12: OAuth 2.0 asks for an audience and a resource (C4, `OAuth2::audience`
 ///    / `resource`).
-pub const MODEL: u32 = 12;
+/// 13: a project's secret variables (D3, `ProjectSettings::secret_variables`).
+pub const MODEL: u32 = 13;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

@@ -145,6 +145,7 @@ mod tests {
         );
         tree.settings = ProjectSettings {
             auth: bearer("project"),
+            ..Default::default()
         };
         tree
     }

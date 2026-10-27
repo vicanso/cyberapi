@@ -85,6 +85,10 @@ pub struct ProjectSettings {
     /// Inheriting here, with nothing above, is none.
     #[serde(skip_serializing_if = "Auth::is_inherit")]
     pub auth: Auth,
+    /// D3: the variables whose values are each reader's own
+    /// (`crate::secrets`); their own values stay empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub secret_variables: Vec<crate::VariableId>,
 }
 
 impl ProjectSettings {

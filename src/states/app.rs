@@ -164,6 +164,8 @@ impl AppStore {
             inherited: Default::default(),
             environment: None,
             tokens: self.tokens.clone(),
+            // D3: each project's, filled where it is sent.
+            secrets: Default::default(),
         }
     }
 

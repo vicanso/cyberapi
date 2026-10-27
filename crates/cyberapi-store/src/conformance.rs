@@ -21,6 +21,7 @@ use cyberapi_core::model::{
 use cyberapi_core::oauth::{KeptToken, KeptTokens};
 use cyberapi_core::prefs::{AppPrefs, HttpVersion, RequestSettings, ThemeMode, Timeouts, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse, HttpStats};
+use cyberapi_core::secrets::SecretValues;
 use cyberapi_core::sync::ProjectConfig;
 use cyberapi_core::tree::{Placement, Tree, TreeData, TreeError};
 use cyberapi_core::{CollectionId, EnvironmentId, ItemId, VariableId};
@@ -57,6 +58,7 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     environments_round_trip(storage, probe).await;
     app_prefs_round_trip(storage).await;
     oauth_tokens_are_kept_whole(storage).await;
+    secret_values_are_per_project(storage).await;
     workspace_prefs_are_per_collection(storage).await;
     history_keeps_the_newest(storage, probe).await;
     history_is_only_of_the_projects_apis(storage).await;
@@ -284,6 +286,18 @@ async fn deleting_a_collection_takes_its_content(storage: &Storage, probe: &dyn 
         )
         .await
         .expect("set workspace prefs");
+    // D3: the reader's secret values go with it too.
+    storage
+        .prefs()
+        .set_secret_values(
+            doomed.id.clone(),
+            SecretValues(std::collections::BTreeMap::from([(
+                VariableId::from("v"),
+                "s".to_string(),
+            )])),
+        )
+        .await
+        .expect("set secret values");
     storage
         .history()
         .add(response(&doomed, &login.item.id, 0), HISTORY_LIMIT)
@@ -297,9 +311,15 @@ async fn deleting_a_collection_takes_its_content(storage: &Storage, probe: &dyn 
     tree.set_folder_settings(doomed.id.clone(), users.item.id.clone(), none())
         .await
         .expect("a folder's settings");
-    tree.set_project_settings(doomed.id.clone(), ProjectSettings { auth: Auth::None })
-        .await
-        .expect("the project's settings");
+    tree.set_project_settings(
+        doomed.id.clone(),
+        ProjectSettings {
+            auth: Auth::None,
+            secret_variables: vec![VariableId::from("v")],
+        },
+    )
+    .await
+    .expect("the project's settings");
     let dev = storage
         .variables()
         .create_environment(doomed.id.clone(), "dev".into())
@@ -562,6 +582,8 @@ async fn settings_are_kept(storage: &Storage) {
             username: "me".into(),
             password: "pw".into(),
         },
+        // D3: which variables are secret is the project's.
+        secret_variables: vec![VariableId::from("v1")],
     };
     tree.set_project_settings(collection.id.clone(), project.clone())
         .await
@@ -948,9 +970,15 @@ async fn shared_changes_move_the_revision(storage: &Storage) {
     .await
     .expect("a folder's settings");
     last = moved(storage, id, last, "a folder's settings").await;
-    tree.set_project_settings(id.clone(), ProjectSettings { auth: Auth::None })
-        .await
-        .expect("the project's settings");
+    tree.set_project_settings(
+        id.clone(),
+        ProjectSettings {
+            auth: Auth::None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the project's settings");
     last = moved(storage, id, last, "the project's settings").await;
     let environment = variables
         .create_environment(id.clone(), "dev".into())
@@ -1318,6 +1346,55 @@ async fn oauth_tokens_are_kept_whole(storage: &Storage) {
     )]));
     prefs.set_oauth_tokens(one.clone()).await.expect("set");
     assert_eq!(prefs.oauth_tokens().await.expect("tokens"), one, "replaced whole");
+}
+
+/// D3: a reader's values of a project's secret variables: per project, the
+/// whole set as last written; forgetting the projects' state leaves them.
+async fn secret_values_are_per_project(storage: &Storage) {
+    let first = new_collection(storage, "secrets one").await;
+    let second = new_collection(storage, "secrets two").await;
+    let prefs = storage.prefs();
+    assert_eq!(
+        prefs.secret_values(first.id.clone()).await.expect("values"),
+        SecretValues::default()
+    );
+    let values = SecretValues(std::collections::BTreeMap::from([
+        (VariableId::from("a"), "s3cret".to_string()),
+        (VariableId::from("b"), String::new()),
+    ]));
+    prefs
+        .set_secret_values(first.id.clone(), values.clone())
+        .await
+        .expect("set");
+    assert_eq!(prefs.secret_values(first.id.clone()).await.expect("values"), values);
+    assert_eq!(
+        prefs.secret_values(second.id.clone()).await.expect("values"),
+        SecretValues::default(),
+        "per project"
+    );
+    prefs.clear_workspaces().await.expect("clear");
+    assert_eq!(
+        prefs.secret_values(first.id.clone()).await.expect("values"),
+        values,
+        "not a project's state to forget"
+    );
+    let one = SecretValues(std::collections::BTreeMap::from([(
+        VariableId::from("b"),
+        "x".to_string(),
+    )]));
+    prefs
+        .set_secret_values(first.id.clone(), one.clone())
+        .await
+        .expect("set");
+    assert_eq!(
+        prefs.secret_values(first.id).await.expect("values"),
+        one,
+        "replaced whole"
+    );
+    not_found(
+        prefs.secret_values(CollectionId::from("nowhere")).await,
+        Entity::Collection,
+    );
 }
 
 async fn workspace_prefs_are_per_collection(storage: &Storage) {
@@ -1951,7 +2028,13 @@ pub async fn backup(storage: &Storage, backups: &dyn crate::BackupStore) {
         .expect("a folder's settings");
     storage
         .tree()
-        .set_project_settings(kept.id.clone(), ProjectSettings { auth: Auth::None })
+        .set_project_settings(
+            kept.id.clone(),
+            ProjectSettings {
+                auth: Auth::None,
+                ..Default::default()
+            },
+        )
         .await
         .expect("the project's settings");
     // So are its environments and the variables in them (#61).

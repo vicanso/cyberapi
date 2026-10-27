@@ -19,6 +19,7 @@ use cyberapi_core::model::{
 use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
+use cyberapi_core::secrets::SecretValues;
 use cyberapi_core::sync::{ConfigAt, KEPT_VERSIONS, ProjectConfig, ProjectVersion};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, EnvironmentId, ItemId, TeamId, Timestamp, VariableId};
@@ -59,6 +60,11 @@ pub(crate) fn workspace_scope(collection: &CollectionId) -> String {
 const APP_SCOPE: &str = "app";
 /// C4: the account's OAuth tokens, a document beside its settings.
 const OAUTH_SCOPE: &str = "oauth-tokens";
+
+/// D3: the account's values of a project's secret variables.
+pub(crate) fn secrets_scope(collection: &CollectionId) -> String {
+    format!("secrets/{collection}")
+}
 
 #[derive(Clone)]
 pub(crate) struct Scoped {
@@ -695,11 +701,13 @@ impl CollectionStore for Scoped {
         self.run(|this| async move {
             let mut tx = this.pool.begin().await.map_err(db)?;
             this.require(&mut tx, &id, CollectionRole::Manager).await?;
-            sqlx::query(this.dialect.sql(sql::PREFS_DELETE_SCOPE))
-                .bind(workspace_scope(&id))
-                .execute(&mut *tx)
-                .await
-                .map_err(db)?;
+            for scope in [workspace_scope(&id), secrets_scope(&id)] {
+                sqlx::query(this.dialect.sql(sql::PREFS_DELETE_SCOPE))
+                    .bind(scope)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
             sqlx::query(this.dialect.sql(sql::COLLECTION_DELETE))
                 .bind(id.as_str().to_string())
                 .execute(&mut *tx)
@@ -1481,6 +1489,23 @@ impl PrefStore for Scoped {
         self.run(|this| async move {
             let mut conn = this.pool.acquire().await.map_err(db)?;
             this.write_doc(&mut conn, OAUTH_SCOPE, &tokens).await
+        })
+    }
+
+    /// A viewer has values of their own too.
+    fn secret_values(&self, collection: CollectionId) -> StoreFuture<SecretValues> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            this.read_doc(&mut conn, &secrets_scope(&collection)).await
+        })
+    }
+
+    fn set_secret_values(&self, collection: CollectionId, values: SecretValues) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            this.write_doc(&mut conn, &secrets_scope(&collection), &values).await
         })
     }
 }

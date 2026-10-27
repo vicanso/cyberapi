@@ -33,6 +33,8 @@ gpui_kit::assets::icon_assets!(
         Keyboard,
         ListPlus,
         ListTree,
+        Lock,
+        LockOpen,
         LogOut,
         Monitor,
         Paperclip,

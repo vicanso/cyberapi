@@ -371,6 +371,10 @@
 - **G4 项目历史版本：** 每次整份替换（同步）之前把旧的存一份，每个项目留最近 50 份；先只在 bridge 上做，桌面本机项目不做。
 - **E1 WebSocket（第 7 节 Q5）：** 先只做桌面版，像 `.proto` 导入和代理那样；网页版要 bridge 做双向中继（新的攻击面、每账号的连接数限制），等 Q5 定了再做，网页上 WebSocket 接口可以编辑、同步，但连接按钮说明只在桌面版可用。一个接口一次一条连接；收发的消息在连接结束（读者断开、服务器关闭或出错）时作为一条历史存下，和事件流一样带每条的时间。发送的消息是请求体编辑器里的文本（模板照常求值），文本帧；二进制帧收到时以 base64 显示，先不支持发送。维护者定了（2026-10-27）：网页版不做 WebSocket。
 
+- **D3 秘密变量（第 7 节 Q3，维护者 2026-10-27 要做）：** 值属于每个读者自己，选“每人本机”那一种（Postman Local Vault 的做法）：变量标为秘密后，项目里只留名字和“秘密”标记，值存在读者自己那里（`PrefStore` 里按项目一份文档：桌面在本机库，网页在服务器上按账号，别人看不到），不同步、不导出、不进备份；队友各填各的。store 保证秘密变量这一行的值始终为空。界面打码（可切换显示）；Details 和历史里实际发出的请求把秘密值换成 `••••`；MCP 只看到名字。查看者也能填自己的值。系统钥匙串先不接（以后可以把这份文档挪进去）。改 D8：秘密变量是唯一有“个人值”的变量。
+- **G2 Mock 服务（维护者 2026-10-27 要做）：** 先做桌面版：项目菜单“Mock 服务…”在本机回环地址起一个 HTTP 服务（端口可改，默认 4010），按接口的方法和路径（去掉地址前缀，`{{id}}` / `:id` / `{id}` 段匹配任何值）找接口，回它的示例（F3）：第一个，或请求头 `x-mock-example` 点名的那个；没有示例时回 404 并说明。只在应用开着、读者打开时运行，弹窗里列出最近收到的请求。bridge 上的 Mock（团队共用的地址，要单独的访问令牌）等以后再做。
+- **A5 前后置脚本（第 7 节 Q1）：** 维护者 2026-10-27 定：暂缓，不引入 JS 引擎；断言、提取、模板函数（方案一）继续承担这部分需求。
+
 ## 附录 A：竞品功能的主要来源
 
 - 协议：[Postman protocols](https://learning.postman.com/docs/use/send-requests/protocols/protocols.md)、[Insomnia gRPC](https://developer.konghq.com/insomnia/grpc-requests/)、[Bruno gRPC streams](https://docs.usebruno.com/send-requests/grpc/grpc-streams.md)、[Yaak gRPC](https://yaak.app/docs/request-types/grpc-requests)、[Hoppscotch](https://docs.hoppscotch.io/llms.txt)、[Apidog](https://docs.apidog.com/llms.txt)、[Requestly](https://docs.requestly.com/llms.txt)、[Kreya](https://kreya.app/)。

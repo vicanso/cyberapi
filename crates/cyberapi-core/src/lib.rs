@@ -38,6 +38,7 @@ pub mod redirect;
 pub mod response;
 pub mod run;
 pub mod search;
+pub mod secrets;
 pub mod send;
 pub mod sse;
 pub mod sync;
