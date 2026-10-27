@@ -7,7 +7,10 @@
 //!
 //! A server-streaming method's reply is many messages: read as they come
 //! ([`ReplyReader`]), and kept one a line ([`GrpcBody::stream_reply`]),
-//! each with when it came. A client-streaming method is not called.
+//! each with when it came. A method that streams from the client is not
+//! sent in one shot: the desktop connects and sends each message on its
+//! own ([`GrpcBody::framed_message`]), and what went each way is kept as
+//! one line a turn ([`transcript`]).
 //!
 //! The definitions are a `FileDescriptorSet`, from a server's reflection
 //! ([`reflection`]) or compiled from `.proto` files. An API keeps the files
@@ -86,20 +89,56 @@ impl GrpcBody {
     }
 
     /// The method it calls in its definitions, or why it calls none.
-    pub fn method_in(&self, definitions: &Definitions) -> Result<MethodDescriptor, String> {
+    /// A method that streams from the client is one: a one-shot send does
+    /// not make it ([`Self::method_in`]); the desktop connects to it.
+    pub fn method_of(&self, definitions: &Definitions) -> Result<MethodDescriptor, String> {
         if self.service.trim().is_empty() || self.method.trim().is_empty() {
             return Err("choose the gRPC method to call".into());
         }
-        let method = definitions
+        definitions
             .find(self.service.trim(), self.method.trim())
-            .ok_or_else(|| format!("{} is not in the API's definitions", self.path()))?;
+            .ok_or_else(|| format!("{} is not in the API's definitions", self.path()))
+    }
+
+    /// The method a one-shot send calls. One that streams from the client
+    /// is refused: it is connected to from the desktop app (E2).
+    pub fn method_in(&self, definitions: &Definitions) -> Result<MethodDescriptor, String> {
+        let method = self.method_of(definitions)?;
         if method.is_client_streaming() {
             return Err(format!(
-                "{} streams from the client; only unary and server-streaming calls are made",
+                "{} streams from the client; it is connected to from the desktop app",
                 self.path()
             ));
         }
         Ok(method)
+    }
+
+    /// Whether the method streams from the client: a client stream, or a
+    /// bidirectional one. Both are connected to, not sent.
+    pub fn client_streams(&self) -> bool {
+        self.stream_flags().is_some_and(|(client, _)| client)
+    }
+
+    /// Whether it streams both ways.
+    pub fn both_streams(&self) -> bool {
+        self.stream_flags().is_some_and(|(client, server)| client && server)
+    }
+
+    fn stream_flags(&self) -> Option<(bool, bool)> {
+        let definitions = self.definitions()?.ok()?;
+        let method = self.method_of(&definitions).ok()?;
+        Some((method.is_client_streaming(), method.is_server_streaming()))
+    }
+
+    /// A reader of whatever the method answers with, including the one
+    /// reply a client-streaming call gives after the request is done.
+    pub fn streaming_reader(&self) -> Option<ReplyReader> {
+        let definitions = self.definitions()?.ok()?;
+        let method = self.method_of(&definitions).ok()?;
+        (method.is_client_streaming() || method.is_server_streaming()).then(|| ReplyReader {
+            output: method.output(),
+            pending: Vec::new(),
+        })
     }
 
     /// Whether the method it calls answers with a stream of messages.
@@ -168,21 +207,28 @@ impl GrpcBody {
     }
 
     /// The request as it goes out: the message, its templates already run
-    /// (`message`), encoded and framed. `Err` says why it cannot be.
+    /// (`message`), encoded and framed. A method that streams from the
+    /// client is refused ([`Self::method_in`]); frame one of those with
+    /// [`Self::framed_message`]. `Err` says why it cannot be.
     pub fn request(&self, message: &str) -> Result<Vec<u8>, String> {
-        let definitions = self
-            .definitions()
-            .ok_or("the API has no gRPC definitions: load them from the server's reflection or a .proto file")?
-            .map_err(|error| format!("the API's gRPC definitions cannot be read: {error}"))?;
+        let definitions = self.definitions_read()?;
         let method = self.method_in(&definitions)?;
-        let input = method.input();
-        let text = strip_json_comments(message);
-        let text = if text.trim().is_empty() { "{}" } else { text.as_str() };
-        let mut reader = serde_json::Deserializer::from_str(text);
-        let message = DynamicMessage::deserialize(input.clone(), &mut reader)
-            .and_then(|message| reader.end().map(|()| message))
-            .map_err(|error| format!("the message is not a {}: {error}", input.full_name()))?;
-        Ok(frame(&message.encode_to_vec()))
+        encode_message(&method.input(), message)
+    }
+
+    /// One message of a call the desktop connects to (E2), encoded and
+    /// framed. `message` has had its templates run. A one-shot send still
+    /// refuses the method ([`Self::request`]).
+    pub fn framed_message(&self, message: &str) -> Result<Vec<u8>, String> {
+        let definitions = self.definitions_read()?;
+        let method = self.method_of(&definitions)?;
+        encode_message(&method.input(), message)
+    }
+
+    fn definitions_read(&self) -> Result<Definitions, String> {
+        self.definitions()
+            .ok_or("the API has no gRPC definitions: load them from the server's reflection or a .proto file")?
+            .map_err(|error| format!("the API's gRPC definitions cannot be read: {error}"))
     }
 
     /// The reply in `body` read as JSON: `None` when there is no message
@@ -301,6 +347,95 @@ fn to_json(message: &DynamicMessage) -> Result<String, String> {
     Ok(crate::format::json(&value))
 }
 
+/// `message` (its templates already run) encoded as `input` and framed.
+fn encode_message(input: &MessageDescriptor, message: &str) -> Result<Vec<u8>, String> {
+    let text = strip_json_comments(message);
+    let text = if text.trim().is_empty() { "{}" } else { text.as_str() };
+    let mut reader = serde_json::Deserializer::from_str(text);
+    let message = DynamicMessage::deserialize(input.clone(), &mut reader)
+        .and_then(|message| reader.end().map(|()| message))
+        .map_err(|error| format!("the message is not a {}: {error}", input.full_name()))?;
+    Ok(frame(&message.encode_to_vec()))
+}
+
+/// One turn of a connected call, as the history keeps it (E2).
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Turn {
+    /// `sent` or `recv`.
+    way: String,
+    text: String,
+}
+
+/// The turns kept, `(sent, text, when)` with when in milliseconds after
+/// the call opened: the body, a JSON line each, and when each line ended.
+pub fn transcript(messages: &[(bool, String, u64)]) -> (Vec<u8>, Vec<(u64, u64)>) {
+    let mut body = Vec::new();
+    let mut arrivals = Vec::new();
+    for (sent, text, at) in messages {
+        let line = Turn {
+            way: if *sent { "sent" } else { "recv" }.to_string(),
+            text: text.clone(),
+        };
+        // A struct of two strings cannot fail to serialize.
+        body.extend(serde_json::to_vec(&line).unwrap_or_default());
+        body.push(b'\n');
+        arrivals.push((body.len() as u64, *at));
+    }
+    (body, arrivals)
+}
+
+/// Whether `body` is a connected call's turns, and not a server-streaming
+/// reply's messages: every non-empty line is one turn.
+pub fn is_transcript(body: &[u8]) -> bool {
+    let mut any = false;
+    for line in body.split(|byte| *byte == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        any = true;
+        match serde_json::from_slice::<Turn>(line) {
+            Ok(turn) if turn.way == "sent" || turn.way == "recv" => {}
+            _ => return false,
+        }
+    }
+    any
+}
+
+/// A turn as the event list shows it. `at` is milliseconds after the call
+/// opened, when it is known.
+pub fn turn_event(sent: bool, text: &str, at: Option<u64>) -> Event {
+    Event {
+        event: if sent { "sent" } else { "received" }.to_string(),
+        data: text.to_string(),
+        at,
+        ..Default::default()
+    }
+}
+
+/// The turns of a kept call, as events. A line that does not read is shown
+/// as it is.
+pub fn transcript_events(body: &[u8], stream: Option<&StreamInfo>) -> Vec<Event> {
+    let arrivals = stream.map(|stream| stream.arrivals.as_slice()).unwrap_or_default();
+    let mut end = 0u64;
+    body.split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            end += line.len() as u64 + 1;
+            let at = arrivals.iter().find(|(arrived, _)| *arrived >= end).map(|(_, at)| *at);
+            match serde_json::from_slice::<Turn>(line) {
+                Ok(turn) => turn_event(turn.way == "sent", &turn.text, at),
+                Err(_) => Event {
+                    event: "received".to_string(),
+                    data: String::from_utf8_lossy(line).into_owned(),
+                    at,
+                    ..Default::default()
+                },
+            }
+        })
+        .collect()
+}
+
 /// A message on the wire: not compressed, its length, its bytes.
 pub fn frame(message: &[u8]) -> Vec<u8> {
     let mut framed = Vec::with_capacity(message.len() + 5);
@@ -414,7 +549,7 @@ pub struct MethodInfo {
     pub method: String,
     pub input: String,
     pub output: String,
-    /// It takes a stream of messages: it is not called.
+    /// It takes a stream of messages: the desktop connects and sends them.
     pub client_streaming: bool,
     /// It answers with a stream of messages.
     pub server_streaming: bool,
@@ -765,7 +900,7 @@ pub(crate) mod tests {
     /// `enum Kind { BOOK = 0; FOOD = 1; }`,
     /// `message Ask { string id = 1; }`,
     /// `service Store { rpc Get(Ask) returns (Item); rpc Watch(Ask) returns (stream Item);`
-    /// `rpc Upload(stream Ask) returns (Item); }`.
+    /// `rpc Upload(stream Ask) returns (Item); rpc Chat(stream Ask) returns (stream Item); }`.
     fn file() -> FileDescriptorProto {
         let optional = Label::Optional;
         FileDescriptorProto {
@@ -829,6 +964,14 @@ pub(crate) mod tests {
                         client_streaming: Some(true),
                         ..Default::default()
                     },
+                    MethodDescriptorProto {
+                        name: Some("Chat".into()),
+                        input_type: Some(".shop.Ask".into()),
+                        output_type: Some(".shop.Item".into()),
+                        client_streaming: Some(true),
+                        server_streaming: Some(true),
+                        ..Default::default()
+                    },
                 ],
                 ..Default::default()
             }],
@@ -872,7 +1015,12 @@ pub(crate) mod tests {
                 .iter()
                 .map(|m| (m.method.as_str(), m.client_streaming, m.server_streaming))
                 .collect::<Vec<_>>(),
-            [("Get", false, false), ("Watch", false, true), ("Upload", true, false)]
+            [
+                ("Get", false, false),
+                ("Watch", false, true),
+                ("Upload", true, false),
+                ("Chat", true, true)
+            ]
         );
         assert_eq!(
             (methods[0].input.as_str(), methods[0].output.as_str()),
@@ -913,6 +1061,14 @@ pub(crate) mod tests {
         assert!(wrong(&body("Get"), r#"{"nope": 1}"#).contains("is not a shop.Ask"));
         assert!(wrong(&body("Get"), "{").contains("is not a shop.Ask"));
         assert!(wrong(&body("Upload"), "{}").contains("streams from the client"));
+        assert_eq!(
+            body("Upload").framed_message(r#"{"id": "7"}"#).expect("framed"),
+            [0, 0, 0, 0, 3, 0x0a, 1, b'7']
+        );
+        assert!(body("Upload").client_streams() && !body("Upload").both_streams());
+        assert!(body("Chat").both_streams());
+        assert!(!body("Watch").client_streams() && body("Watch").streaming_reader().is_some());
+        assert!(body("Get").streaming_reader().is_none());
         assert!(wrong(&body(""), "{}").contains("choose"));
         assert!(wrong(&body("Gone"), "{}").contains("/shop.Store/Gone is not"));
         let bare = GrpcBody {
@@ -998,6 +1154,37 @@ pub(crate) mod tests {
         assert!(GrpcStatus::read(&headers[..1]).is_none());
     }
 
+    /// E2: what went each way on a connected call is kept a line a turn,
+    /// and a server-streaming reply's messages are not read as turns.
+    #[test]
+    fn a_connected_call_keeps_what_went_each_way() {
+        let messages = [
+            (true, r#"{"id":"7"}"#.to_string(), 4),
+            (false, r#"{"name":"hi"}"#.to_string(), 11),
+        ];
+        let (body, arrivals) = transcript(&messages);
+        assert!(is_transcript(&body));
+        assert!(!is_transcript(br#"{"name":"hi"}"#), "a reply is not a turn");
+        assert!(!is_transcript(b""));
+        let events = transcript_events(
+            &body,
+            Some(&StreamInfo {
+                arrivals,
+                ..Default::default()
+            }),
+        );
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (event.event.as_str(), event.data.as_str(), event.at))
+                .collect::<Vec<_>>(),
+            [
+                ("sent", r#"{"id":"7"}"#, Some(4)),
+                ("received", r#"{"name":"hi"}"#, Some(11))
+            ]
+        );
+    }
+
     #[test]
     fn the_body_turns_into_the_message_and_back() {
         let to = switched_body(r#"{"id": 1}"#, HttpMethod::Post, HttpMethod::Grpc);
@@ -1079,7 +1266,7 @@ pub(crate) mod tests {
         collected.add(&files[0]).expect("once");
         assert!(collected.missing().is_empty());
         let definitions = collected.definitions().expect("definitions");
-        assert_eq!(definitions.methods().len(), 3);
+        assert_eq!(definitions.methods().len(), 4);
         assert_eq!(
             reflection::wanted(vec!["grpc.reflection.v1.ServerReflection".into(), "shop.Store".into()]),
             ["shop.Store"]

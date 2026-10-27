@@ -154,6 +154,108 @@ pub fn open_move_dialog(
     field.focus_handle(cx).focus(window, cx);
 }
 
+/// F1: where a scratch request is saved into the project. Picking a folder
+/// (or the top level) is the answer; there is no second dialog.
+pub fn open_save_scratch_dialog(
+    state: WeakEntity<WorkspaceState>,
+    id: ItemId,
+    name: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(tree) = state.upgrade().map(|state| state.read(cx).tree().clone()) else {
+        return;
+    };
+    let folders = destinations(&tree, &id);
+    let search = cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder(t!("workspace.move_search").to_string())
+            .clean_on_escape()
+    });
+    let field = search.clone();
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let keyword = search.read(cx).value().trim().to_string();
+        let theme = cx.theme();
+        let (muted, hover) = (theme.muted_foreground, theme.list_hover);
+        let top = (None, vec![t!("workspace.move_top").to_string()]);
+        let rows = std::iter::once(top)
+            .chain(
+                folders
+                    .iter()
+                    .map(|(folder, path)| (Some(folder.clone()), path.clone())),
+            )
+            .filter(|(folder, path)| {
+                keyword.is_empty()
+                    || folder.is_some() && path.last().is_some_and(|name| matches_text_or_pinyin(name, &keyword))
+            })
+            .enumerate()
+            .map(|(index, (folder, path))| {
+                let (state, id) = (state.clone(), id.clone());
+                let target = folder.clone();
+                let (name, above) = path
+                    .split_last()
+                    .map(|(last, rest)| (last.clone(), rest.join(" / ")))
+                    .unwrap_or_default();
+                h_flex()
+                    .id(("save-scratch-to", index))
+                    .flex_none()
+                    .h(px(30.))
+                    .px_2()
+                    .gap_2()
+                    .items_center()
+                    .rounded(theme.radius)
+                    .text_sm()
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover))
+                    .child(
+                        Icon::new(if folder.is_some() {
+                            IconName::FolderClosed
+                        } else {
+                            IconName::Inbox
+                        })
+                        .small()
+                        .text_color(muted),
+                    )
+                    .child(div().flex_none().child(marked(&name, &keyword, cx)))
+                    .when(!above.is_empty(), |this| {
+                        this.child(div().min_w_0().truncate().text_xs().text_color(muted).child(above))
+                    })
+                    .on_click(move |_, window, cx| {
+                        let _ = state.update(cx, |state, cx| state.save_scratch_into(id.clone(), target.clone(), cx));
+                        window.close_dialog(cx);
+                    })
+            })
+            .collect::<Vec<_>>();
+        let empty = rows.is_empty();
+        dialog
+            .title(t!("workspace.save_scratch_title", name = name).to_string())
+            .w(px(520.))
+            .child(crate::views::dialog_body(
+                v_flex()
+                    .gap_2()
+                    .child(Input::new(&search).prefix(Icon::new(IconName::Search).text_color(muted)))
+                    .child(
+                        v_flex()
+                            .id("save-scratch-list")
+                            .max_h(px(360.))
+                            .overflow_y_scrollbar()
+                            .children(rows)
+                            .when(empty, |this| {
+                                this.child(
+                                    div()
+                                        .py_3()
+                                        .text_sm()
+                                        .text_color(muted)
+                                        .child(t!("workspace.no_match", keyword = keyword).to_string()),
+                                )
+                            }),
+                    ),
+            ))
+            .on_ok(|_, _, _| false)
+    });
+    field.focus_handle(cx).focus(window, cx);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

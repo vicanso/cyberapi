@@ -146,9 +146,15 @@ fn auth(value: &Value) -> Option<Auth> {
             grant: match text(value, "grantType") {
                 "client_credentials" => Grant::ClientCredentials,
                 "password" => Grant::Password,
+                "authorization_code" => Grant::AuthorizationCode,
                 _ => return None,
             },
             token_url: field("accessTokenUrl"),
+            authorization_url: {
+                let url = field("authorizationUrl");
+                if url.is_empty() { field("authUrl") } else { url }
+            },
+            redirect_port: crate::oauth::redirect_port_of(&field("redirectUri")),
             client_id: field("clientId"),
             client_secret: field("clientSecret"),
             username: field("username"),

@@ -649,7 +649,7 @@ impl ResponsePanel {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .when_some(live, |this, (status, ..)| {
+                    .when_some(live.filter(|(status, ..)| *status > 0), |this, (status, ..)| {
                         this.child(pill(
                             format!("{status} {}", status_text(status)),
                             status_color(status, cx),

@@ -282,10 +282,19 @@ impl HttpResponse {
     }
 
     /// Whether it is a stream read as it came, shown as events: an event
-    /// stream, or a gRPC call's streamed reply.
+    /// stream, a gRPC call's streamed reply, or a GraphQL subscription
+    /// that came over a WebSocket (E3).
     pub fn is_stream(&self) -> bool {
         crate::sse::is_event_stream(&self.headers)
             || (matches!(self.request.method, HttpMethod::Grpc | HttpMethod::WebSocket) && self.stream.is_some())
+            || self.graphql_socket()
+    }
+
+    /// A GraphQL subscription kept from a `ws` / `wss` address (E3).
+    fn graphql_socket(&self) -> bool {
+        self.request.content_type == crate::model::ContentType::GraphQl
+            && crate::graphql_ws::is_socket_url(&self.url)
+            && self.stream.is_some()
     }
 
     /// Its events, when it is a stream.
@@ -294,6 +303,13 @@ impl HttpResponse {
             crate::sse::events(&self.body, self.stream.as_ref())
         } else if self.request.method == HttpMethod::WebSocket {
             crate::ws::events(&self.body, self.stream.as_ref())
+        } else if self.request.content_type == crate::model::ContentType::GraphQl
+            && crate::graphql_ws::is_socket_url(&self.url)
+        {
+            crate::graphql_ws::events(&self.body, self.stream.as_ref())
+        } else if self.request.method == HttpMethod::Grpc && crate::grpc::is_transcript(&self.body) {
+            // E2: a connected call's turns, not a server-streaming reply.
+            crate::grpc::transcript_events(&self.body, self.stream.as_ref())
         } else {
             let kind = crate::grpc::GrpcBody::read(&self.request.body)
                 .reply_type()
@@ -337,6 +353,10 @@ impl HttpResponse {
     pub fn body_kind(&self) -> BodyKind {
         // A gRPC reply is kept read as JSON, unless it could not be.
         if self.request.method == HttpMethod::Grpc {
+            // A connected call keeps a line a turn (E2), which is text.
+            if crate::grpc::is_transcript(&self.body) {
+                return BodyKind::Text;
+            }
             return match self.notice {
                 None => BodyKind::Json,
                 Some(_) => BodyKind::Binary,

@@ -21,6 +21,7 @@ pub mod format;
 pub mod graphql;
 pub mod graphql_format;
 pub mod graphql_schema;
+pub mod graphql_ws;
 pub mod grpc;
 mod id;
 pub mod import;

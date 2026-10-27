@@ -172,14 +172,26 @@ fn auth(value: &Value) -> Option<Auth> {
             let grant = match text(info, "grantType") {
                 "CLIENT_CREDENTIALS" => Grant::ClientCredentials,
                 "PASSWORD" => Grant::Password,
+                "AUTHORIZATION_CODE" => Grant::AuthorizationCode,
                 _ => return None,
+            };
+            // Client credentials name the token endpoint `authEndpoint`
+            // when they have no `tokenEndpoint`. The authorization code's
+            // `authEndpoint` is the browser's page.
+            let code = grant == Grant::AuthorizationCode;
+            let token_url = if code {
+                field("tokenEndpoint")
+            } else {
+                [field("tokenEndpoint"), field("authEndpoint")]
+                    .into_iter()
+                    .find(|url| !url.is_empty())
+                    .unwrap_or_default()
             };
             Auth::from(OAuth2 {
                 grant,
-                token_url: [field("tokenEndpoint"), field("authEndpoint")]
-                    .into_iter()
-                    .find(|url| !url.is_empty())
-                    .unwrap_or_default(),
+                token_url,
+                authorization_url: if code { field("authEndpoint") } else { String::new() },
+                redirect_port: 0,
                 client_id: field("clientID"),
                 client_secret: field("clientSecret"),
                 username: field("username"),

@@ -347,16 +347,18 @@ fn scheme(auth: &Auth) -> Option<(String, Value)> {
             let flow = match oauth.grant {
                 Grant::ClientCredentials => "clientCredentials",
                 Grant::Password => "password",
+                Grant::AuthorizationCode => "authorizationCode",
             };
             let scopes: Map<String, Value> = oauth
                 .scope
                 .split_whitespace()
                 .map(|scope| (scope.to_string(), json!("")))
                 .collect();
-            (
-                "oauth2".into(),
-                json!({"type": "oauth2", "flows": {flow: {"tokenUrl": oauth.token_url.trim(), "scopes": scopes}}}),
-            )
+            let mut body = json!({"tokenUrl": oauth.token_url.trim(), "scopes": scopes});
+            if oauth.grant == Grant::AuthorizationCode {
+                body["authorizationUrl"] = json!(oauth.authorization_url.trim());
+            }
+            ("oauth2".into(), json!({"type": "oauth2", "flows": {flow: body}}))
         }
         Auth::ApiKey { name, place, .. } => {
             let place = match place {

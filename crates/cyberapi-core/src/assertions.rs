@@ -153,6 +153,22 @@ pub enum Problem {
     NoTarget,
 }
 
+impl Problem {
+    /// Why, in the short English an answer says (H1: MCP). The panel says
+    /// the same in the reader's language.
+    pub fn reason(&self) -> String {
+        match self {
+            Self::NoResponse => "no answer to check".into(),
+            Self::NotJson => "the body is no JSON".into(),
+            Self::Path(why) => format!("the path does not read: {why}"),
+            Self::Pattern(why) => format!("the pattern does not read: {why}"),
+            Self::NotANumber => "that is no number".into(),
+            Self::UnknownType => format!("the type is one of {}", TYPES.join(", ")),
+            Self::NoTarget => "it names no header or path".into(),
+        }
+    }
+}
+
 /// The longest found value a check says it saw, in characters.
 const SHOWN: usize = 200;
 
@@ -415,6 +431,65 @@ pub fn check_all(assertions: &[Assertion], response: &HttpResponse, json: Option
         .collect()
 }
 
+/// One enabled assertion as an answer reports it (H1): where it sits in the
+/// API's list, what it asked, and whether it held. A check that did not
+/// hold also says what was there; one that could not be made says why.
+/// Nothing of this is written into the history.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reported {
+    pub index: usize,
+    pub subject: Subject,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub target: String,
+    pub op: Op,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub expected: String,
+    /// Set when the check was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub passed: Option<bool>,
+    /// What was there, only when the check was made and did not hold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual: Option<String>,
+    /// Why the check could not be made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The enabled assertions' results for `response`. Empty when none is
+/// enabled, so an answer can leave the field out. The body's JSON is read
+/// only when one of them looks in it.
+pub fn report(assertions: &[Assertion], response: &HttpResponse) -> Vec<Reported> {
+    let json = reads_json(assertions).then(|| response.body_json()).flatten();
+    check_all(assertions, response, json.as_ref())
+        .into_iter()
+        .filter_map(|(index, outcome)| {
+            let assertion = assertions.get(index)?;
+            Some(Reported::of(index, assertion, outcome))
+        })
+        .collect()
+}
+
+impl Reported {
+    fn of(index: usize, assertion: &Assertion, outcome: Result<Checked, Problem>) -> Self {
+        let (passed, actual, error) = match outcome {
+            Ok(Checked { passed: true, .. }) => (Some(true), None, None),
+            Ok(Checked { actual, .. }) => (Some(false), actual, None),
+            Err(problem) => (None, None, Some(problem.reason())),
+        };
+        Self {
+            index,
+            subject: assertion.subject,
+            target: assertion.target.clone(),
+            op: assertion.op,
+            expected: assertion.expected.clone(),
+            passed,
+            actual,
+            error,
+        }
+    }
+}
+
 /// How many of `outcomes` held, of how many.
 pub fn tally(outcomes: &Outcomes) -> (usize, usize) {
     let passed = outcomes
@@ -673,5 +748,50 @@ mod tests {
         let read: Assertion =
             serde_json::from_str(r#"{"subject":"json","target":"id","op":"equals","expected":"7"}"#).expect("reads");
         assert!(read.enabled);
+    }
+
+    /// H1: a pass says so and nothing more; a failure says what was there;
+    /// a check that could not be made says why. A disabled row is left out.
+    #[test]
+    fn a_report_says_each_enabled_assertions_result() {
+        let assertions = vec![
+            Assertion {
+                expected: "201".into(),
+                ..Default::default()
+            },
+            Assertion {
+                enabled: false,
+                expected: "500".into(),
+                ..Default::default()
+            },
+            Assertion {
+                expected: "200".into(),
+                ..Default::default()
+            },
+            Assertion {
+                subject: Subject::Header,
+                target: "X-Missing".into(),
+                op: Op::Equals,
+                expected: "1".into(),
+                ..Default::default()
+            },
+            Assertion {
+                subject: Subject::Json,
+                target: String::new(),
+                op: Op::Exists,
+                ..Default::default()
+            },
+        ];
+        let value = serde_json::to_value(report(&assertions, &response())).expect("writes");
+        assert_eq!(
+            value,
+            serde_json::json!([
+                {"index": 0, "subject": "status", "op": "equals", "expected": "201", "passed": true},
+                {"index": 2, "subject": "status", "op": "equals", "expected": "200", "passed": false, "actual": "201"},
+                {"index": 3, "subject": "header", "target": "X-Missing", "op": "equals", "expected": "1", "passed": false},
+                {"index": 4, "subject": "json", "op": "exists", "error": "it names no header or path"},
+            ])
+        );
+        assert!(report(&[], &response()).is_empty());
     }
 }

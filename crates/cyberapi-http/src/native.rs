@@ -31,7 +31,9 @@
 //! authorities it lists besides the system's (C5, `client_tls`). The
 //! bridge's reads no such files: they would be its own machine's.
 
-use crate::{Exchange, HttpEngine, OpenFuture, PreparedRequest, Progress, SendError, SendFuture, TargetPolicy, Watch};
+use crate::{
+    CallFuture, Exchange, HttpEngine, OpenFuture, PreparedRequest, Progress, SendError, SendFuture, TargetPolicy, Watch,
+};
 use bytes::Bytes;
 use cyberapi_core::prefs::HttpVersion;
 use cyberapi_core::proxy::ProxyKind;
@@ -114,6 +116,28 @@ impl HttpEngine for NativeEngine {
     /// socket carries on until its `outgoing` goes.
     fn open_socket(&self, request: PreparedRequest) -> OpenFuture {
         let task = self.runtime.spawn(crate::socket::open(
+            request,
+            self.policy.clone(),
+            Desktop {
+                proxies: self.proxies,
+                certificates: self.certificates,
+            },
+        ));
+        let guard = AbortOnDrop(task.abort_handle());
+        Box::pin(async move {
+            let _guard = guard;
+            task.await.unwrap_or_else(|error| {
+                Err(SendError::Http {
+                    message: error.to_string(),
+                })
+            })
+        })
+    }
+
+    /// E2: dropped before it is open, the opening stops. Once open, the
+    /// call carries on until its `outgoing` goes.
+    fn open_call(&self, request: PreparedRequest) -> CallFuture {
+        let task = self.runtime.spawn(crate::call::open(
             request,
             self.policy.clone(),
             Desktop {

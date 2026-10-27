@@ -1,10 +1,17 @@
-//! C4: OAuth 2.0 without a browser — the client credentials and the
-//! resource owner password grants (RFC 6749 §4.4, §4.3). A request that
-//! signs in this way is sent with `Authorization: Bearer` and a token the
-//! service asked the token endpoint for first ([`OAuthLogin::token_request`],
-//! [`read_token`]), kept in memory while the app runs and asked again once
-//! it is out of date or the API refuses it; a token that came with a
-//! refresh token is refreshed with it first (§6).
+//! C4: OAuth 2.0. The client credentials and the resource owner password
+//! grants (RFC 6749 §4.4, §4.3) need no browser. The authorization code
+//! grant with PKCE (RFC 6749 §4.1, RFC 7636, RFC 8252) does: the desktop
+//! opens the system browser and a loopback listener, then exchanges the
+//! code here ([`OAuthLogin::code_request`]). This module builds that
+//! request and the authorize URL; it does not open a browser or listen.
+//!
+//! A request that signs in this way is sent with `Authorization: Bearer`
+//! and a token the service asked the token endpoint for first
+//! ([`OAuthLogin::token_request`], [`read_token`]), kept while the app runs
+//! and asked again once it is out of date or the API refuses it; a token
+//! that came with a refresh token is refreshed with it first (§6). An
+//! authorization-code token is not asked for with the grant until the
+//! desktop has exchanged a code: with no refresh token, nothing is sent.
 //!
 //! The client signs in to the token endpoint with Basic, its id and secret
 //! form-encoded first (§2.3.1), or with both in the body. An `audience` and
@@ -31,6 +38,10 @@ pub enum Grant {
     ClientCredentials,
     /// A user's: their name and password, with the client's.
     Password,
+    /// A user's, in their browser: the authorization code, with PKCE.
+    /// The desktop opens the browser and listens on `127.0.0.1`; a page
+    /// cannot. Data model 14.
+    AuthorizationCode,
 }
 
 /// Where the client's id and secret go in the token request.
@@ -51,6 +62,14 @@ pub enum ClientAuth {
 pub struct OAuth2 {
     pub grant: Grant,
     pub token_url: String,
+    /// The authorization endpoint, for [`Grant::AuthorizationCode`]. A
+    /// template, like the token URL.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub authorization_url: String,
+    /// The loopback port the desktop listens on for the callback. `0` binds
+    /// any free port (RFC 8252). Not a template.
+    #[serde(default, skip_serializing_if = "port_is_zero")]
+    pub redirect_port: u16,
     pub client_id: String,
     pub client_secret: String,
     /// The password grant's.
@@ -70,6 +89,10 @@ pub struct OAuth2 {
     pub client_auth: ClientAuth,
 }
 
+fn port_is_zero(port: &u16) -> bool {
+    *port == 0
+}
+
 impl OAuth2 {
     /// The texts that are templates: all of them. The user's name and
     /// password only for the grant that sends them.
@@ -85,16 +108,28 @@ impl OAuth2 {
         if self.grant == Grant::Password {
             texts.extend([self.username.as_str(), &self.password]);
         }
+        if self.grant == Grant::AuthorizationCode {
+            texts.push(self.authorization_url.as_str());
+        }
         texts
     }
 
-    /// Rendered by `render`.
+    /// Rendered by `render`. The user's name and password only for the
+    /// password grant; the authorization URL and the callback port only
+    /// for the authorization code.
     pub fn login<E>(&self, render: impl Fn(&str) -> Result<String, E>) -> Result<OAuthLogin, E> {
         let password = self.grant == Grant::Password;
+        let code = self.grant == Grant::AuthorizationCode;
         let only = |text: &str| if password { render(text) } else { Ok(String::new()) };
         Ok(OAuthLogin {
             grant: self.grant,
             token_url: render(self.token_url.trim())?,
+            authorization_url: if code {
+                render(self.authorization_url.trim())?
+            } else {
+                String::new()
+            },
+            redirect_port: if code { self.redirect_port } else { 0 },
             client_id: render(&self.client_id)?,
             client_secret: render(&self.client_secret)?,
             username: only(&self.username)?,
@@ -113,6 +148,12 @@ impl OAuth2 {
 pub struct OAuthLogin {
     pub grant: Grant,
     pub token_url: String,
+    /// Rendered. Empty unless the grant is [`Grant::AuthorizationCode`].
+    pub authorization_url: String,
+    /// The port the reader set. `0` asks the desktop to bind any free one.
+    /// The port that was bound is not part of the key: the next authorize
+    /// may use another.
+    pub redirect_port: u16,
     pub client_id: String,
     pub client_secret: String,
     pub username: String,
@@ -135,12 +176,17 @@ impl OAuthLogin {
         let grant = match self.grant {
             Grant::ClientCredentials => "client_credentials",
             Grant::Password => "password",
+            Grant::AuthorizationCode => "authorization_code",
         };
         let client_auth = match self.client_auth {
             ClientAuth::Header => "header",
             ClientAuth::Body => "body",
         };
-        let fields = [
+        // The authorization URL and the port the reader set join the hash
+        // only for that grant, so a client-credentials token kept before
+        // they existed is still the same token.
+        let port = self.redirect_port.to_string();
+        let mut fields = vec![
             grant,
             &self.token_url,
             &self.client_id,
@@ -152,6 +198,10 @@ impl OAuthLogin {
             &self.resource,
             client_auth,
         ];
+        if self.grant == Grant::AuthorizationCode {
+            fields.push(&self.authorization_url);
+            fields.push(&port);
+        }
         let mut hash = sha2::Sha256::new();
         for field in fields {
             // Each with its length, so no two lists hash alike.
@@ -180,6 +230,10 @@ impl OAuthLogin {
                 form.append_pair("username", &self.username);
                 form.append_pair("password", &self.password);
             }
+            // Not a token request. The code is exchanged with [`Self::code_form`].
+            (None, Grant::AuthorizationCode) => {
+                form.append_pair("grant_type", "authorization_code");
+            }
         }
         if !self.scope.is_empty() {
             form.append_pair("scope", &self.scope);
@@ -190,6 +244,33 @@ impl OAuthLogin {
         if !self.resource.is_empty() {
             form.append_pair("resource", &self.resource);
         }
+        let authorization = self.client_into(&mut form);
+        (form.finish(), authorization)
+    }
+
+    /// The form exchanging an authorization `code` (RFC 6749 §4.1.3) with
+    /// PKCE's `verifier` (RFC 7636). The scope is not sent again. An
+    /// audience and a resource go when set, as on [`Self::token_form`].
+    pub fn code_form(&self, code: &str, redirect_uri: &str, verifier: &str) -> (String, Option<String>) {
+        let mut form = url::form_urlencoded::Serializer::new(String::new());
+        form.append_pair("grant_type", "authorization_code");
+        form.append_pair("code", code);
+        form.append_pair("redirect_uri", redirect_uri);
+        form.append_pair("code_verifier", verifier);
+        if !self.audience.is_empty() {
+            form.append_pair("audience", &self.audience);
+        }
+        if !self.resource.is_empty() {
+            form.append_pair("resource", &self.resource);
+        }
+        let authorization = self.client_into(&mut form);
+        (form.finish(), authorization)
+    }
+
+    /// The client's sign-in, appended to `form` or returned as a Basic
+    /// header. A client with no secret is a public one: its id goes in the
+    /// form whichever way it was told to sign in.
+    fn client_into(&self, form: &mut url::form_urlencoded::Serializer<String>) -> Option<String> {
         let basic = self.client_auth == ClientAuth::Header && !self.client_secret.is_empty();
         if !basic && !self.client_id.is_empty() {
             form.append_pair("client_id", &self.client_id);
@@ -198,11 +279,10 @@ impl OAuthLogin {
             }
         }
         let encoded = |text: &str| url::form_urlencoded::byte_serialize(text.as_bytes()).collect::<String>();
-        let authorization = basic.then(|| {
+        basic.then(|| {
             let pair = format!("{}:{}", encoded(&self.client_id), encoded(&self.client_secret));
             format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(pair))
-        });
-        (form.finish(), authorization)
+        })
     }
 
     /// The token request, sent as `api` would be — its timeouts,
@@ -210,6 +290,22 @@ impl OAuthLogin {
     /// endpoint. Its certificate is the caller's to choose, by host.
     pub fn token_request(&self, api: &PreparedRequest, refresh: Option<&str>) -> PreparedRequest {
         let (body, authorization) = self.token_form(refresh);
+        self.posted(api, body, authorization)
+    }
+
+    /// The token request that exchanges `code`, sent as `api` would be.
+    pub fn code_request(
+        &self,
+        api: &PreparedRequest,
+        code: &str,
+        redirect_uri: &str,
+        verifier: &str,
+    ) -> PreparedRequest {
+        let (body, authorization) = self.code_form(code, redirect_uri, verifier);
+        self.posted(api, body, authorization)
+    }
+
+    fn posted(&self, api: &PreparedRequest, body: String, authorization: Option<String>) -> PreparedRequest {
         let mut headers = Vec::new();
         if let Some(agent) = api.header("user-agent") {
             headers.push(("User-Agent".to_string(), agent.to_string()));
@@ -231,6 +327,72 @@ impl OAuthLogin {
             ..Default::default()
         }
     }
+}
+
+/// `http://127.0.0.1:{port}/callback` (RFC 8252: the loopback address, not
+/// `localhost`).
+pub fn redirect_uri(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/callback")
+}
+
+/// The port of a loopback callback URI, or `0` when it is not one.
+pub fn redirect_port_of(uri: &str) -> u16 {
+    let Ok(url) = url::Url::parse(uri.trim()) else {
+        return 0;
+    };
+    let host = url.host_str().unwrap_or("");
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
+        return 0;
+    }
+    url.port().unwrap_or(0)
+}
+
+/// PKCE's `code_verifier`: base64url without padding of `entropy` (RFC 7636).
+/// 32 bytes become the 43 characters the RFC's shorter end asks for.
+pub fn code_verifier(entropy: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(entropy)
+}
+
+/// PKCE's S256 `code_challenge`: base64url without padding of the SHA-256
+/// of the verifier's ASCII (RFC 7636 §4.2).
+pub fn code_challenge(verifier: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(verifier.as_bytes()))
+}
+
+/// The browser's authorization URL: `authorization_url` with the code
+/// grant's query added to whatever query it already has.
+pub fn authorize_url(login: &OAuthLogin, redirect_uri: &str, state: &str, challenge: &str) -> Result<String, String> {
+    let mut url = url::Url::parse(login.authorization_url.trim()).map_err(|error| {
+        format!(
+            "OAuth 2.0: the authorization URL {} is not one: {error}",
+            login.authorization_url
+        )
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!(
+            "OAuth 2.0: the authorization URL {} is no http or https address",
+            login.authorization_url
+        ));
+    }
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("response_type", "code");
+        query.append_pair("client_id", &login.client_id);
+        query.append_pair("redirect_uri", redirect_uri);
+        query.append_pair("state", state);
+        query.append_pair("code_challenge", challenge);
+        query.append_pair("code_challenge_method", "S256");
+        if !login.scope.is_empty() {
+            query.append_pair("scope", &login.scope);
+        }
+        if !login.audience.is_empty() {
+            query.append_pair("audience", &login.audience);
+        }
+        if !login.resource.is_empty() {
+            query.append_pair("resource", &login.resource);
+        }
+    }
+    Ok(url.to_string())
 }
 
 /// C4: the reader's tokens, by [`OAuthLogin::key`].
@@ -515,5 +677,110 @@ mod tests {
             r#"{"grant":"clientCredentials","tokenUrl":"https://id.test/token","clientId":"a","clientSecret":"","clientAuth":"header"}"#
         );
         assert_eq!(serde_json::from_str::<OAuth2>(&json).expect("read"), oauth);
+        let code = OAuth2 {
+            grant: Grant::AuthorizationCode,
+            authorization_url: "https://id.test/authorize".into(),
+            redirect_port: 8080,
+            token_url: "https://id.test/token".into(),
+            client_id: "app".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&code).expect("JSON");
+        assert!(json.contains(r#""grant":"authorizationCode""#), "{json}");
+        assert!(
+            json.contains(r#""authorizationUrl":"https://id.test/authorize""#),
+            "{json}"
+        );
+        assert!(json.contains(r#""redirectPort":8080"#), "{json}");
+        assert_eq!(serde_json::from_str::<OAuth2>(&json).expect("read"), code);
+        assert_eq!(
+            serde_json::from_str::<OAuth2>(r#"{"grant":"authorizationCode"}"#)
+                .expect("an old shape, plus the new grant"),
+            OAuth2 {
+                grant: Grant::AuthorizationCode,
+                ..Default::default()
+            }
+        );
+    }
+
+    /// RFC 7636 §4.2's worked example, and a verifier of 32 bytes.
+    #[test]
+    fn pkce_is_s256_of_the_verifier() {
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        assert_eq!(code_challenge(verifier), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+        let made = code_verifier(&[7u8; 32]);
+        assert_eq!(made.len(), 43);
+        assert!(
+            made.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        );
+    }
+
+    #[test]
+    fn the_code_is_exchanged_without_the_scope_and_the_browser_url_carries_pkce() {
+        let mut login = login(Grant::AuthorizationCode, ClientAuth::Header);
+        login.authorization_url = "https://id.test/authorize?audience=kept".into();
+        login.redirect_port = 0;
+        login.audience = "https://api.test".into();
+        let (form, authorization) = login.code_form("the code", "http://127.0.0.1:9/callback", "verifier");
+        assert_eq!(
+            form,
+            "grant_type=authorization_code&code=the+code&redirect_uri=http%3A%2F%2F127.0.0.1%3A9%2Fcallback&code_verifier=verifier&audience=https%3A%2F%2Fapi.test"
+        );
+        assert!(authorization.is_some());
+        assert!(!form.contains("scope="), "the scope is not sent again");
+        // Without a code this is not the client-credentials grant.
+        let (plain, _) = login.token_form(None);
+        assert!(plain.starts_with("grant_type=authorization_code"));
+        assert!(!plain.contains("client_credentials"));
+        let (refresh, _) = login.token_form(Some("r1"));
+        assert!(refresh.starts_with("grant_type=refresh_token"));
+
+        let url = authorize_url(&login, &redirect_uri(9), "st", "ch").expect("url");
+        let url = url::Url::parse(&url).expect("parsed");
+        let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(url.path(), "/authorize");
+        assert_eq!(query.get("response_type").map(String::as_str), Some("code"));
+        assert_eq!(query.get("client_id").map(String::as_str), Some("app id"));
+        assert_eq!(
+            query.get("redirect_uri").map(String::as_str),
+            Some("http://127.0.0.1:9/callback")
+        );
+        assert_eq!(query.get("state").map(String::as_str), Some("st"));
+        assert_eq!(query.get("code_challenge").map(String::as_str), Some("ch"));
+        assert_eq!(query.get("code_challenge_method").map(String::as_str), Some("S256"));
+        assert_eq!(query.get("scope").map(String::as_str), Some("read write"));
+        // The login's audience is added. The one already on the URL stays.
+        let raw = url.query().unwrap_or("");
+        assert!(raw.contains("audience=kept"), "{raw}");
+        assert!(raw.contains("audience=https%3A%2F%2Fapi.test"), "{raw}");
+        assert_eq!(redirect_port_of("http://127.0.0.1:8080/callback"), 8080);
+        assert_eq!(redirect_port_of("http://localhost:8080/callback"), 8080);
+        assert_eq!(redirect_port_of("https://id.test/callback"), 0);
+    }
+
+    #[test]
+    fn a_client_credentials_token_is_not_retold_by_the_authorization_url() {
+        let login = login(Grant::ClientCredentials, ClientAuth::Header);
+        let mut with_url = login.clone();
+        with_url.authorization_url = "https://id.test/authorize".into();
+        with_url.redirect_port = 8080;
+        assert_eq!(with_url.key(), login.key());
+        let mut code = login;
+        code.grant = Grant::AuthorizationCode;
+        code.authorization_url = "https://id.test/authorize".into();
+        let moved = {
+            let mut other = code.clone();
+            other.authorization_url = "https://id.test/other".into();
+            other
+        };
+        assert_ne!(moved.key(), code.key());
+        code.redirect_port = 9;
+        let other_port = {
+            let mut other = code.clone();
+            other.redirect_port = 10;
+            other
+        };
+        assert_ne!(other_port.key(), code.key());
     }
 }

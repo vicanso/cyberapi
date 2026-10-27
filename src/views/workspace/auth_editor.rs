@@ -5,6 +5,10 @@
 //! to it at once, and its view is made again when its request is replaced
 //! (the history, a cURL command); a folder's and the project's wait for
 //! their dialog's Save. Inheriting says what it stands for, and where from.
+//!
+//! The authorization-code grant (C4, data model 14) is the desktop's: it
+//! opens the system browser and listens on `127.0.0.1` for the callback.
+//! A page keeps the same fields and says it cannot open the browser.
 
 use crate::states::{ApiState, WorkspaceState};
 use crate::views::settings::Choice;
@@ -12,23 +16,33 @@ use crate::views::template_hints::{self, FieldHints, HintKey, HintSource, Hints}
 use cyberapi_core::ItemId;
 use cyberapi_core::auth::{Auth, AuthKind, KeyPlace};
 use cyberapi_core::inherit::AuthSource;
-use cyberapi_core::model::HttpMethod;
+use cyberapi_core::model::{HttpMethod, HttpRequest};
 use cyberapi_core::oauth::{ClientAuth, Grant, OAuth2};
+use cyberapi_core::template::Answers;
 use cyberapi_core::template_hints::Hint;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use futures::future::FutureExt as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
-use gpui_kit::component::{ActiveTheme as _, IndexPath, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, IndexPath, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div, rems,
+    AnyElement, AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div,
+    rems,
 };
 use rust_i18n::t;
+use std::time::Duration;
 
 type Choices = Entity<SelectState<Vec<Choice>>>;
 
 const PLACES: [KeyPlace; 2] = [KeyPlace::Header, KeyPlace::Query];
-const GRANTS: [Grant; 2] = [Grant::ClientCredentials, Grant::Password];
+const GRANTS: [Grant; 3] = [Grant::ClientCredentials, Grant::Password, Grant::AuthorizationCode];
+/// How long the desktop waits for the browser to come back to the loopback.
+const AUTHORIZE_WAIT: Duration = Duration::from_secs(180);
 const CLIENT_AUTHS: [ClientAuth; 2] = [ClientAuth::Header, ClientAuth::Body];
 
 /// The fields whose values are templates, in the order of their index in
@@ -43,6 +57,7 @@ const CLIENT_SECRET: usize = 6;
 const SCOPE: usize = 7;
 const AUDIENCE: usize = 8;
 const RESOURCE: usize = 9;
+const AUTHORIZATION_URL: usize = 10;
 
 /// The fields whose values are secrets, shown as dots till shown.
 fn secret(field: usize) -> bool {
@@ -82,9 +97,16 @@ pub struct AuthEditor {
     grant: Choices,
     client_auth: Choices,
     /// Basic's user and password, the token, the key's value, OAuth's
-    /// token URL, client and scope: templates.
-    templated: [Entity<InputState>; 10],
+    /// token URL, client, scope and authorization URL: templates.
+    templated: [Entity<InputState>; 11],
+    /// The loopback port. Empty is any free port. Not a template.
+    redirect_port: Entity<InputState>,
     key_name: Entity<InputState>,
+    /// The browser dance, while it runs. Dropping it cancels: the listener
+    /// stops. The button stays clickable so a second click can drop it.
+    authorizing: Option<Task<()>>,
+    /// What the last attempt came to, under the button.
+    note: Option<AuthNote>,
     hints: HintSource,
     /// The hints open under one of `templated`.
     menu: Option<FieldHints>,
@@ -110,8 +132,31 @@ fn grant_label(grant: Grant) -> String {
     match grant {
         Grant::ClientCredentials => t!("editor.auth_grant_client"),
         Grant::Password => t!("editor.auth_grant_password"),
+        Grant::AuthorizationCode => t!("editor.auth_grant_code"),
     }
     .to_string()
+}
+
+/// What the last authorization attempt came to.
+enum AuthNote {
+    Waiting,
+    Done,
+    Cancelled,
+    TimedOut,
+    Failed(String),
+}
+
+impl AuthNote {
+    fn text(&self) -> String {
+        match self {
+            AuthNote::Waiting => t!("editor.auth_authorize_waiting"),
+            AuthNote::Done => t!("editor.auth_authorized"),
+            AuthNote::Cancelled => t!("editor.auth_authorize_cancelled"),
+            AuthNote::TimedOut => t!("editor.auth_authorize_timeout"),
+            AuthNote::Failed(text) => return text.clone(),
+        }
+        .to_string()
+    }
 }
 
 fn client_auth_label(place: ClientAuth) -> String {
@@ -120,6 +165,33 @@ fn client_auth_label(place: ClientAuth) -> String {
         ClientAuth::Body => t!("editor.auth_client_in_body"),
     }
     .to_string()
+}
+
+/// The attempt ended: the note under the button, and a toast when the
+/// reader may be looking at the browser. Clearing the task is last, so
+/// dropping it does not cancel the rest of this poll.
+fn settle(
+    this: &WeakEntity<AuthEditor>,
+    cx: &mut AsyncApp,
+    window: AnyWindowHandle,
+    note: AuthNote,
+    toast: Option<String>,
+    ok: bool,
+) {
+    if let Some(text) = toast {
+        let _ = cx.update_window(window, |_, window, cx| {
+            let toast = match ok {
+                true => Notification::success(text),
+                false => Notification::error(text),
+            };
+            window.push_notification(toast, cx);
+        });
+    }
+    let _ = this.update(cx, |this, cx| {
+        this.authorizing = None;
+        this.note = Some(note);
+        cx.notify();
+    });
 }
 
 fn place_label(place: KeyPlace) -> String {
@@ -269,7 +341,24 @@ impl AuthEditor {
                 window,
                 cx,
             ),
+            field(
+                oauth.authorization_url,
+                t!("editor.auth_authorization_url").to_string(),
+                false,
+                window,
+                cx,
+            ),
         ];
+        let redirect_port = field(
+            match oauth.redirect_port {
+                0 => String::new(),
+                port => port.to_string(),
+            },
+            t!("editor.auth_redirect_port_placeholder").to_string(),
+            false,
+            window,
+            cx,
+        );
         let key_name = field(name, t!("editor.auth_key_name").to_string(), false, window, cx);
 
         let mut subscriptions = vec![
@@ -301,6 +390,11 @@ impl AuthEditor {
                     this.write(cx);
                 }
             }),
+            cx.subscribe(&redirect_port, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.write(cx);
+                }
+            }),
         ];
         for input in &templated {
             subscriptions.push(cx.subscribe(input, |this, input, event: &InputEvent, cx| match event {
@@ -321,10 +415,13 @@ impl AuthEditor {
             grant,
             client_auth,
             templated,
+            redirect_port,
             key_name,
             hints,
             menu: None,
             hints_later: None,
+            authorizing: None,
+            note: None,
             _subscriptions: subscriptions,
         }
     }
@@ -365,9 +462,11 @@ impl AuthEditor {
                 place: PLACES[self.place.read(cx).selected_value().copied().unwrap_or(0).min(1)],
             },
             AuthKind::OAuth2 => {
-                let grant = GRANTS[self.grant.read(cx).selected_value().copied().unwrap_or(0).min(1)];
+                let grant = self.grant_now(cx);
                 let password = grant == Grant::Password;
-                // The user's only for the grant that sends them.
+                let code = grant == Grant::AuthorizationCode;
+                // The user's only for the grant that sends them, and the
+                // browser's URL and port only for the one that opens one.
                 let user = |field: usize| match password {
                     true => text(&self.templated[field]),
                     false => String::new(),
@@ -375,6 +474,14 @@ impl AuthEditor {
                 Auth::from(OAuth2 {
                     grant,
                     token_url: text(&self.templated[TOKEN_URL]),
+                    authorization_url: match code {
+                        true => text(&self.templated[AUTHORIZATION_URL]),
+                        false => String::new(),
+                    },
+                    redirect_port: match code {
+                        true => self.port_now(cx),
+                        false => 0,
+                    },
                     client_id: text(&self.templated[CLIENT_ID]),
                     client_secret: text(&self.templated[CLIENT_SECRET]),
                     username: user(USERNAME),
@@ -388,11 +495,129 @@ impl AuthEditor {
         }
     }
 
+    fn grant_now(&self, cx: &App) -> Grant {
+        let index = self.grant.read(cx).selected_value().copied().unwrap_or(0);
+        GRANTS[index.min(GRANTS.len() - 1)]
+    }
+
+    /// Empty is any free port. A value that is not a port is none.
+    fn port_now(&self, cx: &App) -> u16 {
+        let text = self.redirect_port.read(cx).value().trim().to_string();
+        if text.is_empty() { 0 } else { text.parse().unwrap_or(0) }
+    }
+
     fn write(&mut self, cx: &mut Context<Self>) {
+        self.note = None;
         if let AuthFor::Api(api) = &self.owner {
             let auth = self.auth(cx);
             api.update(cx, |api, cx| api.set_auth(auth, cx));
         }
+        cx.notify();
+    }
+
+    /// Open the system browser for an authorization-code sign-in, and
+    /// exchange the code the loopback receives. A second click drops the
+    /// task, which stops the listener.
+    fn authorize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.authorizing.is_some() {
+            self.authorizing = None;
+            self.note = Some(AuthNote::Cancelled);
+            cx.notify();
+            return;
+        }
+        if !crate::this_build::opens_oauth_browser() {
+            return;
+        }
+        let request = HttpRequest {
+            uri: "https://127.0.0.1/".into(),
+            auth: self.auth(cx),
+            ..Default::default()
+        };
+        let workspace = self.workspace.read(cx);
+        let mut sender = workspace.run_sender(cx);
+        // The synthetic request carries the sign-in itself. A folder's
+        // headers are not part of asking for this token.
+        sender.inherited = Default::default();
+        let collection = workspace.collection().id.clone();
+        let answers = match &self.owner {
+            AuthFor::Api(api) => api.read(cx).typed(cx),
+            AuthFor::Folder(_) | AuthFor::Project => Answers::default(),
+        };
+        let window = window.window_handle();
+        let exchanging = sender.clone();
+        self.note = Some(AuthNote::Waiting);
+        self.authorizing = Some(cx.spawn(async move |this, cx| {
+            let prepared = cx
+                .background_spawn(async move {
+                    cyberapi_service::prepare_code(&sender, &collection, &request, &answers).await
+                })
+                .await;
+            let grant = match prepared {
+                Ok(grant) => grant,
+                Err(error) => {
+                    settle(&this, cx, window, AuthNote::Failed(error.clone()), Some(error), false);
+                    return;
+                }
+            };
+            let listening = match this.update(cx, |_, cx| {
+                crate::this_build::listen_oauth(grant.port(), grant.state.clone(), cx)
+            }) {
+                Ok(task) => task,
+                Err(_) => return,
+            };
+            let listened = match listening.await {
+                Ok(listened) => listened,
+                Err(error) => {
+                    settle(&this, cx, window, AuthNote::Failed(error.clone()), Some(error), false);
+                    return;
+                }
+            };
+            let bound = listened.port();
+            let url = match grant.authorize_url(bound) {
+                Ok(url) => url,
+                Err(error) => {
+                    drop(listened);
+                    settle(&this, cx, window, AuthNote::Failed(error.clone()), Some(error), false);
+                    return;
+                }
+            };
+            cx.update(|cx| cx.open_url(&url));
+            let code = match futures::future::select(
+                listened.code().boxed_local(),
+                cx.background_executor().timer(AUTHORIZE_WAIT).boxed_local(),
+            )
+            .await
+            {
+                futures::future::Either::Left((code, _)) => code,
+                futures::future::Either::Right((_, waiting)) => {
+                    drop(waiting);
+                    let text = t!("editor.auth_authorize_timeout").to_string();
+                    settle(&this, cx, window, AuthNote::TimedOut, Some(text), false);
+                    return;
+                }
+            };
+            let code = match code {
+                Ok(code) => code,
+                Err(error) => {
+                    settle(&this, cx, window, AuthNote::Failed(error.clone()), Some(error), false);
+                    return;
+                }
+            };
+            let exchanged = cx
+                .background_spawn(
+                    async move { cyberapi_service::exchange_code(&exchanging, &grant, bound, &code).await },
+                )
+                .await;
+            match exchanged {
+                Ok(()) => {
+                    let text = t!("editor.auth_authorized").to_string();
+                    settle(&this, cx, window, AuthNote::Done, Some(text), true);
+                }
+                Err(error) => {
+                    settle(&this, cx, window, AuthNote::Failed(error.clone()), Some(error), false);
+                }
+            }
+        }));
         cx.notify();
     }
 
@@ -603,10 +828,59 @@ impl Render for AuthEditor {
                 }
             }
             AuthKind::OAuth2 => {
-                rows.push(row(
-                    t!("editor.auth_grant").to_string(),
-                    narrow(Select::new(&self.grant)),
-                ));
+                let grant_list = div().w(rems(14.)).child(Select::new(&self.grant).small());
+                rows.push(row(t!("editor.auth_grant").to_string(), grant_list));
+                let grant = self.grant_now(cx);
+                if grant == Grant::AuthorizationCode {
+                    rows.push(row(
+                        t!("editor.auth_authorization_url").to_string(),
+                        self.templated_field(AUTHORIZATION_URL, cx),
+                    ));
+                    rows.push(row(
+                        t!("editor.auth_redirect_port").to_string(),
+                        NumberInput::new(&self.redirect_port)
+                            .small()
+                            .placeholder(t!("editor.auth_redirect_port_placeholder").to_string()),
+                    ));
+                    let busy = self.authorizing.is_some();
+                    let mut button = Button::new("oauth-authorize")
+                        .small()
+                        .label(match busy {
+                            true => t!("editor.auth_authorize_cancel").to_string(),
+                            false => t!("editor.auth_authorize").to_string(),
+                        })
+                        .disabled(!crate::this_build::opens_oauth_browser())
+                        .on_click(cx.listener(|this, _, window, cx| this.authorize(window, cx)));
+                    button = match busy {
+                        true => button.danger(),
+                        false => button.primary(),
+                    };
+                    rows.push(row(String::new(), button));
+                    if let Some(note) = &self.note {
+                        let color = match note {
+                            AuthNote::Done => cx.theme().green,
+                            AuthNote::Failed(_) | AuthNote::TimedOut => cx.theme().danger,
+                            AuthNote::Waiting | AuthNote::Cancelled => cx.theme().muted_foreground,
+                        };
+                        rows.push(div().text_xs().text_color(color).child(note.text()).into_any_element());
+                    }
+                    rows.push(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("editor.auth_code_hint").to_string())
+                            .into_any_element(),
+                    );
+                    if !crate::this_build::opens_oauth_browser() {
+                        rows.push(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("editor.auth_code_web").to_string())
+                                .into_any_element(),
+                        );
+                    }
+                }
                 rows.push(row(
                     t!("editor.auth_token_url").to_string(),
                     self.templated_field(TOKEN_URL, cx),
@@ -619,8 +893,7 @@ impl Render for AuthEditor {
                     t!("editor.auth_client_secret").to_string(),
                     self.templated_field(CLIENT_SECRET, cx),
                 ));
-                let grant = self.grant.read(cx).selected_value().copied().unwrap_or(0);
-                if GRANTS.get(grant) == Some(&Grant::Password) {
+                if grant == Grant::Password {
                     rows.push(row(t!("editor.user").to_string(), self.templated_field(USERNAME, cx)));
                     rows.push(row(
                         t!("editor.password").to_string(),

@@ -60,6 +60,15 @@ pub enum SendFailure {
     /// run, the command line and an AI assistant pass it by.
     #[snafu(display("a WebSocket API is connected to in the desktop app, not sent"))]
     WebSocket,
+    /// E3: a GraphQL subscription whose address is `ws` or `wss` is
+    /// connected to (`crate::graphql_ws`), not sent.
+    #[snafu(display("a GraphQL subscription over WebSocket is connected to in the desktop app, not sent"))]
+    GraphQlSocket,
+    /// E2: a gRPC call that streams from the client is connected to
+    /// (`crate::grpc_stream`), not sent. A run, the command line and an
+    /// assistant pass it by.
+    #[snafu(display("a gRPC call that streams from the client is connected to in the desktop app, not sent"))]
+    GrpcStream,
 }
 
 /// What a `prompt` nothing was typed for does.
@@ -171,6 +180,11 @@ pub(crate) async fn send_with(
     if request.method == HttpMethod::WebSocket {
         return Err(SendFailure::WebSocket);
     }
+    // E2: a client or bidirectional stream is opened by the desktop, one
+    // message at a time. A run, the command line and an assistant are told so.
+    if request.method == HttpMethod::Grpc && GrpcBody::read(&request.body).client_streams() {
+        return Err(SendFailure::GrpcStream);
+    }
     let sender = sender.for_request(&request);
     let (mut prepared, globals) = prepare(
         &sender,
@@ -182,6 +196,12 @@ pub(crate) async fn send_with(
         values,
     )
     .await?;
+    // E3: a subscription whose address is a WebSocket is opened by the
+    // desktop, not sent from here. A run, the command line and an assistant
+    // are told so.
+    if request.content_type == ContentType::GraphQl && cyberapi_core::graphql_ws::is_socket_url(&prepared.url) {
+        return Err(SendFailure::GraphQlSocket);
+    }
     let grpc = (request.method == HttpMethod::Grpc).then(|| GrpcBody::read(&request.body));
     // The jar's cookies go to each hop's own address. A Cookie the request
     // names itself stays with the origin it was written for; past it, the
@@ -1012,6 +1032,13 @@ mod tests {
                         server_streaming: Some(true),
                         ..Default::default()
                     },
+                    prost_types::MethodDescriptorProto {
+                        name: Some("Upload".into()),
+                        input_type: Some(".shop.Ask".into()),
+                        output_type: Some(".shop.Ask".into()),
+                        client_streaming: Some(true),
+                        ..Default::default()
+                    },
                 ],
                 ..Default::default()
             }],
@@ -1078,7 +1105,7 @@ mod tests {
                 .iter()
                 .map(|m| m.method.as_str())
                 .collect::<Vec<_>>(),
-            ["Get", "Watch"]
+            ["Get", "Watch", "Upload"]
         );
         let asked: Vec<_> = setup.engine.sent.lock().expect("sent").drain(..).collect();
         assert_eq!(
@@ -1132,6 +1159,24 @@ mod tests {
         let sent = setup.engine.sent.lock().expect("sent").pop().expect("sent");
         assert_eq!((sent.method, sent.url.as_str()), (HttpMethod::Post, get.as_str()));
         assert_eq!(sent.body, grpc::frame(&field(1, b"7")));
+
+        // E2: a method that streams from the client is not sent from here.
+        let upload = HttpRequest {
+            body: GrpcBody {
+                method: "Upload".into(),
+                ..GrpcBody::read(&call.body)
+            }
+            .to_body(),
+            ..call.clone()
+        };
+        let refused = pollster::block_on(send(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            api.clone(),
+            upload,
+            Answers::default(),
+        ));
+        assert_eq!(refused.map(|response| response.status), Err(SendFailure::GrpcStream));
 
         // A call that failed: its status, no message.
         setup.engine.routes.lock().expect("routes").remove(&get);
@@ -1743,6 +1788,97 @@ mod tests {
             Some("OAuth 2.0: no token from https://id.test/token: 401 invalid_client")
         );
         assert_eq!(asked(&refusing).len(), 1);
+    }
+
+    /// C4: an authorization code is not posted as client credentials. With
+    /// no refresh token, nothing is sent and the answer says to authorize
+    /// in the desktop app. Exchanging a code keeps the token the next send
+    /// uses, and that send does not ask the token endpoint again.
+    #[test]
+    fn an_authorization_code_is_not_asked_until_the_desktop_has_one() {
+        struct Id(Mutex<Vec<PreparedRequest>>);
+        impl HttpEngine for Id {
+            fn send(&self, request: PreparedRequest) -> SendFuture {
+                self.0.lock().expect("asked").push(request.clone());
+                let answer = if request.url == "https://id.test/token" {
+                    ok(200, r#"{"access_token":"t1","expires_in":3600,"refresh_token":"r1"}"#)
+                } else if request.header("authorization") == Some("Bearer t1") {
+                    ok(200, "{}")
+                } else {
+                    ok(401, "{}")
+                };
+                Box::pin(async move { answer })
+            }
+        }
+        let setup = setup(ok(200, "{}"));
+        let api = new_api(&setup, "code");
+        let request = HttpRequest {
+            uri: "https://api.test/a".into(),
+            auth: cyberapi_core::auth::Auth::from(cyberapi_core::oauth::OAuth2 {
+                grant: cyberapi_core::oauth::Grant::AuthorizationCode,
+                authorization_url: "https://id.test/authorize".into(),
+                token_url: "https://id.test/token".into(),
+                client_id: "app".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let id = Arc::new(Id(Mutex::default()));
+        let sender = Sender {
+            engine: id.clone(),
+            tokens: Default::default(),
+            ..setup.sender.clone()
+        };
+        let response = pollster::block_on(send(
+            sender.clone(),
+            setup.collection.clone(),
+            api.clone(),
+            request.clone(),
+            Answers::default(),
+        ))
+        .expect("sent");
+        assert_eq!(response.status, None);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("OAuth 2.0: authorize this API in the desktop app first")
+        );
+        assert!(id.0.lock().expect("asked").is_empty(), "no client_credentials post");
+
+        let grant = pollster::block_on(crate::oauth::prepare_code(
+            &sender,
+            &setup.collection,
+            &request,
+            &Answers::default(),
+        ))
+        .expect("prepared");
+        let url = grant.authorize_url(8765).expect("authorize url");
+        assert!(url.contains("response_type=code"), "{url}");
+        assert!(url.contains("code_challenge_method=S256"), "{url}");
+        assert!(
+            url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A8765%2Fcallback"),
+            "{url}"
+        );
+        pollster::block_on(crate::oauth::exchange_code(&sender, &grant, 8765, "abc")).expect("exchanged");
+        let asked = id.0.lock().expect("asked").drain(..).collect::<Vec<_>>();
+        assert_eq!(asked.len(), 1);
+        let body = String::from_utf8(asked[0].body.clone()).expect("form");
+        assert!(body.starts_with("grant_type=authorization_code"), "{body}");
+        assert!(body.contains("code=abc"), "{body}");
+        assert!(
+            body.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A8765%2Fcallback"),
+            "{body}"
+        );
+        assert!(body.contains("code_verifier="), "{body}");
+        assert!(!body.contains("client_credentials"), "{body}");
+        assert!(!body.contains("scope="), "{body}");
+
+        let response =
+            pollster::block_on(send(sender, setup.collection.clone(), api, request, Answers::default())).expect("sent");
+        assert_eq!(response.status, Some(200));
+        let asked = id.0.lock().expect("asked").drain(..).collect::<Vec<_>>();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].url, "https://api.test/a");
+        assert_eq!(asked[0].header("authorization"), Some("Bearer t1"));
     }
 
     /// C4: the app's tokens are the reader's, kept in their store under a

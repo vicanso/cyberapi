@@ -3,11 +3,13 @@
 //! the browser run the same code.
 
 pub mod backup;
+pub mod graphql_ws;
+pub mod grpc_stream;
 mod oauth;
 mod run;
 mod send;
 pub mod socket;
 
-pub use oauth::Tokens;
+pub use oauth::{CodeGrant, Tokens, exchange_code, prepare_code};
 pub use run::{RunStep, StepResult, run};
 pub use send::{SendFailure, Sender, code, fetch_text, introspect, reflect, send, send_watched};

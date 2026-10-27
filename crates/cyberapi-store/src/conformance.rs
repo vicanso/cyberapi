@@ -1411,6 +1411,7 @@ async fn workspace_prefs_are_per_collection(storage: &Storage) {
         selected: Some(login.item.id.clone()),
         // F1: the open tabs, in order.
         open: vec![ItemId::from("a2"), login.item.id.clone()],
+        scratches: Vec::new(),
         pinned: vec![login.item.id.clone()],
         filters: [(login.item.id.clone(), "$.data[*].name".to_string())]
             .into_iter()

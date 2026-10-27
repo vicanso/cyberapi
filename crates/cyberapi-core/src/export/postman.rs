@@ -56,35 +56,39 @@ fn auth(auth: &Auth) -> Option<Value> {
         Auth::Basic { username, password } => fields("basic", &[("username", username), ("password", password)]),
         Auth::Digest { username, password } => fields("digest", &[("username", username), ("password", password)]),
         Auth::Bearer { token } => fields("bearer", &[("token", token)]),
-        // C4: the grant Postman asks with, unless it asks in a browser.
-        Auth::OAuth2(oauth) => fields(
-            "oauth2",
-            &[
-                (
-                    "grant_type",
-                    match oauth.grant {
-                        Grant::ClientCredentials => "client_credentials",
-                        Grant::Password => "password_credentials",
-                    },
-                ),
-                ("accessTokenUrl", &oauth.token_url),
-                ("clientId", &oauth.client_id),
-                ("clientSecret", &oauth.client_secret),
-                ("username", &oauth.username),
-                ("password", &oauth.password),
-                ("scope", &oauth.scope),
-                ("audience", &oauth.audience),
-                ("resource", &oauth.resource),
-                (
-                    "client_authentication",
-                    match oauth.client_auth {
-                        ClientAuth::Header => "header",
-                        ClientAuth::Body => "body",
-                    },
-                ),
+        // C4: the grant Postman asks with. The authorization code is the
+        // PKCE one: the desktop opens the browser. A fixed callback port
+        // goes out as the loopback URI it listens on.
+        Auth::OAuth2(oauth) => {
+            let grant = match oauth.grant {
+                Grant::ClientCredentials => "client_credentials",
+                Grant::Password => "password_credentials",
+                Grant::AuthorizationCode => "authorization_code_with_pkce",
+            };
+            let client = match oauth.client_auth {
+                ClientAuth::Header => "header",
+                ClientAuth::Body => "body",
+            };
+            let redirect = crate::oauth::redirect_uri(oauth.redirect_port);
+            let mut pairs = vec![
+                ("grant_type", grant),
+                ("authUrl", oauth.authorization_url.as_str()),
+                ("accessTokenUrl", oauth.token_url.as_str()),
+                ("clientId", oauth.client_id.as_str()),
+                ("clientSecret", oauth.client_secret.as_str()),
+                ("username", oauth.username.as_str()),
+                ("password", oauth.password.as_str()),
+                ("scope", oauth.scope.as_str()),
+                ("audience", oauth.audience.as_str()),
+                ("resource", oauth.resource.as_str()),
+                ("client_authentication", client),
                 ("addTokenTo", "header"),
-            ],
-        ),
+            ];
+            if oauth.redirect_port != 0 {
+                pairs.push(("redirect_uri", redirect.as_str()));
+            }
+            fields("oauth2", &pairs)
+        }
         Auth::ApiKey { name, value, place } => fields(
             "apikey",
             &[
@@ -392,8 +396,8 @@ mod tests {
             password: "pw".into(),
             scope: "read".into(),
             audience: "https://api.test".into(),
-            resource: String::new(),
             client_auth: ClientAuth::Body,
+            ..Default::default()
         });
         let mut data = shop();
         data.settings.auth = oauth.clone();

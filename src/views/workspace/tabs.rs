@@ -43,12 +43,13 @@ impl Render for TabsBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
         let opened = state.opened().cloned();
+        let editable = state.editable();
         let tabs: Vec<_> = state
             .tabs()
             .into_iter()
-            .map(|api| {
-                let sending = state.tab_sending(&api.id, cx);
-                (api.id.clone(), api.request.method, api.name.clone(), sending)
+            .map(|tab| {
+                let sending = state.tab_sending(&tab.id, cx);
+                (tab.id, tab.method, tab.name, sending, tab.scratch)
             })
             .collect();
         if opened != self.shown {
@@ -62,7 +63,7 @@ impl Render for TabsBar {
         let row = tabs
             .into_iter()
             .enumerate()
-            .map(|(index, (id, method, name, sending))| {
+            .map(|(index, (id, method, name, sending, scratch))| {
                 let active = opened.as_ref() == Some(&id);
                 let group = SharedString::from(format!("api-tab-{index}"));
                 let (open_id, close_id, middle_id) = (id.clone(), id.clone(), id.clone());
@@ -100,7 +101,7 @@ impl Render for TabsBar {
                             .text_color(method_color(method, cx))
                             .child(method_label(method)),
                     )
-                    .child(div().min_w_0().truncate().child(name))
+                    .child(div().min_w_0().truncate().child(name.clone()))
                     .when(sending, |tab| {
                         tab.child(div().flex_none().size(px(6.)).rounded_full().bg(theme.primary))
                     })
@@ -135,6 +136,22 @@ impl Render for TabsBar {
                     .context_menu(move |menu, _, _| {
                         let (close, others, all) = (menu_state.clone(), menu_state.clone(), menu_state.clone());
                         let (close_id, others_id) = (id.clone(), id.clone());
+                        let menu = if scratch && editable {
+                            let (save, save_id, save_name) = (menu_state.clone(), id.clone(), name.clone());
+                            menu.item(PopupMenuItem::new(t!("workspace.save_scratch").to_string()).on_click(
+                                move |_, window, cx| {
+                                    super::move_dialog::open_save_scratch_dialog(
+                                        save.clone(),
+                                        save_id.clone(),
+                                        save_name.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            ))
+                        } else {
+                            menu
+                        };
                         menu.item(PopupMenuItem::new(t!("workspace.close_tab").to_string()).on_click(
                             move |_, _, cx| {
                                 let _ = close.update(cx, |state, cx| state.close_tab(&close_id, cx));

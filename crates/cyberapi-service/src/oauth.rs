@@ -7,10 +7,13 @@
 //! date — with its refresh token first, where it came with one — and once
 //! the API answers 401 to a kept one.
 
-use crate::send::Sender;
+use crate::send::{self, Sender, Unanswered};
+use cyberapi_core::CollectionId;
 use cyberapi_core::certificates;
-use cyberapi_core::oauth::{self, KeptToken, KeptTokens, OAuthLogin, Token};
+use cyberapi_core::model::HttpRequest;
+use cyberapi_core::oauth::{self, Grant, KeptToken, KeptTokens, OAuthLogin, Token};
 use cyberapi_core::send::PreparedRequest;
+use cyberapi_core::template::Answers;
 use std::sync::Mutex;
 use tracing::warn;
 use web_time::{SystemTime, UNIX_EPOCH};
@@ -198,6 +201,21 @@ async fn ask(sender: &Sender, login: &OAuthLogin, api: &PreparedRequest) -> Resu
         });
     }
     let key = login.key();
+    // The authorization code is had in the desktop's browser, not by
+    // posting the grant. A refresh token from that exchange is still used.
+    // A run, the command line and an assistant stop here when there is none.
+    if login.grant == Grant::AuthorizationCode {
+        if let Some(refresh) = sender.tokens.refresh_token(&key) {
+            let asked = now();
+            if let Ok(token) = ask_with(sender, login, api, Some(&refresh)).await {
+                let access = token.access_token.clone();
+                sender.tokens.keep(sender, &key, token, asked).await;
+                return Ok(access);
+            }
+            sender.tokens.forget(sender, &key).await;
+        }
+        return Err("OAuth 2.0: authorize this API in the desktop app first".into());
+    }
     if let Some(refresh) = sender.tokens.refresh_token(&key) {
         let asked = now();
         if let Ok(token) = ask_with(sender, login, api, Some(&refresh)).await {
@@ -226,4 +244,93 @@ async fn ask_with(
     asking.tls = certificates::tls_for(&sender.sending.certificates, &asking.url);
     let exchange = sender.engine.send(asking).await.map_err(|error| error.to_string())?;
     oauth::read_token(exchange.status, &exchange.body)
+}
+
+/// The authorization-code grant, rendered, with a fresh PKCE verifier and
+/// state. The desktop listens, opens the browser at [`CodeGrant::authorize_url`],
+/// then [`exchange_code`].
+pub struct CodeGrant {
+    pub login: OAuthLogin,
+    /// What the token request is sent as: the API's timeouts, certificate
+    /// check, HTTP version, proxy and User-Agent.
+    prepared: PreparedRequest,
+    verifier: String,
+    pub state: String,
+}
+
+impl CodeGrant {
+    /// The port the reader set. `0` binds any free port.
+    pub fn port(&self) -> u16 {
+        self.login.redirect_port
+    }
+
+    /// The browser's URL once `bound` is the port that is listening.
+    pub fn authorize_url(&self, bound: u16) -> Result<String, String> {
+        oauth::authorize_url(
+            &self.login,
+            &oauth::redirect_uri(bound),
+            &self.state,
+            &oauth::code_challenge(&self.verifier),
+        )
+    }
+}
+
+fn random_bytes() -> Result<[u8; 32], String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|error| format!("OAuth 2.0: no randomness: {error}"))?;
+    Ok(bytes)
+}
+
+/// Render `request`'s authorization-code sign-in — its templates, as a send
+/// would — and the PKCE values the browser dance needs. `Err` says why it
+/// cannot start: it is not that grant, a URL is missing, or a template did
+/// not render.
+pub async fn prepare_code(
+    sender: &Sender,
+    collection: &CollectionId,
+    request: &HttpRequest,
+    answers: &Answers,
+) -> Result<CodeGrant, String> {
+    let sender = sender.for_request(request);
+    let (prepared, _) = send::prepare(&sender, collection, request, answers, Unanswered::Stops, None, &[])
+        .await
+        .map_err(|error| error.to_string())?;
+    let Some(login) = prepared.oauth.clone() else {
+        return Err("OAuth 2.0: this is not an authorization-code sign-in".into());
+    };
+    if login.grant != Grant::AuthorizationCode {
+        return Err("OAuth 2.0: this grant does not open a browser".into());
+    }
+    if login.authorization_url.trim().is_empty() {
+        return Err("OAuth 2.0: there is no authorization URL".into());
+    }
+    if login.client_id.is_empty() {
+        return Err("OAuth 2.0: there is no client id".into());
+    }
+    if login.token_url.trim().is_empty() {
+        return Err("OAuth 2.0: there is no token URL".into());
+    }
+    // Reject a URL the browser cannot open before anything listens.
+    oauth::authorize_url(&login, &oauth::redirect_uri(1), "state", "challenge")?;
+    Ok(CodeGrant {
+        login,
+        prepared,
+        verifier: oauth::code_verifier(&random_bytes()?),
+        state: oauth::code_verifier(&random_bytes()?),
+    })
+}
+
+/// Exchange `code` from the callback on `bound` and keep the token under
+/// the grant's key, as a send would.
+pub async fn exchange_code(sender: &Sender, grant: &CodeGrant, bound: u16, code: &str) -> Result<(), String> {
+    let redirect = oauth::redirect_uri(bound);
+    let mut asking = grant
+        .login
+        .code_request(&grant.prepared, code, &redirect, &grant.verifier);
+    asking.tls = certificates::tls_for(&sender.sending.certificates, &asking.url);
+    let exchange = sender.engine.send(asking).await.map_err(|error| error.to_string())?;
+    let token = oauth::read_token(exchange.status, &exchange.body)
+        .map_err(|why| format!("OAuth 2.0: no token from {}: {why}", grant.login.token_url))?;
+    sender.tokens.keep(sender, &grant.login.key(), token, now()).await;
+    Ok(())
 }

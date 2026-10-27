@@ -657,12 +657,14 @@ impl RequestEditor {
     fn render_grpc(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
-        let (body, known, loading) = {
+        let (body, known, loading, open, finished) = {
             let api = self.api.read(cx);
             (
                 GrpcBody::read(&api.request().body),
                 api.grpc_definitions(cx),
                 api.loading_grpc(),
+                api.call_open(),
+                api.call_finished(),
             )
         };
         // The service by its own name: the package is in the menu.
@@ -690,7 +692,9 @@ impl RequestEditor {
                     service = &method.service;
                     menu = menu.item(PopupMenuItem::label(service.to_string()));
                 }
-                let label = if method.client_streaming {
+                let label = if method.client_streaming && method.server_streaming {
+                    format!("{} · {}", method.method, t!("editor.grpc_bidi_streaming"))
+                } else if method.client_streaming {
                     format!("{} · {}", method.method, t!("editor.grpc_client_streaming"))
                 } else if method.server_streaming {
                     format!("{} · {}", method.method, t!("editor.grpc_server_streaming"))
@@ -702,7 +706,6 @@ impl RequestEditor {
                 menu = menu.item(
                     PopupMenuItem::new(label)
                         .checked(checked)
-                        .disabled(method.client_streaming)
                         .on_click(move |_, window, cx| {
                             let _ =
                                 this.update(cx, |this, cx| this.choose_grpc_method(&picked.0, &picked.1, window, cx));
@@ -787,6 +790,40 @@ impl RequestEditor {
                     .tooltip(t!("editor.format").to_string())
                     .on_click(cx.listener(|this, _, window, cx| this.format_grpc_message(window, cx))),
             )
+            .when(body.client_streams(), |this| {
+                this.child(
+                    Button::new("grpc-send-message")
+                        .primary()
+                        .xsmall()
+                        .icon(gpui_kit::assets::IconName::Send)
+                        .label(t!("editor.ws_send_message").to_string())
+                        .disabled(!open || finished)
+                        .tooltip_with_action(t!("editor.ws_send_message").to_string(), &SendAction, Some(KEY_CONTEXT))
+                        .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
+                )
+                .when(!body.both_streams(), |this| {
+                    this.child(
+                        Button::new("grpc-end-send")
+                            .ghost()
+                            .xsmall()
+                            .label(t!("editor.grpc_end_send").to_string())
+                            .disabled(!open || finished)
+                            .tooltip(t!("editor.grpc_end_send_about").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.api.update(cx, |api, cx| api.finish_grpc(cx));
+                            })),
+                    )
+                })
+                .when(!open, |this| {
+                    this.child(div().min_w_0().truncate().text_xs().text_color(muted).child(
+                        if this_build::streams_bodies() {
+                            t!("editor.grpc_message_hint").to_string()
+                        } else {
+                            t!("editor.grpc_stream_desktop_only").to_string()
+                        },
+                    ))
+                })
+            })
             .child(
                 div()
                     .flex_1()
@@ -1124,8 +1161,9 @@ impl RequestEditor {
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush(cx);
         let api = self.api.read(cx);
-        // E1: on an open WebSocket, the message goes.
-        if api.sending_since().is_some() && !api.socket_open() {
+        // E1 / E2: on an open socket or call, the message goes. While it is
+        // still connecting, this cancels it.
+        if api.sending_since().is_some() && !api.socket_open() && !api.call_open() {
             self.api
                 .update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
             return;
@@ -1152,6 +1190,12 @@ impl RequestEditor {
         if self.api.read(cx).socket_open() {
             self.api
                 .update(cx, |api, cx| api.send_message(Answers { file: None, prompts }, cx));
+            return;
+        }
+        // E2: a message on the open gRPC call.
+        if self.api.read(cx).call_open() {
+            self.api
+                .update(cx, |api, cx| api.send_grpc_message(Answers { file: None, prompts }, cx));
             return;
         }
         if !picks_file {
@@ -1404,6 +1448,16 @@ impl RequestEditor {
                     match sending {
                         // E1: a WebSocket connects, and is closed or given up.
                         _ if request.method == HttpMethod::WebSocket => self.socket_button(sending, cx),
+                        // E2: a method that streams from the client connects.
+                        _ if request.method == HttpMethod::Grpc && GrpcBody::read(&request.body).client_streams() => {
+                            self.grpc_call_button(sending, cx)
+                        }
+                        // E3: a GraphQL API written at a WebSocket address subscribes.
+                        None if request.content_type == ContentType::GraphQl
+                            && cyberapi_core::graphql_ws::written_as_socket(&request.uri) =>
+                        {
+                            self.graphql_subscribe_button(cx)
+                        }
                         // An event stream coming is stopped, and kept.
                         Some(started) => Button::new("request-send")
                             .danger()
@@ -1619,6 +1673,57 @@ impl RequestEditor {
             }
         }
         self.save_graphql(cx);
+    }
+
+    /// E3: subscribe over WebSocket. A page's bridge relays none, as for a
+    /// WebSocket API. Once it is running the button is the stream's Stop.
+    fn graphql_subscribe_button(&self, cx: &mut Context<Self>) -> Button {
+        Button::new("request-send")
+            .primary()
+            .small()
+            .icon(gpui_kit::assets::IconName::Plug)
+            .label(t!("editor.graphql_subscribe").to_string())
+            .disabled(!this_build::opens_sockets())
+            .tooltip(match this_build::opens_sockets() {
+                true => t!("editor.graphql_subscribe_about").to_string(),
+                false => t!("editor.graphql_ws_desktop_only").to_string(),
+            })
+            .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
+    }
+
+    /// E2: a client or bidirectional call's button: connect, give up
+    /// connecting, or close it. A page's bridge relays none.
+    fn grpc_call_button(&self, sending: Option<web_time::Instant>, cx: &mut Context<Self>) -> Button {
+        let open = self.api.read(cx).call_open();
+        match sending {
+            Some(started) => Button::new("request-send")
+                .danger()
+                .small()
+                .label(format!(
+                    "{} {:.1}s",
+                    if open {
+                        t!("editor.ws_disconnect")
+                    } else {
+                        t!("editor.cancel_send")
+                    },
+                    started.elapsed().as_secs_f32()
+                ))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.api
+                        .update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
+                })),
+            None => Button::new("request-send")
+                .primary()
+                .small()
+                .icon(gpui_kit::assets::IconName::Plug)
+                .label(t!("editor.ws_connect").to_string())
+                .disabled(!this_build::streams_bodies())
+                .tooltip(match this_build::streams_bodies() {
+                    true => t!("editor.grpc_connect_about").to_string(),
+                    false => t!("editor.grpc_stream_desktop_only").to_string(),
+                })
+                .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
+        }
     }
 
     /// E1: a WebSocket's button: connect, give up connecting, or close it.
@@ -1884,6 +1989,55 @@ impl RequestEditor {
             .child(content)
             .into_any_element()
     }
+
+    /// F1: a scratch request, and — for someone who may edit the project —
+    /// the way to put it in the tree.
+    fn scratch_note(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let editable = self.workspace.read(cx).editable();
+        let id = self.api.read(cx).api().clone();
+        let name = self
+            .workspace
+            .read(cx)
+            .scratch(&id)
+            .map(|scratch| scratch.name.clone())
+            .unwrap_or_default();
+        let weak = self.workspace.downgrade();
+        let theme = cx.theme();
+        h_flex()
+            .flex_none()
+            .h(px(28.))
+            .px_3()
+            .gap_2()
+            .items_center()
+            .border_b_1()
+            .border_color(theme.border)
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .child(t!("workspace.scratch_hint").to_string()),
+            )
+            .when(editable, |row| {
+                row.child(
+                    Button::new("save-scratch")
+                        .ghost()
+                        .xsmall()
+                        .flex_none()
+                        .label(t!("workspace.save_scratch").to_string())
+                        .on_click(move |_, window, cx| {
+                            super::move_dialog::open_save_scratch_dialog(
+                                weak.clone(),
+                                id.clone(),
+                                name.clone(),
+                                window,
+                                cx,
+                            );
+                        }),
+                )
+            })
+    }
 }
 
 impl Render for RequestEditor {
@@ -1918,9 +2072,11 @@ impl Render for RequestEditor {
                 .child(self.auth.clone())
                 .into_any_element(),
         };
+        let scratch = self.api.read(cx).is_scratch();
         v_flex()
             .size_full()
             .child(self.render_bar(cx))
+            .when(scratch, |column| column.child(self.scratch_note(cx)))
             .child(self.render_tabs(tab, cx))
             .child(v_flex().flex_1().min_h_0().child(content))
     }

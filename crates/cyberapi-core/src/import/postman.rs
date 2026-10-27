@@ -109,14 +109,25 @@ fn auth(value: &Value) -> Option<Auth> {
                 KeyPlace::Header
             },
         },
-        // C4: the grants asked without a browser.
+        // C4: the grants asked without a browser, and the authorization
+        // code with PKCE (the desktop opens the browser).
         "oauth2" => Auth::from(OAuth2 {
             grant: match field("grant_type").as_str() {
                 "client_credentials" => Grant::ClientCredentials,
                 "password_credentials" => Grant::Password,
+                "authorization_code" | "authorization_code_with_pkce" => Grant::AuthorizationCode,
                 _ => return None,
             },
             token_url: field("accessTokenUrl"),
+            authorization_url: field("authUrl"),
+            redirect_port: ["redirect_uri", "redirectUri", "callback"]
+                .into_iter()
+                .map(field)
+                .find_map(|uri| {
+                    let port = crate::oauth::redirect_port_of(&uri);
+                    (port != 0).then_some(port)
+                })
+                .unwrap_or(0),
             client_id: field("clientId"),
             client_secret: field("clientSecret"),
             username: field("username"),

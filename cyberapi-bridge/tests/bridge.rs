@@ -967,6 +967,11 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
         (answer["status"].clone(), answer["body"].clone()),
         (json!(200), json!("pong"))
     );
+    // H1: each enabled assertion's result, on this answer only.
+    assert_eq!(
+        answer["assertions"],
+        json!([{"index": 0, "subject": "status", "op": "equals", "expected": "200", "passed": true}])
+    );
     let (history, _) = tool(
         &router,
         &reader.secret,
@@ -975,6 +980,7 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     )
     .await;
     assert_eq!(history.as_array().map(Vec::len), Some(1));
+    assert!(history[0].get("assertions").is_none(), "results are not kept");
     // In a named environment, or one the project does not have.
     let (staged, failed) = tool(
         &router,

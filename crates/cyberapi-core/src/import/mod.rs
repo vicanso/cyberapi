@@ -430,13 +430,24 @@ mod tests {
                     {"key": "password", "value": "pw"}, {"key": "scope", "value": "read"}, {"key": "client_authentication", "value": "body"},
                     {"key": "tokenRequestParams", "value": [{"key": "audience", "value": "https://api.test", "enabled": true, "send_as": "request_body"}]}]}}},
                 {"name": "b", "request": {"method": "GET", "url": "https://api.test/b", "auth": {"type": "oauth2", "oauth2": [
-                    {"key": "grant_type", "value": "authorization_code"}]}}}
+                    {"key": "grant_type", "value": "authorization_code_with_pkce"},
+                    {"key": "authUrl", "value": "https://id.test/authorize"},
+                    {"key": "accessTokenUrl", "value": "https://id.test/token"},
+                    {"key": "clientId", "value": "app"},
+                    {"key": "redirect_uri", "value": "http://127.0.0.1:8765/callback"}]}}}
             ]}"#;
         assert_eq!(
             auths(postman),
             [
                 with_audience(oauth(Grant::Password, ClientAuth::Body, ("me", "pw"))),
-                Auth::Inherit
+                Auth::from(OAuth2 {
+                    grant: Grant::AuthorizationCode,
+                    authorization_url: "https://id.test/authorize".into(),
+                    token_url: "https://id.test/token".into(),
+                    client_id: "app".into(),
+                    redirect_port: 8765,
+                    ..Default::default()
+                })
             ]
         );
         let insomnia = r#"{"_type": "export", "__export_format": 4, "resources": [

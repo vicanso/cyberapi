@@ -49,6 +49,7 @@ pub fn bind_mac_page_keys(cx: &mut App) {
 enum Command {
     NewApi,
     NewFolder,
+    NewScratch,
     Import,
     Run,
     Recent,
@@ -64,6 +65,7 @@ impl Command {
         match self {
             Self::NewApi => t!("workspace.new_api"),
             Self::NewFolder => t!("workspace.new_folder"),
+            Self::NewScratch => t!("workspace.new_scratch"),
             Self::Import => t!("import.title"),
             Self::Run => t!("run.project"),
             Self::Recent => t!("recent.open"),
@@ -80,6 +82,7 @@ impl Command {
         match self {
             Self::NewApi => Icons::FilePlus,
             Self::NewFolder => Icons::FolderPlus,
+            Self::NewScratch => Icons::FilePlus,
             Self::Import => Icons::Import,
             Self::Run => Icons::Play,
             Self::Recent => Icons::Clock,
@@ -164,6 +167,7 @@ impl PaletteView {
             commands.extend([
                 Command::NewApi,
                 Command::NewFolder,
+                Command::NewScratch,
                 Command::Import,
                 Command::Run,
                 Command::Recent,
@@ -273,6 +277,11 @@ impl PaletteView {
             Item::Command(command) => match (command, workspace, state) {
                 (Command::NewApi, Some(weak), _) => new_item(&weak, None, ItemKind::Api, window, cx),
                 (Command::NewFolder, Some(weak), _) => new_item(&weak, None, ItemKind::Folder, window, cx),
+                (Command::NewScratch, Some(weak), _) => {
+                    let _ = weak.update(cx, |state, cx| {
+                        state.new_scratch(t!("workspace.scratch_name").into(), cx)
+                    });
+                }
                 (Command::Import, Some(weak), _) => open_import_dialog(weak, None, window, cx),
                 (Command::Run, _, Some(state)) => open_run_dialog(state, None, window, cx),
                 (Command::Recent, _, Some(state)) => open_recent_dialog(state, window, cx),

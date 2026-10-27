@@ -976,6 +976,17 @@ fn project_menu(
     } else {
         menu
     };
+    // F1: a scratch request is the reader's, so a viewer may make one too.
+    let for_scratch = state.clone();
+    let menu = menu.item(
+        PopupMenuItem::new(t!("workspace.new_scratch").to_string())
+            .icon(Icons::FilePlus)
+            .on_click(move |_, _, cx| {
+                let _ = for_scratch.update(cx, |state, cx| {
+                    state.new_scratch(t!("workspace.scratch_name").to_string(), cx);
+                });
+            }),
+    );
     // G4: a server project's versions; a viewer reads them.
     let keeps_versions = state.upgrade().is_some_and(|state| state.read(cx).keeps_versions(cx));
     let for_versions = state.clone();

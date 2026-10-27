@@ -65,7 +65,9 @@ path and id; the other tools take a project by its name or id and an API by its 
 only one API has. get_api shows an API's saved request, get_variables the project's environments, custom \
 variables and global request headers, get_history an API's latest responses. A token allowed to send also \
 has send_api, which sends a saved API from the bridge with the project's variables and keeps the response \
-in the account's history. A token allowed to change also has create_api and update_api, which make an API and \
+in the account's history. When the API has assertions enabled, that answer also lists each one's result \
+(whether it held, and when it did not, the value that was there); those results are not kept in the history. \
+A token allowed to change also has create_api and update_api, which make an API and \
 change one's request where the account edits; nothing deletes. Values that read like secrets (passwords, tokens, keys, cookies) are masked as \
 ***, a value made with a template such as {{TOKEN}} is shown as written, long bodies are cut, and every \
 call is logged.";
@@ -268,7 +270,7 @@ fn tool_list(token: &McpToken) -> Vec<Json> {
     if token.can_send {
         tools.push(json!({
             "name": "send_api",
-            "description": "Sends an API's saved request from the bridge, with the project's variables and global headers, and answers its response, which also goes into this account's history. The request really reaches its server: a POST or DELETE does what it says. Needs an editor's role in the project.",
+            "description": "Sends an API's saved request from the bridge, with the project's variables and global headers, and answers its response, which also goes into this account's history. When the API has assertions enabled, the answer also lists each one's result: passed, and when it did not hold the actual value; a check that could not be made says why. Those results are not kept in the history. The request really reaches its server: a POST or DELETE does what it says. Needs an editor's role in the project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -575,8 +577,10 @@ fn auth_json(auth: &Auth) -> Json {
             "grant": match oauth.grant {
                 Grant::ClientCredentials => "client_credentials",
                 Grant::Password => "password",
+                Grant::AuthorizationCode => "authorization_code",
             },
             "tokenUrl": oauth.token_url,
+            "authorizationUrl": oauth.authorization_url,
             "clientId": oauth.client_id,
             "clientSecret": masked("secret", &oauth.client_secret),
             "username": oauth.username,
@@ -846,10 +850,20 @@ async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, argumen
             .unwrap_or_default()
             .of(&secret),
     };
+    // H1: the results ride on this answer only. The history keeps the
+    // response as any send does, without them.
+    let assertions = api.request.assertions.clone();
     let response = cyberapi_service::send(sender, collection.id, api.id, api.request, Answers::default())
         .await
         .map_err(failed)?;
-    Ok(response_json(&response))
+    let mut answer = response_json(&response);
+    let reported = cyberapi_core::assertions::report(&assertions, &response);
+    if !reported.is_empty()
+        && let Some(object) = answer.as_object_mut()
+    {
+        object.insert("assertions".into(), json!(reported));
+    }
+    Ok(answer)
 }
 
 #[cfg(test)]

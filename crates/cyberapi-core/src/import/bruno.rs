@@ -224,11 +224,18 @@ fn auth(mode: &str, find: &dyn Fn(&str) -> Vec<KvParam>) -> Auth {
             let grant = match field("grant_type").as_str() {
                 "client_credentials" => Grant::ClientCredentials,
                 "password" => Grant::Password,
+                "authorization_code" => Grant::AuthorizationCode,
                 _ => return Auth::Inherit,
+            };
+            let authorization_url = {
+                let url = field("authorization_url");
+                if url.is_empty() { field("auth_url") } else { url }
             };
             Auth::from(OAuth2 {
                 grant,
                 token_url: field("access_token_url"),
+                authorization_url,
+                redirect_port: crate::oauth::redirect_port_of(&field("callback_url")),
                 client_id: field("client_id"),
                 client_secret: field("client_secret"),
                 username: field("username"),

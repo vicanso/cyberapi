@@ -190,12 +190,14 @@ fn oauth(scheme: &Value, scopes: &Value) -> Option<Auth> {
         Some(flows) => [
             ("clientCredentials", Grant::ClientCredentials),
             ("password", Grant::Password),
+            ("authorizationCode", Grant::AuthorizationCode),
         ]
         .into_iter()
         .find_map(|(name, grant)| Some((grant, flows.get(name)?)))?,
         None => match text(scheme, "flow") {
             "application" => (Grant::ClientCredentials, scheme),
             "password" => (Grant::Password, scheme),
+            "accessCode" => (Grant::AuthorizationCode, scheme),
             _ => return None,
         },
     };
@@ -206,6 +208,7 @@ fn oauth(scheme: &Value, scopes: &Value) -> Option<Auth> {
     Some(Auth::from(OAuth2 {
         grant,
         token_url: text(flow, "tokenUrl").to_string(),
+        authorization_url: text(flow, "authorizationUrl").to_string(),
         scope: scope.join(" "),
         ..Default::default()
     }))

@@ -443,6 +443,17 @@ impl Timeouts {
     }
 }
 
+/// F1: a request that is not in the project's tree. Its id is also one of
+/// the open tabs. Closing that tab drops it; saving it into a folder makes
+/// it an API and drops this.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Scratch {
+    pub id: ItemId,
+    pub name: String,
+    pub request: HttpRequest,
+}
+
 /// One reader's state of one project's workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -453,9 +464,15 @@ pub struct WorkspacePrefs {
     /// project; the old app kept one for all of them (#20).
     pub selected: Option<ItemId>,
     /// F1: the APIs open as tabs, in their order. The one in the editor
-    /// is the selection, or a pin opened over it.
+    /// is the selection, or a pin opened over it. A scratch request's id
+    /// is here too, and also in [`WorkspacePrefs::scratches`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub open: Vec<ItemId>,
+    /// F1: requests that are not in the tree. The reader's own — not project
+    /// content, so they are not synced — and still here after a restart.
+    /// Closing the tab drops the request.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scratches: Vec<Scratch>,
     /// Pinned APIs, in pin order (M12). The application keeps the list on
     /// the machine and writes this empty; the field stays so a document
     /// from before that still parses, and is copied across once.
@@ -670,6 +687,24 @@ mod tests {
         );
         let workspace: WorkspacePrefs = serde_json::from_str(r#"{"pinned":["a"],"gone":1}"#).expect("defaults");
         assert_eq!(workspace.pinned, vec![ItemId::from("a")]);
+        assert!(
+            workspace.scratches.is_empty(),
+            "a document from before scratches has none"
+        );
+        let scratch = Scratch {
+            id: ItemId::from("scratch-1-0"),
+            name: "Scratch".into(),
+            request: HttpRequest {
+                uri: "http://x".into(),
+                ..Default::default()
+            },
+        };
+        let written = WorkspacePrefs {
+            scratches: vec![scratch.clone()],
+            ..Default::default()
+        };
+        let back: WorkspacePrefs = serde_json::from_str(&serde_json::to_string(&written).expect("json")).expect("back");
+        assert_eq!(back.scratches, vec![scratch]);
     }
 
     #[test]

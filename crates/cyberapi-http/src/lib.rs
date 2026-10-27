@@ -20,13 +20,22 @@
 //! E1: a WebSocket is opened ([`HttpEngine::open_socket`]) rather than
 //! sent: the desktop's engine upgrades an HTTP/1.1 connection and hands
 //! back a [`Socket`] to send on and hear from; the others cannot.
+//!
+//! E2: a gRPC call whose request body streams is opened
+//! ([`HttpEngine::open_call`]) rather than sent. The desktop's engine
+//! speaks HTTP/2 and hands back a [`LiveCall`]: messages go out while the
+//! answer comes in. The others cannot.
 
+#[cfg(not(target_family = "wasm"))]
+mod call;
 #[cfg(not(target_family = "wasm"))]
 mod client_tls;
 #[cfg(not(target_family = "wasm"))]
 mod mock;
 #[cfg(not(target_family = "wasm"))]
 mod native;
+#[cfg(not(target_family = "wasm"))]
+mod oauth_callback;
 mod policy;
 #[cfg(not(target_family = "wasm"))]
 mod proxy;
@@ -40,6 +49,8 @@ pub use cyberapi_core::ws::Frame;
 pub use mock::MockServer;
 #[cfg(not(target_family = "wasm"))]
 pub use native::NativeEngine;
+#[cfg(not(target_family = "wasm"))]
+pub use oauth_callback::CallbackListener;
 pub use policy::TargetPolicy;
 
 use cyberapi_core::response::HttpStats;
@@ -184,6 +195,44 @@ pub enum Opened {
 
 pub type OpenFuture = Pin<Box<dyn Future<Output = Result<Opened, SendError>> + Send + 'static>>;
 
+/// E2: what goes out on a call whose request body streams.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallOut {
+    /// The next piece of the body, as it is on the wire.
+    Data(Vec<u8>),
+    /// The body is done. The answer may still come.
+    Finish,
+    /// The call is given up.
+    Cancel,
+}
+
+/// E2: what comes in on a call whose request body streams. Headers can
+/// arrive after some of the body has gone out: a client-streaming server
+/// often answers only once the request is done.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallIn {
+    Head {
+        status: u16,
+        headers: Vec<(String, String)>,
+    },
+    Data(Vec<u8>),
+    Trailers(Vec<(String, String)>),
+    /// The answer ended.
+    Ended,
+    /// The call failed.
+    Failed(String),
+}
+
+/// E2: an open call. Dropping `outgoing` gives it up. `incoming` ends with
+/// [`CallIn::Ended`] or [`CallIn::Failed`], or when the call is given up.
+pub struct LiveCall {
+    pub stats: HttpStats,
+    pub outgoing: mpsc::UnboundedSender<CallOut>,
+    pub incoming: mpsc::UnboundedReceiver<CallIn>,
+}
+
+pub type CallFuture = Pin<Box<dyn Future<Output = Result<LiveCall, SendError>> + Send + 'static>>;
+
 /// Sends prepared requests. Dropping the future cancels its request.
 pub trait HttpEngine: Send + Sync {
     fn send(&self, request: PreparedRequest) -> SendFuture;
@@ -203,6 +252,17 @@ pub trait HttpEngine: Send + Sync {
         Box::pin(async {
             Err(SendError::Invalid {
                 message: "WebSocket connections are made by the desktop app only".into(),
+            })
+        })
+    }
+
+    /// E2: a call whose request body streams, opened with `request`. Only
+    /// the desktop's engine sends one; a page's bridge does not relay them.
+    fn open_call(&self, request: PreparedRequest) -> CallFuture {
+        let _ = request;
+        Box::pin(async {
+            Err(SendError::Invalid {
+                message: "streaming request bodies are sent by the desktop app only".into(),
             })
         })
     }

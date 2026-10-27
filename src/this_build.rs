@@ -67,6 +67,17 @@ pub fn opens_sockets() -> bool {
     false
 }
 
+/// E2: whether a request body can stream while the answer comes back. The
+/// desktop's engine sends one; a page's bridge relays none.
+#[cfg(not(target_family = "wasm"))]
+pub fn streams_bodies() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn streams_bodies() -> bool {
+    false
+}
+
 /// G2: a project's mock server on this machine's loopback address: the
 /// desktop starts one on the runtime its requests go out on; a page
 /// cannot listen.
@@ -94,6 +105,62 @@ pub fn start_mock(
     _cx: &gpui_kit::App,
 ) -> gpui_kit::Task<Result<Box<dyn crate::states::MockHandle>, String>> {
     gpui_kit::Task::ready(Err("A mock server runs in the desktop app only".into()))
+}
+
+/// C4: one loopback callback for an authorization-code sign-in. Dropping
+/// the listen stops it. The browser is the view's to open.
+pub struct OauthListen {
+    port: u16,
+    done: futures::channel::oneshot::Receiver<Result<String, String>>,
+    /// Dropping stops the listener.
+    _stop: Box<dyn Send>,
+}
+
+impl OauthListen {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// The authorization code, or why the callback did not give one.
+    pub async fn code(self) -> Result<String, String> {
+        match self.done.await {
+            Ok(result) => result,
+            Err(_) => Err("OAuth 2.0: the authorization was cancelled".into()),
+        }
+    }
+}
+
+/// C4: listen on `127.0.0.1:port` (`0` for any free port) for a callback
+/// whose `state` matches. The desktop's runtime; a page cannot listen.
+#[cfg(not(target_family = "wasm"))]
+pub fn listen_oauth(port: u16, state: String, cx: &gpui_kit::App) -> gpui_kit::Task<Result<OauthListen, String>> {
+    let Some(runtime) = cx.try_global::<crate::Runtime>().map(|runtime| runtime.0.clone()) else {
+        return gpui_kit::Task::ready(Err("no runtime to listen on".into()));
+    };
+    gpui_kit::AppContext::background_spawn(cx, async move {
+        let listener = cyberapi_http::CallbackListener::start(runtime, port, state).await?;
+        let (port, done, stop) = listener.into_wait();
+        Ok(OauthListen {
+            port,
+            done,
+            _stop: stop,
+        })
+    })
+}
+#[cfg(target_family = "wasm")]
+pub fn listen_oauth(_port: u16, _state: String, _cx: &gpui_kit::App) -> gpui_kit::Task<Result<OauthListen, String>> {
+    gpui_kit::Task::ready(Err("Authorization code runs in the desktop app only".into()))
+}
+
+/// C4: whether this build can open the system browser and catch the
+/// callback. A page can keep the setup; it cannot authorize.
+#[cfg(not(target_family = "wasm"))]
+pub fn opens_oauth_browser() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn opens_oauth_browser() -> bool {
+    false
 }
 
 /// G2: whether this build serves mocks.

@@ -31,7 +31,7 @@ use cyberapi_core::model::{
     ApiSetting, Collection, Environment, Folder, FolderSettings, HttpMethod, HttpRequest, ProjectSettings, Variable,
     VariableCategory,
 };
-use cyberapi_core::prefs::{RequestTab, WorkspacePrefs};
+use cyberapi_core::prefs::{RequestTab, Scratch, WorkspacePrefs};
 use cyberapi_core::response::{HttpResponse, RECENT_LIMIT};
 use cyberapi_core::secrets::{self, SecretValues};
 use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, ProjectVersion, Step};
@@ -46,12 +46,33 @@ use futures::channel::mpsc::UnboundedReceiver;
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tracing::warn;
 
 /// F1: the most tabs open at once; opening one more closes the one shown
 /// longest ago. Each open tab's editor is kept, with its answers.
 pub const MAX_TABS: usize = 16;
+
+/// F1: one open tab, a project's API or a scratch request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenTab {
+    pub id: ItemId,
+    pub method: HttpMethod,
+    pub name: String,
+    pub scratch: bool,
+}
+
+/// F1: a scratch request's id. Not a tree id, so a reload can tell them apart.
+fn scratch_id() -> ItemId {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let millis = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|since| since.as_millis())
+        .unwrap_or(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    ItemId::new(format!("scratch-{millis}-{n}"))
+}
 
 /// What the view should tell the reader about.
 #[derive(Clone, Debug)]
@@ -1297,19 +1318,30 @@ impl WorkspaceState {
 
     /// The opened API's editor, and its tab (F1): one kept from before,
     /// or a new one beside the tab shown till now. Tabs of APIs that are
-    /// gone close; past `MAX_TABS`, the one shown longest ago does.
+    /// gone close; a scratch request stays, it is not in the tree. Past
+    /// `MAX_TABS`, the one shown longest ago does.
     fn sync_api(&mut self, cx: &mut Context<Self>) {
         if self.load == Load::Loaded {
-            let apis: HashSet<&ItemId> = self.data.apis.iter().map(|api| &api.id).collect();
             let before = self.prefs.open.len();
-            self.prefs.open.retain(|id| apis.contains(id));
-            self.kept.retain(|id, _| apis.contains(id));
-            self.shown.retain(|id| apis.contains(id));
+            // Collected first: `retain` borrows each list while `tab_lives`
+            // reads the tree and the scratches.
+            let open: Vec<ItemId> = self
+                .prefs
+                .open
+                .iter()
+                .filter(|id| self.tab_lives(id))
+                .cloned()
+                .collect();
+            let kept: HashSet<ItemId> = self.kept.keys().filter(|id| self.tab_lives(id)).cloned().collect();
+            let shown: Vec<ItemId> = self.shown.iter().filter(|id| self.tab_lives(id)).cloned().collect();
+            self.prefs.open = open;
+            self.kept.retain(|id, _| kept.contains(id));
+            self.shown = shown;
             if self.prefs.open.len() != before {
                 self.save_prefs(cx);
             }
         }
-        let selected = self.opened_api().cloned();
+        let selected = self.opened_setting();
         let current = self.api.as_ref().map(|api| api.read(cx).api().clone());
         let Some(api) = selected else {
             self.api = None;
@@ -1335,7 +1367,9 @@ impl WorkspaceState {
                 None => {
                     let (sender, workspace) = (self.sender.clone(), cx.entity().downgrade());
                     let editable = self.editable();
-                    let state = cx.new(|cx| ApiState::new(sender, workspace, &api, editable, cx));
+                    let scratch = self.is_scratch(&api.id);
+                    let saves = self.saves.clone();
+                    let state = cx.new(|cx| ApiState::new(sender, workspace, &api, editable, scratch, saves, cx));
                     self.kept.insert(api.id.clone(), state.clone());
                     state
                 }
@@ -1343,6 +1377,32 @@ impl WorkspaceState {
             self.api = Some(state);
         }
         self.limit_tabs(&api.id, cx);
+    }
+
+    /// An open tab's id still names an API, or a scratch request.
+    fn tab_lives(&self, id: &ItemId) -> bool {
+        self.data.apis.iter().any(|api| &api.id == id) || self.is_scratch(id)
+    }
+
+    fn is_scratch(&self, id: &ItemId) -> bool {
+        self.prefs.scratches.iter().any(|scratch| &scratch.id == id)
+    }
+
+    /// The API in the editor as a record: a tree API, or a scratch request
+    /// worn as one so the editor can open it.
+    fn opened_setting(&self) -> Option<ApiSetting> {
+        let id = self.opened()?.clone();
+        if let Some(api) = self.data.apis.iter().find(|api| api.id == id) {
+            return Some(api.clone());
+        }
+        let scratch = self.prefs.scratches.iter().find(|scratch| scratch.id == id)?;
+        Some(ApiSetting {
+            id: scratch.id.clone(),
+            collection: self.collection.id.clone(),
+            name: scratch.name.clone(),
+            request: scratch.request.clone(),
+            ..Default::default()
+        })
     }
 
     /// F1: past `MAX_TABS`, the tab shown longest ago closes — one never
@@ -1364,17 +1424,24 @@ impl WorkspaceState {
                 .min_by_key(|id| shown_at(id).map_or(0, |at| at + 1))
                 .cloned();
             let Some(oldest) = oldest else { return };
-            self.forget_tab(&oldest);
+            self.forget_tab(&oldest, cx);
             self.save_prefs(cx);
         }
     }
 
-    /// F1: the tab and its editor gone; unsaved edits are saved as the
-    /// editor goes, and a request on its way stops.
-    fn forget_tab(&mut self, id: &ItemId) {
+    /// F1: the tab and its editor gone. A project's API saves what it still
+    /// held; a scratch request is dropped with the tab.
+    fn forget_tab(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        let scratch = self.is_scratch(id);
         self.prefs.open.retain(|open| open != id);
         self.shown.retain(|shown| shown != id);
-        self.kept.remove(id);
+        self.prefs.scratches.retain(|scratch| &scratch.id != id);
+        if let Some(api) = self.kept.remove(id) {
+            // A scratch's release would write it back. Closing drops it.
+            if scratch {
+                api.update(cx, |api, _| api.forget_unsaved());
+            }
+        }
     }
 
     /// An open tab's editor made again from the API as kept: its edits not
@@ -1388,13 +1455,38 @@ impl WorkspaceState {
         }
     }
 
-    /// F1: the open tabs' APIs, in order, that still exist.
-    pub fn tabs(&self) -> Vec<&ApiSetting> {
+    /// F1: the open tabs, in order, that still exist. A scratch request is
+    /// one of them and is not in the tree.
+    pub fn tabs(&self) -> Vec<OpenTab> {
         self.prefs
             .open
             .iter()
-            .filter_map(|id| self.data.apis.iter().find(|api| &api.id == id))
+            .filter_map(|id| {
+                if let Some(api) = self.data.apis.iter().find(|api| &api.id == id) {
+                    return Some(OpenTab {
+                        id: id.clone(),
+                        method: api.request.method,
+                        name: api.name.clone(),
+                        scratch: false,
+                    });
+                }
+                self.prefs
+                    .scratches
+                    .iter()
+                    .find(|scratch| &scratch.id == id)
+                    .map(|scratch| OpenTab {
+                        id: id.clone(),
+                        method: scratch.request.method,
+                        name: scratch.name.clone(),
+                        scratch: true,
+                    })
+            })
             .collect()
+    }
+
+    /// F1: the scratch request `id`, when it is one.
+    pub fn scratch(&self, id: &ItemId) -> Option<&Scratch> {
+        self.prefs.scratches.iter().find(|scratch| &scratch.id == id)
     }
 
     /// F1: whether `id`'s tab has a request on its way.
@@ -1412,7 +1504,7 @@ impl WorkspaceState {
         };
         let opened = self.opened() == Some(id);
         let next = self.tab_beside(at, &|other| other == id);
-        self.forget_tab(id);
+        self.forget_tab(id, cx);
         if opened {
             self.pin_open = None;
             self.api = None;
@@ -1441,7 +1533,7 @@ impl WorkspaceState {
     pub fn close_other_tabs(&mut self, id: &ItemId, cx: &mut Context<Self>) {
         let others: Vec<ItemId> = self.prefs.open.iter().filter(|open| *open != id).cloned().collect();
         for other in &others {
-            self.forget_tab(other);
+            self.forget_tab(other, cx);
         }
         if self.opened() != Some(id) {
             self.select(id, cx);
@@ -1453,7 +1545,7 @@ impl WorkspaceState {
     /// F1: every tab closed; nothing is open.
     pub fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
         for id in self.prefs.open.clone() {
-            self.forget_tab(&id);
+            self.forget_tab(&id, cx);
         }
         self.pin_open = None;
         self.prefs.selected = None;
@@ -1706,6 +1798,114 @@ impl WorkspaceState {
         }
         self.save_prefs(cx);
         cx.notify();
+    }
+
+    /// F1: a scratch request, not in the tree, opened as a tab. It uses this
+    /// project's variables and environment. A viewer may make one: it is
+    /// theirs, not the project's. `name` is what the tab shows.
+    pub fn new_scratch(&mut self, name: String, cx: &mut Context<Self>) {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let scratch = Scratch {
+            id: scratch_id(),
+            name,
+            request: HttpRequest::default(),
+        };
+        let id = scratch.id.clone();
+        self.prefs.scratches.push(scratch);
+        self.select(&id, cx);
+    }
+
+    /// F1: the editor's request, kept on the scratch. Nothing happens once
+    /// the tab was closed: closing drops it, and a late save must not put
+    /// it back.
+    pub fn keep_scratch(&mut self, id: &ItemId, request: HttpRequest, cx: &mut Context<Self>) {
+        let Some(scratch) = self.prefs.scratches.iter_mut().find(|scratch| &scratch.id == id) else {
+            return;
+        };
+        if scratch.request == request {
+            return;
+        }
+        scratch.request = request;
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    /// F1: the scratch becomes an API in `parent` (the top level when none).
+    /// The editor's request is written before the new API is opened. Only an
+    /// editor of the project can; a viewer keeps the scratch.
+    pub fn save_scratch_into(&mut self, id: ItemId, parent: Option<ItemId>, cx: &mut Context<Self>) {
+        if !self.editable() {
+            return;
+        }
+        let Some(scratch) = self.prefs.scratches.iter().find(|scratch| scratch.id == id).cloned() else {
+            return;
+        };
+        let request = self
+            .kept
+            .get(&id)
+            .map(|api| api.read(cx).request().clone())
+            .unwrap_or(scratch.request);
+        let call = self
+            .sender
+            .storage
+            .tree()
+            .create_api(self.collection.id.clone(), parent.clone(), scratch.name);
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(inserted) => {
+                let new_id = inserted.item.id.clone();
+                let change = inserted.change;
+                let call = this
+                    .sender
+                    .storage
+                    .tree()
+                    .save_request(this.collection.id.clone(), new_id.clone(), request);
+                run_serial(cx, &this.gate, call, move |this, result, cx| match result {
+                    Ok(setting) => {
+                        this.data.apis.push(setting);
+                        this.data.apply(&change);
+                        this.tree = Tree::build(&this.data);
+                        this.open_folder(parent.as_ref());
+                        for open in &mut this.prefs.open {
+                            if *open == id {
+                                *open = new_id.clone();
+                            }
+                        }
+                        for shown in &mut this.shown {
+                            if *shown == id {
+                                *shown = new_id.clone();
+                            }
+                        }
+                        if this.prefs.selected.as_ref() == Some(&id) {
+                            this.prefs.selected = Some(new_id.clone());
+                        }
+                        this.prefs.scratches.retain(|scratch| scratch.id != id);
+                        if let Some(old) = this.kept.remove(&id) {
+                            old.update(cx, |api, _| api.forget_unsaved());
+                        }
+                        if this.api.as_ref().is_some_and(|api| api.read(cx).api() == &id) {
+                            this.api = None;
+                        }
+                        this.created = Some(new_id);
+                        this.pin_open = None;
+                        this.sync_api(cx);
+                        this.save_prefs(cx);
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        // The empty API was written. Take it back; the scratch stays.
+                        let created = new_id.clone();
+                        let call = this.sender.storage.tree().delete(this.collection.id.clone(), created);
+                        run_serial(cx, &this.gate, call, move |_, _, cx| {
+                            cx.emit(WorkspaceEvent::Failed(error));
+                        });
+                    }
+                });
+            }
+            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+        });
     }
 
     /// F3.4: a new API is selected, and the folder it went into opens.
@@ -3244,6 +3444,82 @@ mod tests {
         assert_eq!(stored(&storage, &collection, &id).query, [header("q", "x")]);
         let other = editor(&state, cx);
         assert_ne!(other.read_with(cx, |api, _| api.api().clone()), id);
+    }
+
+    /// F1: a scratch request is a tab and not a row of the tree. It uses the
+    /// reader's prefs, so it is still there on the next visit, and closing
+    /// its tab drops it. Saving it into a folder makes it an API.
+    #[gpui_kit::test]
+    async fn a_scratch_request_stays_until_it_is_saved_or_closed(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+
+        state.update(cx, |state, cx| state.new_scratch("Scratch".into(), cx));
+        cx.run_until_parked();
+        let id = state.read_with(cx, |state, _| {
+            let tabs = state.tabs();
+            assert_eq!(tabs.len(), 1);
+            assert!(tabs[0].scratch);
+            assert!(state.tree().get(&tabs[0].id).is_none());
+            tabs[0].id.clone()
+        });
+        assert!(row_names(&state, cx).is_empty(), "a scratch is not in the tree");
+
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| api.set_uri("http://scratch.test/one".into(), cx));
+        // Still waiting: leaving the tab is what keeps it.
+        api.update(cx, |api, cx| api.set_body("noted".into(), cx));
+        drop(api);
+        state.update(cx, |state, cx| state.create_api(None, "ping".into(), cx));
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            let scratch = state.scratch(&id).expect("the tab is still open");
+            assert_eq!(scratch.request.uri, "http://scratch.test/one");
+            assert_eq!(scratch.request.body, "noted");
+            assert!(state.tabs().iter().any(|tab| tab.scratch && tab.id == id));
+        });
+        assert_eq!(row_names(&state, cx), ["ping"]);
+
+        drop(state);
+        let again = open(&storage, collection.clone(), cx);
+        again.read_with(cx, |state, _| {
+            let scratch = state.scratch(&id).expect("it survives the visit");
+            assert_eq!(scratch.request.uri, "http://scratch.test/one");
+            assert_eq!(scratch.request.body, "noted");
+            assert!(state.tabs().iter().any(|tab| tab.id == id && tab.scratch));
+        });
+        again.update(cx, |state, cx| state.close_tab(&id, cx));
+        cx.run_until_parked();
+        drop(again);
+        let closed = open(&storage, collection.clone(), cx);
+        closed.read_with(cx, |state, _| {
+            assert!(state.scratch(&id).is_none(), "closing the tab drops it");
+            assert!(state.tabs().iter().all(|tab| tab.id != id));
+        });
+
+        closed.update(cx, |state, cx| state.create_folder(None, "users".into(), cx));
+        cx.run_until_parked();
+        let folder = find(&closed, "users", cx);
+        closed.update(cx, |state, cx| state.new_scratch("Scratch".into(), cx));
+        cx.run_until_parked();
+        let scratch = editor(&closed, cx);
+        let scratch_id = scratch.read_with(cx, |api, _| api.api().clone());
+        scratch.update(cx, |api, cx| api.set_uri("http://scratch.test/two".into(), cx));
+        drop(scratch);
+        closed.update(cx, |state, cx| {
+            state.save_scratch_into(scratch_id.clone(), Some(folder.clone()), cx)
+        });
+        cx.run_until_parked();
+
+        let saved = find(&closed, "Scratch", cx);
+        assert_eq!(stored(&storage, &collection, &saved).uri, "http://scratch.test/two");
+        closed.read_with(cx, |state, _| {
+            assert_eq!(state.tree().get(&saved).and_then(|node| node.parent()), Some(&folder));
+            assert!(state.scratch(&scratch_id).is_none());
+            assert!(state.tabs().iter().any(|tab| tab.id == saved && !tab.scratch));
+            assert!(state.tabs().iter().all(|tab| tab.id != scratch_id));
+        });
     }
 
     /// A pasted cURL command replaces the request whole, saved at once, and

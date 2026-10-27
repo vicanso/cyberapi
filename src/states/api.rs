@@ -35,13 +35,15 @@ use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody, ReplyReader};
 use cyberapi_core::model::{ApiSetting, ContentType, Example, HttpMethod, HttpRequest, KvParam};
 use cyberapi_core::prefs::RequestSettings;
-use cyberapi_core::response::HttpResponse;
+use cyberapi_core::response::{HttpResponse, StreamEnd};
 use cyberapi_core::send::PrepareError;
 use cyberapi_core::sse;
 use cyberapi_core::template::{Answers, TemplateError};
 use cyberapi_core::ws::{self, Frame};
 use cyberapi_core::{CollectionId, ItemId};
-use cyberapi_http::{Progress, SocketIn, SocketOut, Watch, stop_signal};
+use cyberapi_http::{CallIn, CallOut, Progress, SocketIn, SocketOut, Watch, stop_signal};
+use cyberapi_service::graphql_ws::{self, Heard};
+use cyberapi_service::grpc_stream;
 use cyberapi_service::socket::{self, Connected, LiveSocket};
 use cyberapi_service::{SendFailure, Sender};
 use cyberapi_store::StoreError;
@@ -179,6 +181,25 @@ struct OpenSocket {
     opened: Instant,
 }
 
+/// E2: an open gRPC call whose request streams. Messages go out on it one
+/// at a time; what went each way is kept once it ends. Dropping `outgoing`
+/// gives the call up, so it stays until the answer has been read.
+struct OpenCall {
+    outgoing: mpsc::UnboundedSender<CallOut>,
+    /// `(sent, text, milliseconds after it opened)`.
+    messages: Vec<(bool, String, u64)>,
+    opened: Instant,
+    /// The request is done (a client stream's "finish"). A bidirectional
+    /// call never is, until it ends.
+    finished: bool,
+    bidi: bool,
+    reader: Option<ReplyReader>,
+    status: Option<u16>,
+    headers: Vec<(String, String)>,
+    trailers: Vec<(String, String)>,
+    failed: Option<String>,
+}
+
 /// An event stream's answer, or a gRPC call's streamed reply, as it comes.
 pub struct LiveStream {
     pub status: u16,
@@ -241,6 +262,45 @@ impl LiveStream {
         self.body.extend(line);
         self.events.push(ws::event(sent, frame, at));
     }
+
+    /// E3: a GraphQL subscription over a WebSocket, its results added as
+    /// they come.
+    fn graphql(status: u16, headers: Vec<(String, String)>) -> Self {
+        Self {
+            status,
+            headers,
+            body: Vec::new(),
+            events: Vec::new(),
+            reader: Reader::Socket,
+            head: Instant::now(),
+            stopping: false,
+        }
+    }
+
+    /// E2: a gRPC call that streams from the client, before its headers.
+    /// Status 0 is not an answer yet; the panel draws no status for it.
+    fn call() -> Self {
+        Self::socket(0, Vec::new())
+    }
+
+    /// E2: one turn, sent or received, as the history will keep it.
+    fn grpc_turn(&mut self, sent: bool, text: &str, at: u64) {
+        let (line, _) = grpc::transcript(&[(sent, text.to_string(), at)]);
+        self.body.extend(line);
+        self.events.push(grpc::turn_event(sent, text, Some(at)));
+    }
+
+    /// E3: one result. `at` is milliseconds after the connection opened.
+    fn graphql_event(&mut self, heard: &Heard) {
+        self.body
+            .extend(cyberapi_core::graphql_ws::line(&heard.kind, &heard.data));
+        self.events.push(sse::Event {
+            event: heard.kind.clone(),
+            data: heard.data.clone(),
+            at: Some(heard.at),
+            ..Default::default()
+        });
+    }
 }
 
 /// How long the live stream waits between redraws: pieces that come
@@ -254,6 +314,12 @@ pub struct ApiState {
     api: ItemId,
     /// A viewer's edits stay here: they send, and are never saved (§9.2).
     editable: bool,
+    /// F1: a scratch request. Its edits are the reader's, in the workspace
+    /// prefs, even a viewer's. Closing the tab drops them.
+    scratch: bool,
+    /// The workspace's pref saves, so a scratch written as the editor goes
+    /// lands after the one already on its way.
+    pref_saves: Arc<async_lock::Mutex<()>>,
     request: HttpRequest,
     /// What the store has, as far as this state knows; `None` after a save
     /// failed, so the next one goes out whatever it holds.
@@ -267,6 +333,8 @@ pub struct ApiState {
     live: Option<LiveStream>,
     /// E1: the WebSocket open, while it is.
     socket: Option<OpenSocket>,
+    /// E2: the gRPC call open, while it is.
+    call: Option<OpenCall>,
     last_send: Option<Instant>,
     /// Newest first (F7.9). Shared, so the panel takes one for each frame
     /// without copying its body.
@@ -303,10 +371,42 @@ impl ApiState {
         workspace: WeakEntity<WorkspaceState>,
         api: &ApiSetting,
         editable: bool,
+        scratch: bool,
+        pref_saves: Arc<async_lock::Mutex<()>>,
         cx: &mut Context<Self>,
     ) -> Self {
         // An edit not saved yet is saved as the state goes.
         cx.on_release(|this, cx| {
+            if this.scratch {
+                // Closing the tab marks it saved and drops it. What is left
+                // unsaved — the project was left — is written after the
+                // prefs save already on its way, and only while the scratch
+                // is still there.
+                if this.saved.as_ref() == Some(&this.request) {
+                    return;
+                }
+                let (saves, storage, collection) = (
+                    this.pref_saves.clone(),
+                    this.sender.storage.clone(),
+                    this.collection.clone(),
+                );
+                let (id, request) = (this.api.clone(), this.request.clone());
+                cx.background_spawn(async move {
+                    let _turn = saves.lock().await;
+                    let Ok(mut prefs) = storage.prefs().workspace(collection.clone()).await else {
+                        return;
+                    };
+                    let Some(scratch) = prefs.scratches.iter_mut().find(|scratch| scratch.id == id) else {
+                        return;
+                    };
+                    scratch.request = request;
+                    if let Err(error) = storage.prefs().set_workspace(collection, prefs).await {
+                        warn!(%error, "the scratch request could not be saved");
+                    }
+                })
+                .detach();
+                return;
+            }
             if this.editable && this.saved.as_ref() != Some(&this.request) {
                 let call = this.sender.storage.tree().save_request(
                     this.collection.clone(),
@@ -328,6 +428,8 @@ impl ApiState {
             collection: api.collection.clone(),
             api: api.id.clone(),
             editable,
+            scratch,
+            pref_saves,
             request: api.request.clone(),
             saved: Some(api.request.clone()),
             save_task: None,
@@ -335,6 +437,7 @@ impl ApiState {
             sending: None,
             live: None,
             socket: None,
+            call: None,
             last_send: None,
             responses: Vec::new(),
             history: Load::Loading,
@@ -352,6 +455,11 @@ impl ApiState {
 
     pub fn api(&self) -> &ItemId {
         &self.api
+    }
+
+    /// F1: this editor holds a scratch request, not an API in the tree.
+    pub fn is_scratch(&self) -> bool {
+        self.scratch
     }
 
     /// Whether the reader may change the project's requests: a viewer's
@@ -673,9 +781,25 @@ impl ApiState {
     }
 
     /// Saves what the editor holds, unless the store has it already.
+    /// A scratch request is kept in the reader's prefs, a viewer's too.
     pub fn save_now(&mut self, cx: &mut Context<Self>) {
         self.save_task = None;
         cx.notify();
+        if self.scratch {
+            if self.saved.as_ref() == Some(&self.request) {
+                return;
+            }
+            let request = self.request.clone();
+            self.saved = Some(request.clone());
+            let id = self.api.clone();
+            let workspace = self.workspace.clone();
+            // Leaving a tab, and a push, call this while the workspace is
+            // already being updated. The scratch is written once that returns.
+            cx.defer(move |cx| {
+                let _ = workspace.update(cx, |workspace, cx| workspace.keep_scratch(&id, request, cx));
+            });
+            return;
+        }
         if !self.editable || self.saved.as_ref() == Some(&self.request) {
             return;
         }
@@ -722,6 +846,18 @@ impl ApiState {
             cx.notify();
             return;
         }
+        // E2: an open call is given up. This is before the generic branch:
+        // the call's task has no stop signal, so that branch would do nothing.
+        if self.call.is_some() {
+            if let Some(call) = self.call.as_mut() {
+                let _ = call.outgoing.unbounded_send(CallOut::Cancel);
+            }
+            if let Some(live) = self.live.as_mut() {
+                live.stopping = true;
+            }
+            cx.notify();
+            return;
+        }
         if let Some(sending) = self.sending.as_mut() {
             // An event stream that has begun ends, and is kept; any other
             // request is dropped.
@@ -741,6 +877,19 @@ impl ApiState {
         remember_typed(&self.collection, &answers.prompts, cx);
         if self.request.method == HttpMethod::WebSocket {
             return self.connect(answers, cx);
+        }
+        // E2: a method that streams from the client is connected to. A page
+        // reaches the engine's refusal and keeps it, as a WebSocket does.
+        if self.request.method == HttpMethod::Grpc && GrpcBody::read(&self.request.body).client_streams() {
+            return self.connect_grpc(answers, cx);
+        }
+        // E3: a GraphQL API whose address is (or may be) a WebSocket
+        // subscribes instead of sending. An address that renders as HTTP
+        // still sends.
+        if self.request.content_type == ContentType::GraphQl
+            && cyberapi_core::graphql_ws::might_subscribe(&self.request.uri)
+        {
+            return self.subscribe_graphql(answers, cx);
         }
         let (told, mut telling) = mpsc::unbounded::<Progress>();
         let (stop, stopped) = stop_signal();
@@ -791,6 +940,112 @@ impl ApiState {
     /// The event stream being answered, while it comes.
     pub fn live(&self) -> Option<&LiveStream> {
         self.live.as_ref()
+    }
+
+    /// E3: subscribes when the rendered address is a WebSocket, and sends
+    /// otherwise. Results show as they come; stopping sends `complete`.
+    fn subscribe_graphql(&mut self, answers: Answers, cx: &mut Context<Self>) {
+        let (told, mut telling) = mpsc::unbounded::<Progress>();
+        let (stop, stopped) = stop_signal();
+        let watch = Watch {
+            progress: Arc::new(move |progress| {
+                let _ = told.unbounded_send(progress);
+            }),
+            stop: stopped,
+        };
+        let sender = self.sender(cx);
+        let collection = self.collection.clone();
+        let api = self.api.clone();
+        let request = self.request.clone();
+        let call = graphql_ws::subscribe(
+            sender.clone(),
+            collection.clone(),
+            api.clone(),
+            request.clone(),
+            answers.clone(),
+        );
+        let task = cx.spawn(async move |this, cx| match cx.background_spawn(call).await {
+            Ok(graphql_ws::Started::Http) => {
+                let result = cx
+                    .background_spawn(cyberapi_service::send_watched(
+                        sender,
+                        collection,
+                        api,
+                        request,
+                        answers,
+                        Some(watch),
+                    ))
+                    .await;
+                let _ = this.update(cx, |this, cx| this.answered(result, cx));
+            }
+            Ok(graphql_ws::Started::Kept(response)) => {
+                let _ = this.update(cx, |this, cx| this.answered(Ok(response), cx));
+            }
+            Err(failure) => {
+                let _ = this.update(cx, |this, cx| this.answered(Err(failure), cx));
+            }
+            Ok(graphql_ws::Started::Open(subscription)) => {
+                drop(watch);
+                let status = subscription.status;
+                let headers = subscription.headers.clone();
+                let (events_tx, mut heard) = mpsc::unbounded();
+                let (stop_tx, stop_rx) = oneshot::channel();
+                // `cx` here is the task's, whose spawn takes the app alone.
+                let listening = this.clone();
+                let follow = cx.spawn(async move |cx| {
+                    while let Some(event) = heard.next().await {
+                        if listening
+                            .update(cx, |this, cx| {
+                                if let Some(live) = this.live.as_mut() {
+                                    live.graphql_event(&event);
+                                }
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+                if this
+                    .update(cx, |this, cx| {
+                        this.live = Some(LiveStream::graphql(status, headers));
+                        if let Some(sending) = this.sending.as_mut() {
+                            sending._follow = follow;
+                            sending.stop = Some(stop_tx);
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                let response = cx
+                    .background_spawn(graphql_ws::drive(sender, subscription, events_tx, stop_rx))
+                    .await;
+                let _ = this.update(cx, |this, cx| this.answered(Ok(response), cx));
+            }
+        });
+        let follow = cx.spawn(async move |this, cx| {
+            while let Some(first) = telling.next().await {
+                let mut batch = vec![first];
+                while let Ok(more) = telling.try_recv() {
+                    batch.push(more);
+                }
+                if this.update(cx, |this, cx| this.told(batch, cx)).is_err() {
+                    return;
+                }
+                cx.background_executor().timer(LIVE_FRAME).await;
+            }
+        });
+        self.sending = Some(Sending {
+            started: Instant::now(),
+            _task: task,
+            _follow: follow,
+            stop: Some(stop),
+            replies: None,
+        });
+        cx.notify();
     }
 
     /// E1: opens the WebSocket. Once open, what comes is heard till it
@@ -916,6 +1171,228 @@ impl ApiState {
         cx.notify();
     }
 
+    /// E2: opens a gRPC call that streams from the client. The editor's
+    /// message is not sent with it; each one goes out after, framed.
+    /// Headers may arrive only once the request is finished, so the panel
+    /// shows the turns from the moment it opens.
+    fn connect_grpc(&mut self, answers: Answers, cx: &mut Context<Self>) {
+        let sender = self.sender(cx);
+        let call = grpc_stream::connect(
+            sender.clone(),
+            self.collection.clone(),
+            self.api.clone(),
+            self.request.clone(),
+            answers,
+        );
+        let task = cx.spawn(async move |this, cx| {
+            let opened = match cx.background_spawn(call).await {
+                Ok(grpc_stream::Connected::Open(opened)) => opened,
+                Ok(grpc_stream::Connected::Kept(response)) => {
+                    let _ = this.update(cx, |this, cx| this.answered(Ok(response), cx));
+                    return;
+                }
+                Err(failure) => {
+                    let _ = this.update(cx, |this, cx| this.answered(Err(failure), cx));
+                    return;
+                }
+            };
+            let grpc_stream::OpenedCall {
+                outgoing,
+                mut incoming,
+                reader,
+                bidi,
+                head,
+            } = opened;
+            if this
+                .update(cx, |this, cx| {
+                    this.live = Some(LiveStream::call());
+                    this.call = Some(OpenCall {
+                        outgoing,
+                        messages: Vec::new(),
+                        opened: Instant::now(),
+                        finished: false,
+                        bidi,
+                        reader,
+                        status: None,
+                        headers: Vec::new(),
+                        trailers: Vec::new(),
+                        failed: None,
+                    });
+                    cx.notify();
+                })
+                .is_err()
+            {
+                return;
+            }
+            while let Some(came) = incoming.next().await {
+                let ended = this.update(cx, |this, cx| this.heard(came, cx)).unwrap_or(true);
+                if ended {
+                    break;
+                }
+            }
+            // `outgoing` is dropped only now: dropping it earlier would
+            // reset a call whose request was finished and whose reply is
+            // still on its way.
+            let Ok((call, stopping)) = this.update(cx, |this, _| {
+                let stopping = this.live.as_ref().is_some_and(|live| live.stopping);
+                (this.call.take(), stopping)
+            }) else {
+                return;
+            };
+            let Some(call) = call else { return };
+            let OpenCall {
+                messages,
+                status,
+                headers,
+                trailers,
+                failed,
+                ..
+            } = call;
+            let ended = if stopping {
+                StreamEnd::Stopped
+            } else if let Some(message) = failed {
+                StreamEnd::Failed { message }
+            } else {
+                StreamEnd::Closed
+            };
+            let kept = cx
+                .background_spawn(grpc_stream::keep(
+                    sender, head, status, headers, trailers, messages, ended,
+                ))
+                .await;
+            let _ = this.update(cx, |this, cx| this.answered(Ok(kept), cx));
+        });
+        self.sending = Some(Sending {
+            started: Instant::now(),
+            _task: task,
+            _follow: Task::ready(()),
+            stop: None,
+            replies: None,
+        });
+        cx.notify();
+    }
+
+    /// One thing the call said. `true` when the call has ended.
+    fn heard(&mut self, came: CallIn, cx: &mut Context<Self>) -> bool {
+        let at = self
+            .call
+            .as_ref()
+            .map(|call| call.opened.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+        match came {
+            CallIn::Head { status, headers } => {
+                if let Some(call) = self.call.as_mut() {
+                    call.status = Some(status);
+                    call.headers = headers.clone();
+                }
+                if let Some(live) = self.live.as_mut() {
+                    live.status = status;
+                    live.headers = headers;
+                }
+                cx.notify();
+                false
+            }
+            CallIn::Data(bytes) => {
+                let texts = {
+                    let Some(call) = self.call.as_mut() else { return true };
+                    match call.reader.as_mut() {
+                        Some(reader) => reader
+                            .feed(&bytes, Some(at))
+                            .into_iter()
+                            .map(|event| event.data)
+                            .collect(),
+                        None => vec![format!("binary, {} bytes", bytes.len())],
+                    }
+                };
+                for text in texts {
+                    self.turn(false, text, at, cx);
+                }
+                false
+            }
+            CallIn::Trailers(fields) => {
+                if let Some(call) = self.call.as_mut() {
+                    call.trailers.extend(fields);
+                }
+                false
+            }
+            CallIn::Ended => true,
+            CallIn::Failed(message) => {
+                if let Some(call) = self.call.as_mut() {
+                    call.failed = Some(message);
+                }
+                true
+            }
+        }
+    }
+
+    /// A turn of the open call, shown now and kept when it ends.
+    fn turn(&mut self, sent: bool, text: String, at: u64, cx: &mut Context<Self>) {
+        if let Some(call) = self.call.as_mut() {
+            call.messages.push((sent, text.clone(), at));
+        }
+        if let Some(live) = self.live.as_mut() {
+            live.grpc_turn(sent, &text, at);
+        }
+        cx.notify();
+    }
+
+    /// E2: whether the call is open, so a message can go.
+    pub fn call_open(&self) -> bool {
+        self.call.is_some()
+    }
+
+    /// E2: the request of a client stream has been finished. Nothing more
+    /// is sent; the reply may still be coming.
+    pub fn call_finished(&self) -> bool {
+        self.call.as_ref().is_some_and(|call| call.finished)
+    }
+
+    /// E2: sends the message as it is now, its templates rendered, framed,
+    /// on the open call.
+    pub fn send_grpc_message(&mut self, answers: Answers, cx: &mut Context<Self>) {
+        if self.call.as_ref().is_none_or(|call| call.finished) {
+            return;
+        }
+        self.save_now(cx);
+        remember_typed(&self.collection, &answers.prompts, cx);
+        let call = grpc_stream::message(self.sender(cx), self.collection.clone(), self.request.clone(), answers);
+        cx.spawn(async move |this, cx| {
+            let rendered = cx.background_spawn(call).await;
+            let _ = this.update(cx, |this, cx| match rendered {
+                Ok((text, framed)) => this.say_grpc(text, framed, cx),
+                Err(failure) => cx.emit(not_sent(failure)),
+            });
+        })
+        .detach();
+    }
+
+    fn say_grpc(&mut self, text: String, framed: Vec<u8>, cx: &mut Context<Self>) {
+        let Some(call) = self.call.as_mut() else { return };
+        if call.finished {
+            return;
+        }
+        let at = call.opened.elapsed().as_millis() as u64;
+        if call.outgoing.unbounded_send(CallOut::Data(framed)).is_ok() {
+            let text = if text.trim().is_empty() { "{}".into() } else { text };
+            call.messages.push((true, text.clone(), at));
+            if let Some(live) = self.live.as_mut() {
+                live.grpc_turn(true, &text, at);
+            }
+        }
+        cx.notify();
+    }
+
+    /// E2: the request of a client stream is done. The one reply comes after.
+    pub fn finish_grpc(&mut self, cx: &mut Context<Self>) {
+        let Some(call) = self.call.as_mut() else { return };
+        if call.bidi || call.finished {
+            return;
+        }
+        let _ = call.outgoing.unbounded_send(CallOut::Finish);
+        call.finished = true;
+        cx.notify();
+    }
+
     fn told(&mut self, told: Vec<Progress>, cx: &mut Context<Self>) {
         // Told after the answer came: it is shown already.
         if self.sending.is_none() {
@@ -941,6 +1418,7 @@ impl ApiState {
         self.sending = None;
         self.live = None;
         self.socket = None;
+        self.call = None;
         match result {
             Ok(response) => {
                 // F7.5: an answer that names its file is saved as it
