@@ -24,6 +24,8 @@
 #[cfg(not(target_family = "wasm"))]
 mod client_tls;
 #[cfg(not(target_family = "wasm"))]
+mod mock;
+#[cfg(not(target_family = "wasm"))]
 mod native;
 mod policy;
 #[cfg(not(target_family = "wasm"))]
@@ -34,6 +36,8 @@ mod socket;
 pub use cyberapi_core::response::Exchange;
 pub use cyberapi_core::send::PreparedRequest;
 pub use cyberapi_core::ws::Frame;
+#[cfg(not(target_family = "wasm"))]
+pub use mock::MockServer;
 #[cfg(not(target_family = "wasm"))]
 pub use native::NativeEngine;
 pub use policy::TargetPolicy;

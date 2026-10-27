@@ -44,6 +44,7 @@ gpui_kit::assets::icon_assets!(
         Play,
         Plug,
         Send,
+        Server,
         Table,
         Terminal,
         Trash,

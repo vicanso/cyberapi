@@ -161,7 +161,7 @@ impl NativeEngine {
 
 /// Cancels a spawned task when its owner goes: a dropped send stops its
 /// request, and a finished one closes its connection.
-struct AbortOnDrop(AbortHandle);
+pub(crate) struct AbortOnDrop(pub(crate) AbortHandle);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {

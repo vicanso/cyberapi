@@ -69,6 +69,14 @@ gpui_kit::actions!(
     ]
 );
 
+/// The desktop's tokio runtime, the one requests go out on: a mock server
+/// (G2) listens on it too.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) struct Runtime(pub(crate) tokio::runtime::Handle);
+
+#[cfg(not(target_family = "wasm"))]
+impl gpui_kit::Global for Runtime {}
+
 /// What only one of the builds has; the other leaves it `None`.
 #[derive(Clone, Default)]
 pub struct Extras {
@@ -116,9 +124,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         gpui_kit::application()
     };
+    let handle = runtime.handle().clone();
     app.with_assets(assets::Assets).run(move |cx| {
         // Must come before anything that uses a component.
         gpui_kit::init(cx);
+        cx.set_global(Runtime(handle));
         syntax::register_languages();
         match opened {
             Ok((storage, store, prefs)) => {

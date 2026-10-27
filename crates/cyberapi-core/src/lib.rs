@@ -30,6 +30,7 @@ pub mod json_view;
 pub mod local_only;
 pub mod mcp;
 pub mod media;
+pub mod mock;
 pub mod model;
 pub mod oauth;
 pub mod prefs;

@@ -10,6 +10,7 @@ mod dashboard;
 #[cfg(test)]
 mod desktop_copies;
 mod directory;
+mod mock;
 mod palette;
 mod run;
 mod server;
@@ -23,6 +24,7 @@ pub use cookies::{CookieKey, CookiesEvent, CookiesState, cookie_key};
 pub use copy::ServerCopy;
 pub use dashboard::{DashboardEvent, DashboardState};
 pub use directory::{DirectoryDone, DirectoryEvent, DirectoryState};
+pub use mock::{DEFAULT_PORT as MOCK_PORT, MockHandle, MockState};
 pub use palette::{FoundApi, PaletteState};
 pub use run::{Planned, RunState};
 pub use server::{ServerEvent, ServerState, ServerStatus, SignInFailure};

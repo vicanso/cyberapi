@@ -67,6 +67,56 @@ pub fn opens_sockets() -> bool {
     false
 }
 
+/// G2: a project's mock server on this machine's loopback address: the
+/// desktop starts one on the runtime its requests go out on; a page
+/// cannot listen.
+#[cfg(not(target_family = "wasm"))]
+pub fn start_mock(
+    port: u16,
+    routes: cyberapi_core::mock::Routes,
+    heard: futures::channel::mpsc::UnboundedSender<cyberapi_core::mock::Heard>,
+    cx: &gpui_kit::App,
+) -> gpui_kit::Task<Result<Box<dyn crate::states::MockHandle>, String>> {
+    let Some(runtime) = cx.try_global::<crate::Runtime>().map(|runtime| runtime.0.clone()) else {
+        return gpui_kit::Task::ready(Err("no runtime to listen on".into()));
+    };
+    gpui_kit::AppContext::background_spawn(cx, async move {
+        cyberapi_http::MockServer::start(runtime, port, routes, heard)
+            .await
+            .map(|server| Box::new(server) as Box<dyn crate::states::MockHandle>)
+    })
+}
+#[cfg(target_family = "wasm")]
+pub fn start_mock(
+    _port: u16,
+    _routes: cyberapi_core::mock::Routes,
+    _heard: futures::channel::mpsc::UnboundedSender<cyberapi_core::mock::Heard>,
+    _cx: &gpui_kit::App,
+) -> gpui_kit::Task<Result<Box<dyn crate::states::MockHandle>, String>> {
+    gpui_kit::Task::ready(Err("A mock server runs in the desktop app only".into()))
+}
+
+/// G2: whether this build serves mocks.
+#[cfg(not(target_family = "wasm"))]
+pub fn serves_mocks() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn serves_mocks() -> bool {
+    false
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl crate::states::MockHandle for cyberapi_http::MockServer {
+    fn address(&self) -> String {
+        format!("http://{}", cyberapi_http::MockServer::address(self))
+    }
+
+    fn set_routes(&self, routes: cyberapi_core::mock::Routes) {
+        cyberapi_http::MockServer::set_routes(self, routes);
+    }
+}
+
 /// Whether requests may go through a proxy (#60): the desktop's do; a
 /// page's go from the bridge, straight to their servers.
 #[cfg(not(target_family = "wasm"))]

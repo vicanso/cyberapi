@@ -17,7 +17,7 @@
 //! draft's.
 
 use super::copy::{self, Kept, Pushed, ServerCopy};
-use super::{ApiState, AppStore, GrpcDefinitions, Load, ServerStatus, run_serial, run_store};
+use super::{ApiState, AppStore, GrpcDefinitions, Load, MockState, ServerStatus, run_serial, run_store};
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::auth::Auth;
@@ -193,6 +193,9 @@ pub struct WorkspaceState {
     secrets: SecretValues,
     /// Their save, waiting for the typing to settle.
     secrets_save: Option<Task<()>>,
+    /// G2: the project's mock server, once its dialog opened; it stops
+    /// with the project.
+    mock: Option<Entity<MockState>>,
     /// A server project's beat, its poll started once the opening heard
     /// from the server or failed to: a first ask after a failed opening
     /// waits as one after any failure.
@@ -284,6 +287,7 @@ impl WorkspaceState {
             _filter_save: None,
             secrets: SecretValues::default(),
             secrets_save: None,
+            mock: None,
             poll_every: poll,
         };
         state.reload(cx);
@@ -1116,6 +1120,22 @@ impl WorkspaceState {
         self.refresh_variables(VariableCategory::Environment, cx);
         self.refresh_variables(VariableCategory::GlobalRequestHeader, cx);
         self.refresh_variables(VariableCategory::Custom, cx);
+    }
+
+    /// G2: the project's mock server, made the first time it is asked for.
+    pub fn mock(&mut self, cx: &mut Context<Self>) -> Entity<MockState> {
+        if let Some(mock) = &self.mock {
+            return mock.clone();
+        }
+        let workspace = cx.entity().downgrade();
+        let mock = cx.new(|cx| MockState::new(workspace, cx));
+        self.mock = Some(mock.clone());
+        mock
+    }
+
+    /// G2: where the mock server listens, while it runs.
+    pub fn mock_address(&self, cx: &App) -> Option<String> {
+        self.mock.as_ref()?.read(cx).address()
     }
 
     /// D3: reads the reader's secret values again — unless some typed are

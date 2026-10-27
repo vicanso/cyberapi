@@ -26,7 +26,8 @@ bytes = "1.12.1"
 flate2 = "1.1.10"
 http = "1.5.0"
 http-body-util = "0.1.5"
-hyper = { version = "1.12.0", features = ["client", "http1", "http2"] }
+# `server`: a project's mock server (G2).
+hyper = { version = "1.12.0", features = ["client", "server", "http1", "http2"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 # A client certificate kept as a `.p12` / `.pfx` (C5).
 p12-keystore = "0.4.1"

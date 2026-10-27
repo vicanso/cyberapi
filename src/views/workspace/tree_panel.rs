@@ -990,6 +990,25 @@ fn project_menu(
                 }),
         )
     });
+    // G2: the project's mock server, the desktop's; anyone sends, so anyone
+    // mocks.
+    let for_mock = state.clone();
+    let mocking = state.upgrade().and_then(|state| state.read(cx).mock_address(cx));
+    let menu = menu.when(crate::this_build::serves_mocks(), |menu| {
+        let label = match &mocking {
+            Some(address) => t!("mock.open_running", address = address).to_string(),
+            None => t!("mock.open").to_string(),
+        };
+        menu.item(
+            PopupMenuItem::new(label)
+                .icon(Icons::Server)
+                .on_click(move |_, window, cx| {
+                    if let Some(state) = for_mock.upgrade() {
+                        super::mock_dialog::open_mock_dialog(state, window, cx);
+                    }
+                }),
+        )
+    });
     // A3, D4: anyone sends, so anyone runs and has a history.
     let (for_recent, for_run) = (state.clone(), state.clone());
     let menu = menu.item(
