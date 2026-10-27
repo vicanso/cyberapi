@@ -463,7 +463,7 @@ pub async fn code(
         add_cookies(&sender, &mut prepared).await?;
     }
     // C4: no token is asked for to write code.
-    oauth::sign_kept(&sender, &mut prepared);
+    oauth::sign_kept(&sender, &mut prepared).await;
     Ok(cyberapi_core::code::code(
         target,
         &prepared,
@@ -1731,6 +1731,70 @@ mod tests {
             Some("OAuth 2.0: no token from https://id.test/token: 401 invalid_client")
         );
         assert_eq!(asked(&refusing).len(), 1);
+    }
+
+    /// C4: the app's tokens are the reader's, kept in their store under a
+    /// hash: after a restart the kept one signs, and none is asked for.
+    #[test]
+    fn the_apps_oauth_tokens_outlive_it() {
+        struct Id(Mutex<usize>);
+        impl HttpEngine for Id {
+            fn send(&self, request: PreparedRequest) -> SendFuture {
+                let answer = if request.url == "https://id.test/token" {
+                    *self.0.lock().expect("asked") += 1;
+                    ok(200, r#"{"access_token":"t1","expires_in":3600}"#)
+                } else if request.header("authorization") == Some("Bearer t1") {
+                    ok(200, "{}")
+                } else {
+                    ok(401, "{}")
+                };
+                Box::pin(async move { answer })
+            }
+        }
+        let setup = setup(ok(200, "{}"));
+        let api = new_api(&setup, "kept");
+        let request = HttpRequest {
+            uri: "https://api.test/a".into(),
+            auth: cyberapi_core::auth::Auth::from(cyberapi_core::oauth::OAuth2 {
+                token_url: "https://id.test/token".into(),
+                client_id: "app".into(),
+                client_secret: "the-secret".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let id = Arc::new(Id(Mutex::new(0)));
+        let send_with_tokens = |tokens: Arc<Tokens>| {
+            pollster::block_on(send(
+                Sender {
+                    engine: id.clone(),
+                    tokens,
+                    ..setup.sender.clone()
+                },
+                setup.collection.clone(),
+                api.clone(),
+                request.clone(),
+                Answers::default(),
+            ))
+            .expect("sent")
+        };
+        assert_eq!(send_with_tokens(Arc::new(Tokens::stored())).status, Some(200));
+        assert_eq!(*id.0.lock().expect("asked"), 1);
+        let kept = pollster::block_on(setup.storage.prefs().oauth_tokens()).expect("kept");
+        assert_eq!(kept.0.len(), 1);
+        let (key, token) = kept.0.iter().next().expect("one");
+        assert_eq!(key.len(), 64);
+        assert_eq!(token.access_token, "t1");
+        assert!(token.expires_at.is_some());
+        let doc = serde_json::to_string(&kept).expect("JSON");
+        assert!(!doc.contains("the-secret") && !doc.contains("id.test"), "{doc}");
+
+        // As the app starts again: the kept one signs.
+        assert_eq!(send_with_tokens(Arc::new(Tokens::stored())).status, Some(200));
+        assert_eq!(*id.0.lock().expect("asked"), 1, "none asked for");
+        // A run's live in memory alone.
+        assert_eq!(send_with_tokens(Arc::new(Tokens::default())).status, Some(200));
+        assert_eq!(*id.0.lock().expect("asked"), 2);
     }
 
     #[test]

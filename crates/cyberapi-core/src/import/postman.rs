@@ -66,6 +66,28 @@ fn auth(value: &Value) -> Option<Auth> {
         Some(object) => as_text(object.get(key)),
         None => String::new(),
     };
+    // C4: an extra parameter of the token request, as newer Postman keeps
+    // its audience and resource; else one of the fields.
+    let token_param = |name: &str| {
+        let params = match fields {
+            Some(Value::Array(items)) => items
+                .iter()
+                .find(|item| text(item, "key") == "tokenRequestParams")
+                .and_then(|item| item.get("value")),
+            Some(object) => object.get("tokenRequestParams"),
+            None => None,
+        };
+        params
+            .and_then(Value::as_array)
+            .and_then(|params| {
+                params
+                    .iter()
+                    .find(|param| text(param, "key") == name && param.get("enabled") != Some(&Value::Bool(false)))
+            })
+            .map(|param| as_text(param.get("value")))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| field(name))
+    };
     Some(match kind {
         "inherit" => Auth::Inherit,
         "noauth" => Auth::None,
@@ -100,6 +122,8 @@ fn auth(value: &Value) -> Option<Auth> {
             username: field("username"),
             password: field("password"),
             scope: field("scope"),
+            audience: token_param("audience"),
+            resource: token_param("resource"),
             client_auth: match field("client_authentication").as_str() {
                 "body" => ClientAuth::Body,
                 _ => ClientAuth::Header,

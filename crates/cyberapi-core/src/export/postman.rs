@@ -73,6 +73,8 @@ fn auth(auth: &Auth) -> Option<Value> {
                 ("username", &oauth.username),
                 ("password", &oauth.password),
                 ("scope", &oauth.scope),
+                ("audience", &oauth.audience),
+                ("resource", &oauth.resource),
                 (
                     "client_authentication",
                     match oauth.client_auth {
@@ -388,6 +390,8 @@ mod tests {
             username: "me".into(),
             password: "pw".into(),
             scope: "read".into(),
+            audience: "https://api.test".into(),
+            resource: String::new(),
             client_auth: ClientAuth::Body,
         });
         let mut data = shop();

@@ -73,7 +73,8 @@ impl AppStore {
             state: state.clone(),
             server,
             updates,
-            tokens: Arc::default(),
+            // C4: the reader's, kept in their store.
+            tokens: Arc::new(Tokens::stored()),
         });
         state.update(cx, |state, cx| {
             state.reload_me(cx);

@@ -412,20 +412,32 @@ mod tests {
                 password: user.1.into(),
                 scope: "read".into(),
                 client_auth,
+                ..Default::default()
             })
+        };
+        let with_audience = |auth: Auth| match auth {
+            Auth::OAuth2(oauth) => Auth::from(OAuth2 {
+                audience: "https://api.test".into(),
+                ..*oauth
+            }),
+            other => other,
         };
         let postman = r#"{"info": {"name": "S", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
             "item": [
                 {"name": "a", "request": {"method": "GET", "url": "https://api.test/a", "auth": {"type": "oauth2", "oauth2": [
                     {"key": "grant_type", "value": "password_credentials"}, {"key": "accessTokenUrl", "value": "https://id.test/token"},
                     {"key": "clientId", "value": "app"}, {"key": "clientSecret", "value": "s"}, {"key": "username", "value": "me"},
-                    {"key": "password", "value": "pw"}, {"key": "scope", "value": "read"}, {"key": "client_authentication", "value": "body"}]}}},
+                    {"key": "password", "value": "pw"}, {"key": "scope", "value": "read"}, {"key": "client_authentication", "value": "body"},
+                    {"key": "tokenRequestParams", "value": [{"key": "audience", "value": "https://api.test", "enabled": true, "send_as": "request_body"}]}]}}},
                 {"name": "b", "request": {"method": "GET", "url": "https://api.test/b", "auth": {"type": "oauth2", "oauth2": [
                     {"key": "grant_type", "value": "authorization_code"}]}}}
             ]}"#;
         assert_eq!(
             auths(postman),
-            [oauth(Grant::Password, ClientAuth::Body, ("me", "pw")), Auth::Inherit]
+            [
+                with_audience(oauth(Grant::Password, ClientAuth::Body, ("me", "pw"))),
+                Auth::Inherit
+            ]
         );
         let insomnia = r#"{"_type": "export", "__export_format": 4, "resources": [
             {"_id": "wrk_1", "_type": "workspace", "name": "S"},

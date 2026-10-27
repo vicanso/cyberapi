@@ -154,6 +154,8 @@ fn auth(value: &Value) -> Option<Auth> {
             username: field("username"),
             password: field("password"),
             scope: field("scope"),
+            audience: field("audience"),
+            resource: field("resource"),
             client_auth: match value.get("credentialsInBody").and_then(Value::as_bool) {
                 Some(true) => ClientAuth::Body,
                 _ => ClientAuth::Header,

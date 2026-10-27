@@ -17,6 +17,7 @@ use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, Environment, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
     VariableCategory,
 };
+use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
@@ -52,6 +53,8 @@ struct State {
     environments: Vec<Environment>,
     app: AppPrefs,
     workspaces: HashMap<CollectionId, WorkspacePrefs>,
+    /// C4.
+    oauth_tokens: KeptTokens,
     /// Oldest first.
     responses: Vec<HttpResponse>,
     cookies: Vec<Cookie>,
@@ -800,6 +803,17 @@ impl PrefStore for MemoryStore {
     fn clear_workspaces(&self) -> StoreFuture<()> {
         self.run(|state, _| {
             state.workspaces.clear();
+            Ok(())
+        })
+    }
+
+    fn oauth_tokens(&self) -> StoreFuture<KeptTokens> {
+        self.run(|state, _| Ok(state.oauth_tokens.clone()))
+    }
+
+    fn set_oauth_tokens(&self, tokens: KeptTokens) -> StoreFuture<()> {
+        self.run(move |state, _| {
+            state.oauth_tokens = tokens;
             Ok(())
         })
     }

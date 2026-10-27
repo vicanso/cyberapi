@@ -33,6 +33,7 @@ use cyberapi_core::model::{
     ApiSetting, Collection, Environment, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
     VariableCategory,
 };
+use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HISTORY_SIZES, HttpResponse, RECENT_LIMIT};
 use cyberapi_core::response::{StreamEnd, StreamInfo};
@@ -242,6 +243,11 @@ pub enum Call {
         prefs: WorkspacePrefs,
     },
     PrefsClearWorkspaces,
+    /// C4: the account's OAuth tokens.
+    PrefsOAuthTokens,
+    PrefsSetOAuthTokens {
+        tokens: KeptTokens,
+    },
     HistoryAdd {
         // Boxed: a response is far bigger than any other call.
         response: Box<HttpResponse>,
@@ -384,6 +390,8 @@ impl Call {
             | Self::PrefsWorkspace { .. }
             | Self::PrefsSetWorkspace { .. }
             | Self::PrefsClearWorkspaces
+            | Self::PrefsOAuthTokens
+            | Self::PrefsSetOAuthTokens { .. }
             | Self::HistoryAdd { .. }
             | Self::HistoryList { .. }
             | Self::HistoryLatest { .. }
@@ -515,6 +523,8 @@ pub async fn dispatch(
             prefs: value,
         } => reply(prefs.set_workspace(collection, value).await),
         Call::PrefsClearWorkspaces => reply(prefs.clear_workspaces().await),
+        Call::PrefsOAuthTokens => reply(prefs.oauth_tokens().await),
+        Call::PrefsSetOAuthTokens { tokens } => reply(prefs.set_oauth_tokens(tokens).await),
         // D4: an account keeps no more than the settings offer.
         Call::HistoryAdd { response, keep } => {
             let keep = keep.clamp(*HISTORY_SIZES.start(), *HISTORY_SIZES.end());
@@ -887,6 +897,14 @@ impl PrefStore for BridgeStore {
 
     fn clear_workspaces(&self) -> StoreFuture<()> {
         self.call(Call::PrefsClearWorkspaces)
+    }
+
+    fn oauth_tokens(&self) -> StoreFuture<KeptTokens> {
+        self.call(Call::PrefsOAuthTokens)
+    }
+
+    fn set_oauth_tokens(&self, tokens: KeptTokens) -> StoreFuture<()> {
+        self.call(Call::PrefsSetOAuthTokens { tokens })
     }
 }
 

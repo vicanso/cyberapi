@@ -37,7 +37,9 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 /// 10: an API, folder or project signs in with OAuth 2.0 (C4,
 ///    `Auth::OAuth2`).
 /// 11: an API is a WebSocket connection (E1, `HttpMethod::WebSocket`).
-pub const MODEL: u32 = 11;
+/// 12: OAuth 2.0 asks for an audience and a resource (C4, `OAuth2::audience`
+///    / `resource`).
+pub const MODEL: u32 = 12;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

@@ -18,6 +18,7 @@ use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, ContentType, Folder, FolderSettings, HttpMethod, HttpRequest, KvParam,
     ProjectSettings, VariableCategory,
 };
+use cyberapi_core::oauth::{KeptToken, KeptTokens};
 use cyberapi_core::prefs::{AppPrefs, HttpVersion, RequestSettings, ThemeMode, Timeouts, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse, HttpStats};
 use cyberapi_core::sync::ProjectConfig;
@@ -55,6 +56,7 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     variables_round_trip(storage).await;
     environments_round_trip(storage, probe).await;
     app_prefs_round_trip(storage).await;
+    oauth_tokens_are_kept_whole(storage).await;
     workspace_prefs_are_per_collection(storage).await;
     history_keeps_the_newest(storage, probe).await;
     history_is_only_of_the_projects_apis(storage).await;
@@ -1286,6 +1288,36 @@ async fn app_prefs_round_trip(storage: &Storage) {
     prefs.timeouts.read = 60;
     storage.prefs().set_app(prefs.clone()).await.expect("set app prefs");
     assert_eq!(storage.prefs().app().await.expect("app prefs"), prefs);
+}
+
+/// C4: the reader's OAuth tokens: none at first, then the whole set as
+/// last written; forgetting the projects' state leaves them.
+async fn oauth_tokens_are_kept_whole(storage: &Storage) {
+    let prefs = storage.prefs();
+    assert_eq!(prefs.oauth_tokens().await.expect("tokens"), KeptTokens::default());
+    let token = |access: &str, refresh: Option<&str>, expires_at: Option<i64>| KeptToken {
+        access_token: access.into(),
+        refresh_token: refresh.map(str::to_string),
+        expires_at,
+    };
+    let both = KeptTokens(std::collections::BTreeMap::from([
+        ("k1".to_string(), token("a", Some("r"), Some(1_900_000_000))),
+        ("k2".to_string(), token("b", None, None)),
+    ]));
+    prefs.set_oauth_tokens(both.clone()).await.expect("set");
+    assert_eq!(prefs.oauth_tokens().await.expect("tokens"), both);
+    prefs.clear_workspaces().await.expect("clear");
+    assert_eq!(
+        prefs.oauth_tokens().await.expect("tokens"),
+        both,
+        "not a project's state"
+    );
+    let one = KeptTokens(std::collections::BTreeMap::from([(
+        "k2".to_string(),
+        token("c", None, None),
+    )]));
+    prefs.set_oauth_tokens(one.clone()).await.expect("set");
+    assert_eq!(prefs.oauth_tokens().await.expect("tokens"), one, "replaced whole");
 }
 
 async fn workspace_prefs_are_per_collection(storage: &Storage) {

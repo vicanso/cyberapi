@@ -23,6 +23,7 @@ use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, Environment, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
     VariableCategory, legacy as columns,
 };
+use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
@@ -462,6 +463,9 @@ async fn write_change(conn: &Connection, collection: &CollectionId, change: &Tre
 fn workspace_scope(collection: &CollectionId) -> String {
     format!("workspace/{collection}")
 }
+
+/// C4: the reader's OAuth tokens, a document beside their settings.
+const OAUTH_SCOPE: &str = "oauth-tokens";
 
 /// A stored document, or its defaults when there is none or it cannot be
 /// read: a reader's preferences are not worth failing a launch over.
@@ -1406,6 +1410,20 @@ impl PrefStore for TursoStore {
             execute(&conn, "DELETE FROM prefs WHERE scope LIKE 'workspace/%'", ())
                 .await
                 .map(|_| ())
+        })
+    }
+
+    fn oauth_tokens(&self) -> StoreFuture<KeptTokens> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            read_doc(&conn, OAUTH_SCOPE).await
+        })
+    }
+
+    fn set_oauth_tokens(&self, tokens: KeptTokens) -> StoreFuture<()> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            write_doc(&conn, OAUTH_SCOPE, &tokens).await
         })
     }
 }

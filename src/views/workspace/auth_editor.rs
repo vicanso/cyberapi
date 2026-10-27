@@ -41,6 +41,8 @@ const TOKEN_URL: usize = 4;
 const CLIENT_ID: usize = 5;
 const CLIENT_SECRET: usize = 6;
 const SCOPE: usize = 7;
+const AUDIENCE: usize = 8;
+const RESOURCE: usize = 9;
 
 /// The fields whose values are secrets, shown as dots till shown.
 fn secret(field: usize) -> bool {
@@ -81,7 +83,7 @@ pub struct AuthEditor {
     client_auth: Choices,
     /// Basic's user and password, the token, the key's value, OAuth's
     /// token URL, client and scope: templates.
-    templated: [Entity<InputState>; 8],
+    templated: [Entity<InputState>; 10],
     key_name: Entity<InputState>,
     hints: HintSource,
     /// The hints open under one of `templated`.
@@ -253,6 +255,20 @@ impl AuthEditor {
                 cx,
             ),
             field(oauth.scope, t!("editor.auth_scope").to_string(), false, window, cx),
+            field(
+                oauth.audience,
+                t!("editor.auth_audience_placeholder").to_string(),
+                false,
+                window,
+                cx,
+            ),
+            field(
+                oauth.resource,
+                t!("editor.auth_resource_placeholder").to_string(),
+                false,
+                window,
+                cx,
+            ),
         ];
         let key_name = field(name, t!("editor.auth_key_name").to_string(), false, window, cx);
 
@@ -364,6 +380,8 @@ impl AuthEditor {
                     username: user(USERNAME),
                     password: user(PASSWORD),
                     scope: text(&self.templated[SCOPE]),
+                    audience: text(&self.templated[AUDIENCE]),
+                    resource: text(&self.templated[RESOURCE]),
                     client_auth: CLIENT_AUTHS[self.client_auth.read(cx).selected_value().copied().unwrap_or(0).min(1)],
                 })
             }
@@ -612,6 +630,14 @@ impl Render for AuthEditor {
                 rows.push(row(
                     t!("editor.auth_scope").to_string(),
                     self.templated_field(SCOPE, cx),
+                ));
+                rows.push(row(
+                    t!("editor.auth_audience").to_string(),
+                    self.templated_field(AUDIENCE, cx),
+                ));
+                rows.push(row(
+                    t!("editor.auth_resource").to_string(),
+                    self.templated_field(RESOURCE, cx),
                 ));
                 rows.push(row(
                     t!("editor.auth_client_auth").to_string(),

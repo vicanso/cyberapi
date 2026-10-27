@@ -7,12 +7,20 @@
 //! refresh token is refreshed with it first (§6).
 //!
 //! The client signs in to the token endpoint with Basic, its id and secret
-//! form-encoded first (§2.3.1), or with both in the body.
+//! form-encoded first (§2.3.1), or with both in the body. An `audience` and
+//! a `resource` (RFC 8707), which some servers ask for (Auth0, Azure AD),
+//! go in the form when given.
+//!
+//! The tokens are the reader's, kept as cookies are ([`KeptTokens`]): by a
+//! hash of what they were asked with ([`OAuthLogin::key`]) — never the
+//! secrets themselves — and never synced or backed up.
 
 use crate::model::HttpMethod;
 use crate::send::PreparedRequest;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
+use std::collections::BTreeMap;
 
 /// How a token is had.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -53,6 +61,12 @@ pub struct OAuth2 {
     /// Space-separated; none asked for when empty.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub scope: String,
+    /// The API the token is for, where the server asks (Auth0's
+    /// `audience`, RFC 8707's `resource`); none sent when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub audience: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub resource: String,
     pub client_auth: ClientAuth,
 }
 
@@ -65,6 +79,8 @@ impl OAuth2 {
             &self.client_id,
             &self.client_secret,
             &self.scope,
+            &self.audience,
+            &self.resource,
         ];
         if self.grant == Grant::Password {
             texts.extend([self.username.as_str(), &self.password]);
@@ -84,6 +100,8 @@ impl OAuth2 {
             username: only(&self.username)?,
             password: only(&self.password)?,
             scope: render(self.scope.trim())?,
+            audience: render(self.audience.trim())?,
+            resource: render(self.resource.trim())?,
             client_auth: self.client_auth,
         })
     }
@@ -100,6 +118,8 @@ pub struct OAuthLogin {
     pub username: String,
     pub password: String,
     pub scope: String,
+    pub audience: String,
+    pub resource: String,
     pub client_auth: ClientAuth,
 }
 
@@ -109,6 +129,38 @@ pub fn bearer(token: &str) -> String {
 }
 
 impl OAuthLogin {
+    /// What its token is kept under: a SHA-256 of every field, so a changed
+    /// secret or password asks anew, and none is written down.
+    pub fn key(&self) -> String {
+        let grant = match self.grant {
+            Grant::ClientCredentials => "client_credentials",
+            Grant::Password => "password",
+        };
+        let client_auth = match self.client_auth {
+            ClientAuth::Header => "header",
+            ClientAuth::Body => "body",
+        };
+        let fields = [
+            grant,
+            &self.token_url,
+            &self.client_id,
+            &self.client_secret,
+            &self.username,
+            &self.password,
+            &self.scope,
+            &self.audience,
+            &self.resource,
+            client_auth,
+        ];
+        let mut hash = sha2::Sha256::new();
+        for field in fields {
+            // Each with its length, so no two lists hash alike.
+            hash.update((field.len() as u64).to_be_bytes());
+            hash.update(field.as_bytes());
+        }
+        hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
     /// The form asking for a token — with `refresh`, the refresh token
     /// asked with in place of the grant — and the client's Basic header
     /// when it signs in there. A client with no secret is a public one: its
@@ -131,6 +183,12 @@ impl OAuthLogin {
         }
         if !self.scope.is_empty() {
             form.append_pair("scope", &self.scope);
+        }
+        if !self.audience.is_empty() {
+            form.append_pair("audience", &self.audience);
+        }
+        if !self.resource.is_empty() {
+            form.append_pair("resource", &self.resource);
         }
         let basic = self.client_auth == ClientAuth::Header && !self.client_secret.is_empty();
         if !basic && !self.client_id.is_empty() {
@@ -173,6 +231,24 @@ impl OAuthLogin {
             ..Default::default()
         }
     }
+}
+
+/// C4: the reader's tokens, by [`OAuthLogin::key`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct KeptTokens(pub BTreeMap<String, KeptToken>);
+
+/// A token as kept.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeptToken {
+    pub access_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// When it ends, in seconds since the epoch; none, until the API
+    /// refuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 /// What the token endpoint gave.
@@ -264,6 +340,7 @@ mod tests {
             password: "p&w".into(),
             scope: "read write".into(),
             client_auth,
+            ..Default::default()
         }
         .login(|text| Ok::<_, Infallible>(text.replace("{{S}}", "s:cret")))
         .expect("rendered")
@@ -297,6 +374,45 @@ mod tests {
         assert_eq!(authorization, None);
         // The user's only for the grant that sends them.
         assert_eq!(login(Grant::ClientCredentials, ClientAuth::Header).username, "");
+    }
+
+    #[test]
+    fn an_audience_and_a_resource_go_when_given() {
+        let mut login = login(Grant::ClientCredentials, ClientAuth::Header);
+        login.audience = "https://api.test".into();
+        login.resource = "urn:api".into();
+        let (form, _) = login.token_form(None);
+        assert_eq!(
+            form,
+            "grant_type=client_credentials&scope=read+write&audience=https%3A%2F%2Fapi.test&resource=urn%3Aapi"
+        );
+    }
+
+    #[test]
+    fn a_token_is_kept_under_a_hash_of_what_asked_for_it() {
+        let login = login(Grant::Password, ClientAuth::Header);
+        let key = login.key();
+        assert_eq!(key.len(), 64);
+        assert!(!key.contains("s:cret") && !key.contains("p&w"));
+        assert_eq!(key, login.clone().key(), "the same, the same key");
+        let mut other = login.clone();
+        other.password = "changed".into();
+        assert_ne!(other.key(), key, "a changed password asks anew");
+        let mut moved = login;
+        moved.username = "mep&w".into();
+        moved.password = String::new();
+        assert_ne!(moved.key(), key, "fields do not run into each other");
+        let kept = KeptTokens(BTreeMap::from([(
+            key.clone(),
+            KeptToken {
+                access_token: "t".into(),
+                refresh_token: None,
+                expires_at: Some(100),
+            },
+        )]));
+        let json = serde_json::to_string(&kept).expect("JSON");
+        assert_eq!(json, format!(r#"{{"{key}":{{"accessToken":"t","expiresAt":100}}}}"#));
+        assert_eq!(serde_json::from_str::<KeptTokens>(&json).expect("read"), kept);
     }
 
     #[test]

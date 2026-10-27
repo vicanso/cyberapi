@@ -234,6 +234,8 @@ fn auth(mode: &str, find: &dyn Fn(&str) -> Vec<KvParam>) -> Auth {
                 username: field("username"),
                 password: field("password"),
                 scope: field("scope"),
+                audience: String::new(),
+                resource: String::new(),
                 client_auth: match field("credentials_placement").as_str() {
                     "basic_auth_header" => ClientAuth::Header,
                     _ => ClientAuth::Body,

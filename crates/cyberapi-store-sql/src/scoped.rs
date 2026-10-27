@@ -16,6 +16,7 @@ use cyberapi_core::model::{
     ApiCategory, ApiSetting, Collection, Environment, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
     VariableCategory,
 };
+use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, KEPT_VERSIONS, ProjectConfig, ProjectVersion};
@@ -56,6 +57,8 @@ pub(crate) fn workspace_scope(collection: &CollectionId) -> String {
 }
 
 const APP_SCOPE: &str = "app";
+/// C4: the account's OAuth tokens, a document beside its settings.
+const OAUTH_SCOPE: &str = "oauth-tokens";
 
 #[derive(Clone)]
 pub(crate) struct Scoped {
@@ -1464,6 +1467,20 @@ impl PrefStore for Scoped {
                 .await
                 .map_err(db)?;
             Ok(())
+        })
+    }
+
+    fn oauth_tokens(&self) -> StoreFuture<KeptTokens> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.read_doc(&mut conn, OAUTH_SCOPE).await
+        })
+    }
+
+    fn set_oauth_tokens(&self, tokens: KeptTokens) -> StoreFuture<()> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.write_doc(&mut conn, OAUTH_SCOPE, &tokens).await
         })
     }
 }

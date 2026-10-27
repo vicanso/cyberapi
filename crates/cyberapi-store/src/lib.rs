@@ -37,6 +37,7 @@ use cyberapi_core::model::{
     ApiSetting, Collection, Environment, Folder, FolderSettings, HttpRequest, ProjectSettings, Variable,
     VariableCategory,
 };
+use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig, ProjectVersion};
@@ -268,6 +269,11 @@ pub trait PrefStore: Send + Sync {
     /// Forgets the reader's state of every project — pins, open folders,
     /// the selection, tabs (F15.3). The app's settings stay.
     fn clear_workspaces(&self) -> StoreFuture<()>;
+    /// C4: the reader's OAuth tokens, kept as cookies are: never synced or
+    /// backed up. None at first.
+    fn oauth_tokens(&self) -> StoreFuture<KeptTokens>;
+    /// Replaces them whole.
+    fn set_oauth_tokens(&self, tokens: KeptTokens) -> StoreFuture<()>;
 }
 
 /// The reader's cookies (M9): every project's requests share them (F9.1);

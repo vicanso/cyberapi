@@ -185,6 +185,8 @@ fn auth(value: &Value) -> Option<Auth> {
                 username: field("username"),
                 password: field("password"),
                 scope: field("scopes"),
+                audience: String::new(),
+                resource: String::new(),
                 client_auth: match text(info, "clientAuthentication") {
                     "IN_BODY" => ClientAuth::Body,
                     _ => ClientAuth::Header,

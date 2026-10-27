@@ -1,62 +1,136 @@
 //! C4: the OAuth 2.0 tokens a request is signed with (`cyberapi_core::oauth`).
-//! They are the reader's, like cookies, but kept only in memory while the
-//! app runs: never in the project, its sync or a backup. A token is asked
+//! They are the reader's, kept as cookies are: the app's in the reader's
+//! store (`PrefStore::oauth_tokens`, read once, written whole after each
+//! change), never in the project, its sync or a backup; a run's on the
+//! command line and an AI assistant's call only in memory. A token is asked
 //! for the first time a request needs it, asked again once it is out of
 //! date — with its refresh token first, where it came with one — and once
 //! the API answers 401 to a kept one.
 
 use crate::send::Sender;
 use cyberapi_core::certificates;
-use cyberapi_core::oauth::{self, OAuthLogin, Token};
+use cyberapi_core::oauth::{self, KeptToken, KeptTokens, OAuthLogin, Token};
 use cyberapi_core::send::PreparedRequest;
-use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Duration;
-use web_time::Instant;
+use tracing::warn;
+use web_time::{SystemTime, UNIX_EPOCH};
 
-/// A token this close to its end is asked for again: it might end on its
-/// way.
-const MARGIN: Duration = Duration::from_secs(30);
+/// A token this close to its end, in seconds, is asked for again: it might
+/// end on its way.
+const MARGIN: i64 = 30;
 
-/// The tokens had, by what they were asked with: one per token endpoint,
-/// client, user and scope — and secret, so a changed one asks anew.
+/// The tokens had, by [`OAuthLogin::key`]: one per token endpoint, client,
+/// user, scope and secret, so a changed one asks anew.
 #[derive(Default)]
-pub struct Tokens(Mutex<HashMap<OAuthLogin, Kept>>);
+pub struct Tokens {
+    /// Kept in the reader's store too, and read from there once.
+    stored: bool,
+    /// `None` until read.
+    kept: Mutex<Option<KeptTokens>>,
+    /// The writes of the whole set, one at a time in the order made: a
+    /// later one landing first would be undone.
+    writes: futures::lock::Mutex<()>,
+}
 
-struct Kept {
-    token: Token,
-    /// When it ends; none, until the API refuses it.
-    ends: Option<Instant>,
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 impl Tokens {
-    /// The access token kept for `login`, while it has not ended.
-    fn current(&self, login: &OAuthLogin) -> Option<String> {
-        let kept = self.0.lock().ok()?;
-        let kept = kept.get(login)?;
-        kept.ends
-            .is_none_or(|ends| Instant::now() + MARGIN < ends)
-            .then(|| kept.token.access_token.clone())
-    }
-
-    fn refresh_token(&self, login: &OAuthLogin) -> Option<String> {
-        self.0.lock().ok()?.get(login)?.token.refresh_token.clone()
-    }
-
-    fn keep(&self, login: &OAuthLogin, mut token: Token, asked: Instant) {
-        let ends = token.expires_in.map(|seconds| asked + Duration::from_secs(seconds));
-        if let Ok(mut kept) = self.0.lock() {
-            // A refresh that gave no new refresh token leaves the old one.
-            if token.refresh_token.is_none() {
-                token.refresh_token = kept.get(login).and_then(|kept| kept.token.refresh_token.clone());
-            }
-            kept.insert(login.clone(), Kept { token, ends });
+    /// Kept in the store of the sender they sign for: the app's.
+    pub fn stored() -> Self {
+        Self {
+            stored: true,
+            ..Self::default()
         }
     }
 
-    fn forget(&self, login: &OAuthLogin) {
-        if let Ok(mut kept) = self.0.lock() {
-            kept.remove(login);
+    /// Read from the store, the first time.
+    async fn load(&self, sender: &Sender) {
+        if self.kept.lock().map(|kept| kept.is_some()).unwrap_or(true) {
+            return;
+        }
+        let read = match self.stored {
+            true => sender.storage.prefs().oauth_tokens().await.unwrap_or_else(|error| {
+                warn!(%error, "the OAuth tokens could not be read");
+                KeptTokens::default()
+            }),
+            false => KeptTokens::default(),
+        };
+        if let Ok(mut kept) = self.kept.lock()
+            && kept.is_none()
+        {
+            *kept = Some(read);
+        }
+    }
+
+    fn with<T>(&self, read: impl FnOnce(&mut KeptTokens) -> T) -> Option<T> {
+        let mut kept = self.kept.lock().ok()?;
+        Some(read(kept.get_or_insert_with(KeptTokens::default)))
+    }
+
+    /// The access token kept for `key`, while it has not ended.
+    fn current(&self, key: &str) -> Option<String> {
+        self.with(|kept| {
+            let token = kept.0.get(key)?;
+            token
+                .expires_at
+                .is_none_or(|ends| now() + MARGIN < ends)
+                .then(|| token.access_token.clone())
+        })
+        .flatten()
+    }
+
+    fn refresh_token(&self, key: &str) -> Option<String> {
+        self.with(|kept| kept.0.get(key)?.refresh_token.clone()).flatten()
+    }
+
+    /// `token`, asked at `asked` (seconds since the epoch), in place of the
+    /// one `key` had; a refresh that gave no new refresh token leaves the
+    /// old one.
+    async fn keep(&self, sender: &Sender, key: &str, token: Token, asked: i64) {
+        self.with(|kept| {
+            let refresh_token = token
+                .refresh_token
+                .or_else(|| kept.0.get(key).and_then(|old| old.refresh_token.clone()));
+            kept.0.insert(
+                key.to_string(),
+                KeptToken {
+                    access_token: token.access_token,
+                    refresh_token,
+                    expires_at: token.expires_in.map(|seconds| asked + seconds as i64),
+                },
+            );
+        });
+        self.write(sender).await;
+    }
+
+    async fn forget(&self, sender: &Sender, key: &str) {
+        if self.with(|kept| kept.0.remove(key)).flatten().is_some() {
+            self.write(sender).await;
+        }
+    }
+
+    /// The whole set into the store, but those ended with no refresh token
+    /// to renew them.
+    async fn write(&self, sender: &Sender) {
+        if !self.stored {
+            return;
+        }
+        let _turn = self.writes.lock().await;
+        let Some(tokens) = self.with(|kept| {
+            let at = now();
+            kept.0
+                .retain(|_, token| token.refresh_token.is_some() || token.expires_at.is_none_or(|ends| ends > at));
+            kept.clone()
+        }) else {
+            return;
+        };
+        if let Err(error) = sender.storage.prefs().set_oauth_tokens(tokens).await {
+            warn!(%error, "the OAuth tokens could not be kept");
         }
     }
 }
@@ -78,7 +152,12 @@ pub(crate) async fn sign(sender: &Sender, prepared: &mut PreparedRequest, anew: 
     let Some(login) = prepared.oauth.clone() else {
         return Ok(Signed::No);
     };
-    let kept = if anew { None } else { sender.tokens.current(&login) };
+    sender.tokens.load(sender).await;
+    let kept = if anew {
+        None
+    } else {
+        sender.tokens.current(&login.key())
+    };
     let (token, signed) = match kept {
         Some(token) => (token, Signed::Kept),
         None => (ask(sender, &login, prepared).await?, Signed::Asked),
@@ -89,11 +168,12 @@ pub(crate) async fn sign(sender: &Sender, prepared: &mut PreparedRequest, anew: 
 
 /// F7.8: `prepared` signed with the token kept, if there is one; else
 /// with words saying where one is had, for the code to be completed.
-pub(crate) fn sign_kept(sender: &Sender, prepared: &mut PreparedRequest) {
+pub(crate) async fn sign_kept(sender: &Sender, prepared: &mut PreparedRequest) {
     if let Some(login) = &prepared.oauth {
+        sender.tokens.load(sender).await;
         let token = sender
             .tokens
-            .current(login)
+            .current(&login.key())
             .unwrap_or_else(|| format!("<an access token from {}>", login.token_url));
         authorize(prepared, &token);
     }
@@ -117,21 +197,22 @@ async fn ask(sender: &Sender, login: &OAuthLogin, api: &PreparedRequest) -> Resu
             false => format!("OAuth 2.0: the token URL {at} is no http or https address"),
         });
     }
-    if let Some(refresh) = sender.tokens.refresh_token(login) {
-        let asked = Instant::now();
+    let key = login.key();
+    if let Some(refresh) = sender.tokens.refresh_token(&key) {
+        let asked = now();
         if let Ok(token) = ask_with(sender, login, api, Some(&refresh)).await {
             let access = token.access_token.clone();
-            sender.tokens.keep(login, token, asked);
+            sender.tokens.keep(sender, &key, token, asked).await;
             return Ok(access);
         }
     }
-    sender.tokens.forget(login);
-    let asked = Instant::now();
+    sender.tokens.forget(sender, &key).await;
+    let asked = now();
     let token = ask_with(sender, login, api, None)
         .await
         .map_err(|why| format!("OAuth 2.0: no token from {at}: {why}"))?;
     let access = token.access_token.clone();
-    sender.tokens.keep(login, token, asked);
+    sender.tokens.keep(sender, &key, token, asked).await;
     Ok(access)
 }
 
