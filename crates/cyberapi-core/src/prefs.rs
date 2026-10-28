@@ -270,7 +270,7 @@ pub struct ColumnWidths {
 impl Default for ColumnWidths {
     fn default() -> Self {
         Self {
-            tree: 300.,
+            tree: 240.,
             editor_ratio: 0.5,
         }
     }
@@ -721,7 +721,7 @@ mod tests {
     fn an_empty_document_is_the_defaults() {
         let prefs: AppPrefs = serde_json::from_str("{}").expect("defaults");
         assert_eq!(prefs, AppPrefs::default());
-        assert_eq!(prefs.columns.tree, 300.);
+        assert_eq!(prefs.columns.tree, 240., "the tree starts at 240 px");
         assert!(prefs.text.wrap, "long lines wrap, as they did before the setting");
         assert!(prefs.text.show_tabs, "the tab bar shows, as it did before the setting");
         let hidden: AppPrefs = serde_json::from_str(r#"{"text":{"showTabs":false}}"#).expect("parses");
