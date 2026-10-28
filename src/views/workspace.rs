@@ -373,7 +373,11 @@ fn confirm_delete(
 struct Selected {
     api: EntityId,
     editor: Entity<RequestEditor>,
+    /// Around the editor, so a field's focus is known to be inside it.
+    editor_focus: FocusHandle,
     response: Entity<ResponsePanel>,
+    /// Around the response, for the same reason.
+    response_focus: FocusHandle,
     _editor_events: Subscription,
 }
 
@@ -567,12 +571,25 @@ impl WorkspaceView {
         }
         match api {
             Some(api) if self.selected.as_ref().map(|s| s.api) != Some(api.entity_id()) => {
+                // The columns are replaced. A field in them that has the keys
+                // is no longer drawn, but the input registry keeps its state,
+                // so the focus handle stays and the next key is dispatched on
+                // the window's root. A pin's shortcut is the workspace's, and
+                // from there it no longer matches (F12.2).
+                let focus_was_here = self.selected.as_ref().is_some_and(|selected| {
+                    selected.editor_focus.contains_focused(window, cx)
+                        || selected.response_focus.contains_focused(window, cx)
+                });
                 let state = self.state.clone();
                 let editor = cx.new(|cx| RequestEditor::new(state.clone(), api.clone(), window, cx));
-                // An API just made: its address is what comes next.
+                // An API just made: its address is what comes next. Otherwise
+                // the keys come back here, ahead of that field being dropped.
                 let id = api.read(cx).api().clone();
-                if self.state.update(cx, |state, _| state.take_created(&id)) {
+                let created = self.state.update(cx, |state, _| state.take_created(&id));
+                if created {
                     editor.update(cx, |editor, cx| editor.focus_uri(window, cx));
+                } else if focus_was_here {
+                    self.focus.focus(window, cx);
                 }
                 let response = cx.new(|cx| ResponsePanel::new(state.clone(), api.clone(), window, cx));
                 let editor_events = cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
@@ -581,7 +598,9 @@ impl WorkspaceView {
                 self.selected = Some(Selected {
                     api: api.entity_id(),
                     editor,
+                    editor_focus: cx.focus_handle(),
                     response,
+                    response_focus: cx.focus_handle(),
                     _editor_events: editor_events,
                 });
             }
@@ -770,16 +789,23 @@ impl Render for WorkspaceView {
                         .size(px(editor_width))
                         .size_range(px(280.)..px(4000.))
                         .child(
-                            v_flex()
-                                .size_full()
-                                .child(self.tabs.clone())
-                                .child(div().w_full().flex_1().min_h_0().child(selected.editor.clone())),
+                            v_flex().size_full().child(self.tabs.clone()).child(
+                                div()
+                                    .w_full()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .track_focus(&selected.editor_focus)
+                                    .child(selected.editor.clone()),
+                            ),
                         ),
                 )
                 .child(
-                    resizable_panel()
-                        .size_range(px(240.)..px(4000.))
-                        .child(selected.response.clone()),
+                    resizable_panel().size_range(px(240.)..px(4000.)).child(
+                        div()
+                            .size_full()
+                            .track_focus(&selected.response_focus)
+                            .child(selected.response.clone()),
+                    ),
                 ),
             None => group.child(resizable_panel().child(self.render_nothing_selected(window, cx))),
         };
@@ -835,6 +861,8 @@ impl Render for WorkspaceView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Extras, SignOut};
+    use cyberapi_core::prefs::AppPrefs;
     use cyberapi_core::prefs::{SendPrefs, Timeouts};
     use cyberapi_core::template::NoFiles;
     use cyberapi_http::{HttpEngine, PreparedRequest, SendFuture};
@@ -958,6 +986,111 @@ mod tests {
         assert_eq!(cx.read(|cx| view.read(cx).pasted), 1, "not the workspace's");
         let field = cx.read(|cx| view.read(cx).field.read(cx).value().to_string());
         assert_eq!(field, "curl https://a.test", "the field's own paste");
+    }
+
+    /// F12.2: a pin's shortcut still selects the next one after the first
+    /// moved the editor out from under a field that had the keys.
+    #[gpui_kit::test]
+    async fn a_pin_shortcut_keeps_working_after_the_editor_had_focus(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let collection = pollster::block_on(store.storage().collections().create(NewCollection {
+            name: "p".into(),
+            ..Default::default()
+        }))
+        .expect("create");
+        // No bridge session: the desktop's server state would read the real
+        // `server.json` and ask that bridge who is signed in.
+        let sign_out: SignOut = Arc::new(|| Box::pin(async {}));
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            bind_keys(cx);
+            AppStore::init(
+                store.storage(),
+                Arc::new(NoEngine),
+                AppPrefs::default(),
+                Extras {
+                    sign_out: Some(sign_out),
+                    ..Extras::default()
+                },
+                cx,
+            );
+        });
+        let mut view = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(1100.), px(700.)), |window, cx| {
+                let collection = collection.clone();
+                let state = cx.new(|cx| {
+                    let sender = AppStore::global(cx).sender(cx);
+                    WorkspaceState::new(sender, collection, cx)
+                });
+                let workspace = cx.new(|cx| WorkspaceView::with_state(state, window, cx));
+                view = Some(workspace.clone());
+                Root::new(workspace, window, cx)
+            })
+            .into();
+        let view = view.expect("built");
+        cx.run_until_parked();
+        let state = cx.read(|cx| view.read(cx).state.clone());
+        for name in ["login", "ping"] {
+            state.update(cx, |state, cx| state.create_api(None, name.into(), cx));
+            cx.run_until_parked();
+        }
+        let named = |cx: &mut TestAppContext, name: &str| {
+            cx.read(|cx| {
+                let state = view.read(cx).state.read(cx);
+                state
+                    .tree()
+                    .roots()
+                    .flat_map(|root| std::iter::once(root.id().clone()).chain(state.tree().descendants(root.id())))
+                    .find(|id| state.tree().get(id).is_some_and(|node| node.name() == name))
+                    .unwrap_or_else(|| panic!("no item named {name}"))
+            })
+        };
+        let login = named(cx, "login");
+        let ping = named(cx, "ping");
+        state.update(cx, |state, cx| {
+            state.set_pinned(&login, true, cx);
+            state.set_pinned(&ping, true, cx);
+        });
+        cx.run_until_parked();
+
+        let opened = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).state.read(cx).opened().cloned());
+        assert_eq!(opened(cx), Some(ping.clone()), "the tree's row is open");
+
+        // The address field has the keys, as it does while a request is edited.
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let editor = view
+                .read(cx)
+                .selected
+                .as_ref()
+                .expect("the editor is open")
+                .editor
+                .clone();
+            editor.update(cx, |editor, cx| editor.focus_uri_now(window, cx));
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+
+        let press = |cx: &mut TestAppContext, key: &str| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.press(key, cx);
+            })
+            .expect("the window is open");
+            cx.run_until_parked();
+        };
+        press(cx, "secondary-1");
+        assert_eq!(opened(cx), Some(login.clone()), "the first pin opens");
+        press(cx, "secondary-2");
+        assert_eq!(opened(cx), Some(ping), "the next pin still opens");
+        cx.update_window(window, |_, window, cx| {
+            assert!(
+                view.read(cx).focus.is_focused(window),
+                "the workspace took the keys back from the editor that closed"
+            );
+        })
+        .expect("the window is open");
     }
 
     /// F10.5: what is on the clipboard is read when the reader pastes, and
