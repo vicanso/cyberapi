@@ -88,7 +88,8 @@ pub enum ThemeMode {
 }
 
 /// How text shows: sizes in pixels, `0` the default (F14.6), and whether
-/// long lines in the code editors wrap (F14.7).
+/// long lines in the code editors wrap (F14.7). The open APIs' tab bar
+/// belongs here too: it shows unless a document says otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TextPrefs {
@@ -97,6 +98,10 @@ pub struct TextPrefs {
     /// The code editors': a request's body and a response's.
     pub editor_size: u32,
     pub wrap: bool,
+    /// The open APIs above the request and the response. Off, they stay
+    /// open and the shortcuts still reach them; the bar is not drawn.
+    /// Pins in the title bar are separate and always drawn.
+    pub show_tabs: bool,
 }
 
 impl Default for TextPrefs {
@@ -105,6 +110,7 @@ impl Default for TextPrefs {
             ui_size: 0,
             editor_size: 0,
             wrap: true,
+            show_tabs: true,
         }
     }
 }
@@ -717,6 +723,10 @@ mod tests {
         assert_eq!(prefs, AppPrefs::default());
         assert_eq!(prefs.columns.tree, 300.);
         assert!(prefs.text.wrap, "long lines wrap, as they did before the setting");
+        assert!(prefs.text.show_tabs, "the tab bar shows, as it did before the setting");
+        let hidden: AppPrefs = serde_json::from_str(r#"{"text":{"showTabs":false}}"#).expect("parses");
+        assert!(!hidden.text.show_tabs);
+        assert!(hidden.text.wrap, "turning the bar off leaves wrapping as it was");
         assert_eq!(
             prefs.sending,
             SendPrefs::default(),
@@ -992,6 +1002,7 @@ mod tests {
             ui_size: 16,
             editor_size: 20,
             wrap: false,
+            show_tabs: true,
         };
         assert_eq!((chosen.ui(), chosen.editor()), (16, 20));
         // A document edited by hand cannot make the window unreadable.
@@ -999,6 +1010,7 @@ mod tests {
             ui_size: 3,
             editor_size: 90,
             wrap: true,
+            show_tabs: true,
         };
         assert_eq!((odd.ui(), odd.editor()), (12, 20));
         assert!(TextPrefs::UI_SIZES.contains(&TextPrefs::DEFAULT_UI));
@@ -1007,6 +1019,7 @@ mod tests {
             ui_size: 17,
             editor_size: 19,
             wrap: true,
+            show_tabs: true,
         };
         assert_eq!((inside.ui(), inside.editor()), (17, 19), "any size in the range");
     }

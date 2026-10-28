@@ -854,6 +854,21 @@ impl SettingsView {
                     cx,
                 ),
                 setting_row(
+                    t!("settings.show_tabs").to_string(),
+                    Some(t!("settings.show_tabs_desc").to_string()),
+                    Switch::new("settings-tabs")
+                        .checked(prefs.text.show_tabs)
+                        .on_click(|checked, _, cx| {
+                            let app = AppStore::global(cx).state().clone();
+                            let text = TextPrefs {
+                                show_tabs: *checked,
+                                ..app.read(cx).prefs().text
+                            };
+                            app.update(cx, |app, cx| app.set_text(text, cx));
+                        }),
+                    cx,
+                ),
+                setting_row(
                     t!("settings.json_view").to_string(),
                     Some(t!("settings.json_view_desc").to_string()),
                     Select::new(&self.json_view).small(),
@@ -1374,8 +1389,9 @@ mod tests {
         };
         assert!(!shown(cx, "settings-wrap"), "the Editor section's, not the first's");
 
-        click(cx, handle, &["settings-editor", "settings-wrap"]);
+        click(cx, handle, &["settings-editor", "settings-wrap", "settings-tabs"]);
         assert!(!prefs(cx).text.wrap);
+        assert!(!prefs(cx).text.show_tabs);
         click(
             cx,
             handle,

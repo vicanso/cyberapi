@@ -879,6 +879,7 @@ mod tests {
             ui_size: 16,
             editor_size: 15,
             wrap: false,
+            show_tabs: true,
         };
         let sending = SendPrefs {
             follow_redirects: true,

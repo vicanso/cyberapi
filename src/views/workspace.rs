@@ -414,7 +414,10 @@ pub struct WorkspaceView {
     tabs: Entity<TabsBar>,
     title_name: Entity<ProjectTitle>,
     selected: Option<Selected>,
+    /// The tree, and everything to its right.
     columns: Entity<ResizableState>,
+    /// The request and the response, under the open-API bar.
+    editor_columns: Entity<ResizableState>,
     focus: FocusHandle,
     /// The window title last set.
     title: String,
@@ -524,6 +527,7 @@ impl WorkspaceView {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let columns = cx.new(|_| ResizableState::default());
+        let editor_columns = cx.new(|_| ResizableState::default());
         let mut view = Self {
             id,
             state,
@@ -533,6 +537,7 @@ impl WorkspaceView {
             title_name,
             selected: None,
             columns,
+            editor_columns,
             focus,
             title: String::new(),
             _subscriptions: subscriptions,
@@ -562,13 +567,6 @@ impl WorkspaceView {
     /// drops them when nothing is selected.
     fn follow_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let api: Option<Entity<ApiState>> = self.state.read(cx).api().cloned();
-        // Two columns become three, or three two: the sizes start again from
-        // the kept widths. Carried over, the empty column's measured width
-        // and the new column's would overflow, and flex would squeeze the
-        // tree to fit.
-        if api.is_some() != self.selected.is_some() {
-            self.columns = cx.new(|_| ResizableState::default());
-        }
         match api {
             Some(api) if self.selected.as_ref().map(|s| s.api) != Some(api.entity_id()) => {
                 // The columns are replaced. A field in them that has the keys
@@ -609,55 +607,61 @@ impl WorkspaceView {
         }
     }
 
-    /// F14.5: the widths kept — the tree in pixels, the editor as its share
-    /// of the rest. Moving the tree's edge keeps that share: the editor's
-    /// edge is the only one that changes it.
+    /// F14.5: the tree's width, in pixels. Its edge does not change how the
+    /// request and the response share what is left.
     fn columns_resized(&mut self, columns: &Entity<ResizableState>, window: &mut Window, cx: &mut Context<Self>) {
         let sizes = columns.read(cx).sizes().clone();
+        let [tree, rest] = sizes[..] else {
+            return;
+        };
+        let tree = f32::from(tree);
+        let rest = f32::from(rest);
         let app = AppStore::global(cx).state().clone();
         let kept = app.read(cx).prefs().columns;
-        let (widths, editor) = match sizes[..] {
-            [tree, editor, response] => {
-                let rest = f32::from(editor) + f32::from(response);
-                if rest <= 0. {
-                    return;
-                }
-                let tree = f32::from(tree);
-                if (tree - kept.tree).abs() > 0.5 {
-                    let widths = ColumnWidths { tree, ..kept };
-                    (widths, Some(rest * kept.editor_ratio.clamp(0.2, 0.8)))
-                } else {
-                    let editor_ratio = (f32::from(editor) / rest).clamp(0.2, 0.8);
-                    (ColumnWidths { tree, editor_ratio }, None)
-                }
-            }
-            // Nothing selected: the tree and the space beside it.
-            [tree, _] => (
-                ColumnWidths {
-                    tree: f32::from(tree),
-                    ..kept
-                },
-                None,
-            ),
-            _ => return,
-        };
-        app.update(cx, |app, cx| app.set_columns(widths, cx));
-        if let Some(editor) = editor {
-            columns.update(cx, |columns, cx| columns.resize_panel(1, px(editor), window, cx));
+        if (tree - kept.tree).abs() <= 0.5 {
+            return;
         }
+        app.update(cx, |app, cx| app.set_columns(ColumnWidths { tree, ..kept }, cx));
+        if rest > 0. {
+            let editor = rest * kept.editor_ratio.clamp(0.2, 0.8);
+            self.editor_columns.update(cx, |columns, cx| {
+                columns.resize_panel(0, px(editor), window, cx);
+            });
+        }
+    }
+
+    /// The request's share of what the tree leaves (F14.5).
+    fn editor_resized(&mut self, columns: &Entity<ResizableState>, _: &mut Window, cx: &mut Context<Self>) {
+        let sizes = columns.read(cx).sizes().clone();
+        let [editor, response] = sizes[..] else {
+            return;
+        };
+        let rest = f32::from(editor) + f32::from(response);
+        if rest <= 0. {
+            return;
+        }
+        let editor_ratio = (f32::from(editor) / rest).clamp(0.2, 0.8);
+        let app = AppStore::global(cx).state().clone();
+        let kept = app.read(cx).prefs().columns;
+        if (editor_ratio - kept.editor_ratio).abs() < 0.000_1 {
+            return;
+        }
+        app.update(cx, |app, cx| {
+            app.set_columns(ColumnWidths { editor_ratio, ..kept }, cx);
+        });
     }
 
     /// F4.14: the editor column at `share` of what the tree leaves, kept
     /// as a drag would keep it.
     fn set_editor_share(&mut self, share: f32, window: &mut Window, cx: &mut Context<Self>) {
-        let sizes = self.columns.read(cx).sizes().clone();
-        let [_, editor, response] = sizes[..] else {
+        let sizes = self.editor_columns.read(cx).sizes().clone();
+        let [editor, response] = sizes[..] else {
             return;
         };
         let width = (f32::from(editor) + f32::from(response)) * share;
-        let columns = self.columns.clone();
-        columns.update(cx, |columns, cx| columns.resize_panel(1, px(width), window, cx));
-        self.columns_resized(&columns, window, cx);
+        let columns = self.editor_columns.clone();
+        columns.update(cx, |columns, cx| columns.resize_panel(0, px(width), window, cx));
+        self.editor_resized(&columns, window, cx);
     }
 
     /// F12.2: the pin with this number (from 0), if there is one, opened
@@ -769,7 +773,11 @@ impl Render for WorkspaceView {
         if window.focused(cx).is_none() {
             self.focus.focus(window, cx);
         }
-        let columns = AppStore::global(cx).state().read(cx).prefs().columns;
+        // Copy both out while the read guard lives: `prefs()` borrows it.
+        let (columns, show_tabs) = {
+            let prefs = AppStore::global(cx).state().read(cx).prefs();
+            (prefs.columns, prefs.text.show_tabs)
+        };
         let state = self.state.downgrade();
         let folder_state = state.clone();
         let paste_state = state.clone();
@@ -783,30 +791,43 @@ impl Render for WorkspaceView {
                 .child(self.tree.clone()),
         );
         let group = match &self.selected {
-            Some(selected) => group
-                .child(
-                    resizable_panel()
-                        .size(px(editor_width))
-                        .size_range(px(280.)..px(4000.))
-                        .child(
-                            v_flex().size_full().child(self.tabs.clone()).child(
+            // The open APIs span the request and the response, so their
+            // bottom edge is one line. Inside the editor column it stopped
+            // at the split, and the response's own line started lower.
+            Some(selected) => {
+                let split = h_resizable("workspace-editor")
+                    .with_state(&self.editor_columns)
+                    .child(
+                        resizable_panel()
+                            .size(px(editor_width))
+                            .size_range(px(280.)..px(4000.))
+                            .child(
                                 div()
-                                    .w_full()
-                                    .flex_1()
-                                    .min_h_0()
+                                    .size_full()
                                     .track_focus(&selected.editor_focus)
                                     .child(selected.editor.clone()),
                             ),
+                    )
+                    .child(
+                        resizable_panel().size_range(px(240.)..px(4000.)).child(
+                            div()
+                                .size_full()
+                                .track_focus(&selected.response_focus)
+                                .child(selected.response.clone()),
                         ),
-                )
-                .child(
-                    resizable_panel().size_range(px(240.)..px(4000.)).child(
-                        div()
+                    )
+                    .on_resize(cx.listener(|this, columns: &Entity<ResizableState>, window, cx| {
+                        this.editor_resized(columns, window, cx)
+                    }));
+                group.child(
+                    resizable_panel().child(
+                        v_flex()
                             .size_full()
-                            .track_focus(&selected.response_focus)
-                            .child(selected.response.clone()),
+                            .when(show_tabs, |column| column.child(self.tabs.clone()))
+                            .child(div().w_full().flex_1().min_h_0().child(split)),
                     ),
-                ),
+                )
+            }
             None => group.child(resizable_panel().child(self.render_nothing_selected(window, cx))),
         };
         let editor = self.selected.as_ref().map(|selected| selected.editor.downgrade());
@@ -863,7 +884,7 @@ mod tests {
     use super::*;
     use crate::{Extras, SignOut};
     use cyberapi_core::prefs::AppPrefs;
-    use cyberapi_core::prefs::{SendPrefs, Timeouts};
+    use cyberapi_core::prefs::{SendPrefs, TextPrefs, Timeouts};
     use cyberapi_core::template::NoFiles;
     use cyberapi_http::{HttpEngine, PreparedRequest, SendFuture};
     use cyberapi_service::Sender;
@@ -1091,6 +1112,122 @@ mod tests {
             );
         })
         .expect("the window is open");
+    }
+
+    /// Pins beside the project name, drawn with the open-API bar so a test
+    /// can see both. The app itself draws the pins in the title bar.
+    struct PinsAndTabs {
+        pins: Entity<PinsBar>,
+        workspace: Entity<WorkspaceView>,
+    }
+
+    impl Render for PinsAndTabs {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            v_flex()
+                .size_full()
+                .child(self.pins.clone())
+                .child(div().flex_1().min_h_0().child(self.workspace.clone()))
+        }
+    }
+
+    /// The bar above the editor follows the setting. Hiding it leaves the
+    /// open APIs open, and the title bar's pins drawn.
+    #[gpui_kit::test]
+    async fn the_tab_bar_follows_the_setting(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let collection = pollster::block_on(store.storage().collections().create(NewCollection {
+            name: "p".into(),
+            ..Default::default()
+        }))
+        .expect("create");
+        let sign_out: SignOut = Arc::new(|| Box::pin(async {}));
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            AppStore::init(
+                store.storage(),
+                Arc::new(NoEngine),
+                AppPrefs::default(),
+                Extras {
+                    sign_out: Some(sign_out),
+                    ..Extras::default()
+                },
+                cx,
+            );
+        });
+        let mut view = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(1100.), px(700.)), |window, cx| {
+                let collection = collection.clone();
+                let state = cx.new(|cx| {
+                    let sender = AppStore::global(cx).sender(cx);
+                    WorkspaceState::new(sender, collection, cx)
+                });
+                let workspace = cx.new(|cx| WorkspaceView::with_state(state, window, cx));
+                let pins = workspace.read(cx).pins().clone();
+                view = Some(workspace.clone());
+                Root::new(cx.new(|_| PinsAndTabs { pins, workspace }), window, cx)
+            })
+            .into();
+        let view = view.expect("built");
+        cx.run_until_parked();
+        let state = cx.read(|cx| view.read(cx).state.clone());
+        state.update(cx, |state, cx| state.create_api(None, "ping".into(), cx));
+        cx.run_until_parked();
+        let opened_id = cx
+            .read(|cx| view.read(cx).state.read(cx).opened().cloned())
+            .expect("the new API is open");
+        state.update(cx, |state, cx| state.set_pinned(&opened_id, true, cx));
+        cx.run_until_parked();
+
+        // Neither bar's own id is a leaf, so the query is its close button.
+        let painted = |cx: &mut TestAppContext, id: (&'static str, usize)| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(id).is_some()
+            })
+            .expect("the window is open")
+        };
+        let opened = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).state.read(cx).opened().cloned());
+        assert!(opened(cx).is_some(), "the new API is open");
+        assert!(
+            painted(cx, ("close-api-tab", 0)),
+            "the open APIs show unless the setting says otherwise"
+        );
+        assert!(painted(cx, ("unpin", 0)), "the pin shows with them");
+
+        cx.update(|cx| {
+            let app = AppStore::global(cx).state().clone();
+            app.update(cx, |app, cx| {
+                app.set_text(
+                    TextPrefs {
+                        show_tabs: false,
+                        ..app.prefs().text
+                    },
+                    cx,
+                );
+            });
+        });
+        assert!(!painted(cx, ("close-api-tab", 0)), "the setting hides the open APIs");
+        assert!(painted(cx, ("unpin", 0)), "the pin stays");
+        assert!(opened(cx).is_some(), "the API stays open");
+
+        cx.update(|cx| {
+            let app = AppStore::global(cx).state().clone();
+            app.update(cx, |app, cx| {
+                app.set_text(
+                    TextPrefs {
+                        show_tabs: true,
+                        ..app.prefs().text
+                    },
+                    cx,
+                );
+            });
+        });
+        assert!(
+            painted(cx, ("close-api-tab", 0)),
+            "turning the setting back on draws the open APIs again"
+        );
+        assert!(painted(cx, ("unpin", 0)), "the pin is still there");
     }
 
     /// F10.5: what is on the clipboard is read when the reader pastes, and
