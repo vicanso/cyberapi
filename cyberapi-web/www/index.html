@@ -84,6 +84,25 @@
 </div>
 
 <script type="module">
+  // An input method's keystrokes are not the application's. gpui-pre-web
+  // (0.3.9 here, and 0.3.5 before it) decides that from `isComposing` alone,
+  // but the first key of a composition arrives before `compositionstart`:
+  // `isComposing` is still false and, in Chrome on macOS, `key` is the
+  // letter itself — so the letter is inserted as text and "你" comes out as
+  // "n你". `keyCode` 229 is what marks a key the IME took, on every browser,
+  // so those keydowns are stopped here, in the capture phase on `window`,
+  // before they reach the backend's listener. Not `preventDefault`: the IME
+  // still has to see them. The same check keeps Enter, Backspace and the
+  // arrows from also firing the application's bindings while they are
+  // choosing a candidate. Delete when upstream checks for 229 itself.
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.isComposing || event.keyCode === 229) event.stopImmediatePropagation();
+    },
+    true,
+  );
+
   // Every address is relative to the page, so it can be served under a base
   // path. The wasm builds its own requests and the kit's icon URLs on `root`.
   const root = new URL(".", location.href).href.replace(/\/$/, "");
