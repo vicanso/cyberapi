@@ -103,7 +103,8 @@ COPY --from=builder /cyberapi-bridge /usr/local/bin/cyberapi-bridge
 # is published, and to whom, is `docker run -p`'s decision. An environment
 # variable rather than an argument: arguments to `docker run` (such as
 # `--insecure-cookie` behind plain http, where the Secure login cookie is
-# dropped, or `--allow-target 10.0.0.0/8` for the APIs of your own network)
+# dropped, or `--allow-target 10.0.0.0/8` for a private range: requests go
+# to public addresses only)
 # are passed to the bridge and would replace it.
 ENV CYBERAPI_BRIDGE_LISTEN=0.0.0.0:7380
 EXPOSE 7380

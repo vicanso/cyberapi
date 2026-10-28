@@ -58,11 +58,11 @@ adds the other accounts from the settings menu.
 login cookie is Secure; --insecure-cookie lifts that for plain HTTP on this
 machine only.
 
-Requests are sent from the bridge, to public and private networks, never to
-this host (loopback) or link-local addresses (the cloud metadata address
-among them). --allow-target 127.0.0.1/32 (or CYBERAPI_BRIDGE_ALLOW_TARGETS)
-allows ranges back; --public-only (or CYBERAPI_BRIDGE_PUBLIC_ONLY=1) refuses
-private networks too, for a bridge open to the internet.
+Requests are sent from the bridge to public addresses only. Private
+networks, this host (loopback) and link-local addresses (the cloud metadata
+address among them) are refused. --allow-target 127.0.0.1/32 (or
+CYBERAPI_BRIDGE_ALLOW_TARGETS) allows a range back. --public-only (or
+CYBERAPI_BRIDGE_PUBLIC_ONLY) is already what the bridge does.
 
 Failed sign-ins are slowed per name and per address; behind a reverse proxy
 every request comes from the proxy's address, so rate-limit there as well.

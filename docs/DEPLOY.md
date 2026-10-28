@@ -138,7 +138,7 @@ helm install cyberapi deploy/helm/cyberapi \
 
 - **The database**: `store.existingSecret` (and `store.existingSecretKey`, `store-url` by default) names a Secret of yours; or `store.url` puts the URL in a Secret the chart writes. Without either it refuses to install.
 - **The first administrator**: `setupToken.value` or `setupToken.existingSecret`; without one the token is in the log (`kubectl logs deploy/cyberapi | grep -i "setup token"`).
-- **The options** above, as values: `bridge.basePath` (the ingress path should match it), `bridge.allowTargets` (a list), `bridge.publicOnly`, `bridge.insecureCookie`, and `bridge.extraArgs` / `bridge.extraEnv` for the rest.
+- **The options** above, as values: `bridge.basePath` (the ingress path should match it), `bridge.allowTargets` (a list), `bridge.publicOnly` (on by default; requests go to public addresses only), `bridge.insecureCookie`, and `bridge.extraArgs` / `bridge.extraEnv` for the rest.
 - **One replica** (`replicaCount: 1`): the login throttle, the MCP limit and the requests an account has out at once are counted in each process. The pod runs as non-root with a read-only root filesystem; it is ready once it reaches its database.
 - **TLS** is the Ingress's (`ingress.tls`): behind it the login cookie stays `Secure`. A version other than the chart's is `image.tag` (`nightly` follows `main`).
 
@@ -152,7 +152,7 @@ Each is a flag and, where given, an environment variable.
 | `--listen <addr>` | `CYBERAPI_BRIDGE_LISTEN` | Where to listen. `127.0.0.1:7380` by default; the image sets `0.0.0.0:7380`. |
 | `--setup-token <token>` | `CYBERAPI_BRIDGE_SETUP_TOKEN` | The token the first administrator is made with. Random, and logged, when not given. |
 | `--allow-target <ranges>` | `CYBERAPI_BRIDGE_ALLOW_TARGETS` | Address ranges requests may also go to, comma-separated, e.g. `127.0.0.1/32` ([Where requests may go](#where-requests-may-go)). |
-| `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | *0.2.2.* Refuse private networks too, for a bridge open to the internet. |
+| `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | *0.2.2*, and what the bridge does without it since *0.3.1*. Requests go to public addresses only either way; a private range is `--allow-target`. |
 | `--base-path <path>` | `CYBERAPI_BRIDGE_BASE_PATH` | *0.2.2.* Serve the page and the API under this path, e.g. `/cyberapi`, and keep the login cookie to it ([under a sub-path](#https-behind-a-reverse-proxy)). Empty by default: the root. |
 | `--insecure-cookie` | | Leave `Secure` off the login cookie, for plain HTTP on your own machine. |
 | `--www <dir>` | | Serve this directory as the page instead of the built-in one (development). |
@@ -211,12 +211,12 @@ The bridge then answers under `/cyberapi/` only, sends `/cyberapi` on to `/cyber
 
 ## Where requests may go
 
-The bridge sends the page's requests itself, from where it runs. By default (*0.2.2*; up to 0.2.1, public addresses only) it reaches **public addresses and private networks** (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, IPv6 `fc00::/7`), since the APIs a team tests are mostly on its own network. It refuses only what is never an API under test and is where a request sent on someone's behalf does harm: **its own host** (loopback `127.0.0.0/8`, `::1`, where services trust whoever calls) and **its link** (link-local `169.254.0.0/16`, `fe80::/10`, among them the cloud metadata address `169.254.169.254`, which hands out the machine's credentials), besides unspecified, multicast, broadcast and reserved addresses. The check is on the address a name resolves to, and again on every redirect. A refused request says the name and the address it led to.
+The bridge sends the page's requests itself, from where it runs. It sends to **public addresses only** (*0.3.1*; 0.2.2 and 0.3.0 also reached private networks, and through 0.2.1 public addresses only). It refuses private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), carrier-grade NAT (`100.64.0.0/10`), IPv6 unique-local (`fc00::/7`), the benchmarking range (`198.18.0.0/15`, where a fake-IP proxy answers), **its own host** (loopback `127.0.0.0/8`, `::1`, where services trust whoever calls), **its link** (link-local `169.254.0.0/16`, `fe80::/10`, among them the cloud metadata address `169.254.169.254`, which hands out the machine's credentials), and unspecified, multicast, broadcast and reserved addresses. The check is on the address a name resolves to, and again on every redirect. A refused request names that address and says the server sends to public addresses only; the page repeats it under the error, in the reader's language.
 
-Whoever can sign in to the page can therefore reach what the bridge's machine can. Run it on the network of the APIs it is for, not in a more privileged one.
+Whoever can sign in can therefore reach public addresses from the bridge's machine, and nothing on the network around it.
 
-- To reach a service on the bridge's own host, allow it: `CYBERAPI_BRIDGE_ALLOW_TARGETS=127.0.0.1/32`. In a container, `127.0.0.1` is the container itself; an API on the host is reached at the host's address.
-- For a bridge open to the internet, `--public-only` (`CYBERAPI_BRIDGE_PUBLIC_ONLY=1`) refuses the private networks as well, and `--allow-target` lets the ranges you name back: `CYBERAPI_BRIDGE_ALLOW_TARGETS=10.1.0.0/16,192.168.10.0/24`.
+- A private range, or a service on the bridge's own host, is named with `--allow-target`: `CYBERAPI_BRIDGE_ALLOW_TARGETS=10.1.0.0/16,192.168.10.0/24` or `127.0.0.1/32`. In a container, `127.0.0.1` is the container itself; an API on the host is reached at the host's address.
+- `--public-only` (`CYBERAPI_BRIDGE_PUBLIC_ONLY`) has been accepted since *0.2.2*. Since *0.3.1* the bridge sends this way without it, and setting the variable to false does not open private networks.
 
 Ranges are written as addresses (CIDR), not names: the check is on what a name resolves to, so a name allowed by itself could lead anywhere. Each account has at most 16 requests under way at once; more are answered "busy" at once rather than queued.
 

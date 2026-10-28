@@ -31,11 +31,13 @@ bridge:
   # Serve the page and the API under a path, e.g. /cyberapi; the ingress
   # path should be the same. Empty: the root.
   basePath: ""
-  # Address ranges requests may also go to, e.g. 10.0.0.0/8 for the APIs
-  # of your own network ("Where requests may go").
+  # Address ranges requests may also go to. The bridge sends to public
+  # addresses only; a private range is named here, e.g. 10.0.0.0/8
+  # ("Where requests may go").
   allowTargets: []
-  # Refuse private networks too, for a bridge open to the internet.
-  publicOnly: false
+  # Kept so an existing install still sets CYBERAPI_BRIDGE_PUBLIC_ONLY.
+  # The bridge sends to public addresses only either way.
+  publicOnly: true
   # Leave Secure off the login cookie: only for plain HTTP inside a
   # network you trust. Behind TLS, leave it off.
   insecureCookie: false

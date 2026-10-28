@@ -1,18 +1,17 @@
 //! Which addresses an engine may connect to (`docs/architecture.md` §5).
 //!
 //! The desktop sends wherever its reader asks. The bridge sends for every
-//! account from inside its own network. The APIs a team tests are mostly
-//! on that network, so by default it reaches public and private addresses
-//! alike ([`TargetPolicy::Networks`]), and refuses only what is never an
-//! API under test and is where a request sent on someone's behalf does
-//! harm: the bridge's own host (loopback, where services trust whoever
-//! calls), the link-local range (the cloud's metadata address, which hands
-//! out the machine's credentials), unspecified, multicast, broadcast and
-//! reserved addresses. `--public-only` ([`TargetPolicy::PublicOnly`]) also
-//! refuses the private ranges, carrier-grade NAT, the benchmarking range
-//! (where fake-IP proxies answer) and IPv6 unique-local, for a bridge open
-//! to the internet. An administrator can allow ranges back in either. An
-//! IPv4 address inside IPv6 (mapped, translated, NAT64) is judged as itself.
+//! account, and only to public addresses ([`TargetPolicy::PublicOnly`]).
+//! It refuses a private network, carrier-grade NAT, the benchmarking range
+//! (where fake-IP proxies answer), IPv6 unique-local, its own host
+//! (loopback, where services trust whoever calls), the link-local range
+//! (the cloud's metadata address, which hands out the machine's
+//! credentials), and unspecified, multicast, broadcast and reserved
+//! addresses. An administrator allows a range back with `--allow-target`.
+//! [`TargetPolicy::Networks`] still reaches public and private addresses
+//! and refuses only that host, the link and the reserved addresses; the
+//! bridge does not select it. An IPv4 address inside IPv6 (mapped,
+//! translated, NAT64) is judged as itself.
 //!
 //! The check is on the resolved address at connect time, so a name that
 //! resolves to an inner address — or starts to (DNS rebinding) — is refused
@@ -27,9 +26,9 @@ pub enum TargetPolicy {
     #[default]
     Anywhere,
     /// Public and private networks, not the bridge's own host or link, and
-    /// these ranges besides: the bridge's default.
+    /// these ranges besides. The bridge does not select this.
     Networks { allowed: Vec<IpNet> },
-    /// Public addresses, and these ranges besides: `--public-only`.
+    /// Public addresses, and these ranges besides: the bridge.
     PublicOnly { allowed: Vec<IpNet> },
 }
 
@@ -165,8 +164,8 @@ mod tests {
         }
     }
 
-    /// The default: the team's networks, public and private, but never the
-    /// bridge's own host or link — wherever an address hides it.
+    /// Public and private networks, but never the bridge's own host or
+    /// link — wherever an address hides it. The bridge does not select this.
     #[test]
     fn the_bridge_reaches_networks_but_not_its_host_or_link() {
         let policy = TargetPolicy::Networks { allowed: vec![] };

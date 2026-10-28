@@ -1127,11 +1127,20 @@ impl ResponsePanel {
                         .to_string(),
                     )
             });
+            // The bridge sends to public addresses only. The alert is the
+            // English reason; this says the same in the reader's language.
+            let public_only = SendError::is_forbidden_target(error).then(|| {
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("response.public_only").to_string())
+            });
             return v_flex()
                 .p_3()
                 .gap_2()
                 .child(Alert::error("response-error", error.clone()).title(t!("response.failed").to_string()))
                 .children(certificate)
+                .children(public_only)
                 // The reason, to search for or pass on: the text cannot be
                 // selected.
                 .child(

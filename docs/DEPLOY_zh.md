@@ -138,7 +138,7 @@ helm install cyberapi deploy/helm/cyberapi \
 
 - **数据库**：`store.existingSecret`（及 `store.existingSecretKey`，默认 `store-url`）指向你自己的 Secret；或者用 `store.url`，由 chart 写进它生成的 Secret。两者都没有时拒绝安装。
 - **第一个管理员**：`setupToken.value` 或 `setupToken.existingSecret`；都没有时初始化 token 在日志里（`kubectl logs deploy/cyberapi | grep -i "setup token"`）。
-- **上面的选项**都有对应的 value：`bridge.basePath`（Ingress 的路径要和它一致）、`bridge.allowTargets`（列表）、`bridge.publicOnly`、`bridge.insecureCookie`，其余用 `bridge.extraArgs` / `bridge.extraEnv`。
+- **上面的选项**都有对应的 value：`bridge.basePath`（Ingress 的路径要和它一致）、`bridge.allowTargets`（列表）、`bridge.publicOnly`（默认开启；请求只发往公网地址）、`bridge.insecureCookie`，其余用 `bridge.extraArgs` / `bridge.extraEnv`。
 - **一个副本**（`replicaCount: 1`）：登录限流、MCP 调用限制和每个账号同时发送的请求数都是在各自进程里计数的。Pod 以非 root 用户、只读根文件系统运行，连上数据库后才算就绪。
 - **TLS** 交给 Ingress（`ingress.tls`），这样登录 Cookie 保持 `Secure`。要用 chart 之外的版本就设 `image.tag`（`nightly` 跟随 `main`）。
 
@@ -152,7 +152,7 @@ helm install cyberapi deploy/helm/cyberapi \
 | `--listen <addr>` | `CYBERAPI_BRIDGE_LISTEN` | 监听地址，默认 `127.0.0.1:7380`；镜像里设为 `0.0.0.0:7380`。 |
 | `--setup-token <token>` | `CYBERAPI_BRIDGE_SETUP_TOKEN` | 创建第一个管理员用的 token。不设置时随机生成并写进日志。 |
 | `--allow-target <网段>` | `CYBERAPI_BRIDGE_ALLOW_TARGETS` | 请求还可以发往的网段，逗号分隔，如 `127.0.0.1/32`（见[请求能发往哪里](#请求能发往哪里)）。 |
-| `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | *0.2.2*。连内网也拒绝，用于开放到公网的 bridge。 |
+| `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | *0.2.2* 起就有；*0.3.1* 起不写它也一样。请求只发往公网地址。要访问内网，用 `--allow-target`。 |
 | `--base-path <路径>` | `CYBERAPI_BRIDGE_BASE_PATH` | *0.2.2*。把页面和接口放在这个路径下，如 `/cyberapi`，登录 Cookie 也只在这个路径下有效（见[子路径](#反向代理和-https)）。默认为空，即根路径。 |
 | `--insecure-cookie` | | 登录 Cookie 不带 `Secure`，用于在自己机器上走纯 HTTP。 |
 | `--www <dir>` | | 用这个目录作为页面，代替内置的页面（开发用）。 |
@@ -211,12 +211,12 @@ server {
 
 ## 请求能发往哪里
 
-页面的请求由 bridge 在它所在的位置代发。默认（*0.2.2*；0.2.1 及以前只能访问公网）**公网和内网都能访问**（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`100.64.0.0/10`、IPv6 `fc00::/7`），因为团队要测的接口大多在自己的内网里。只拒绝那些不会是被测接口、而代人发请求时又最容易出事的地址：**bridge 所在的本机**（回环 `127.0.0.0/8`、`::1`，那里的服务往往默认信任本机来的请求），以及**链路本地**（`169.254.0.0/16`、`fe80::/10`，其中包括云服务器的元数据地址 `169.254.169.254`，能拿到这台机器的云账号凭证），另外还有未指定、组播、广播和保留地址。检查的是域名解析后的地址，每次重定向都会再查一次。被拒绝时，报错会写出域名和它解析到的地址。
+页面的请求由 bridge 在它所在的位置代发，而且**只发往公网地址**（*0.3.1*；0.2.2 和 0.3.0 也能访问内网，0.2.1 及以前只能访问公网）。它拒绝内网（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`）、运营商级 NAT（`100.64.0.0/10`）、IPv6 唯一本地地址（`fc00::/7`）、基准测试段（`198.18.0.0/15`，fake-IP 代理会把域名解析到这里）、**bridge 所在的本机**（回环 `127.0.0.0/8`、`::1`，那里的服务往往默认信任本机来的请求）、**链路本地**（`169.254.0.0/16`、`fe80::/10`，其中包括云服务器的元数据地址 `169.254.169.254`，能拿到这台机器的云账号凭证），以及未指定、组播、广播和保留地址。检查的是域名解析后的地址，每次重定向都会再查一次。被拒绝时，报错写出域名和它解析到的地址，并说明只发往公网地址；页面在这条错误下面用读者的语言再提示一次。
 
-也就是说，能登录网页版的人，能访问 bridge 这台机器能访问的地方。请把它部署在要测的接口所在的网段，不要放进权限更大的网段。
+也就是说，能登录网页版的人，只能访问 bridge 这台机器能访问的公网地址，访问不到它所在的内网。
 
-- 要访问 bridge 本机上的服务，就放行它：`CYBERAPI_BRIDGE_ALLOW_TARGETS=127.0.0.1/32`。在容器里，`127.0.0.1` 是容器自己；宿主机上的接口要用宿主机的地址访问。
-- 开放到公网的 bridge 可以用 `--public-only`（`CYBERAPI_BRIDGE_PUBLIC_ONLY=1`）连内网也一并拒绝，再用 `--allow-target` 放行你指定的网段：`CYBERAPI_BRIDGE_ALLOW_TARGETS=10.1.0.0/16,192.168.10.0/24`。
+- 要访问内网，或 bridge 本机上的服务，就放行那个网段：`CYBERAPI_BRIDGE_ALLOW_TARGETS=10.1.0.0/16,192.168.10.0/24`，或 `127.0.0.1/32`。在容器里，`127.0.0.1` 是容器自己；宿主机上的接口要用宿主机的地址访问。
+- `--public-only`（`CYBERAPI_BRIDGE_PUBLIC_ONLY`）从 *0.2.2* 起就接受。*0.3.1* 起不写它也只发往公网；把这个变量设成 false 也不会开放内网。
 
 放行写的是地址（CIDR），不是域名：检查的是域名解析后的地址，只放行一个域名的话，它可以解析到任何地方。每个账号同时最多有 16 个请求在发送，再多的会立即回复“忙”，不会排队。
 

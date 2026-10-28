@@ -323,7 +323,8 @@ async fn redirects_are_not_followed_and_odd_headers_still_read() {
 #[tokio::test]
 async fn the_bridges_policy_refuses_inner_addresses() {
     let address = serve().await;
-    // The default reaches the team's networks, not the bridge's own host.
+    // Loopback is refused. The bridge sends to public addresses only;
+    // Networks still reaches a private range and refuses this host too.
     let networks = NativeEngine::new(
         tokio::runtime::Handle::current(),
         TargetPolicy::Networks { allowed: vec![] },
@@ -344,6 +345,7 @@ async fn the_bridges_policy_refuses_inner_addresses() {
         panic!("{refused:?}");
     };
     assert!(target.starts_with("localhost (") && target.ends_with(')'), "{target}");
+    assert!(refused.to_string().contains("public addresses only"), "{refused}");
     assert!(refused.to_string().contains("--allow-target"), "{refused}");
     let public_only = NativeEngine::new(
         tokio::runtime::Handle::current(),

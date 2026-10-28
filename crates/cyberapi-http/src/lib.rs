@@ -88,9 +88,10 @@ pub enum SendError {
     Http { message: String },
     /// The bridge will not reach this address (`TargetPolicy`). `target`
     /// is the host as written, with the address it resolved to when it is
-    /// a name: `api.internal (10.1.2.3)`.
+    /// a name: `api.internal (10.1.2.3)`. The bridge sends to public
+    /// addresses only.
     #[snafu(display(
-        "the server does not send requests to {target}; its administrator can allow that address with --allow-target"
+        "the server does not send requests to {target}; it sends to public addresses only, and its administrator can allow that address with --allow-target"
     ))]
     Forbidden { target: String },
     /// The browser build could not reach the bridge.
@@ -115,6 +116,12 @@ impl SendError {
     /// [`SendError::Certificate`].
     pub fn is_untrusted_certificate(error: &str) -> bool {
         error.starts_with("untrusted certificate: ")
+    }
+
+    /// Whether `error`, the text a response keeps, is a
+    /// [`SendError::Forbidden`]: the bridge sends to public addresses only.
+    pub fn is_forbidden_target(error: &str) -> bool {
+        error.starts_with("the server does not send requests to ")
     }
 }
 
@@ -282,5 +289,17 @@ mod tests {
             message: "handshake".into(),
         };
         assert!(!SendError::is_untrusted_certificate(&other.to_string()));
+    }
+
+    #[test]
+    fn a_refused_address_says_public_addresses_only() {
+        let failure = SendError::Forbidden {
+            target: "api.internal (10.1.2.3)".into(),
+        };
+        let text = failure.to_string();
+        assert!(SendError::is_forbidden_target(&text), "{text}");
+        assert!(text.contains("public addresses only"), "{text}");
+        assert!(text.contains("--allow-target"), "{text}");
+        assert!(!SendError::is_forbidden_target("could not connect: reset"));
     }
 }

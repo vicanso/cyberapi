@@ -273,7 +273,7 @@ JSON 默认展示：恢复默认设置时写回「文本」，再保存其余设
   - 行为和桌面版一致。代价是请求从服务器发出，访问不到用户本机的 `localhost`。
   - Cookie 使用发起请求的账号自己的 Cookie。
   - 以后可以再增加可选的“浏览器直连”模式（受 CORS 限制）。
-  - bridge 需要限制可访问的目标地址，防止被当作 SSRF 跳板：默认拒绝 bridge 所在主机的回环和链路本地（含云元数据地址），`--public-only` 时连内网也拒绝，管理员可用 `--allow-target` 放行网段。
+  - bridge 需要限制可访问的目标地址，防止被当作 SSRF 跳板：只发往公网地址，拒绝内网、本机回环和链路本地（含云元数据地址），管理员可用 `--allow-target` 放行网段。被拒绝时错误说明只允许公网地址，页面在错误下再提示一次。
 - **发送管线**（L2 `cyberapi-service`）：变量注入（F5.2）、body 处理（F5.3）、Query / Header 处理（F5.4）、模板函数（M6）、写入历史（F5.8）。两端共用同一份代码。
 - **模板函数的 IO 依赖**通过 trait 注入：`FileReader`、`FilePicker`、`ResponseLookup`、`VariableLookup`、`Clock`。浏览器版不提供 `readFile` 和 `openFile`。
 
@@ -373,7 +373,7 @@ JSON 默认展示：恢复默认设置时写回「文本」，再保存其余设
 - **计时（#1）与取消（#2）**：`NativeEngine` 在 hyper 的连接级 API 上每个请求新建连接，DNS / TCP / TLS 各自计时，包装后的流记录写完请求的时间；响应的起点在 HTTP/1.1 下是收到首字节，在 HTTP/2 下是收到响应头（连接自己的 SETTINGS 帧会先到）。drop future 即中止 tokio 任务、断开连接。每个解析到的地址分到一份连接超时，一个不通的地址不会耗尽全部时间。
 - **HTTP 版本（F14.10）**：默认 HTTPS 经 ALPN 协商 HTTP/2，不支持就用 HTTP/1.1，明文用 HTTP/1.1；设置里可以只用 HTTP/1.1，或只用 HTTP/2（明文时为 h2c）。实际版本记在 `HttpStats.version`。没有做 HTTP/3。
 - **历史记录**：`HistoryStore`，读者自己的（bridge 上按账号隔离），每个接口最近 10 条；写入不算项目修改。
-- **bridge 的目标地址限制**：`TargetPolicy` 在连接时检查解析后的地址（防 DNS rebinding），IPv6 中嵌入的 IPv4 按 IPv4 判断；`--allow-target` 放行网段。当时的默认是 `PublicOnly`，后来改为 `Networks`：公网和内网都能到，只拒绝 bridge 所在主机的回环、链路本地（含云元数据地址）以及未指定 / 组播 / 广播 / 保留地址；`--public-only` 时才是 `PublicOnly`，再拒绝私网、CGNAT、基准测试段（198.18.0.0/15，fake-IP 代理会把域名解析到这里）、IPv6 ULA。在使用 fake-IP 模式代理的机器上以 `--public-only` 开发时需要放行 198.18.0.0/15。
+- **bridge 的目标地址限制**：`TargetPolicy` 在连接时检查解析后的地址（防 DNS rebinding），IPv6 中嵌入的 IPv4 按 IPv4 判断；`--allow-target` 放行网段。bridge 只用 `PublicOnly`：只发往公网地址，拒绝私网、CGNAT、基准测试段（198.18.0.0/15，fake-IP 代理会把域名解析到这里）、IPv6 ULA，以及本机回环、链路本地（含云元数据地址）和未指定 / 组播 / 广播 / 保留地址。被拒绝时错误写出目标并说明只发往公网，页面在错误下用读者的语言再提示一次。`Networks`（公网和内网都能到，只拒绝本机和链路本地）还在库里，bridge 不再选用；`--public-only` 仍接受，已经是现在的行为。在使用 fake-IP 模式代理的机器上开发时需要放行 198.18.0.0/15。
 - **当时未做**：响应体的流式处理（整个响应体一次读进内存，最多 64 MiB，解压后同样，超出截断并标记；bridge 每个账号同时最多 16 个请求）。后来补上的：事件流（SSE）和 gRPC 服务端流边收边显示（`HttpEngine::send_watched`，不受整体超时限制，bridge 经 `/v1/send/stream` 以 NDJSON 转发），其余响应仍整体读取；Cookie（第 8 步）；附件自动保存（F7.5，桌面写入“下载”目录，浏览器版触发下载，从历史选中时不保存）；大响应体（#17）：历史只保存不超过 2 MiB 的响应体，更大的只记长度，面板最多显示 1 MiB 文本，并可以“保存响应体”。
 
 第 11 步落地时的做法：
