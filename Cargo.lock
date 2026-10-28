@@ -1852,7 +1852,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi-bridge"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "argon2",
  "axum",
@@ -1884,7 +1884,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "cyberapi-core",
@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1924,7 +1924,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi-gui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-lock",
  "chrono",
@@ -1962,7 +1962,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi-http"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.23.1",
  "brotli-decompressor",
@@ -1993,7 +1993,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi-service"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "cyberapi-core",
@@ -2015,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi-store"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "cyberapi-core",
@@ -2029,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi-store-bridge"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cyberapi-core",
  "cyberapi-http",
@@ -2042,7 +2042,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi-store-sql"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "cyberapi-core",
@@ -2060,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi-store-turso"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-lock",
  "chrono",
@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "cyberapi-web"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cyberapi-core",
  "cyberapi-gui",

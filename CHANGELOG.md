@@ -1,5 +1,77 @@
 # Changelog
 
+## [0.4.0](https://github.com/vicanso/cyberapi/compare/v0.3.0..v0.4.0) - 2026-10-28
+
+### ⛰️  Features
+
+- *(A1)* MCP's get_api lists an API's assertions; the docs say what assertions do - ([52ebeb9](https://github.com/vicanso/cyberapi/commit/52ebeb9b4d1a03260c52ce6f9f91836707b0b6ad))
+- *(A1)* An Assert tab edits an API's assertions, each marked against the response shown; the status line counts how many held. The Raw HTTP tab is Wire (报文), to fit - ([e62e454](https://github.com/vicanso/cyberapi/commit/e62e454c28229be69ec5c12b41f2da8e9237cad4))
+- *(A1)* An API's assertions on its status, headers, JSON, body, time and size, kept in its request; model 6 - ([a93243f](https://github.com/vicanso/cyberapi/commit/a93243fa2210658dbc468e3e5fcc7c5489cbeaa5))
+- *(A3, A2)* Run a folder or the project, once or for each row of a data file, values taken from one answer for the requests after it - ([4c94709](https://github.com/vicanso/cyberapi/commit/4c94709ce46e80094577494f5ed5d8b82374ddcc))
+- *(A4)* Cyberapi-cli run — a project file's APIs run from a terminal or CI, as Run… runs them - ([8bf2cd7](https://github.com/vicanso/cyberapi/commit/8bf2cd774219ad1148978193075a37d976eb7804))
+- *(B1, B2)* A project or a folder exports as a Postman collection (v2.1) or an OpenAPI 3.0 document (YAML) too, from the export submenu - ([3c08f44](https://github.com/vicanso/cyberapi/commit/3c08f44e36d5ca8b15e59593edd38059c6c0fd90))
+- *(B3)* Importing again into a project adds only what is new, into the folders of the same name, or also updates the APIs it has - ([829eec1](https://github.com/vicanso/cyberapi/commit/829eec1cf3438cf835545602f64349523e8efa10))
+- *(B3)* An address in the import dialog is fetched, as the app sends, redirects followed and nothing kept - ([5edd405](https://github.com/vicanso/cyberapi/commit/5edd4050151c2566be3dea93c379455f80b81d8e))
+- *(B4)* Imports bring how they sign in and their environments — Postman's and Insomnia's auth at every level, OpenAPI's security schemes as the project's, a Postman environment file and Insomnia's sub-environments as named environments; the project keeps its own auth, and an environment it has gets only what it lacks - ([35a8460](https://github.com/vicanso/cyberapi/commit/35a8460efbca36ecf59e9996f0d0d464ea22fe1a))
+- *(B5)* Imports HAR archives, Hoppscotch collections and environments, Bruno .bru files and OpenCollection documents - ([130b64f](https://github.com/vicanso/cyberapi/commit/130b64fc84733cdcb1beeb7d9a4fdbb4bf29511d))
+- *(B6)* Copy a request as Node.js axios, PHP Guzzle, Rust reqwest, Java's and C#'s HttpClient or Swift's URLSession - ([05f4eac](https://github.com/vicanso/cyberapi/commit/05f4eac8e7cfc8344ed239bbd870579e02adedfd))
+- *(C2)* Digest auth — a 401 that asks for Digest (MD5 or SHA-256, -sess, qop=auth) is answered once by sending again signed; an API, folder or project can sign in with it; cURL copies it as --digest; data model 7 - ([9353619](https://github.com/vicanso/cyberapi/commit/9353619a1de580ea4d3bcaaa4fff8e39e2f34ca0))
+- *(C4)* OAuth tokens kept as cookies are, and an audience and a resource asked with - ([06932bb](https://github.com/vicanso/cyberapi/commit/06932bb34243dabd328ab513c505432ee12cf043))
+- *(C4)* OAuth 2.0's client credentials and password grants, the token asked for before sending and kept in memory - ([ba038e3](https://github.com/vicanso/cyberapi/commit/ba038e3c1fa5608922bb42232564f1af4eef972c))
+- *(C5)* Client certificates by host (PEM, or PKCS#12 with its password) and authorities trusted besides the system's, in the desktop's settings; only the desktop's engine reads the files, never the bridge's; cURL copies them - ([992d261](https://github.com/vicanso/cyberapi/commit/992d261bc54d0b5dcbfaa7f490dae800af0647e1))
+- *(D1)* {{prompt(label, start)}} asks for a value as the request is sent: one dialog for all of them, what was typed kept by project until the app quits; an AI assistant's send that has one is refused - ([b98b1c3](https://github.com/vicanso/cyberapi/commit/b98b1c3189d9d5e8afa1cbfd83c491b92f38b25e))
+- *(D2)* {{env(NAME)}} reads this machine's environment variable — the app's own, else what the login shell exports, so an app opened from the Dock finds what ~/.zshrc sets; one not set stops the send; a page and the bridge read none - ([bdd93eb](https://github.com/vicanso/cyberapi/commit/bdd93eb4d078b9a4cbc57cb849a579d564914b8f))
+- *(D3)* Secret variables, their values each reader's own and never in the project - ([3504c5c](https://github.com/vicanso/cyberapi/commit/3504c5c2f620cf5c49c476a8fba222e4f92bd15e))
+- *(D4)* The history keeps as many as the settings say, a project lists its recent responses, and two responses compare - ([e909c4c](https://github.com/vicanso/cyberapi/commit/e909c4c6c5ef44b41b071dbd9c4af50b59ac14de))
+- *(E1)* WebSocket APIs, connected on the desktop with what went each way kept - ([015cb53](https://github.com/vicanso/cyberapi/commit/015cb53d81ea8cd80aa1653fafae361423764871))
+- *(F1)* Each API opened stays open as a tab, its editor, answers and request on its way kept - ([e6b5e65](https://github.com/vicanso/cyberapi/commit/e6b5e651e5b2e124416d191a069cfba80d40e333))
+- *(F2)* A command palette on ⌘/Ctrl-K — an API in any project, a project, an environment or a command - ([f88ff54](https://github.com/vicanso/cyberapi/commit/f88ff542d1ea666d16fbac5ddf3775dcaada7dca))
+- *(F3)* What APIs and folders are for, and answers kept as examples, with the project - ([43ba5cf](https://github.com/vicanso/cyberapi/commit/43ba5cf3d0e10490be4d4167dececdce539520f9))
+- *(F4, #51)* A Raw HTTP tab shows the whole exchange as curl -v prints it, sent secrets masked till shown - ([d77b7e4](https://github.com/vicanso/cyberapi/commit/d77b7e45ca9e062caa211e137bc082da1e8405b2))
+- *(G1)* A project of the desktop's own is uploaded to its server under the same id, and becomes its copy in place, its history kept - ([6a80d85](https://github.com/vicanso/cyberapi/commit/6a80d8524c59d3e23a0ea5ee45c617b94c1da872))
+- *(G1)* A project may be made with the id it is given, unless one has it - ([470de4a](https://github.com/vicanso/cyberapi/commit/470de4ac208ff6874f53a1c3a695a0f46b61fb93))
+- *(G2)* A project's mock server on the desktop, answering from its examples - ([4993a0f](https://github.com/vicanso/cyberapi/commit/4993a0f63648110f2cfd80f053cff8a4a9459c3e))
+- *(G4)* The server keeps a project's last 50 versions, and an editor puts one back - ([b0b51cb](https://github.com/vicanso/cyberapi/commit/b0b51cbe3d9cbfae14808b2013416498d0845ae9))
+- *(G6)* A Helm chart for the web version - ([be58427](https://github.com/vicanso/cyberapi/commit/be5842733d4cb66625cab550e56d809f180f24a6))
+- *(H1)* An MCP send reports each assertion, and the history keeps none - ([9505d7a](https://github.com/vicanso/cyberapi/commit/9505d7ad0312b19f6bf300afa2e33e4004aee0bc))
+- *(H1)* An MCP token allowed to change makes and changes APIs where its account edits - ([054e92a](https://github.com/vicanso/cyberapi/commit/054e92a5f9ed41c0b448bcaba49befe546bcc06a))
+- *(sync)* A server project's card has a cloud, crossed out while the server is out of reach; a list the server cannot give keeps the last - ([45c1c90](https://github.com/vicanso/cyberapi/commit/45c1c905b3f6d81f523b4ac51175a382d4f1df4f))
+- The API tree opens at 240 px - ([5d44019](https://github.com/vicanso/cyberapi/commit/5d44019b5a037a42ec85c1be842c204eb7834b89))
+- The open-API bar hides from Editor, and pins stay - ([88ea6e3](https://github.com/vicanso/cyberapi/commit/88ea6e3d16fe34aa313c4b7ddcba9939668e8d0b))
+- A text body shows 1 or 2 MiB, chosen in Data - ([668bb07](https://github.com/vicanso/cyberapi/commit/668bb0772f05a81daf94f521e0585e6a4aa574be))
+
+### 🐛 Bug Fixes
+
+- *(F4, #43)* The last response fades while the next request is on its way - ([e2e8f4c](https://github.com/vicanso/cyberapi/commit/e2e8f4c966bcf14e0c8a3885e83cb4b308a23342))
+- *(F4, #43)* Each list's bulk editor shows a line of its own kind, page: 1 for the query - ([79b1a76](https://github.com/vicanso/cyberapi/commit/79b1a764479d068aeb6954ac5bea569da002f827))
+- *(F4, #44)* The Window menu's Zoom and Minimize act after the dispatch, when the window can be updated - ([6c20e88](https://github.com/vicanso/cyberapi/commit/6c20e88fc1799b9729b10da8b891a6803cea8aeb))
+- *(sync)* A server project's cloud is blue, amber while its server is out of reach - ([0ccbc2d](https://github.com/vicanso/cyberapi/commit/0ccbc2d6c8427d8c3b67c0c830de1abab87b24cf))
+- *(sync)* The projects page asks the server for its list again while it shows, when the window comes back and on a click, so a team's new project comes in - ([126b92b](https://github.com/vicanso/cyberapi/commit/126b92b65c775075a198fbd9a986aa2b61c8dafa))
+- The server sends requests to public addresses only - ([9c33757](https://github.com/vicanso/cyberapi/commit/9c33757414b297e0c3023afe26d0fdd4da91c1c2))
+- Another pinned API can still be chosen by its shortcut - ([643f71d](https://github.com/vicanso/cyberapi/commit/643f71d97071527da1a62b2db95807249af5ae9d))
+- The browser drops an input method's first key instead of inserting it - ([77322aa](https://github.com/vicanso/cyberapi/commit/77322aa4f19dbd5217517f3e9e42d948500096b6))
+- The Tauri app's first environments table gives way to the named environments, and the desktop logs to a file - ([df6ba18](https://github.com/vicanso/cyberapi/commit/df6ba18bcb76f2f2cd9d07cd091507c63ce282b3))
+- Fix accesskit - ([2403289](https://github.com/vicanso/cyberapi/commit/24032899200b5806fa3489fc932b94f88de1bf97))
+
+### 📚 Documentation
+
+- What the rest of the plan does where it had questions, and the order it goes in - ([5460c89](https://github.com/vicanso/cyberapi/commit/5460c890575b6aefec89a4312db21b41f3bc221a))
+- #74–#77 are done, and the Touch Bar crash's patch is in - ([a0dcf33](https://github.com/vicanso/cyberapi/commit/a0dcf330cd070a3d6ac1b240a0716c7aa3baa539))
+- C1 waits; every vendor signs a little differently - ([f668d10](https://github.com/vicanso/cyberapi/commit/f668d102a7c9ab4cfb902ed716da7a5f229bf07c))
+- B4 waits, with how it will go when it is done - ([ffb38cb](https://github.com/vicanso/cyberapi/commit/ffb38cb3657b8e35917f0ed08fd3795a8cb992ba))
+- B3 is done - ([87910df](https://github.com/vicanso/cyberapi/commit/87910df04ac92116a5f0ab5ae6527ac4ecbeea75))
+- F4 is done, the Linux part of #44 left to check there - ([b1d4a57](https://github.com/vicanso/cyberapi/commit/b1d4a57083c42451ea9096b0d066d0d2f4b29d04))
+- What is worth building after 0.3.0, from competitors, user demand and our own leftovers - ([81ead12](https://github.com/vicanso/cyberapi/commit/81ead12809e9981f37bec87c06f571e2eebd5467))
+- One line on installing in the README, the details in docs/INSTALL.md - ([13ef737](https://github.com/vicanso/cyberapi/commit/13ef73767f33312b739466d7cdc24fb8c2b45676))
+
+### ⚡ Performance
+
+- *(import)* A big text is held beside the editor, which shows its start unwrapped, and is described in the background - ([63fd418](https://github.com/vicanso/cyberapi/commit/63fd41867b33d8abf8652765a4126936a8faa88b))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(macos)* CYBERAPI_NO_ACCESSIBILITY starts the desktop app without AccessKit, to tell whether it is what clashes with the Touch Bar when a window closes - ([272d8c1](https://github.com/vicanso/cyberapi/commit/272d8c12ed9ae07ead6c681f72f2b5766d657b38))
+
 ## [0.3.0](https://github.com/vicanso/cyberapi/compare/v0.2.1..v0.3.0) - 2026-10-25
 
 ### ⛰️  Features

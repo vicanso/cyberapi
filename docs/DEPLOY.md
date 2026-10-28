@@ -24,7 +24,7 @@ This guide follows `main`. What a release does not have yet is marked with the v
 ## What you need
 
 - **A database**: PostgreSQL or MySQL (CI tests PostgreSQL 18 and MySQL 8.4). Give the bridge an empty database and a user that can create tables in it: it creates the schema on its first start and brings it up to date on every start after.
-- **The program**: the image [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web) for linux/amd64 and linux/arm64 (tags: each version such as `0.3.0`, `latest`, and `nightly` from `main`), or `cyberapi-web-<version>-x86_64-unknown-linux-gnu.tar.gz` from [Releases](https://github.com/vicanso/cyberapi/releases) (glibc 2.39 or newer: Ubuntu 24.04, Debian 13).
+- **The program**: the image [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web) for linux/amd64 and linux/arm64 (tags: each version such as `0.4.0`, `latest`, and `nightly` from `main`), or `cyberapi-web-<version>-x86_64-unknown-linux-gnu.tar.gz` from [Releases](https://github.com/vicanso/cyberapi/releases) (glibc 2.39 or newer: Ubuntu 24.04, Debian 13).
 - **HTTPS** in front of it for anything beyond a try on your own machine: the login cookie is `Secure`, which browsers send over HTTPS only.
 
 ## Try it
@@ -61,7 +61,7 @@ services:
     restart: unless-stopped
 
   cyberapi:
-    image: vicanso/cyberapi-web:0.3.0
+    image: vicanso/cyberapi-web:0.4.0
     environment:
       CYBERAPI_BRIDGE_STORE: postgres://cyberapi:change-me@db:5432/cyberapi
     ports:
@@ -87,8 +87,8 @@ The image runs as a non-root user on a distroless base (no shell), listens on `0
 ## The binary, with systemd
 
 ```bash
-tar -xzf cyberapi-web-0.3.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 755 cyberapi-web-0.3.0-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
+tar -xzf cyberapi-web-0.4.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 755 cyberapi-web-0.4.0-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
 ```
 
 The database address goes in a file only root can read, not on the command line, where anyone who can list processes would see it:

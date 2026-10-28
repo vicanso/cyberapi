@@ -24,7 +24,7 @@
 ## 需要什么
 
 - **数据库**：PostgreSQL 或 MySQL（CI 测试的是 PostgreSQL 18 和 MySQL 8.4）。给 bridge 一个空库和一个能在里面建表的用户：首次启动时它会建好表，之后每次启动都会把表结构升级到当前版本。
-- **程序**：镜像 [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web)，有 linux/amd64 和 linux/arm64（tag：各个版本号如 `0.3.0`、`latest`，以及 `main` 的 `nightly`）；或者 [Releases](https://github.com/vicanso/cyberapi/releases) 里的 `cyberapi-web-<版本>-x86_64-unknown-linux-gnu.tar.gz`（需要 glibc 2.39 或更新：Ubuntu 24.04、Debian 13）。
+- **程序**：镜像 [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web)，有 linux/amd64 和 linux/arm64（tag：各个版本号如 `0.4.0`、`latest`，以及 `main` 的 `nightly`）；或者 [Releases](https://github.com/vicanso/cyberapi/releases) 里的 `cyberapi-web-<版本>-x86_64-unknown-linux-gnu.tar.gz`（需要 glibc 2.39 或更新：Ubuntu 24.04、Debian 13）。
 - **HTTPS**：除了在自己机器上试用，前面都要有 HTTPS。登录 Cookie 带 `Secure`，浏览器只在 HTTPS 下发送它。
 
 ## 先试一下
@@ -61,7 +61,7 @@ services:
     restart: unless-stopped
 
   cyberapi:
-    image: vicanso/cyberapi-web:0.3.0
+    image: vicanso/cyberapi-web:0.4.0
     environment:
       CYBERAPI_BRIDGE_STORE: postgres://cyberapi:change-me@db:5432/cyberapi
     ports:
@@ -87,8 +87,8 @@ docker compose logs cyberapi | grep setup_token
 ## 二进制加 systemd
 
 ```bash
-tar -xzf cyberapi-web-0.3.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 755 cyberapi-web-0.3.0-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
+tar -xzf cyberapi-web-0.4.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 755 cyberapi-web-0.4.0-x86_64-unknown-linux-gnu/cyberapi-bridge /usr/local/bin/
 ```
 
 数据库地址放在只有 root 能读的文件里，不要写在命令行上：能列出进程的人都能看到命令行。
