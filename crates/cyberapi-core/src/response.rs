@@ -22,9 +22,17 @@ pub const RECENT_LIMIT: usize = 50;
 /// The biggest body an API's history keeps (#17). A bigger one shows when it
 /// arrives; the history keeps only its size.
 pub const HISTORY_BODY_LIMIT: usize = 2 * 1024 * 1024;
-/// The most of a text body the response panel shows; the rest is left out,
-/// and the panel says so.
-pub const DISPLAY_LIMIT: usize = 1024 * 1024;
+/// How many MiB of a text body the response panel shows when the settings
+/// do not say. The top of [`DISPLAY_SIZES`] is what history keeps of a body.
+pub const DISPLAY_MIB: u32 = 1;
+/// What the settings may show of a text body, in MiB. The editor lays out
+/// and highlights all of it on the main thread, so more than this stalls
+/// the window; history keeps no more of a body than the top of this.
+pub const DISPLAY_SIZES: RangeInclusive<u32> = 1..=2;
+/// The most of a text body the response panel shows by default
+/// ([`DISPLAY_MIB`]); the rest is left out, and the panel says so. The
+/// settings choose within [`DISPLAY_SIZES`].
+pub const DISPLAY_LIMIT: usize = DISPLAY_MIB as usize * 1024 * 1024;
 /// The biggest body the response panel reads into a tree (#57). The tree is
 /// read from the whole body, not the part the text views show; past this,
 /// parsing it would hold the window, and the panel says so.

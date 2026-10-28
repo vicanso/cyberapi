@@ -22,7 +22,7 @@ use crate::views::update_dialog::open_update_dialog;
 use cyberapi_core::prefs::{AppPrefs, HttpVersion, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
 use cyberapi_core::proxy::{ProxyMode, ProxyPrefs};
 use cyberapi_core::redirect::MAX_REDIRECTS;
-use cyberapi_core::response::{HISTORY_LIMIT, HISTORY_SIZES};
+use cyberapi_core::response::{DISPLAY_MIB, DISPLAY_SIZES, HISTORY_LIMIT, HISTORY_SIZES};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
 use gpui_kit::component::list::ListItem;
@@ -228,6 +228,8 @@ pub struct SettingsView {
     editor_size: Entity<InputState>,
     /// D4: how many responses each API keeps.
     history_size: Entity<InputState>,
+    /// How many MiB of a text body the response panel shows.
+    display_mib: Entity<InputState>,
     connect: Entity<InputState>,
     write: Entity<InputState>,
     read: Entity<InputState>,
@@ -412,6 +414,23 @@ impl SettingsView {
             cx,
             &mut subscriptions,
         );
+        let display_mib = Self::size_field(
+            prefs.sending.display_mib(),
+            display_sizes(),
+            DISPLAY_MIB,
+            |prefs| prefs.sending.display_mib(),
+            |size, cx| {
+                let app = AppStore::global(cx).state().clone();
+                let sending = SendPrefs {
+                    display_mib: size,
+                    ..app.read(cx).prefs().sending.clone()
+                };
+                app.update(cx, |app, cx| app.set_sending(sending, cx));
+            },
+            window,
+            cx,
+            &mut subscriptions,
+        );
 
         // Empty is the default, which the field shows greyed.
         let mut number = |value: u32, default: u32, kind: Number, window: &mut Window, cx: &mut Context<Self>| {
@@ -501,6 +520,7 @@ impl SettingsView {
             ui_size,
             editor_size,
             history_size,
+            display_mib,
             connect,
             write,
             read,
@@ -955,7 +975,7 @@ impl SettingsView {
                 cx,
             ));
         }
-        // D4: what the history keeps, then clearing it.
+        // D4: what the history keeps, then how much of a text body shows.
         rows.push(setting_row(
             t!("settings.history_size").to_string(),
             Some(size_description(
@@ -964,6 +984,17 @@ impl SettingsView {
                 "settings.history_size_desc",
             )),
             NumberInput::new(&self.history_size).small(),
+            cx,
+        ));
+        // The wire view uses the same number. Hex and the JSON tree do not.
+        rows.push(setting_row(
+            t!("settings.display_mib").to_string(),
+            Some(size_description(
+                display_sizes(),
+                DISPLAY_MIB,
+                "settings.display_mib_desc",
+            )),
+            NumberInput::new(&self.display_mib).small(),
             cx,
         ));
         for (clearing, id, label, description, action) in [
@@ -1205,6 +1236,11 @@ fn history_sizes() -> RangeInclusive<u32> {
     *HISTORY_SIZES.start() as u32..=*HISTORY_SIZES.end() as u32
 }
 
+/// How many MiB of a text body the settings offer.
+fn display_sizes() -> RangeInclusive<u32> {
+    DISPLAY_SIZES
+}
+
 /// The text of a size row: its range and its default.
 fn size_description(sizes: RangeInclusive<u32>, default: u32, key: &str) -> String {
     t!(key, min = sizes.start(), max = sizes.end(), default = default).to_string()
@@ -1375,6 +1411,22 @@ mod tests {
         let editor = cx.read(|cx| view.read(cx).editor_size.clone());
         assert_eq!(enter(cx, handle, &editor, "5"), "11", "the smallest offered");
         assert_eq!(prefs(cx).text.editor_size, 11);
+    }
+
+    /// A text body shows 1 or 2 MiB; the default is stored as `0`.
+    #[gpui_kit::test]
+    async fn the_shown_body_is_saved_within_its_range(cx: &mut TestAppContext) {
+        let (handle, view) = open(cx);
+        let field = cx.read(|cx| view.read(cx).display_mib.clone());
+        assert_eq!(cx.read(|cx| field.read(cx).value().to_string()), "1");
+
+        assert_eq!(enter(cx, handle, &field, "2"), "2");
+        assert_eq!(prefs(cx).sending.display_mib, 2);
+        assert_eq!(prefs(cx).sending.display_limit(), 2 * 1024 * 1024);
+        assert_eq!(enter(cx, handle, &field, "9"), "2", "the most offered");
+        assert_eq!(prefs(cx).sending.display_mib, 2);
+        assert_eq!(enter(cx, handle, &field, "0"), "1", "the smallest offered");
+        assert_eq!(prefs(cx).sending.display_mib, 0, "the default follows a new default");
     }
 
     /// The lists save what is picked in them; putting every setting back

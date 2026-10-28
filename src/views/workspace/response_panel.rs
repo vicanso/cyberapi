@@ -14,8 +14,8 @@ use cyberapi_core::grpc::GrpcStatus;
 use cyberapi_core::media::{self, HEX_LIMIT, ImageType};
 use cyberapi_core::model::{ContentType, HttpMethod};
 use cyberapi_core::response::{
-    BodyKind, DISPLAY_LIMIT, HeaderSource, HttpResponse, RESPONSE_LIMIT, SentHeader, SentRequest, StatusLevel,
-    StreamEnd, TREE_LIMIT, clip_text, format_duration, format_size, status_level, status_text, unwrappable_line,
+    BodyKind, HeaderSource, HttpResponse, RESPONSE_LIMIT, SentHeader, SentRequest, StatusLevel, StreamEnd, TREE_LIMIT,
+    clip_text, format_duration, format_size, status_level, status_text, unwrappable_line,
 };
 use cyberapi_http::SendError;
 use gpui_kit::component::alert::Alert;
@@ -212,8 +212,9 @@ pub struct ResponsePanel {
     body: Entity<EditorState>,
     /// #51: the whole exchange as text, read only.
     wire: Entity<EditorState>,
-    /// The response the wire editor holds, and whether its secrets showed.
-    wire_of: Option<(String, bool)>,
+    /// The response the wire editor holds, whether its secrets showed, and
+    /// how many bytes of the exchange it holds.
+    wire_of: Option<(String, bool, usize)>,
     /// The wire editor holds only the exchange's start.
     wire_clipped: bool,
     /// Which response the body editor holds.
@@ -222,8 +223,11 @@ pub struct ResponsePanel {
     /// as it came.
     shown_pretty: bool,
     /// The editor holds only the start of the body: this much of it
-    /// (`DISPLAY_LIMIT` of text, `HEX_LIMIT` of bytes).
+    /// (the settings' display limit of text, `HEX_LIMIT` of bytes).
     clipped: Option<usize>,
+    /// How many bytes of a text body, and of the wire view, the editors
+    /// hold. From the settings (`SendPrefs::display_limit`).
+    display_limit: usize,
     /// The editor holds bytes as hex, whose lines never wrap.
     hex: bool,
     /// The shown body as an image to draw, made once for each response.
@@ -273,6 +277,7 @@ impl ResponsePanel {
                 .default_value(kept.clone())
         });
         let wrap = app.read(cx).prefs().text.wrap;
+        let display_limit = app.read(cx).prefs().sending.display_limit();
         let body = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language("json")
@@ -335,6 +340,7 @@ impl ResponsePanel {
             shown: None,
             shown_pretty: false,
             clipped: None,
+            display_limit,
             hex: false,
             image: None,
             zoom: None,
@@ -505,7 +511,11 @@ impl ResponsePanel {
         self.find(window, cx);
         let pretty = self.shown_json(cx) && self.response_view(cx) == JsonView::Pretty;
         let filtered = self.wanted_filter(cx).filter(|_| pretty);
-        if !changed && pretty == self.shown_pretty && filtered == self.shown_filter {
+        // The amount shown can change while this response stays open.
+        let limit = AppStore::global(cx).state().read(cx).prefs().sending.display_limit();
+        let limit_changed = limit != self.display_limit;
+        self.display_limit = limit;
+        if !changed && pretty == self.shown_pretty && filtered == self.shown_filter && !limit_changed {
             self.sync_response_tree(cx);
             cx.notify();
             return;
@@ -527,13 +537,14 @@ impl ResponsePanel {
         // runs on a new response, whose whole body shows meanwhile, so the
         // matches replace it once found.
         self.shown_filter = filtered.filter(|_| matches.is_some());
+        let limit = self.display_limit;
         let (language, text, clipped, hex) = match (&shown, matches) {
             // #63: what the filter found, indented.
             (Some(_), Some(matches)) => {
-                let (text, clipped) = clip_text(cyberapi_core::format::json(&*matches), DISPLAY_LIMIT);
-                ("json", text, clipped.then_some(DISPLAY_LIMIT), false)
+                let (text, clipped) = clip_text(cyberapi_core::format::json(&*matches), limit);
+                ("json", text, clipped.then_some(limit), false)
             }
-            (Some(response), None) => editor_text(response, pretty),
+            (Some(response), None) => editor_text(response, pretty, limit),
             (None, _) => ("text", String::new(), None, false),
         };
         self.clipped = clipped;
@@ -1583,13 +1594,13 @@ impl ResponsePanel {
     /// #51: the wire editor holds `response`'s exchange, its secrets as
     /// the switch says; set once for each.
     fn sync_wire(&mut self, response: &HttpResponse, window: &mut Window, cx: &mut Context<Self>) {
-        let key = (response.id.clone(), self.reveal);
+        let key = (response.id.clone(), self.reveal, self.display_limit);
         if self.wire_of.as_ref() == Some(&key) {
             return;
         }
         self.wire_of = Some(key);
         // As the body: its start, and no wrapping a line too long to.
-        let (text, clipped) = clip_text(response.exchange(self.reveal), DISPLAY_LIMIT);
+        let (text, clipped) = clip_text(response.exchange(self.reveal), self.display_limit);
         self.wire_clipped = clipped;
         let wraps = self.wrap && unwrappable_line(&text).is_none();
         self.wire.update(cx, |editor, cx| {
@@ -1607,7 +1618,7 @@ impl ResponsePanel {
             .is_none()
             .then(|| note(t!("response.wire_unsent").to_string(), Vec::new(), cx));
         let clipped = self.wire_clipped.then(|| {
-            let size = format_size(DISPLAY_LIMIT as u64);
+            let size = format_size(self.display_limit as u64);
             note(t!("response.wire_clipped", size = size).to_string(), Vec::new(), cx)
         });
         v_flex()
@@ -1903,7 +1914,8 @@ fn image_format(kind: ImageType) -> Option<ImageFormat> {
 /// What the editor holds for `response`, in which grammar, how much of the
 /// body that is when not all of it, and whether it is hex: JSON and text as
 /// the view wants them (#51), an SVG's text, any other body's bytes.
-fn editor_text(response: &HttpResponse, pretty: bool) -> (&'static str, String, Option<usize>, bool) {
+/// `limit` is how much text to show. Hex keeps its own `HEX_LIMIT`.
+fn editor_text(response: &HttpResponse, pretty: bool, limit: usize) -> (&'static str, String, Option<usize>, bool) {
     let text = match response.body_kind() {
         BodyKind::Json | BodyKind::Text if pretty => response.body_text(),
         BodyKind::Json | BodyKind::Text => response.raw_body_text(),
@@ -1917,8 +1929,8 @@ fn editor_text(response: &HttpResponse, pretty: bool) -> (&'static str, String, 
         }
     };
     // A body that would make the editor crawl shows its start (#17).
-    let (text, clipped) = clip_text(text.unwrap_or_default(), DISPLAY_LIMIT);
-    (language_of(response), text, clipped.then_some(DISPLAY_LIMIT), false)
+    let (text, clipped) = clip_text(text.unwrap_or_default(), limit);
+    (language_of(response), text, clipped.then_some(limit), false)
 }
 
 /// The next scale of [`ZOOMS`] past `scale`, larger or smaller.
@@ -2144,5 +2156,37 @@ impl Render for ResponsePanel {
             .border_color(cx.theme().border)
             .child(summary)
             .child(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::editor_text;
+    use cyberapi_core::response::HttpResponse;
+
+    /// Text stops at the settings' limit. Bytes keep the hex limit.
+    #[test]
+    fn a_text_body_is_clipped_at_the_settings_limit_and_bytes_are_not() {
+        let text = HttpResponse {
+            headers: vec![("content-type".into(), "text/plain".into())],
+            body: b"abcdef".to_vec(),
+            ..Default::default()
+        };
+        let (_, shown, clipped, hex) = editor_text(&text, false, 4);
+        assert!(!hex);
+        assert_eq!(shown, "abcd");
+        assert_eq!(clipped, Some(4));
+        let (_, shown, clipped, _) = editor_text(&text, false, 6);
+        assert_eq!(shown, "abcdef");
+        assert_eq!(clipped, None);
+
+        let bytes = HttpResponse {
+            headers: vec![("content-type".into(), "application/octet-stream".into())],
+            body: vec![0, 1, 2, 3, 255],
+            ..Default::default()
+        };
+        let (_, _, clipped, hex) = editor_text(&bytes, false, 1);
+        assert!(hex);
+        assert_eq!(clipped, None, "hex keeps its own limit");
     }
 }

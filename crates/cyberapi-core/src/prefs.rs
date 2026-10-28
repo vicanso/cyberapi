@@ -162,6 +162,10 @@ pub struct SendPrefs {
     /// D4: how many responses each API keeps; `0` is the default
     /// ([`crate::response::HISTORY_LIMIT`]). Read by [`Self::history_size`].
     pub history_size: u32,
+    /// How many MiB of a text body the panel shows; `0` is the default
+    /// ([`crate::response::DISPLAY_MIB`]). Read by [`Self::display_mib`].
+    /// The wire view uses the same number. Hex and the JSON tree do not.
+    pub display_mib: u32,
 }
 
 impl SendPrefs {
@@ -171,6 +175,19 @@ impl SendPrefs {
         use crate::response::{HISTORY_LIMIT, HISTORY_SIZES};
         let sizes = *HISTORY_SIZES.start() as u32..=*HISTORY_SIZES.end() as u32;
         within(self.history_size, HISTORY_LIMIT as u32, sizes) as usize
+    }
+
+    /// How many MiB of a text body the panel shows: the setting, kept to
+    /// [`crate::response::DISPLAY_SIZES`], or the default.
+    pub fn display_mib(&self) -> u32 {
+        use crate::response::{DISPLAY_MIB, DISPLAY_SIZES};
+        within(self.display_mib, DISPLAY_MIB, DISPLAY_SIZES)
+    }
+
+    /// [`Self::display_mib`] as bytes. The panel clips a text body and the
+    /// wire view here.
+    pub fn display_limit(&self) -> usize {
+        self.display_mib() as usize * 1024 * 1024
     }
 }
 
@@ -215,6 +232,7 @@ impl RequestSettings {
             proxy: sending.proxy.clone(),
             certificates: sending.certificates.clone(),
             history_size: sending.history_size,
+            display_mib: sending.display_mib,
         }
     }
 }
@@ -648,6 +666,33 @@ mod tests {
         assert_eq!(over.http_version, HttpVersion::Http1);
         assert_eq!(RequestSettings::default().sending_over(&sending), sending);
         assert_eq!(RequestSettings::default().timeouts_over(settings), settings);
+    }
+
+    /// The panel shows 1 MiB of a text body unless the settings say 2, and
+    /// never more than history keeps.
+    #[test]
+    fn the_shown_body_stays_between_one_and_two_mib() {
+        use crate::response::{DISPLAY_LIMIT, DISPLAY_SIZES, HISTORY_BODY_LIMIT};
+        assert_eq!(
+            *DISPLAY_SIZES.end() as usize * 1024 * 1024,
+            HISTORY_BODY_LIMIT,
+            "the panel never shows more of a text body than history keeps"
+        );
+        let mut sending = SendPrefs::default();
+        assert_eq!(sending.display_mib(), 1);
+        assert_eq!(sending.display_limit(), DISPLAY_LIMIT);
+        sending.display_mib = 2;
+        assert_eq!(sending.display_mib(), 2);
+        assert_eq!(sending.display_limit(), HISTORY_BODY_LIMIT);
+        sending.display_mib = 9;
+        assert_eq!(sending.display_mib(), 2);
+        assert_eq!(sending.display_limit(), HISTORY_BODY_LIMIT);
+        sending.display_mib = 0;
+        assert_eq!(sending.display_limit(), DISPLAY_LIMIT);
+        let stored: SendPrefs = serde_json::from_str(r#"{"displayMib":2}"#).expect("json");
+        assert_eq!(stored.display_limit(), HISTORY_BODY_LIMIT);
+        let missing: SendPrefs = serde_json::from_str("{}").expect("defaults");
+        assert_eq!(missing.display_limit(), DISPLAY_LIMIT);
     }
 
     #[test]
