@@ -927,3 +927,84 @@ async fn the_readers_own_items_stay_in_the_copy(cx: &mut TestAppContext) {
         assert!(!state.unsynced());
     });
 }
+
+/// F5: an API of a project of this machine's copied into the account's
+/// server project goes into its copy, which is then unsynced, and the
+/// variables it reads that are not there are told; moved, it is gone here.
+#[gpui_kit::test]
+async fn an_api_goes_into_another_project(cx: &mut TestAppContext) {
+    use crate::Extras;
+    use crate::states::AppStore;
+    use cyberapi_core::model::HttpRequest;
+    let machine = Machine::signed_in(cx);
+    let theirs = machine.on_server("orders").await;
+    machine.dashboard(cx);
+    let (local, bridge) = (machine.local.clone(), machine.bridge.clone());
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        let extras = Extras {
+            copies: Some(Arc::new(local.clone())),
+            ..Default::default()
+        };
+        AppStore::init(local.storage(), bridge, Default::default(), extras, cx);
+    });
+    cx.run_until_parked();
+    let storage = machine.local.storage();
+    let mine = storage
+        .collections()
+        .create(NewCollection {
+            name: "mine".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("a project of this machine's");
+    let ping = storage
+        .tree()
+        .create_api(mine.id.clone(), None, "ping".into())
+        .await
+        .expect("an API")
+        .item;
+    let request = HttpRequest {
+        uri: "{{HOST}}/ping".into(),
+        ..Default::default()
+    };
+    storage
+        .tree()
+        .save_request(mine.id.clone(), ping.id.clone(), request)
+        .await
+        .expect("its request");
+    let workspace = cx.new(|cx| WorkspaceState::new(machine.sender(), mine.clone(), cx));
+    let told: Rc<RefCell<Vec<WorkspaceEvent>>> = Rc::default();
+    let heard = told.clone();
+    cx.update(|cx| {
+        cx.subscribe(&workspace, move |_, event: &WorkspaceEvent, _| {
+            heard.borrow_mut().push(event.clone());
+        })
+        .detach();
+    });
+    cx.run_until_parked();
+    assert_eq!(machine.binding(&theirs.id).map(|binding| binding.unsynced), Some(false));
+
+    workspace.update(cx, |state, cx| {
+        state.transfer(ping.id.clone(), theirs.clone(), None, false, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(api_names(&storage, &theirs.id), ["ping"], "in the copy");
+    assert_eq!(api_names(&storage, &mine.id), ["ping"], "and still here");
+    assert_eq!(machine.binding(&theirs.id).map(|binding| binding.unsynced), Some(true));
+    assert!(
+        told.borrow().iter().any(|event| matches!(
+            event,
+            WorkspaceEvent::Transferred { moved: false, missing, .. } if missing == &["HOST".to_string()]
+        )),
+        "{:?}",
+        told.borrow()
+    );
+
+    workspace.update(cx, |state, cx| {
+        state.transfer(ping.id.clone(), theirs.clone(), None, true, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(api_names(&storage, &theirs.id), ["ping", "ping"]);
+    assert!(api_names(&storage, &mine.id).is_empty(), "moved");
+}

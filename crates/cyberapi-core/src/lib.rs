@@ -47,6 +47,7 @@ pub mod sync;
 pub mod template;
 pub mod template_hints;
 mod time;
+pub mod transfer;
 pub mod tree;
 pub mod undo;
 pub mod update;

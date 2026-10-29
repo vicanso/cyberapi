@@ -24,6 +24,7 @@ mod schema_browser;
 mod settings_dialogs;
 mod source_dialog;
 mod tabs;
+mod transfer_dialog;
 mod tree_panel;
 mod versions_dialog;
 
@@ -517,6 +518,27 @@ impl WorkspaceView {
                 }
                 WorkspaceEvent::NotIntoLocal => {
                     window.push_notification(Notification::warning(t!("sync.not_into_local").to_string()), cx);
+                }
+                // F5: where it went, and what it reads that is not there.
+                WorkspaceEvent::Transferred {
+                    name,
+                    project,
+                    moved,
+                    missing,
+                } => {
+                    let text = if *moved {
+                        t!("transfer.moved", name = name, project = project)
+                    } else {
+                        t!("transfer.copied", name = name, project = project)
+                    };
+                    window.push_notification(Notification::success(text.to_string()), cx);
+                    if !missing.is_empty() {
+                        let names = missing.join(", ");
+                        window.push_notification(
+                            Notification::warning(t!("transfer.missing", project = project, names = names).to_string()),
+                            cx,
+                        );
+                    }
                 }
                 // F6: undone from the notice, for a while.
                 WorkspaceEvent::Deleted { name, apis, count } => {

@@ -114,6 +114,14 @@ pub enum WorkspaceEvent {
     NotIntoLocal,
     /// F6: `name` was deleted; delete `count` can be undone a while.
     Deleted { name: String, apis: usize, count: u64 },
+    /// F5: `name` was copied, or moved, into `project`; the variables it
+    /// reads that `project` has none of.
+    Transferred {
+        name: String,
+        project: String,
+        moved: bool,
+        missing: Vec<String>,
+    },
 }
 
 /// F6: a delete that can be undone, and what of the reader's own state of
@@ -2589,8 +2597,13 @@ impl WorkspaceState {
     /// F3.6. The view asks first. What was removed leaves the reader's state
     /// too: selection, pins, open folders.
     pub fn delete(&mut self, id: ItemId, cx: &mut Context<Self>) {
+        self.delete_told(id, true, cx);
+    }
+
+    /// Deletes `id`; `told`: the reader is told, and offered to undo it.
+    fn delete_told(&mut self, id: ItemId, told: bool, cx: &mut Context<Self>) {
         // F6: what goes, kept to be put back.
-        let deleted = undo::deleted(&self.data, &id);
+        let deleted = undo::deleted(&self.data, &id).filter(|_| told);
         let call = self.sender.storage.tree().delete(self.collection.id.clone(), id);
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(removal) => {
@@ -2625,6 +2638,76 @@ impl WorkspaceState {
                 this.sync_api(cx);
                 this.save_prefs(cx);
                 cx.notify();
+            }
+            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+        });
+    }
+
+    /// F5: `id` copied into project `target` — at its top level, or into
+    /// its `folder` — with new ids, then, `moving`, deleted here. Written
+    /// into the app's store: on the desktop a server project's copy is
+    /// there, and is marked unsynced; a page writes to the server. The
+    /// history does not go with it.
+    pub fn transfer(
+        &mut self,
+        id: ItemId,
+        target: Collection,
+        folder: Option<ItemId>,
+        moving: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if moving && !self.editable() || target.id == self.collection.id {
+            return;
+        }
+        let Some(item) = cyberapi_core::transfer::item(&self.data, &id) else {
+            return;
+        };
+        let name = match &item {
+            ImportItem::Api { name, .. } | ImportItem::Folder { name, .. } => name.clone(),
+        };
+        let read = cyberapi_core::transfer::read_variables(&item);
+        let store = AppStore::global(cx);
+        let storage = store.storage().clone();
+        let server = store.server().cloned();
+        let copy = server.as_ref().and_then(|server| {
+            let server = server.read(cx);
+            let binding = server.mine(&target.id)?.clone();
+            Some((
+                server.copies()?.clone(),
+                sync::CopyBinding {
+                    unsynced: true,
+                    ..binding
+                },
+            ))
+        });
+        let unsynced = copy.as_ref().map(|(_, binding)| binding.clone());
+        let to = target.id.clone();
+        let call: StoreFuture<Vec<String>> = Box::pin(async move {
+            storage.tree().import(to.clone(), folder, vec![item]).await?;
+            if let Some((copies, binding)) = copy {
+                copies.bind(binding).await?;
+            }
+            let mut names = Vec::new();
+            for category in [VariableCategory::Environment, VariableCategory::Custom] {
+                let variables = storage.variables().list(to.clone(), category).await?;
+                names.extend(variables.into_iter().map(|variable| variable.name));
+            }
+            Ok(cyberapi_core::transfer::missing(&read, &names))
+        });
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(missing) => {
+                if let (Some(server), Some(binding)) = (&server, unsynced) {
+                    server.update(cx, |server, cx| server.note_bound(vec![binding], cx));
+                }
+                if moving {
+                    this.delete_told(id.clone(), false, cx);
+                }
+                cx.emit(WorkspaceEvent::Transferred {
+                    name,
+                    project: target.name.clone(),
+                    moved: moving,
+                    missing,
+                });
             }
             Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
         });

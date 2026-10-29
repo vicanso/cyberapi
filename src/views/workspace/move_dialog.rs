@@ -18,7 +18,7 @@ use rust_i18n::t;
 
 /// Every folder `moving` may go into, depth first, with the names of the
 /// folders above it: not `moving` itself, nor anything inside it.
-fn destinations(tree: &Tree, moving: &ItemId) -> Vec<(ItemId, Vec<String>)> {
+pub(super) fn destinations(tree: &Tree, moving: &ItemId) -> Vec<(ItemId, Vec<String>)> {
     fn walk(tree: &Tree, ids: &[ItemId], above: &[String], moving: &ItemId, out: &mut Vec<(ItemId, Vec<String>)>) {
         for id in ids {
             let Some(node) = tree.get(id) else { continue };

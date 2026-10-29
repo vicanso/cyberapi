@@ -5,6 +5,7 @@
 
 use super::move_dialog::open_move_dialog;
 use super::settings_dialogs::open_folder_settings;
+use super::transfer_dialog::open_transfer_dialog;
 use super::{
     NewApi, NewFolder, PasteCurl, confirm_delete, export, method_color, method_label, new_item, open_import_dialog,
     paste_curl,
@@ -1210,6 +1211,22 @@ fn item_menu(
         }
         ItemKind::Api => menu,
     };
+    // F5: into another project; a viewer copies what they read.
+    let (copy_state, copy_id, copy_name) = (state.clone(), id.clone(), name.to_string());
+    let menu = menu.item(
+        PopupMenuItem::new(t!("transfer.copy").to_string())
+            .icon(Icons::Send)
+            .on_click(move |_, window, cx| {
+                open_transfer_dialog(
+                    copy_state.clone(),
+                    copy_id.clone(),
+                    copy_name.clone(),
+                    false,
+                    window,
+                    cx,
+                )
+            }),
+    );
     if !editable {
         return menu;
     }
@@ -1217,13 +1234,24 @@ fn item_menu(
     let (rename_view, rename_id, rename_name) = (view.clone(), id.clone(), name.to_string());
     let (delete_state, delete_id, delete_name) = (state.clone(), id.clone(), name.to_string());
     let (move_state, move_id, move_name) = (state.clone(), id.clone(), name.to_string());
-    let menu = menu.separator().item(
-        PopupMenuItem::new(t!("workspace.move_to").to_string())
-            .icon(Icons::FolderInput)
-            .on_click(move |_, window, cx| {
-                open_move_dialog(move_state.clone(), move_id.clone(), move_name.clone(), window, cx)
-            }),
-    );
+    let (away_state, away_id, away_name) = (state.clone(), id.clone(), name.to_string());
+    let menu = menu
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("workspace.move_to").to_string())
+                .icon(Icons::FolderInput)
+                .on_click(move |_, window, cx| {
+                    open_move_dialog(move_state.clone(), move_id.clone(), move_name.clone(), window, cx)
+                }),
+        )
+        // F5.
+        .item(
+            PopupMenuItem::new(t!("transfer.move").to_string())
+                .icon(Icons::FolderInput)
+                .on_click(move |_, window, cx| {
+                    open_transfer_dialog(away_state.clone(), away_id.clone(), away_name.clone(), true, window, cx)
+                }),
+        );
     // An API's copy, to change beside it.
     let menu = match kind {
         ItemKind::Api => {
