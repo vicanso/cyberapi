@@ -186,3 +186,17 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | F1 后半 | 临时请求：项目菜单和命令面板的“新建临时请求”开一个不在树里的标签，用所在项目的变量和环境。内容在读者自己的 `WorkspacePrefs.scratches`（不进项目、不同步，重启后还在）；关掉标签就丢掉。编辑者“保存到项目…”选目录后才成为接口；查看者也可以新建 | 已完成 |
 | C4 后半 | OAuth 授权码 + PKCE（桌面版）：授权方式多一种 `Grant::AuthorizationCode`（授权地址是模板，回调端口 `0` 为随机；数据模型编号 14）。点“授权”用 PKCE（S256）打开系统浏览器，在 `127.0.0.1` 上收一次回调（`cyberapi_http::CallbackListener`，复用 Mock 的 hyper），换来的令牌照现有方式存。网页版能保存设置，按钮说明只在桌面版可用。命令行、运行器、MCP 的 `send_api` 不打开浏览器：没有刷新令牌时回答先在桌面版授权。Postman（`authorization_code` / `authorization_code_with_pkce`）、OpenAPI（`authorizationCode`，Swagger `accessCode`）、Insomnia、Hoppscotch、Bruno 导入，Postman / OpenAPI 导出 | 已完成 |
 | A5 | 前后置脚本 | 暂缓：维护者不想引入 JS 引擎（2026-10-27） |
+
+## 0.4.0 之后
+
+来自 [feature-research-0.4.md](./feature-research-0.4.md)（2026-10-29）。同上：不建 issue，提交信息写功能编号，需要定的写在那份文档里、按其中的默认做法做，一项一个提交。顺序按投入从小到大；可做可不做的 F7、A7、B8、D7 见那份文档第 4 节，没有排进来。
+
+| 编号 | 内容 | 状态 |
+|---|---|---|
+| B7 | 来源绑定与一键同步：项目记住导入用的 `http(s)` 地址（`ProjectSettings.source`，跟着项目同步），“从来源同步…”取回后先显示新增 / 更新 / 来源里已没有的摘要，确认后按 B3 的“更新已有的”合并，来源里没有了的不删 | 待做 |
+| D6 | 生产环境标记：`ProjectSettings.protected_environments`；选中时环境切换器用醒目颜色，发送会改数据的请求（非 GET / HEAD / OPTIONS、mutation、gRPC、WebSocket 连接）和运行器开始前确认；MCP 在这个环境里拒绝这类请求，命令行不问 | 待做 |
+| G8 | 历史版本对比：和现在或和之后那一版比，按 id 列出接口、目录、设置、变量、环境的变化，接口的请求按行对比；规则在 core | 待做 |
+| D5 | 目录级、接口级变量：`FolderSettings.variables` / `HttpRequest.variables`，`{{value(名称)}}` 或地址前缀读，优先级 运行中的值 > 接口 > 目录（内层胜）> 当前环境 > 共用；经 `inherit::inherited` 进所有发送入口；Bruno、Postman 导入，Postman 导出 | 待做 |
+| F6 | 本机数据保护：桌面版每天自动备份到 `backups/`（现有格式，留 7 份，可关）；树里删除接口 / 目录后 10 秒内可撤销，按原 id 和位置放回（store 要能按原 id 放回，先写 conformance 检查），响应历史不恢复 | 待做 |
+| F5 | 复制 / 移动到其他项目：右键菜单选目标项目和目录，带上请求全部内容和目录设置，用新 id；移动是复制后删除，历史不跟过去；完成后列出目标项目里没有的变量 | 待做 |
+| A6 | 响应结构校验：断言多一种对象 Schema（JSON Schema，draft 2020-12，不取远程 `$ref`）；OpenAPI 导入时第一个 2xx 的 JSON schema 成为一条“来自导入”的断言（B7 同步时更新它），导出 OpenAPI 时用它作响应 schema；校验库要能编译到 wasm | 待做 |
