@@ -3,6 +3,7 @@
 //! with one signature, the desktop's first.
 
 use crate::states::Installer;
+use cyberapi_core::ItemId;
 use cyberapi_core::template::FileReader;
 use std::sync::Arc;
 
@@ -162,6 +163,35 @@ pub fn opens_oauth_browser() -> bool {
 pub fn opens_oauth_browser() -> bool {
     false
 }
+
+/// F7: whether an open tab goes into a window of its own: a page has one.
+#[cfg(not(target_family = "wasm"))]
+pub fn opens_windows() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn opens_windows() -> bool {
+    false
+}
+
+/// F7: `id`'s tab of `workspace` in a window of its own, or that window
+/// brought forward; in a page, it stays where it is.
+#[cfg(not(target_family = "wasm"))]
+pub fn open_apart(workspace: gpui_kit::Entity<crate::states::WorkspaceState>, id: ItemId, cx: &mut gpui_kit::App) {
+    crate::views::open_apart(workspace, id, cx);
+}
+#[cfg(target_family = "wasm")]
+pub fn open_apart(workspace: gpui_kit::Entity<crate::states::WorkspaceState>, id: ItemId, cx: &mut gpui_kit::App) {
+    workspace.update(cx, |workspace, cx| workspace.join(&id, cx));
+}
+
+/// F7: `id`'s own window closed, its tab back in the main window.
+#[cfg(not(target_family = "wasm"))]
+pub fn close_apart(id: &ItemId, cx: &mut gpui_kit::App) {
+    crate::views::close_apart(id, cx);
+}
+#[cfg(target_family = "wasm")]
+pub fn close_apart(_: &ItemId, _: &mut gpui_kit::App) {}
 
 /// A7: whether this build load tests an API: a page's sends go through
 /// the bridge, which lets an account have only so many at once.

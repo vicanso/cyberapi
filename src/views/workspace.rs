@@ -2,6 +2,8 @@
 //! its response side by side in resizable columns (F14.5), and the pins and
 //! the selected request the title bar shows.
 
+#[cfg(not(target_family = "wasm"))]
+mod apart_window;
 mod assertions_editor;
 mod auth_editor;
 mod compare_dialog;
@@ -29,6 +31,11 @@ mod transfer_dialog;
 mod tree_panel;
 mod versions_dialog;
 
+#[cfg(not(any(target_os = "macos", target_family = "wasm")))]
+pub use apart_window::is_apart_window;
+#[cfg(not(target_family = "wasm"))]
+pub use apart_window::{close_apart, open_apart};
+
 use crate::APP_NAME;
 use crate::i18n;
 use crate::states::{ApiState, AppStore, ServerCopy, WorkspaceEvent, WorkspaceState};
@@ -40,7 +47,7 @@ use cyberapi_core::prefs::ColumnWidths;
 use cyberapi_core::send::unsent_body;
 use cyberapi_core::tree::ItemKind;
 use cyberapi_core::{CollectionId, ItemId};
-use gpui_kit::component::button::ButtonVariant;
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::empty::{
     Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
@@ -461,7 +468,7 @@ impl WorkspaceView {
                 this.follow_title(window, cx);
                 cx.notify();
             }),
-            cx.subscribe_in(&state, window, |_, this_state, event, window, cx| match event {
+            cx.subscribe_in(&state, window, |this, this_state, event, window, cx| match event {
                 WorkspaceEvent::Imported { apis, folders, again } => {
                     let mut text = t!(
                         "import.done",
@@ -520,6 +527,18 @@ impl WorkspaceView {
                 WorkspaceEvent::NotIntoLocal => {
                     window.push_notification(Notification::warning(t!("sync.not_into_local").to_string()), cx);
                 }
+                // F7: what was typed here goes with it, then this editor
+                // goes: the window's is the tab's only one.
+                WorkspaceEvent::Parted(id) => {
+                    let parted = this_state.read(cx).kept_api(id).map(|api| api.entity_id());
+                    if let Some(selected) = &this.selected
+                        && Some(selected.api) == parted
+                    {
+                        selected.editor.update(cx, |editor, cx| editor.flush(cx));
+                    }
+                    this.follow_selection(window, cx);
+                    crate::this_build::open_apart(this_state.clone(), id.clone(), cx);
+                }
                 // F5: where it went, and what it reads that is not there.
                 WorkspaceEvent::Transferred {
                     name,
@@ -554,7 +573,7 @@ impl WorkspaceView {
                         .id1::<UndoDelete>(ElementId::Integer(count))
                         .action(move |_, _, _| {
                             let state = state.clone();
-                            gpui_kit::component::button::Button::new("undo-delete")
+                            Button::new("undo-delete")
                                 .small()
                                 .label(t!("undo.undo").to_string())
                                 .on_click(move |_, window, cx| {
@@ -630,7 +649,11 @@ impl WorkspaceView {
     /// Makes the editor and response columns of the selected API's state, or
     /// drops them when nothing is selected.
     fn follow_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let api: Option<Entity<ApiState>> = self.state.read(cx).api().cloned();
+        // F7: one in a window of its own is edited there alone.
+        let api: Option<Entity<ApiState>> = {
+            let state = self.state.read(cx);
+            state.api().filter(|api| !state.is_apart(api.read(cx).api())).cloned()
+        };
         match api {
             Some(api) if self.selected.as_ref().map(|s| s.api) != Some(api.entity_id()) => {
                 // The columns are replaced. A field in them that has the keys
@@ -769,6 +792,52 @@ impl WorkspaceView {
         &self.state
     }
 
+    /// F7: the opened tab, when it is in a window of its own.
+    fn apart_opened(&self, cx: &App) -> Option<ItemId> {
+        let state = self.state.read(cx);
+        state.opened().filter(|id| state.is_apart(id)).cloned()
+    }
+
+    /// F7: where the opened tab went, and the way back.
+    fn render_apart(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = self.apart_opened(cx).unwrap_or_default();
+        let (show_id, back_id) = (id.clone(), id);
+        let state = self.state.clone();
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("apart.here").to_string()),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("apart-show")
+                            .outline()
+                            .small()
+                            .label(t!("apart.show").to_string())
+                            .on_click(move |_, _, cx| {
+                                crate::this_build::open_apart(state.clone(), show_id.clone(), cx)
+                            }),
+                    )
+                    .child(
+                        Button::new("apart-back")
+                            .primary()
+                            .small()
+                            .label(t!("apart.back").to_string())
+                            .on_click(move |_, _, cx| crate::this_build::close_apart(&back_id, cx)),
+                    ),
+            )
+    }
+
     fn render_nothing_selected(&self, window: &Window, cx: &App) -> impl IntoElement {
         // F3.12's shortcuts, as this platform writes them, for a reader who
         // may change the tree.
@@ -892,6 +961,15 @@ impl Render for WorkspaceView {
                     ),
                 )
             }
+            // F7: the open tab is in a window of its own.
+            None if self.apart_opened(cx).is_some() => group.child(
+                resizable_panel().child(
+                    v_flex()
+                        .size_full()
+                        .when(show_tabs, |column| column.child(self.tabs.clone()))
+                        .child(self.render_apart(cx)),
+                ),
+            ),
             None => group.child(resizable_panel().child(self.render_nothing_selected(window, cx))),
         };
         let editor = self.selected.as_ref().map(|selected| selected.editor.downgrade());

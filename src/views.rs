@@ -56,10 +56,14 @@ pub use startup::StartupError;
 pub use teams_dialog::open_teams_dialog;
 pub use update_dialog::{follow_update, update_chip};
 pub use variables_dialog::open_variables_dialog;
+#[cfg(not(any(target_os = "macos", target_family = "wasm")))]
+pub use workspace::is_apart_window;
 pub use workspace::{
     OpenPalette, ROOT_CONTEXT, WorkspaceView, bind_keys as bind_workspace_keys, bind_mac_page_keys, bind_palette_keys,
     bind_palette_mac_page_keys, open_palette, open_project_auth,
 };
+#[cfg(not(target_family = "wasm"))]
+pub use workspace::{close_apart, open_apart};
 
 use cyberapi_core::format::JSON_INDENT;
 use gpui_kit::component::input::TabSize;

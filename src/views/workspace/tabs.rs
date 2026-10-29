@@ -152,6 +152,18 @@ impl Render for TabsBar {
                         } else {
                             menu
                         };
+                        // F7: on the desktop, in a window of its own.
+                        let menu = if crate::this_build::opens_windows() {
+                            let (apart, apart_id) = (menu_state.clone(), id.clone());
+                            menu.item(
+                                PopupMenuItem::new(t!("apart.open").to_string()).on_click(move |_, _, cx| {
+                                    let _ = apart.update(cx, |state, cx| state.part(&apart_id, cx));
+                                }),
+                            )
+                            .separator()
+                        } else {
+                            menu
+                        };
                         menu.item(PopupMenuItem::new(t!("workspace.close_tab").to_string()).on_click(
                             move |_, _, cx| {
                                 let _ = close.update(cx, |state, cx| state.close_tab(&close_id, cx));

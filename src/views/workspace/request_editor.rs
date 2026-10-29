@@ -980,7 +980,7 @@ impl RequestEditor {
 
     /// Hands the API what the fields hold now, ahead of their own delays:
     /// what was typed just before sending goes with it.
-    fn flush(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn flush(&mut self, cx: &mut Context<Self>) {
         self.save_uri(cx);
         let (query, headers) = (self.query.read(cx).list(cx), self.headers.read(cx).list(cx));
         let (method, content_type) = {

@@ -1145,3 +1145,9 @@ max = "最慢"
 received = "收到"
 not_sent = "没有发送：%{why}"
 production_ask = "当前环境“%{environment}”标为生产环境，压测会反复发送这个可能改动数据的请求。仍要开始吗？"
+
+[apart]
+open = "在新窗口打开"
+here = "这个接口在另一个窗口里编辑。"
+show = "切换到那个窗口"
+back = "移回这里"

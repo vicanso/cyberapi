@@ -286,13 +286,13 @@ fn open_main_window<V: Render>(cx: &mut App, build: impl FnOnce(&mut Window, &mu
     install_mac_menus(cx);
     // Closing the window hides the app on macOS (F1.4); elsewhere the last
     // window closing is the app quitting. The settings window alone is not
-    // the app.
+    // the app, nor a tab's own (F7).
     #[cfg(not(any(target_os = "macos", target_family = "wasm")))]
     cx.on_window_closed(|cx, _| {
         if cx
             .windows()
             .into_iter()
-            .all(|window| views::is_settings_window(window, cx))
+            .all(|window| views::is_settings_window(window, cx) || views::is_apart_window(window, cx))
         {
             cx.quit();
         }

@@ -122,6 +122,9 @@ pub enum WorkspaceEvent {
         moved: bool,
         missing: Vec<String>,
     },
+    /// F7: the open tab `0` is to be shown in a window of its own, or that
+    /// window brought forward.
+    Parted(ItemId),
 }
 
 /// F6: a delete that can be undone, and what of the reader's own state of
@@ -189,6 +192,9 @@ pub struct WorkspaceState {
     /// too, kept while their tab is: a tab shown again has its edits, its
     /// answers and the request on its way as they were.
     kept: HashMap<ItemId, Entity<ApiState>>,
+    /// F7: the open tabs shown in a window of their own, whose editor is
+    /// that window's alone.
+    apart: HashSet<ItemId>,
     /// F1: the open tabs in the order they were shown, the latest last:
     /// past `MAX_TABS`, the one shown longest ago closes.
     shown: Vec<ItemId>,
@@ -314,6 +320,7 @@ impl WorkspaceState {
             saves: Arc::default(),
             api: None,
             kept: HashMap::new(),
+            apart: HashSet::new(),
             shown: Vec::new(),
             created: None,
             pin_open: None,
@@ -1525,7 +1532,8 @@ impl WorkspaceState {
                 .prefs
                 .open
                 .iter()
-                .filter(|id| *id != opened && !sending(id))
+                // F7: nor one in a window of its own.
+                .filter(|id| *id != opened && !sending(id) && !self.apart.contains(*id))
                 .min_by_key(|id| shown_at(id).map_or(0, |at| at + 1))
                 .cloned();
             let Some(oldest) = oldest else { return };
@@ -1538,6 +1546,7 @@ impl WorkspaceState {
     /// held; a scratch request is dropped with the tab.
     fn forget_tab(&mut self, id: &ItemId, cx: &mut Context<Self>) {
         let scratch = self.is_scratch(id);
+        self.apart.remove(id);
         self.prefs.open.retain(|open| open != id);
         self.shown.retain(|shown| shown != id);
         self.prefs.scratches.retain(|scratch| &scratch.id != id);
@@ -1552,6 +1561,7 @@ impl WorkspaceState {
     /// An open tab's editor made again from the API as kept: its edits not
     /// saved yet are given up.
     fn start_again(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        self.apart.remove(id);
         if let Some(api) = self.kept.remove(id) {
             api.update(cx, |api, _| api.forget_unsaved());
         }
@@ -1603,6 +1613,41 @@ impl WorkspaceState {
 
     /// F1: `id`'s tab closed. Closing the one opened opens the one after
     /// it, else the one before; with none left, nothing is.
+    /// F7: the open tab `id` in a window of its own, its editor that
+    /// window's alone — two editors of one request would each write back
+    /// what they hold. The view opens the window (`Parted`).
+    pub fn part(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        if !self.prefs.open.contains(id) {
+            return;
+        }
+        if !self.kept.contains_key(id) {
+            self.select(id, cx);
+        }
+        if !self.kept.contains_key(id) {
+            return;
+        }
+        self.apart.insert(id.clone());
+        cx.emit(WorkspaceEvent::Parted(id.clone()));
+        cx.notify();
+    }
+
+    /// F7: `id`'s window closed: its tab is edited here again.
+    pub fn join(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        if self.apart.remove(id) {
+            cx.notify();
+        }
+    }
+
+    /// F7: whether the open tab `id` is in a window of its own.
+    pub fn is_apart(&self, id: &ItemId) -> bool {
+        self.apart.contains(id) && self.prefs.open.contains(id)
+    }
+
+    /// F7: the editor state of the open tab `id`, once it has been shown.
+    pub fn kept_api(&self, id: &ItemId) -> Option<&Entity<ApiState>> {
+        self.kept.get(id)
+    }
+
     pub fn close_tab(&mut self, id: &ItemId, cx: &mut Context<Self>) {
         let Some(at) = self.prefs.open.iter().position(|open| open == id) else {
             return;
@@ -3747,6 +3792,53 @@ mod tests {
         state.update(cx, |state, cx| state.delete(c.clone(), cx));
         cx.run_until_parked();
         assert_eq!((tabs(&state, cx), opened(&state, cx)), (vec!["b".to_string()], Some(b)));
+    }
+
+    /// F7: a tab goes into a window of its own with its editor as it was,
+    /// is told so, and comes back; closing it ends that.
+    #[gpui_kit::test]
+    async fn a_tab_goes_apart_and_comes_back(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        for name in ["a", "b"] {
+            state.update(cx, |state, cx| state.create_api(None, name.into(), cx));
+            cx.run_until_parked();
+        }
+        let (a, b) = (find(&state, "a", cx), find(&state, "b", cx));
+        let parted = Rc::new(RefCell::new(Vec::new()));
+        let told = parted.clone();
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&state, move |_, event: &WorkspaceEvent, _| {
+                if let WorkspaceEvent::Parted(id) = event {
+                    told.borrow_mut().push(id.clone());
+                }
+            })
+        });
+        state.update(cx, |state, cx| state.select(&a, cx));
+        let editor_a = editor(&state, cx);
+        // B is open but not shown yet: shown so, it has an editor to take.
+        state.update(cx, |state, cx| state.part(&b, cx));
+        state.update(cx, |state, cx| state.part(&a, cx));
+        cx.run_until_parked();
+        assert_eq!(*parted.borrow(), [b.clone(), a.clone()]);
+        state.read_with(cx, |state, _| {
+            assert!(state.is_apart(&a) && state.is_apart(&b));
+            assert_eq!(
+                state.kept_api(&a).map(|api| api.entity_id()),
+                Some(editor_a.entity_id()),
+                "the editor it had"
+            );
+        });
+        state.update(cx, |state, cx| state.join(&a, cx));
+        state.update(cx, |state, cx| state.close_tab(&b, cx));
+        state.read_with(cx, |state, _| {
+            assert!(!state.is_apart(&a), "back");
+            assert!(!state.is_apart(&b) && state.kept_api(&b).is_none(), "closed");
+        });
+        // Not an open tab: nothing.
+        state.update(cx, |state, cx| state.part(&b, cx));
+        assert_eq!(parted.borrow().len(), 2);
     }
 
     /// F1: past `MAX_TABS`, the tab shown longest ago closes.

@@ -1145,3 +1145,9 @@ max = "Slowest"
 received = "Received"
 not_sent = "Nothing was sent: %{why}"
 production_ask = "“%{environment}” is marked as production, and a load test sends this request, which may change something, over and over. Start anyway?"
+
+[apart]
+open = "Open in a new window"
+here = "This API is being edited in another window."
+show = "Go to that window"
+back = "Bring it back here"
