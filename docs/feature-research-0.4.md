@@ -149,7 +149,12 @@
 
 - **F7 并排查看 / 在新窗口打开标签（M–L）：** 需求有证据（Postman #9180）。工作区的状态现在是为一个窗口设计的，要先写设计：桌面版标签右键“在新窗口打开”，新窗口只显示这一个接口的请求和响应，和主窗口共用同一个 `ApiState`。
 - **A7 压测（M）：** 运行弹窗加“压测”：选一个接口，并发 1–50、按次数或时长，显示吞吐、P50 / P95 / P99、错误率，不写历史。只在桌面版提供：bridge 每个账号同时最多 16 个请求。Postman、Apidog 有，没查到投票数据。
-- **B8 导入 `.http` 文件（S–M）：** VS Code REST Client、JetBrains HTTP Client 的格式：`###` 分隔请求，`@name = value` 成为共用变量，`http-client.env.json` 成为命名环境，`http-client.private.env.json` 的值作为秘密变量的值；`> {% %}` 响应处理脚本忽略并说明。用户多，但需求没查证。
+- **B8 导入 `.http` 文件（S–M）：** VS Code REST Client、JetBrains HTTP Client 的格式：`###` 分隔请求，`@name = value` 成为共用变量，`http-client.env.json` 成为命名环境，`http-client.private.env.json` 的值作为秘密变量的值；`> {% %}` 响应处理脚本忽略并说明。用户多，但需求没查证。**已完成**，实现时定下的：
+  - 识别：第一条请求之前只有注释和 `@变量`，且第一条请求写了方法；只写地址的请求行要文件里有 `###` 或 `@变量` 才算——单独一个地址仍是 B3 的“获取”。
+  - `{{名称}}` 原样保留（与其他格式的导入一致），只在地址开头作环境变量前缀时会被替换；在请求头、请求体里的不替换。**待维护者确认**：要不要把导入时认得的变量（文件变量、环境文件里的）在地址以外写成 `{{value(名称)}}`——那需要它们同时是自定义变量，导入现在只写环境变量。这个问题对 Postman、Insomnia 等导入同样存在。
+  - 系统变量：有对应函数的换成函数（`$uuid` / `$guid` / `$random.uuid`、`$timestamp`（带偏移时 `now(%s, …)`）、`$isoTimestamp`、`$datetime iso8601`、`$localDatetime iso8601`、`$randomInt`（REST Client 的上限不含，换成 `random` 时减一）、`$random.integer`、`$random.alphanumeric`、`$processEnv NAME`、`$env.NAME`），其余（`$dotenv`、`$aadToken`、自定义日期格式、按名称引用别的请求的响应）原样留下。
+  - `http-client.private.env.json` 和公共的形状一样，按内容分不出来，值以明文导入；文档提醒不要导入到团队项目。**待维护者确认**：要不要按文件名把它的值放进秘密变量（D3）——导入弹窗现在只拿到内容，没有文件名。
+  - `< ./file` 形式的请求体原样留在请求体里（读文件的路径相对 `.http` 文件，导入后无从解析）；multipart 里读文件的部分写成 `file://路径`。
 - **D7 补全模板函数（S）：** `base64Decode`、`sha1`、`sha512`、`hmacSha1`、`hmacSha512`、`urlDecode`，`now` 支持偏移（如 `now(%Y-%m-%d, -1d)`）。不写脚本时，国内接口常见的签名靠这些拼。JWT 生成属于 C1，不在其中。**已完成**：`base64Decode`（别名 `b64d`）认标准和 URL 安全两种字母表、有无补位都行，解出的是字节（链在别的函数前面时原样传下去）；`urlDecode` 同 `decodeURIComponent`（`+` 不变成空格）；偏移写在格式之后、`utc` 之前，单位 s / m / h / d / w。
 
 ## 5. 不建议做

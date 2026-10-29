@@ -14,6 +14,11 @@
 //! method's or `vars {`) and an OpenCollection document (`opencollection`,
 //! or one request's `info` with its `http` or `graphql`), Bruno's YAML.
 //!
+//! B8: a `.http` file (REST Client's, JetBrains HTTP Client's: requests
+//! parted by `###`, told by its first request's line) and their
+//! environment files (an object of environments, each an object of
+//! variables).
+//!
 //! B4: besides its items, an import brings how the project signs in (a
 //! Postman collection's auth, an OpenAPI document's security, its values
 //! left empty) and named environments (a Postman environment, Insomnia's
@@ -28,6 +33,7 @@ mod bruno;
 mod curl;
 mod har;
 mod hoppscotch;
+mod http_file;
 mod insomnia;
 pub mod merge;
 mod openapi;
@@ -171,6 +177,10 @@ pub enum Format {
     HoppscotchEnvironment,
     Bruno,
     OpenCollection,
+    /// B8: a `.http` file.
+    Http,
+    /// B8: `http-client.env.json`, or REST Client's environments.
+    HttpEnvironment,
     CyberApi,
 }
 
@@ -195,6 +205,9 @@ pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportE
     if bruno::is_bru(text) {
         return Ok((Format::Bruno, None));
     }
+    if http_file::is_http(text) {
+        return Ok((Format::Http, None));
+    }
     let json = document(text)?;
     let format = match &json {
         serde_json::Value::Object(map) if map.contains_key("swagger") => Format::Swagger,
@@ -211,6 +224,7 @@ pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportE
         json if opencollection::is_opencollection(json) => Format::OpenCollection,
         json if hoppscotch::is_collection(json) => Format::Hoppscotch,
         json if hoppscotch::is_environment(json) => Format::HoppscotchEnvironment,
+        json if http_file::is_environment(json) => Format::HttpEnvironment,
         _ => Format::CyberApi,
     };
     Ok((format, Some(json)))
@@ -242,6 +256,8 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     let bundle = match (format, json) {
         (Format::Curl, _) => curl::parse(text)?,
         (Format::Bruno, _) => bruno::parse(text),
+        (Format::Http, _) => http_file::parse(text),
+        (Format::HttpEnvironment, Some(json)) => http_file::parse_environment(&json),
         (Format::Postman, Some(json)) => postman::parse(&json),
         (Format::PostmanEnvironment, Some(json)) => postman::parse_environment(&json),
         (Format::Insomnia, Some(json)) => insomnia::parse(&json),
@@ -283,6 +299,8 @@ fn json_name(format: Format, json: &serde_json::Value) -> Option<String> {
         | Format::HoppscotchEnvironment
         | Format::Bruno
         | Format::OpenCollection
+        | Format::Http
+        | Format::HttpEnvironment
         | Format::CyberApi => None,
     };
     name.filter(|name| !name.is_empty()).map(str::to_string)
@@ -520,6 +538,13 @@ mod tests {
             Ok(Format::HoppscotchEnvironment)
         );
         assert_eq!(format("meta {\n  name: a\n}\nget {\n  url: /a\n}\n"), Ok(Format::Bruno));
+        // B8.
+        assert_eq!(format("POST {{host}}/a\n\n{}\n"), Ok(Format::Http));
+        assert_eq!(format(r#"{"dev": {"host": "h"}}"#), Ok(Format::HttpEnvironment));
+        assert!(
+            format("https://a.test/spec.json").is_err(),
+            "an address to fetch, not a request"
+        );
         assert_eq!(
             format("opencollection: 1.0.0\ninfo:\n  name: a\n"),
             Ok(Format::OpenCollection)
