@@ -892,7 +892,7 @@ mod tests {
     use cyberapi_store::{MemoryStore, NewCollection};
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt as _;
-    use gpui_kit::{AnyWindowHandle, ClipboardItem, TestAppContext, div, size};
+    use gpui_kit::{AnyWindowHandle, ClipboardItem, InputEvent as _, TestAppContext, div, size};
     use std::sync::Arc;
 
     struct NoEngine;
@@ -1113,6 +1113,236 @@ mod tests {
             );
         })
         .expect("the window is open");
+    }
+
+    /// Answers every request with `200 ok`.
+    struct Answering;
+
+    impl HttpEngine for Answering {
+        fn send(&self, _: PreparedRequest) -> SendFuture {
+            Box::pin(async {
+                Ok(cyberapi_core::response::Exchange {
+                    status: 200,
+                    body: b"ok".to_vec(),
+                    ..Default::default()
+                })
+            })
+        }
+    }
+
+    /// A pin opened by its shortcut, then sent with Cmd/Ctrl-Enter: the first
+    /// click on another API selects it and both panels follow. A second click
+    /// is not required.
+    #[gpui_kit::test]
+    async fn a_click_after_a_pinned_send_opens_that_api(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let collection = pollster::block_on(store.storage().collections().create(NewCollection {
+            name: "p".into(),
+            ..Default::default()
+        }))
+        .expect("create");
+        let sign_out: SignOut = Arc::new(|| Box::pin(async {}));
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            bind_keys(cx);
+            AppStore::init(
+                store.storage(),
+                Arc::new(Answering),
+                AppPrefs::default(),
+                Extras {
+                    sign_out: Some(sign_out),
+                    ..Extras::default()
+                },
+                cx,
+            );
+        });
+        let mut view = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(1100.), px(700.)), |window, cx| {
+                let collection = collection.clone();
+                let state = cx.new(|cx| {
+                    let sender = AppStore::global(cx).sender(cx);
+                    WorkspaceState::new(sender, collection, cx)
+                });
+                let workspace = cx.new(|cx| WorkspaceView::with_state(state, window, cx));
+                view = Some(workspace.clone());
+                Root::new(workspace, window, cx)
+            })
+            .into();
+        let view = view.expect("built");
+        cx.run_until_parked();
+        let state = cx.read(|cx| view.read(cx).state.clone());
+        for name in ["pin", "other", "rest"] {
+            state.update(cx, |state, cx| state.create_api(None, name.into(), cx));
+            cx.run_until_parked();
+        }
+        let named = |cx: &mut TestAppContext, name: &str| {
+            cx.read(|cx| {
+                let state = view.read(cx).state.read(cx);
+                state
+                    .tree()
+                    .roots()
+                    .flat_map(|root| std::iter::once(root.id().clone()).chain(state.tree().descendants(root.id())))
+                    .find(|id| state.tree().get(id).is_some_and(|node| node.name() == name))
+                    .unwrap_or_else(|| panic!("no item named {name}"))
+            })
+        };
+        let pin = named(cx, "pin");
+        let other = named(cx, "other");
+        let rest = named(cx, "rest");
+        let give_uri = |cx: &mut TestAppContext, id: &cyberapi_core::ItemId, uri: &str| {
+            state.update(cx, |state, cx| {
+                state.select(id, cx);
+                let api = state.api().expect("the API is open").clone();
+                api.update(cx, |api, cx| api.set_uri(uri.to_string(), cx));
+            });
+            cx.run_until_parked();
+        };
+        // Stored before the editors that show them are built, so a panel that
+        // stays on the sent pin is visible as its address and its body.
+        give_uri(cx, &pin, "http://pin.test");
+        give_uri(cx, &other, "http://other.test");
+        state.update(cx, |state, cx| {
+            state.select(&rest, cx);
+            state.set_pinned(&pin, true, cx);
+        });
+        cx.run_until_parked();
+
+        // The address field has the keys, then the pin shortcut opens the pin.
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let editor = view
+                .read(cx)
+                .selected
+                .as_ref()
+                .expect("the editor is open")
+                .editor
+                .clone();
+            editor.update(cx, |editor, cx| editor.focus_uri_now(window, cx));
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("secondary-1", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        let (opened, uri) = cx.read(|cx| {
+            let view = view.read(cx);
+            let opened = view.state.read(cx).opened().cloned();
+            let uri = view
+                .selected
+                .as_ref()
+                .expect("the pin's editor is open")
+                .editor
+                .read(cx)
+                .shown_uri(cx);
+            (opened, uri)
+        });
+        assert_eq!(opened.as_ref(), Some(&pin), "the pin shortcut opens the pin");
+        assert_eq!(uri, "http://pin.test", "the request panel shows the pin");
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("secondary-enter", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        let (answered, body) = cx.read(|cx| {
+            let view = view.read(cx);
+            let answered = view
+                .state
+                .read(cx)
+                .api()
+                .is_some_and(|api| !api.read(cx).responses().is_empty());
+            let body = view
+                .selected
+                .as_ref()
+                .expect("the panels are open")
+                .response
+                .read(cx)
+                .shown_body(cx);
+            (answered, body)
+        });
+        assert!(answered, "the answer is back before the other API is chosen");
+        assert_eq!(body, "ok", "the response panel shows the pin's answer");
+
+        // The row itself is not an observed control, so the click is aimed at
+        // its name, just left of the pin that sits on that row.
+        let click_row = |cx: &mut TestAppContext, id: &cyberapi_core::ItemId| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let pin = window.find(format!("tree-pin-{id}")).bounds();
+                let position = gpui_kit::point(pin.origin.x - px(48.), pin.origin.y + pin.size.height / 2.);
+                let modifiers = window.modifiers();
+                window.dispatch_event(
+                    gpui_kit::MouseMoveEvent {
+                        position,
+                        pressed_button: None,
+                        modifiers,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                window.dispatch_event(
+                    gpui_kit::MouseDownEvent {
+                        button: gpui_kit::MouseButton::Left,
+                        position,
+                        modifiers,
+                        click_count: 1,
+                        first_mouse: false,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                window.dispatch_event(
+                    gpui_kit::MouseUpEvent {
+                        button: gpui_kit::MouseButton::Left,
+                        position,
+                        modifiers,
+                        click_count: 1,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+            })
+            .expect("the window is open");
+            cx.run_until_parked();
+        };
+        let panels = |cx: &mut TestAppContext| {
+            cx.read(|cx| {
+                let view = view.read(cx);
+                let state = view.state.read(cx);
+                let shown = view.selected.as_ref().expect("the panels are open");
+                let open_id = state.api().map(|api| api.read(cx).api().clone());
+                let panel_follows = state.api().map(|api| api.entity_id()) == Some(shown.api);
+                (
+                    state.selected().cloned(),
+                    state.opened().cloned(),
+                    open_id,
+                    panel_follows,
+                    shown.editor.read(cx).shown_uri(cx),
+                    shown.response.read(cx).shown_body(cx),
+                )
+            })
+        };
+        click_row(cx, &other);
+        let first = panels(cx);
+        click_row(cx, &other);
+        let second = panels(cx);
+        assert_eq!(
+            (
+                first.0.as_ref(),
+                first.1.as_ref(),
+                first.2.as_ref(),
+                first.3,
+                first.4.as_str(),
+                first.5.as_str()
+            ),
+            (Some(&other), Some(&other), Some(&other), true, "http://other.test", ""),
+            "the first click selects the API and both panels follow it\nfirst {first:?}\nsecond {second:?}"
+        );
     }
 
     /// Pins beside the project name, drawn with the open-API bar so a test

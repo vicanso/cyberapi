@@ -360,6 +360,12 @@ impl ResponsePanel {
         panel
     }
 
+    /// The body editor's text. Tests read it to see which response the panel shows.
+    #[cfg(test)]
+    pub(super) fn shown_body(&self, cx: &App) -> String {
+        self.body.read(cx).value().to_string()
+    }
+
     /// The view this response was switched to; otherwise the default.
     fn response_view(&self, cx: &App) -> JsonView {
         match (&self.shown, &self.body_view) {

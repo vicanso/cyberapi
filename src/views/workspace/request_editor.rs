@@ -502,6 +502,12 @@ impl RequestEditor {
         }
     }
 
+    /// The address field's text. Tests read it to see which API the panel shows.
+    #[cfg(test)]
+    pub(super) fn shown_uri(&self, cx: &App) -> String {
+        self.uri.read(cx).value().to_string()
+    }
+
     /// The keys to the URI field now, its text selected to type over (#64).
     pub fn focus_uri_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.uri.update(cx, |input, cx| {

@@ -1753,7 +1753,12 @@ impl WorkspaceState {
     /// folder is opened or closed instead. The folders it sits in open, so
     /// its row shows.
     pub fn select(&mut self, id: &ItemId, cx: &mut Context<Self>) {
-        let mut changed = self.prefs.selected.as_ref() != Some(id) || self.pin_open.take().is_some();
+        // Close the pin before the `||`. When the tree row changes, the
+        // left side is already true and a `take` on the right never runs:
+        // the row looks selected while the editor keeps the pin, until the
+        // same row is chosen again.
+        let closed_pin = self.pin_open.take();
+        let mut changed = self.prefs.selected.as_ref() != Some(id) || closed_pin.is_some();
         self.prefs.selected = Some(id.clone());
         let mut parent = self.tree.get(id).and_then(|node| node.parent()).cloned();
         while let Some(folder) = parent {
