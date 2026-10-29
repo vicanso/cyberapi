@@ -839,6 +839,28 @@ async fn a_version_put_back_reaches_the_server_and_the_copy(cx: &mut TestAppCont
             .map(Vec::len)),
         Some(1)
     );
+    // G8: the version compared with the project as the server has it now.
+    let compared = workspace
+        .read_with(cx, |state, cx| state.compared_versions("v1".into(), None, cx))
+        .expect("versions to compare");
+    let (was, now) = pollster::block_on(compared).expect("both read");
+    let changes = cyberapi_core::versions::changes(&was, &now);
+    let renamed: Vec<(&str, &cyberapi_core::versions::Change)> = changes
+        .items
+        .iter()
+        .map(|item| (item.name.as_str(), &item.change))
+        .collect();
+    assert_eq!(
+        renamed,
+        [(
+            "login",
+            &cyberapi_core::versions::Change::Changed {
+                renamed_from: Some("old".into()),
+                moved: false,
+                edited: false,
+            }
+        )]
+    );
     // Not over a change the server has not had.
     workspace.update(cx, |state, cx| state.create_api(None, "draft".into(), cx));
     cx.run_until_parked();

@@ -901,6 +901,28 @@ impl WorkspaceState {
         });
     }
 
+    /// G8: version `id` and what it is compared with: version `after`, or
+    /// the project as the server has it now — changes not synced yet are
+    /// not in it. `None` when the project keeps no versions.
+    pub fn compared_versions(
+        &self,
+        id: String,
+        after: Option<String>,
+        cx: &App,
+    ) -> Option<StoreFuture<(ProjectConfig, ProjectConfig)>> {
+        let store = cx.try_global::<AppStore>().and_then(|store| store.versions(cx))?;
+        let server = self.copy.as_ref()?.server.clone();
+        let collection = self.collection.id.clone();
+        Some(Box::pin(async move {
+            let old = store.version(collection.clone(), id).await?;
+            let new = match after {
+                Some(after) => store.version(collection, after).await?,
+                None => server.tree().config(collection).await?.config,
+            };
+            Ok((old, new))
+        }))
+    }
+
     /// D4: reads the project's newest responses again, for its recent list.
     pub fn load_recent(&mut self, cx: &mut Context<Self>) {
         self.recent = None;

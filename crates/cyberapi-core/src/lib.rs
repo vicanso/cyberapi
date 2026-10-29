@@ -50,6 +50,7 @@ mod time;
 pub mod tree;
 pub mod update;
 pub mod version;
+pub mod versions;
 pub mod ws;
 
 pub use id::{AccountId, CollectionId, EnvironmentId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
