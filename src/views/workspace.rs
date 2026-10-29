@@ -46,12 +46,18 @@ use gpui_kit::component::input::Search;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EntityId, FocusHandle, Focusable, Hsla, InteractiveElement as _,
+    App, AppContext as _, Context, ElementId, Entity, EntityId, FocusHandle, Focusable, Hsla, InteractiveElement as _,
     IntoElement, KeyBinding, ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, div, px,
 };
+
+/// F6: how long a delete can be undone from its notice.
+const UNDO_FOR: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// F6: the notices that undo a delete, one for each.
+struct UndoDelete;
 pub use pins::PinsBar;
 pub use project_title::ProjectTitle;
 // For the shortcuts' list.
@@ -511,6 +517,38 @@ impl WorkspaceView {
                 }
                 WorkspaceEvent::NotIntoLocal => {
                     window.push_notification(Notification::warning(t!("sync.not_into_local").to_string()), cx);
+                }
+                // F6: undone from the notice, for a while.
+                WorkspaceEvent::Deleted { name, apis, count } => {
+                    let count = *count;
+                    let text = if *apis > 0 {
+                        t!("undo.deleted_history", name = name)
+                    } else {
+                        t!("undo.deleted", name = name)
+                    };
+                    let state = this_state.clone();
+                    let note = Notification::info(text.to_string())
+                        .id1::<UndoDelete>(ElementId::Integer(count))
+                        .action(move |_, _, _| {
+                            let state = state.clone();
+                            gpui_kit::component::button::Button::new("undo-delete")
+                                .small()
+                                .label(t!("undo.undo").to_string())
+                                .on_click(move |_, window, cx| {
+                                    state.update(cx, |state, cx| state.undo_delete(count, cx));
+                                    window.remove_notification1::<UndoDelete>(ElementId::Integer(count), cx);
+                                })
+                        });
+                    window.push_notification(note, cx);
+                    let state = this_state.downgrade();
+                    cx.spawn_in(window, async move |_, cx| {
+                        cx.background_executor().timer(UNDO_FOR).await;
+                        let _ = state.update(cx, |state, _| state.forget_undo(count));
+                        let _ = cx.update(|window, cx| {
+                            window.remove_notification1::<UndoDelete>(ElementId::Integer(count), cx)
+                        });
+                    })
+                    .detach();
                 }
                 WorkspaceEvent::Conflict => {
                     let state = this_state.clone();

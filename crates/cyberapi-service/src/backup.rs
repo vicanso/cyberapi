@@ -32,6 +32,18 @@ pub async fn back_up(store: Arc<dyn BackupStore>, at: Timestamp) -> Result<Vec<u
     })
 }
 
+/// F6: as [`back_up`], but nothing when there is no project to keep: the
+/// desktop's own backups skip an empty database.
+pub async fn back_up_some(store: Arc<dyn BackupStore>, at: Timestamp) -> Result<Option<Vec<u8>>, BackupFailure> {
+    let backup = store.snapshot().await.context(StoreSnafu)?;
+    if backup.is_empty() {
+        return Ok(None);
+    }
+    pack(&backup, &at).map(Some).map_err(|error| BackupFailure::Write {
+        message: error.to_string(),
+    })
+}
+
 /// A zip's time is the wall clock's, with no zone; one it cannot hold
 /// (before 1980) is its earliest.
 fn zip_time(at: &Timestamp) -> zip::DateTime {
@@ -129,6 +141,16 @@ mod tests {
         let other = store_with("other");
         pollster::block_on(restore(Arc::new(other.clone()), bytes)).expect("restored");
         assert_eq!(names(&other), ["shop"]);
+    }
+
+    /// F6: the desktop's own skip an empty database.
+    #[test]
+    fn nothing_is_kept_of_no_project() {
+        let at = Timestamp::parse_lenient("2026-10-21T14:15:32+08:00");
+        let empty = pollster::block_on(back_up_some(Arc::new(MemoryStore::new()), at)).expect("read");
+        assert!(empty.is_none());
+        let some = pollster::block_on(back_up_some(Arc::new(store_with("shop")), at)).expect("read");
+        assert!(some.is_some());
     }
 
     #[test]

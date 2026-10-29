@@ -520,6 +520,18 @@ impl DashboardView {
             Some(_) => format!("{description}\n{}", t!("sync.delete_loses_draft")),
             None => description,
         };
+        // F6: where it could come back from.
+        let backed_up = crate::this_build::backs_up_by_itself()
+            && crate::states::AppStore::global(cx)
+                .state()
+                .read(cx)
+                .prefs()
+                .backups
+                .auto;
+        let description = match backed_up {
+            true => format!("{description}\n{}", t!("dashboard.delete_backed_up")),
+            false => description,
+        };
         window.open_alert_dialog(cx, move |alert, _, _| {
             let (state, id) = (state.clone(), collection.id.clone());
             alert

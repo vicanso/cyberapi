@@ -49,6 +49,7 @@ refused_client_too_old = "服务器保存项目的方式比这个应用新，修
 refused_environment_name_taken = "项目里已经有同名的环境。"
 
 [dashboard]
+delete_backed_up = "删错了还可以从每天的自动备份里恢复：设置 → 本地数据 → 打开备份目录，再在首页的设置菜单里“恢复备份…”。恢复会替换这台电脑上的全部项目。"
 on_server = "服务器项目：本机是它的副本，在你选择时同步"
 on_server_unreached = "服务器项目，现在连不上服务器：正在用本机的副本"
 refresh = "重新向服务器获取项目"
@@ -480,6 +481,9 @@ clear_title = "清空所有 Cookie？"
 clear_description = "所有站点的 Cookie 都会被删除。"
 
 [settings]
+auto_backup = "每天自动备份"
+auto_backup_desc = "每天在后台备份一次项目、目录、接口和变量（格式与手动备份相同，能用“恢复”读），存在数据目录的 backups 里，保留最近 %{kept} 份。响应历史、Cookie 和秘密变量的值不在其中。"
+show_backups = "打开备份目录"
 title = "设置"
 section_appearance = "外观"
 section_appearance_desc = "界面字号、主题和语言。"
@@ -1083,3 +1087,8 @@ none_heard = "还没有。"
 title = "变量"
 folder_hint = "这个目录里的接口（包括子目录里的）可以用 {{value(名称)}} 读，也可以作地址开头的 {{名称}}。它们优先于环境变量和项目的自定义变量，里层目录的优先于外层的，接口自己的又优先于目录的。随环境变化的值仍应写在环境里。"
 api_hint = "只属于这个接口：用 {{value(名称)}} 读，也可以作地址开头的 {{名称}}。它们优先于目录的、环境的和项目的同名变量；运行时数据行和提取的值又优先于它们。"
+
+[undo]
+undo = "撤销"
+deleted = "已删除“%{name}”"
+deleted_history = "已删除“%{name}”。撤销会把它放回原处，但其中接口的响应历史不会恢复。"

@@ -247,6 +247,83 @@ pub fn log_days() -> Option<usize> {
     None
 }
 
+/// F6: whether this build backs its data up by itself; a page's data is
+/// the server's.
+#[cfg(not(target_family = "wasm"))]
+pub fn backs_up_by_itself() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn backs_up_by_itself() -> bool {
+    false
+}
+
+/// F6: whether another of the desktop's own backups is due `now` (the wall
+/// clock), by those in its folder.
+#[cfg(not(target_family = "wasm"))]
+pub fn backup_due(now: chrono::NaiveDateTime) -> bool {
+    let Some(dir) = crate::paths::backups_dir() else {
+        return false;
+    };
+    cyberapi_core::backup::due(&file_names(&dir), now)
+}
+#[cfg(target_family = "wasm")]
+pub fn backup_due(_: chrono::NaiveDateTime) -> bool {
+    false
+}
+
+/// F6: `bytes` kept as the backup `name` in the backups' folder — written
+/// apart first, so a half-written one never takes the name — and the
+/// oldest removed past `cyberapi_core::backup::KEPT`; answers where.
+#[cfg(not(target_family = "wasm"))]
+pub fn keep_backup(name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, String> {
+    let dir = crate::paths::backups_dir().ok_or("no data directory")?;
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let path = dir.join(name);
+    let writing = dir.join(format!(".{name}.part"));
+    std::fs::write(&writing, bytes)
+        .and_then(|()| std::fs::rename(&writing, &path))
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&writing);
+            error.to_string()
+        })?;
+    for old in cyberapi_core::backup::pruned(&file_names(&dir)) {
+        if let Err(error) = std::fs::remove_file(dir.join(&old)) {
+            tracing::warn!(%error, old, "an old backup could not be removed");
+        }
+    }
+    Ok(path)
+}
+#[cfg(target_family = "wasm")]
+pub fn keep_backup(_: &str, _: &[u8]) -> Result<std::path::PathBuf, String> {
+    Err("a page keeps no files".into())
+}
+
+/// The names of the files in `dir`; none when it cannot be read.
+#[cfg(not(target_family = "wasm"))]
+fn file_names(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// F6: opens the backups' folder, made first if none was written yet.
+#[cfg(not(target_family = "wasm"))]
+pub fn show_backups(cx: &mut gpui_kit::App) {
+    if let Some(dir) = crate::paths::backups_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        cx.open_with_system(&dir);
+    }
+}
+#[cfg(target_family = "wasm")]
+pub fn show_backups(_: &mut gpui_kit::App) {}
+
 /// Opens the logs' folder (`paths::logs_dir`), made first if no log was
 /// written yet. A page logs to the browser's console, and has none.
 #[cfg(not(target_family = "wasm"))]

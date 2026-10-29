@@ -38,6 +38,7 @@ use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, ProjectVersion,
 use cyberapi_core::template::Answers;
 use cyberapi_core::template_hints;
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
+use cyberapi_core::undo;
 use cyberapi_core::{EnvironmentId, ItemId, VariableId};
 use cyberapi_service::Sender;
 use cyberapi_store::{Storage, StoreError, StoreFuture};
@@ -111,6 +112,18 @@ pub enum WorkspaceEvent {
     /// A move would have put the server's items into the reader's own
     /// folder, which a sync leaves out (§3.4): it did not happen.
     NotIntoLocal,
+    /// F6: `name` was deleted; delete `count` can be undone a while.
+    Deleted { name: String, apis: usize, count: u64 },
+}
+
+/// F6: a delete that can be undone, and what of the reader's own state of
+/// the tree it took: the pins and the open folders among what went.
+struct Undo {
+    /// Which delete it is: the view's notice undoes this one only.
+    count: u64,
+    deleted: undo::Deleted,
+    pinned: Vec<ItemId>,
+    expanded: Vec<ItemId>,
 }
 
 /// What opening a copy found: what this machine kept, and the server's
@@ -203,6 +216,8 @@ pub struct WorkspaceState {
     recent: Option<Result<Vec<Arc<HttpResponse>>, StoreError>>,
     /// G4: the server project's versions, as last read; `None` while read.
     versions: Option<Result<Vec<ProjectVersion>, StoreError>>,
+    /// F6: the last delete, while it can be undone.
+    undo: Option<Undo>,
     /// A server project's working copy; `None` for a project of this
     /// machine's, whose changes are written at once.
     copy: Option<CopyState>,
@@ -303,6 +318,7 @@ impl WorkspaceState {
             grpc: HashMap::new(),
             recent: None,
             versions: None,
+            undo: None,
             copy,
             _poll: poll.filter(|_| !is_copy).map(|every| Self::poll(every, cx)),
             _filter_save: None,
@@ -2573,10 +2589,23 @@ impl WorkspaceState {
     /// F3.6. The view asks first. What was removed leaves the reader's state
     /// too: selection, pins, open folders.
     pub fn delete(&mut self, id: ItemId, cx: &mut Context<Self>) {
+        // F6: what goes, kept to be put back.
+        let deleted = undo::deleted(&self.data, &id);
         let call = self.sender.storage.tree().delete(self.collection.id.clone(), id);
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(removal) => {
                 let gone = |id: &ItemId| removal.folders.contains(id) || removal.apis.contains(id);
+                if let Some(deleted) = deleted {
+                    let count = this.undo.as_ref().map_or(0, |undo| undo.count) + 1;
+                    let (name, apis) = (deleted.name.clone(), deleted.apis.len());
+                    this.undo = Some(Undo {
+                        count,
+                        pinned: this.prefs.pinned.iter().filter(|id| gone(id)).cloned().collect(),
+                        expanded: this.prefs.expanded.iter().filter(|id| gone(id)).cloned().collect(),
+                        deleted,
+                    });
+                    cx.emit(WorkspaceEvent::Deleted { name, apis, count });
+                }
                 // F1: the open tab beside the opened API takes its place.
                 let beside = this
                     .opened()
@@ -2599,6 +2628,57 @@ impl WorkspaceState {
             }
             Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
         });
+    }
+
+    /// F6: delete `count` undone: what it took put back as it was, into the
+    /// project as it is now, written whole (`undo::put_back`). Only while
+    /// it is the last delete, and not after [`Self::forget_undo`].
+    pub fn undo_delete(&mut self, count: u64, cx: &mut Context<Self>) {
+        if self.undo.as_ref().is_none_or(|undo| undo.count != count) || !self.editable() {
+            return;
+        }
+        let Some(undo) = self.undo.take() else { return };
+        // What the open APIs hold goes in first: the project is written
+        // whole as it is read.
+        for api in self.kept.values() {
+            api.update(cx, |api, cx| api.save_now(cx));
+        }
+        let storage = self.sender.storage.clone();
+        let collection = self.collection.id.clone();
+        let deleted = undo.deleted.clone();
+        let call: StoreFuture<TreeData> = Box::pin(async move {
+            let tree = storage.tree();
+            let at = tree.config(collection.clone()).await?;
+            let mut config = at.config;
+            undo::put_back(&mut config, &deleted);
+            tree.replace(collection.clone(), config, Some(at.revision)).await?;
+            tree.load(collection).await
+        });
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(data) => {
+                this.set_data(data, cx);
+                for id in undo.pinned.iter().chain(&undo.expanded) {
+                    let list = if undo.pinned.contains(id) {
+                        &mut this.prefs.pinned
+                    } else {
+                        &mut this.prefs.expanded
+                    };
+                    if !list.contains(id) {
+                        list.push(id.clone());
+                    }
+                }
+                this.save_prefs(cx);
+                cx.notify();
+            }
+            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+        });
+    }
+
+    /// F6: delete `count` can no longer be undone.
+    pub fn forget_undo(&mut self, count: u64) {
+        if self.undo.as_ref().is_some_and(|undo| undo.count == count) {
+            self.undo = None;
+        }
     }
 
     /// The reader's state is saved in the background; a failure costs them
@@ -3259,6 +3339,99 @@ mod tests {
         cx.run_until_parked();
         let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
         assert_eq!(kept.settings.source, None);
+    }
+
+    /// F6: a deleted folder comes back with its ids, its place, what its
+    /// APIs held and the reader's pins; the history of what stayed stays.
+    #[gpui_kit::test]
+    async fn a_delete_is_undone(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let tree = storage.tree();
+        let users = tree
+            .create_folder(collection.id.clone(), None, "users".into())
+            .await
+            .expect("a folder")
+            .item;
+        let login = tree
+            .create_api(collection.id.clone(), Some(users.id.clone()), "login".into())
+            .await
+            .expect("an API")
+            .item;
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "https://a.test/login".into(),
+            description: "signs in".into(),
+            ..Default::default()
+        };
+        tree.save_request(collection.id.clone(), login.id.clone(), request.clone())
+            .await
+            .expect("its request");
+        let health = tree
+            .create_api(collection.id.clone(), None, "health".into())
+            .await
+            .expect("an API")
+            .item;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.set_pinned(&login.id, true, cx));
+        cx.run_until_parked();
+        let before = storage.tree().load(collection.id.clone()).await.expect("the tree");
+
+        let counts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = counts.clone();
+        cx.update(|cx| {
+            cx.subscribe(&state, move |_, event: &WorkspaceEvent, _| {
+                if let WorkspaceEvent::Deleted { count, apis, .. } = event {
+                    seen.lock().expect("seen").push((*count, *apis));
+                }
+            })
+            .detach()
+        });
+        state.update(cx, |state, cx| state.delete(users.id.clone(), cx));
+        cx.run_until_parked();
+        assert_eq!(*counts.lock().expect("seen"), [(1, 1)]);
+        assert!(state.read_with(cx, |state, _| state.pinned().is_empty()));
+
+        // Not one that is not the last.
+        state.update(cx, |state, cx| state.undo_delete(7, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            storage
+                .tree()
+                .load(collection.id.clone())
+                .await
+                .expect("tree")
+                .apis
+                .len(),
+            1
+        );
+
+        state.update(cx, |state, cx| state.undo_delete(1, cx));
+        cx.run_until_parked();
+        let after = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        assert_eq!(after.top_order, before.top_order);
+        assert_eq!(after.folders.iter().map(|f| &f.id).collect::<Vec<_>>(), [&users.id]);
+        let back = after.apis.iter().find(|api| api.id == login.id).expect("login is back");
+        assert_eq!(back.request, request);
+        assert!(after.apis.iter().any(|api| api.id == health.id));
+        assert_eq!(
+            state.read_with(cx, |state, _| state
+                .pinned()
+                .iter()
+                .map(|api| api.id.clone())
+                .collect::<Vec<_>>()),
+            vec![login.id.clone()],
+            "pinned again"
+        );
+
+        // Once only, and not after it is forgotten.
+        state.update(cx, |state, cx| state.delete(health.id.clone(), cx));
+        cx.run_until_parked();
+        state.update(cx, |state, _| state.forget_undo(2));
+        state.update(cx, |state, cx| state.undo_delete(2, cx));
+        cx.run_until_parked();
+        let last = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        assert!(!last.apis.iter().any(|api| api.id == health.id));
     }
 
     /// D6: an environment marked as production is the project's to keep;

@@ -48,6 +48,7 @@ pub mod template;
 pub mod template_hints;
 mod time;
 pub mod tree;
+pub mod undo;
 pub mod update;
 pub mod version;
 pub mod versions;

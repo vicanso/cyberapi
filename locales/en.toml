@@ -49,6 +49,7 @@ refused_client_too_old = "The server keeps projects in a newer way than this app
 refused_environment_name_taken = "The project has an environment of that name already."
 
 [dashboard]
+delete_backed_up = "Deleted by mistake, it can come back from a daily backup: Settings → Local data → Open backups, then “Restore a backup…” from the settings menu here. Restoring replaces every project on this computer."
 on_server = "On the server: this is your copy of it, synced when you choose"
 on_server_unreached = "On the server, which cannot be reached now: you work on your copy"
 refresh = "Ask the server for its projects again"
@@ -480,6 +481,9 @@ clear_title = "Clear every cookie?"
 clear_description = "Every cookie of every site goes."
 
 [settings]
+auto_backup = "Back up every day"
+auto_backup_desc = "Once a day, in the background, the projects, folders, APIs and variables are backed up — as a manual backup is, so Restore reads them — into backups in the data folder; the newest %{kept} are kept. Response history, cookies and secret values are not in them."
+show_backups = "Open backups"
 title = "Settings"
 section_appearance = "Appearance"
 section_appearance_desc = "The size of the interface's text, the theme and the language."
@@ -1083,3 +1087,8 @@ none_heard = "None yet."
 title = "Variables"
 folder_hint = "The APIs in this folder, its subfolders' too, read these as {{value(name)}}, or as {{NAME}} at the start of an address. They come before the environment's variables and the project's custom ones; an inner folder's before an outer one's, and an API's own before its folders'. Keep what changes with the environment in the environment."
 api_hint = "This API's own: read as {{value(name)}}, or as {{NAME}} at the start of its address. They come before its folders', the environment's and the project's of the same names; a run's data and extracted values come before them."
+
+[undo]
+undo = "Undo"
+deleted = "Deleted “%{name}”"
+deleted_history = "Deleted “%{name}”. Undo puts it back where it was, but not its APIs' response history."

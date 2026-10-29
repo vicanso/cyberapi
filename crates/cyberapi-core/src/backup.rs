@@ -47,7 +47,53 @@ pub enum BackupError {
 /// F13.1: what a backup made `at` is called — to the second, so a second
 /// backup the same day is a file of its own (#8).
 pub fn file_name(at: &Timestamp) -> String {
-    format!("cyberapi-backup-{}.zip", at.get().format("%Y-%m-%d-%H%M%S"))
+    format!("cyberapi-backup-{}.zip", at.get().format(NAMED_AT))
+}
+
+/// How a backup's file name says when it was made, on the wall clock.
+const NAMED_AT: &str = "%Y-%m-%d-%H%M%S";
+
+/// F6: how many of its own backups the desktop keeps.
+pub const KEPT: usize = 7;
+
+/// F6: how long the desktop waits after one of its own backups before it
+/// makes the next.
+pub const EVERY: chrono::TimeDelta = chrono::TimeDelta::hours(24);
+
+/// F6: when the backup named `name` ([`file_name`]) was made; `None` for a
+/// file that is not one.
+pub fn made_at(name: &str) -> Option<chrono::NaiveDateTime> {
+    let at = name.strip_prefix("cyberapi-backup-")?.strip_suffix(".zip")?;
+    chrono::NaiveDateTime::parse_from_str(at, NAMED_AT).ok()
+}
+
+/// F6: whether, with the files `names` in the backups' folder, another is
+/// due `now` (the wall clock): there is none, or the newest is [`EVERY`]
+/// old. One from the future — the clock was put back — waits no longer.
+pub fn due<S: AsRef<str>>(names: &[S], now: chrono::NaiveDateTime) -> bool {
+    match names.iter().filter_map(|name| made_at(name.as_ref())).max() {
+        Some(newest) => newest > now || now - newest >= EVERY,
+        None => true,
+    }
+}
+
+/// F6: those of `names` to remove so that only the newest [`KEPT`] backups
+/// stay. What is not a backup is never among them.
+pub fn pruned<S: AsRef<str>>(names: &[S]) -> Vec<String> {
+    let mut backups: Vec<(chrono::NaiveDateTime, &str)> = names
+        .iter()
+        .filter_map(|name| Some((made_at(name.as_ref())?, name.as_ref())))
+        .collect();
+    backups.sort();
+    let extra = backups.len().saturating_sub(KEPT);
+    backups[..extra].iter().map(|(_, name)| name.to_string()).collect()
+}
+
+impl Backup {
+    /// No project: nothing worth keeping.
+    pub fn is_empty(&self) -> bool {
+        self.collections.is_empty()
+    }
 }
 
 fn text(row: &Value, key: &str) -> String {
@@ -270,6 +316,30 @@ impl Backup {
 
 #[cfg(test)]
 mod tests {
+    /// F6: a day between the desktop's own; seven kept; nothing else
+    /// touched.
+    #[test]
+    fn a_backup_is_due_once_a_day_and_seven_are_kept() {
+        let at = |text: &str| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M").expect("a time");
+        let names: Vec<String> = (1..=9)
+            .map(|day| format!("cyberapi-backup-2026-10-{day:02}-093000.zip"))
+            .chain(["notes.txt".to_string(), "cyberapi-backup-x.zip".to_string()])
+            .collect();
+        assert_eq!(made_at(&names[0]), Some(at("2026-10-01 09:30")), "the name's own time");
+        assert!(!due(&names, at("2026-10-10 09:00")));
+        assert!(due(&names, at("2026-10-10 09:30")));
+        assert!(due(&names, at("2026-10-08 09:00")), "the clock was put back");
+        assert!(due(&["notes.txt"], at("2026-10-10 09:00")));
+        assert_eq!(
+            pruned(&names),
+            [
+                "cyberapi-backup-2026-10-01-093000.zip",
+                "cyberapi-backup-2026-10-02-093000.zip"
+            ]
+        );
+        assert!(pruned(&names[..7]).is_empty());
+    }
+
     use super::*;
     use crate::auth::Auth;
     use crate::model::{FolderSettings, HttpMethod};

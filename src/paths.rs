@@ -24,6 +24,20 @@ pub const LOG_PREFIX: &str = "cyberapi-dev.log";
 /// How many days of logs are kept: the oldest go as new ones come.
 pub const LOG_DAYS: usize = 7;
 
+/// F6: the desktop's own backups' folder in [`data_dir`]; a debug build's
+/// is its own, as its database is, so it never prunes the installed app's.
+#[cfg(not(debug_assertions))]
+const BACKUPS_DIR: &str = "backups";
+
+/// See [`BACKUPS_DIR`].
+#[cfg(debug_assertions)]
+const BACKUPS_DIR: &str = "backups-dev";
+
+/// F6: where the desktop keeps its own backups.
+pub fn backups_dir() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join(BACKUPS_DIR))
+}
+
 /// Where the logs go: `logs` in the data directory.
 pub fn logs_dir() -> Option<PathBuf> {
     data_dir().map(|dir| dir.join("logs"))

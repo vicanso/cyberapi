@@ -46,6 +46,22 @@ pub struct AppPrefs {
     pub folded_groups: Vec<String>,
     /// The desktop's update check. A page leaves it as it is.
     pub updates: UpdatePrefs,
+    /// F6: the desktop's own backups. A page leaves it as it is.
+    pub backups: BackupPrefs,
+}
+
+/// F6: whether the desktop backs its data up by itself, once a day
+/// (`crate::backup::due`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BackupPrefs {
+    pub auto: bool,
+}
+
+impl Default for BackupPrefs {
+    fn default() -> Self {
+        Self { auto: true }
+    }
 }
 
 /// How the desktop looks for a newer release ([`crate::update`]).

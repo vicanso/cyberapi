@@ -23,6 +23,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
 
+/// F6: how long after the start the desktop first sees whether one of its
+/// own backups is due, and how often after that.
+const BACKUP_START: Duration = Duration::from_secs(10);
+const BACKUP_LOOK: Duration = Duration::from_secs(60 * 60);
+
 /// The stores, the engine and the application state, installed once by
 /// `launch`.
 #[derive(Clone)]
@@ -56,7 +61,9 @@ impl AppStore {
             selecting: None,
             save_task: None,
             saves: Arc::default(),
+            backing_up: None,
         });
+        let backs_up = extras.backups.is_some() && this_build::backs_up_by_itself();
         let server = extras.sign_out.is_none().then(|| {
             let engine = engine.clone();
             let copies = extras.copies.clone();
@@ -79,6 +86,9 @@ impl AppStore {
         state.update(cx, |state, cx| {
             state.reload_me(cx);
             state.reopen_last_page(cx);
+            if backs_up {
+                state.watch_backups(cx);
+            }
         });
     }
 
@@ -230,6 +240,8 @@ pub struct AppState {
     /// writes the whole document, so a later one landing first would be
     /// overwritten by an older.
     saves: Arc<Mutex<()>>,
+    /// F6: the desktop looking, now and then, whether to back up.
+    backing_up: Option<Task<()>>,
 }
 
 impl AppState {
@@ -641,6 +653,56 @@ impl AppState {
     }
 
     /// Whether the desktop looks for a newer release at start.
+    /// F6: whether the desktop backs up by itself.
+    pub fn set_auto_backup(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.prefs.backups.auto != on {
+            self.prefs.backups.auto = on;
+            self.schedule_save(cx);
+            cx.notify();
+        }
+    }
+
+    /// F6: a while after the start, then every hour, a backup of its own
+    /// when one is due.
+    fn watch_backups(&mut self, cx: &mut Context<Self>) {
+        self.backing_up = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(BACKUP_START).await;
+            loop {
+                match this.update(cx, |this, cx| this.back_up_by_itself(cx)) {
+                    Ok(Some(backing_up)) => backing_up.await,
+                    Ok(None) => {}
+                    Err(_) => return,
+                }
+                cx.background_executor().timer(BACKUP_LOOK).await;
+            }
+        }));
+    }
+
+    /// F6: a backup into the desktop's own folder, when the reader has them
+    /// on and the newest there is a day old; none of an empty database.
+    /// Done quietly: a failure is logged.
+    fn back_up_by_itself(&mut self, cx: &mut Context<Self>) -> Option<Task<()>> {
+        if !self.prefs.backups.auto {
+            return None;
+        }
+        let backups = AppStore::global(cx).backups().cloned()?;
+        Some(cx.background_spawn(async move {
+            let now = chrono::Local::now();
+            if !this_build::backup_due(now.naive_local()) {
+                return;
+            }
+            let at = Timestamp::new(now.fixed_offset());
+            match backup::back_up_some(backups, at).await {
+                Ok(None) => {}
+                Ok(Some(bytes)) => match this_build::keep_backup(&cyberapi_core::backup::file_name(&at), &bytes) {
+                    Ok(path) => tracing::info!(path = %path.display(), "backed up by itself"),
+                    Err(error) => warn!(error, "a backup of its own could not be kept"),
+                },
+                Err(error) => warn!(%error, "the data could not be backed up"),
+            }
+        }))
+    }
+
     pub fn set_auto_update_check(&mut self, on: bool, cx: &mut Context<Self>) {
         if self.prefs.updates.auto_check != on {
             self.prefs.updates.auto_check = on;

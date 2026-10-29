@@ -990,6 +990,33 @@ impl SettingsView {
                 cx,
             ));
         }
+        // F6: the desktop's own backups, a day apart.
+        if this_build::backs_up_by_itself() {
+            let auto = AppStore::global(cx).state().read(cx).prefs().backups.auto;
+            rows.push(setting_row(
+                t!("settings.auto_backup").to_string(),
+                Some(t!("settings.auto_backup_desc", kept = cyberapi_core::backup::KEPT).to_string()),
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Button::new("settings-show-backups")
+                            .outline()
+                            .small()
+                            .label(t!("settings.show_backups").to_string())
+                            .on_click(|_, _, cx| this_build::show_backups(cx)),
+                    )
+                    .child(
+                        Switch::new("settings-auto-backup")
+                            .checked(auto)
+                            .on_click(|checked, _, cx| {
+                                let app = AppStore::global(cx).state().clone();
+                                app.update(cx, |app, cx| app.set_auto_backup(*checked, cx));
+                            }),
+                    ),
+                cx,
+            ));
+        }
         // D4: what the history keeps, then how much of a text body shows.
         rows.push(setting_row(
             t!("settings.history_size").to_string(),
@@ -1339,7 +1366,7 @@ mod tests {
         let mut view = None;
         // Tall enough that the Data section's confirmation is on screen: a
         // click lands only on what is.
-        let handle = cx.open_window(size(px(760.), px(1000.)), |window, cx| {
+        let handle = cx.open_window(size(px(760.), px(1200.)), |window, cx| {
             let settings = cx.new(|cx| SettingsView::new(None, window, cx));
             view = Some(settings.clone());
             Root::new(settings, window, cx)
