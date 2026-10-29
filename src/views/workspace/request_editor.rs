@@ -315,8 +315,8 @@ impl RequestEditor {
             cx.new(|cx| AuthEditor::new(AuthFor::Api(api), workspace, window, cx))
         };
         let settings = {
-            let api = api.clone();
-            cx.new(|cx| super::request_settings::RequestSettingsView::new(api, window, cx))
+            let (api, hints) = (api.clone(), hints.clone());
+            cx.new(|cx| super::request_settings::RequestSettingsView::new(api, hints, window, cx))
         };
         let assertions = {
             let api = api.clone();
@@ -950,8 +950,8 @@ impl RequestEditor {
             .extend(template_hints::watch(&self.body, window, cx));
         self.rebuild_graphql(window, cx);
         self.settings = {
-            let api = self.api.clone();
-            cx.new(|cx| super::request_settings::RequestSettingsView::new(api, window, cx))
+            let (api, hints) = (self.api.clone(), self.hints.clone());
+            cx.new(|cx| super::request_settings::RequestSettingsView::new(api, hints, window, cx))
         };
         self.assertions = {
             let api = self.api.clone();
@@ -1278,13 +1278,25 @@ impl RequestEditor {
         let streaming = self.api.read(cx).live().is_some();
         let (env, _) = split_env_prefix(&request.uri);
         let env = env.map(str::to_string);
-        let environments: Vec<(String, String)> = self
+        let mut environments: Vec<(String, String)> = self
             .workspace
             .read(cx)
             .environments()
             .into_iter()
             .map(|variable| (variable.name, variable.value))
             .collect();
+        // D5: the folders' variables and the API's own stand in for the
+        // environment's of the same names.
+        let api_id = self.api.read(cx).api().clone();
+        for (name, value) in self
+            .workspace
+            .read(cx)
+            .inherited(&api_id)
+            .values(&request.variables, &[])
+        {
+            environments.retain(|(given, _)| *given != name);
+            environments.push((name, value));
+        }
         // What the prefix stands for: the address the request goes to.
         // A prefix nothing enabled stands for is sent as it is written.
         let env_value = env

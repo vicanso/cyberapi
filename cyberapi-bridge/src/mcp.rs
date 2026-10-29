@@ -638,6 +638,9 @@ async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
         "query": params_json(&request.query),
         "headers": params_json(&request.headers),
         "folderHeaders": params_json(&inherited.headers),
+        // D5: its own variables and its folders', masked as headers are.
+        "variables": params_json(&request.variables),
+        "folderVariables": params_json(&inherited.variables),
         "auth": auth,
         "authFrom": auth_from,
         "contentType": request.content_type.as_str(),

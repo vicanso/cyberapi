@@ -1,7 +1,7 @@
 //! What a folder and the project set for their APIs (#66): a folder's auth
 //! and the headers every API in it sends, the project's auth — and what
-//! the folder is for (F3). Kept when Save is clicked; a viewer reads them
-//! and closes.
+//! the folder is for (F3), and the variables its APIs read (D5). Kept when
+//! Save is clicked; a viewer reads them and closes.
 
 use super::auth_editor::{AuthEditor, AuthFor};
 use super::request_editor::{COMMON_HEADERS, HEADER_EXAMPLE};
@@ -20,6 +20,9 @@ use gpui_kit::{
     Styled as _, Window, div, px,
 };
 use rust_i18n::t;
+
+/// D5: a line of a variables list as text.
+pub(super) const VARIABLE_EXAMPLE: &str = "userId: 42";
 
 /// A part of a dialog: its title, what it is for, and its fields.
 fn section(title: String, about: String, body: impl IntoElement, cx: &App) -> AnyElement {
@@ -59,6 +62,8 @@ struct FolderSettingsView {
     description: Entity<EditorState>,
     auth: Entity<AuthEditor>,
     headers: Entity<KvEditor>,
+    /// D5.
+    variables: Entity<KvEditor>,
 }
 
 impl Render for FolderSettingsView {
@@ -89,6 +94,12 @@ impl Render for FolderSettingsView {
                 self.headers.clone(),
                 cx,
             ))
+            .child(section(
+                t!("own_variables.title").to_string(),
+                t!("own_variables.folder_hint").to_string(),
+                self.variables.clone(),
+                cx,
+            ))
     }
 }
 
@@ -107,7 +118,14 @@ pub fn open_folder_settings(workspace: &Entity<WorkspaceState>, id: ItemId, wind
             example: HEADER_EXAMPLE,
             ..Default::default()
         };
-        KvEditor::new(&folder.settings.headers, options, window, cx).hints(hints)
+        KvEditor::new(&folder.settings.headers, options, window, cx).hints(hints.clone())
+    });
+    let variables = cx.new(|cx| {
+        let options = KvOptions {
+            example: VARIABLE_EXAMPLE,
+            ..Default::default()
+        };
+        KvEditor::new(&folder.settings.variables, options, window, cx).hints(hints)
     });
     let description = cx.new(|cx| {
         let mut editor = EditorState::new(window, cx)
@@ -121,18 +139,20 @@ pub fn open_folder_settings(workspace: &Entity<WorkspaceState>, id: ItemId, wind
         description: description.clone(),
         auth: auth.clone(),
         headers: headers.clone(),
+        variables: variables.clone(),
     });
     let title = t!("folder_settings.title", name = folder.name).to_string();
     let workspace = workspace.downgrade();
     window.open_dialog(cx, move |dialog, _, _| {
         let save = {
             let (auth, headers, workspace, id) = (auth.clone(), headers.clone(), workspace.clone(), id.clone());
-            let description = description.clone();
+            let (description, variables) = (description.clone(), variables.clone());
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                 let settings = FolderSettings {
                     auth: auth.read(cx).auth(cx),
                     headers: headers.read(cx).list(cx),
                     description: description.read(cx).value().trim_end().to_string(),
+                    variables: variables.read(cx).list(cx),
                 };
                 if let Some(workspace) = workspace.upgrade() {
                     workspace.update(cx, |state, cx| state.set_folder_settings(id.clone(), settings, cx));

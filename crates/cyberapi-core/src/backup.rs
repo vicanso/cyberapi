@@ -299,6 +299,11 @@ mod tests {
                     auth: Auth::Bearer { token: "t".into() },
                     headers: vec![],
                     description: String::new(),
+                    variables: vec![crate::model::KvParam {
+                        key: "page".into(),
+                        value: "1".into(),
+                        enabled: true,
+                    }],
                 },
                 created_at: at(),
                 updated_at: at(),

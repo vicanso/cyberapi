@@ -764,6 +764,15 @@ impl ApiState {
         json
     }
 
+    /// D5: the API's own variables.
+    pub fn set_variables(&mut self, variables: Vec<KvParam>, cx: &mut Context<Self>) {
+        let variables = kept(variables);
+        if self.request.variables != variables {
+            self.request.variables = variables;
+            self.save_later(cx);
+        }
+    }
+
     /// #71: the API's own sending settings.
     pub fn set_settings(&mut self, settings: RequestSettings, cx: &mut Context<Self>) {
         if self.request.settings != settings {

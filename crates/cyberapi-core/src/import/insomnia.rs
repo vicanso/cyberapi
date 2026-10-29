@@ -203,6 +203,7 @@ fn children(resources: &[Value], parent: &str) -> Vec<ImportItem> {
                     auth: resource.get("authentication").and_then(auth).unwrap_or_default(),
                     headers: Vec::new(),
                     description: text(resource, "description").trim().to_string(),
+                    variables: Vec::new(),
                 },
             }),
             _ => None,

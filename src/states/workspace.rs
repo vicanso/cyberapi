@@ -1098,14 +1098,30 @@ impl WorkspaceState {
     /// the APIs, the ones near the opened API first. `machine`: whether
     /// this build reads this machine's files and environment variables.
     pub fn hint_sources(&self, machine: bool) -> template_hints::Sources {
+        let mut custom: Vec<(String, String)> = self
+            .in_environment(&self.custom)
+            .into_iter()
+            .filter(|variable| variable.enabled)
+            .map(|variable| self.shown_secret(variable))
+            .map(|variable| (variable.name, variable.value))
+            .collect();
+        // D5: the opened API's folders' variables and its own, in place of
+        // the project's of the same names.
+        if let Some(api) = self.opened() {
+            let own = self
+                .data
+                .apis
+                .iter()
+                .find(|found| &found.id == api)
+                .map(|found| found.request.variables.clone())
+                .unwrap_or_default();
+            for (name, value) in self.inherited(api).values(&own, &[]) {
+                custom.retain(|(given, _)| *given != name);
+                custom.push((name, value));
+            }
+        }
         template_hints::Sources {
-            custom: self
-                .in_environment(&self.custom)
-                .into_iter()
-                .filter(|variable| variable.enabled)
-                .map(|variable| self.shown_secret(variable))
-                .map(|variable| (variable.name, variable.value))
-                .collect(),
+            custom,
             apis: template_hints::apis(&self.tree, self.opened()),
             machine,
             response: None,

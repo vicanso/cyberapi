@@ -45,7 +45,9 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 /// 15: the address a project syncs from (B7, `ProjectSettings::source`).
 /// 16: environments marked as production (D6,
 ///    `ProjectSettings::protected_environments`).
-pub const MODEL: u32 = 16;
+/// 17: folders' and APIs' own variables (D5, `FolderSettings::variables`,
+///    `HttpRequest::variables`).
+pub const MODEL: u32 = 17;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

@@ -86,6 +86,7 @@
   - 计算放进 `inherit::inherited`（`Sender.inherited` 已经由各发送入口填），这样运行器、命令行、MCP 自动都有。模板提示列出这些变量。
   - 导入：Bruno 的目录 / 请求变量（`vars:pre-request`）、Postman item 级的 `variable`。导出：Postman 写回 item 的 `variable`；OpenAPI 不写。
 - **落点：** core（model、`inherit`、`template` 的取值顺序）；界面是目录设置弹窗和请求的“设置”标签。
+- **实现时的补充（已完成）：** 和默认做法有一处不同：值**不做**模板求值，和项目的自定义变量、运行中的值一样原样使用（`{{value(…)}}` 本来就不对取到的值再求值；要算出来的值写在用它的地方）。取值顺序在 `Inherited::values`，发送前和运行中的值一起经 `run::with_values` 叠上去，所以 `{{value(名称)}}` 和地址前缀都认；地址栏的前缀选择器、模板提示也列出它们。MCP 的 `get_api` 带上接口和目录的变量（按请求头的规则打码）。OpenCollection、Hoppscotch、Insomnia 的同类字段没有读。
 
 ### F6 本机数据保护（M）
 

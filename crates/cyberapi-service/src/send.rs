@@ -738,14 +738,15 @@ pub(crate) async fn prepare(
     }
 
     // D3: the reader's values of the secret ones; #61: the shared
-    // variables, and the environment's in their place; A3: a run's in
-    // theirs.
+    // variables, and the environment's in their place; D5: the folders'
+    // and the API's own in theirs; A3: a run's in all of theirs.
     let variables = secrets::fill(variables, &sender.secrets);
     let variables = environments::effective(&variables, sender.environment.as_ref().map(|found| &found.id));
+    let values = sender.inherited.values(&request.variables, values);
     let variables = if values.is_empty() {
         variables
     } else {
-        cyberapi_core::run::with_values(&variables, values)
+        cyberapi_core::run::with_values(&variables, &values)
     };
     let needs = send::needs(request, &variables, &sender.inherited);
     let missing = answers.unanswered(&needs.prompts);
@@ -2201,6 +2202,46 @@ mod tests {
         ))
         .expect("code");
         assert!(curl.contains("X-Team: users") && curl.contains("Bearer t0"), "{curl}");
+    }
+
+    /// D5: a folder's variables and the API's own stand in for the
+    /// environment's and the project's custom ones of the same names, the
+    /// API's before the folder's.
+    #[test]
+    fn an_api_reads_its_own_and_its_folders_variables() {
+        let mut setup = setup(Ok(Exchange {
+            status: 200,
+            ..Default::default()
+        }));
+        variable(&setup, VariableCategory::Environment, "HOST", "https://shared.test");
+        variable(&setup, VariableCategory::Custom, "team", "project");
+        variable(&setup, VariableCategory::Custom, "page", "0");
+        let kv = |key: &str, value: &str| KvParam {
+            key: key.into(),
+            value: value.into(),
+            enabled: true,
+        };
+        setup.sender.inherited = Inherited {
+            variables: vec![kv("HOST", "https://folder.test"), kv("team", "folder"), kv("page", "1")],
+            ..Default::default()
+        };
+        let api = new_api(&setup, "list");
+        let request = HttpRequest {
+            uri: "{{HOST}}/list".into(),
+            query: vec![kv("team", "{{value(team)}}"), kv("page", "{{value(page)}}")],
+            variables: vec![kv("page", "2")],
+            ..Default::default()
+        };
+        pollster::block_on(send(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            api,
+            request,
+            Answers::default(),
+        ))
+        .expect("sent");
+        let sent = setup.engine.sent.lock().expect("sent")[0].clone();
+        assert_eq!(sent.url, "https://folder.test/list?team=folder&page=2");
     }
 
     /// #61: in a named environment, its variables stand in for the shared

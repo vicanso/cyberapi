@@ -10,8 +10,9 @@
 //! method's block (`get`, `post`…) holds the URL and which body and auth
 //! it uses, which the `body:…` and `auth:…` blocks hold. `params:path`
 //! fills the URL's `:name`s, this app having none of its own. Bruno's
-//! `{{process.env.NAME}}` is this app's `{{env(NAME)}}` (D2); scripts,
-//! tests, `vars:…` and the docs stay behind.
+//! `{{process.env.NAME}}` is this app's `{{env(NAME)}}` (D2);
+//! `vars:pre-request` are the request's own variables (D5); scripts, tests,
+//! `vars:post-response` and the docs stay behind.
 
 use super::{ImportBundle, ImportItem, api, content_type_of, kv};
 use crate::auth::{Auth, KeyPlace};
@@ -293,6 +294,8 @@ pub(super) fn parse(text: &str) -> ImportBundle {
         built.query = listed;
     }
     built.headers = dict("headers");
+    // D5.
+    built.variables = dict("vars:pre-request");
     if let Some(at) = built
         .headers
         .iter()
@@ -427,6 +430,15 @@ script:pre-request {
   bru.setVar("a", 1);
 }
 
+vars:pre-request {
+  size: 20
+  ~trace: 1
+}
+
+vars:post-response {
+  id: res.body.id
+}
+
 docs {
   # Orders
 }
@@ -442,6 +454,7 @@ docs {
             request.headers,
             [kv("X-Debug", "1", false), kv("X-Key", "{{env(SHOP_KEY)}}", true)]
         );
+        assert_eq!(request.variables, [kv("size", "20", true), kv("trace", "1", false)]);
         assert_eq!(request.content_type, ContentType::Json);
         assert_eq!(
             request.body,

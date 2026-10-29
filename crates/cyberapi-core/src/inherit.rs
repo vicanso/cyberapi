@@ -4,6 +4,12 @@
 //! project. The folders' headers all go, the outermost folder's first, so
 //! an inner folder's replaces an outer one's of the same name; the global
 //! headers go before them and the API's own after (#3).
+//!
+//! D5: the folders' variables likewise, the outermost folder's first; with
+//! the API's own after them and a run's values after those, the last of a
+//! name is the one read ([`Inherited::values`]). They stand for the
+//! environment's variables and the project's custom ones of the same name,
+//! as a run's values do (`crate::run::with_values`).
 
 use crate::ItemId;
 use crate::auth::Auth;
@@ -32,6 +38,8 @@ pub struct Inherited {
     pub auth: Auth,
     /// Where `auth` comes from.
     pub from: AuthSource,
+    /// D5: the folders' variables, the outermost folder's first.
+    pub variables: Vec<KvParam>,
 }
 
 impl Inherited {
@@ -43,6 +51,23 @@ impl Inherited {
     /// The folders' headers that go: enabled, and named.
     pub fn sent_headers(&self) -> impl Iterator<Item = &KvParam> {
         self.headers.iter().filter(|kv| kv.enabled && !kv.key.trim().is_empty())
+    }
+
+    /// D5: the values a request reads of variables: the folders' (an inner
+    /// one's in place of an outer one's), then the request's `own`, then a
+    /// run's `given`, each in place of what came before of its name.
+    pub fn values(&self, own: &[KvParam], given: &[(String, String)]) -> crate::run::Values {
+        let mut values = crate::run::Values::new();
+        for kv in self.variables.iter().chain(own) {
+            let name = kv.key.trim();
+            if kv.enabled && !name.is_empty() {
+                crate::run::set(&mut values, name, kv.value.clone());
+            }
+        }
+        for (name, value) in given {
+            crate::run::set(&mut values, name, value.clone());
+        }
+        values
     }
 }
 
@@ -70,6 +95,11 @@ pub fn inherited(tree: &TreeData, item: &ItemId) -> Inherited {
         .rev()
         .flat_map(|folder| folder.settings.headers.iter().cloned())
         .collect();
+    let variables = above
+        .iter()
+        .rev()
+        .flat_map(|folder| folder.settings.variables.iter().cloned())
+        .collect();
     let (auth, from) = above
         .iter()
         .find(|folder| !folder.settings.auth.is_inherit())
@@ -83,7 +113,12 @@ pub fn inherited(tree: &TreeData, item: &ItemId) -> Inherited {
             )
         })
         .unwrap_or_else(|| (tree.settings.auth.clone(), AuthSource::Project));
-    Inherited { headers, auth, from }
+    Inherited {
+        headers,
+        auth,
+        from,
+        variables,
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +158,7 @@ mod tests {
                 auth: bearer("users"),
                 headers: vec![kv("X-Team", "users", true), kv("X-Off", "1", false)],
                 description: String::new(),
+                variables: vec![kv("team", "users", true), kv("page", "1", true), kv("off", "1", false)],
             },
         );
         set(
@@ -132,6 +168,7 @@ mod tests {
                 auth: Auth::Inherit,
                 headers: vec![kv("X-Team", "profile", true)],
                 description: String::new(),
+                variables: vec![kv("team", "profile", true)],
             },
         );
         set(
@@ -141,6 +178,7 @@ mod tests {
                 auth: Auth::None,
                 headers: vec![],
                 description: String::new(),
+                variables: vec![],
             },
         );
         tree.settings = ProjectSettings {
@@ -195,6 +233,34 @@ mod tests {
         let profile = inherited(&tree, &"profile".into());
         assert_eq!(profile.headers.len(), 2);
         assert!(inherited(&tree, &"users".into()).headers.is_empty());
+    }
+
+    /// D5: the nearest wins — a run's values, the API's own, an inner
+    /// folder's, an outer one's; switched off and nameless ones are not
+    /// read.
+    #[test]
+    fn the_nearest_variable_of_a_name_is_read() {
+        let tree = tree();
+        let me = inherited(&tree, &"me".into());
+        let values = |own: &[KvParam], given: &[(String, String)]| {
+            let mut values = me.values(own, given);
+            values.sort();
+            values
+        };
+        let pair = |name: &str, value: &str| (name.to_string(), value.to_string());
+        assert_eq!(values(&[], &[]), [pair("page", "1"), pair("team", "profile")]);
+        assert_eq!(
+            values(
+                &[kv("page", "2", true), kv("team", "me", false), kv(" ", "x", true)],
+                &[]
+            ),
+            [pair("page", "2"), pair("team", "profile")]
+        );
+        assert_eq!(
+            values(&[kv("page", "2", true)], &[pair("page", "3")]),
+            [pair("page", "3"), pair("team", "profile")]
+        );
+        assert!(inherited(&tree, &"health".into()).values(&[], &[]).is_empty());
     }
 
     #[test]

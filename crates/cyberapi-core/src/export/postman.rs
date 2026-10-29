@@ -106,6 +106,20 @@ fn auth(auth: &Auth) -> Option<Value> {
     })
 }
 
+/// D5: a folder's or a request's variables, as Postman's item `variable`.
+fn variables(variables: &[KvParam]) -> Value {
+    variables
+        .iter()
+        .map(|kv| {
+            let mut variable = json!({"key": kv.key, "value": kv.value, "type": "string"});
+            if !kv.enabled {
+                variable["disabled"] = json!(true);
+            }
+            variable
+        })
+        .collect()
+}
+
 fn item(item: &Item<'_>) -> Value {
     match item {
         Item::Folder(folder, children) => {
@@ -117,10 +131,18 @@ fn item(item: &Item<'_>) -> Value {
             if !folder.settings.description.trim().is_empty() {
                 out["description"] = json!(folder.settings.description.trim());
             }
+            // D5.
+            if !folder.settings.variables.is_empty() {
+                out["variable"] = variables(&folder.settings.variables);
+            }
             out
         }
         Item::Api(api) => {
             let mut out = json!({"name": api.name, "request": request(&api.request)});
+            // D5.
+            if !api.request.variables.is_empty() {
+                out["variable"] = variables(&api.request.variables);
+            }
             // F3: its examples, as Postman's saved responses.
             if !api.request.examples.is_empty() {
                 out["response"] = api
@@ -279,6 +301,7 @@ mod tests {
                     },
                     headers: Vec::new(),
                     description: "Orders, made and listed.".into(),
+                    variables: vec![kv("status", "paid", true)],
                 },
                 created_at: Default::default(),
                 updated_at: Default::default(),
@@ -292,6 +315,7 @@ mod tests {
                         uri: "{{HOST}}/orders".into(),
                         query: vec![kv("page", "1", true), kv("debug", "1", false)],
                         headers: vec![kv("Accept", "application/json", true)],
+                        variables: vec![kv("size", "20", true), kv("trace", "1", false)],
                         ..Default::default()
                     },
                 ),
@@ -382,6 +406,9 @@ mod tests {
         assert_eq!(requests[1].description, "Makes an order.");
         assert_eq!(requests[1].examples, shop().apis[1].request.examples);
         assert_eq!(settings.description, "Orders, made and listed.");
+        // D5: the folder's variables and a request's, switched off ones too.
+        assert_eq!(settings.variables, shop().folders[0].settings.variables);
+        assert_eq!(requests[0].variables, shop().apis[0].request.variables);
     }
 
     /// C4: OAuth goes as Postman's, and this app's import reads it back.

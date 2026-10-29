@@ -159,6 +159,8 @@ fn item(value: &Value) -> Option<ImportItem> {
                 auth: value.get("auth").and_then(auth).unwrap_or_default(),
                 headers: Vec::new(),
                 description: description(value.get("description")),
+                // D5.
+                variables: pairs(value.get("variable"), "key"),
             },
         });
     };
@@ -252,6 +254,8 @@ fn item(value: &Value) -> Option<ImportItem> {
     if let Some(own) = request.get("auth").and_then(auth) {
         built.auth = own;
     }
+    // D5: the item's own variables.
+    built.variables = pairs(value.get("variable"), "key");
     // F3: what it is for, and its saved responses as examples.
     built.description = description(request.get("description"));
     built.examples = value

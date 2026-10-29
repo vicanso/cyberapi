@@ -521,6 +521,12 @@ async fn requests_are_saved(storage: &Storage) {
             target: "$.token".into(),
             ..Default::default()
         }],
+        // Its own variables (D5).
+        variables: vec![KvParam {
+            key: "tenant".into(),
+            value: "acme".into(),
+            enabled: false,
+        }],
         // What it is for, and an example (F3).
         description: "Signs in.\n\n- user\n- password".into(),
         examples: vec![cyberapi_core::model::Example {
@@ -570,6 +576,12 @@ async fn settings_are_kept(storage: &Storage) {
         }],
         // F3: what it is for.
         description: "The team's own.".into(),
+        // D5: the variables its APIs read.
+        variables: vec![KvParam {
+            key: "team".into(),
+            value: "users".into(),
+            enabled: true,
+        }],
     };
     let set = tree
         .set_folder_settings(collection.id.clone(), users.item.id.clone(), settings.clone())

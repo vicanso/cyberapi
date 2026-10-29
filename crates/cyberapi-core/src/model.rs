@@ -69,6 +69,10 @@ pub struct FolderSettings {
     /// F3: what the folder is for, as plain text. Its own, not its APIs'.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// D5: variables of the APIs in it, read as a run's values are; an
+    /// inner folder's before an outer one's (`crate::inherit`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variables: Vec<KvParam>,
 }
 
 impl FolderSettings {
@@ -175,6 +179,10 @@ pub struct HttpRequest {
     /// F3: answers kept as examples of what it returns, with the project.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub examples: Vec<Example>,
+    /// D5: its own variables, read as a run's values are — before its
+    /// folders' and the environment's of the same names (`crate::inherit`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variables: Vec<KvParam>,
     /// What a newer version keeps in a request that this one does not
     /// read, written back as it came (`docs/batch4-design.md` §2.1): a
     /// request saved here keeps it.
@@ -203,6 +211,7 @@ struct StoredRequest {
     extractions: Vec<crate::assertions::Extraction>,
     description: String,
     examples: Vec<Example>,
+    variables: Vec<KvParam>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -226,6 +235,7 @@ impl From<StoredRequest> for HttpRequest {
             extractions: stored.extractions,
             description: stored.description,
             examples: stored.examples,
+            variables: stored.variables,
             extra: stored.extra,
         }
     }
