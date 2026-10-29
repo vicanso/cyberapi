@@ -50,7 +50,7 @@ const fn function(
 
 /// Every function [`crate::template::evaluate`] knows, the ones a request
 /// reaches for most first.
-pub const FUNCTIONS: [Function; 17] = [
+pub const FUNCTIONS: [Function; 23] = [
     function("value", None, true, false),
     function("get", Some("g"), true, false),
     function("timestamp", Some("ts"), false, false),
@@ -59,10 +59,16 @@ pub const FUNCTIONS: [Function; 17] = [
     function("random", None, true, false),
     function("randomString", None, true, false),
     function("base64", Some("b64"), true, false),
+    function("base64Decode", Some("b64d"), true, false),
     function("urlEncode", None, true, false),
+    function("urlDecode", None, true, false),
     function("md5", None, true, false),
+    function("sha1", None, true, false),
     function("sha256", None, true, false),
+    function("sha512", None, true, false),
+    function("hmacSha1", None, true, false),
     function("hmacSha256", None, true, false),
+    function("hmacSha512", None, true, false),
     function("prompt", None, true, false),
     function("readTextFile", Some("rtf"), true, true),
     function("readFile", Some("rf"), true, true),

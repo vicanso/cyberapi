@@ -420,6 +420,17 @@ pub fn evaluate(expr: &Expr, inputs: &Inputs, files: &dyn FileReader) -> Result<
             "base64" | "b64" => Value::Text(base64::engine::general_purpose::STANDARD.encode(value.into_bytes())),
             "md5" => Value::Text(hex(&md5::Md5::digest(value.into_text().as_bytes()))),
             "sha256" => Value::Text(hex(&sha2::Sha256::digest(value.into_text().as_bytes()))),
+            // D7.
+            "sha1" => Value::Text(hex(&sha1::Sha1::digest(value.into_text().as_bytes()))),
+            "sha512" => Value::Text(hex(&sha2::Sha512::digest(value.into_text().as_bytes()))),
+            "base64Decode" | "b64d" => Value::Bytes(base64_decode(&value)?),
+            "urlDecode" => Value::Text(
+                percent_encoding::percent_decode_str(&value.into_text())
+                    .decode_utf8_lossy()
+                    .into_owned(),
+            ),
+            "hmacSha1" => Value::Text(hmac::<sha1::Sha1>("hmacSha1", &value)?),
+            "hmacSha512" => Value::Text(hmac::<sha2::Sha512>("hmacSha512", &value)?),
             "openFile" | "of" => match &inputs.answers.file {
                 Some(file) => Value::Text(file.clone()),
                 None => value,
@@ -441,7 +452,7 @@ pub fn evaluate(expr: &Expr, inputs: &Inputs, files: &dyn FileReader) -> Result<
             "random" => Value::Text(random(&value, &inputs.draws)?.to_string()),
             "randomString" => Value::Text(random_string(&value, &inputs.draws)?),
             "now" => Value::Text(now(&value, inputs)?),
-            "hmacSha256" => Value::Text(hmac_sha256(&value)?),
+            "hmacSha256" => Value::Text(hmac::<sha2::Sha256>("hmacSha256", &value)?),
             "urlEncode" => Value::Text(crate::send::encode_uri_component(&value.into_text())),
             "get" | "g" => {
                 let text = value.into_text();
@@ -542,24 +553,35 @@ fn random_string(value: &Value, draws: &Draws) -> Result<String, TemplateError> 
 
 /// The time now: ISO 8601 (`2026-10-25T14:30:00+08:00`), or in a strftime
 /// format (`%Y-%m-%d %H:%M:%S`); local, or UTC when the last parameter is
-/// `utc`. `now(utc)` is ISO 8601 in UTC.
+/// `utc`. `now(utc)` is ISO 8601 in UTC. D7: shifted by a parameter such
+/// as `-1d` before `utc`: `now(%Y-%m-%d, -1d)` is yesterday.
 fn now(value: &Value, inputs: &Inputs) -> Result<String, TemplateError> {
     let mut params = params(value);
     let utc = params.last().is_some_and(|last| last.eq_ignore_ascii_case("utc"));
     if utc {
         params.pop();
     }
+    // D7: shifted, as `now(%Y-%m-%d, -1d)`.
+    let shifted = params.last().and_then(|last| shift(last));
+    if shifted.is_some() {
+        params.pop();
+    }
     let format = match params.as_slice() {
         [] => "",
         [format] => format.as_str(),
-        _ => return Err(params_error("now", value, "a format, then utc or nothing")),
+        _ => {
+            return Err(params_error(
+                "now",
+                value,
+                "a format, then a shift such as -1d, then utc — each or nothing",
+            ));
+        }
     };
     let offset = if utc { 0 } else { inputs.utc_offset };
-    let at = chrono::DateTime::from_timestamp(inputs.now, 0)
-        .unwrap_or_default()
-        .with_timezone(
-            &chrono::FixedOffset::east_opt(offset).unwrap_or(chrono::FixedOffset::east_opt(0).expect("UTC")),
-        );
+    let at = chrono::DateTime::from_timestamp(inputs.now, 0).unwrap_or_default() + shifted.unwrap_or_default();
+    let at = at.with_timezone(
+        &chrono::FixedOffset::east_opt(offset).unwrap_or(chrono::FixedOffset::east_opt(0).expect("UTC")),
+    );
     if format.is_empty() || format.eq_ignore_ascii_case("iso") {
         return Ok(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
     }
@@ -570,19 +592,49 @@ fn now(value: &Value, inputs: &Inputs) -> Result<String, TemplateError> {
     Ok(at.format_with_items(items.into_iter()).to_string())
 }
 
-/// HMAC-SHA256 of the data under the key, in hex. The data is everything
-/// after the first parameter, commas and all.
-fn hmac_sha256(value: &Value) -> Result<String, TemplateError> {
+/// An HMAC (`D`: SHA-256, or D7's SHA-1 and SHA-512) of the data under
+/// the key, in hex. The data is everything after the first parameter,
+/// commas and all.
+fn hmac<D: hmac::EagerHash>(name: &str, value: &Value) -> Result<String, TemplateError> {
     let params = params(value);
     let [key, data @ ..] = params.as_slice() else {
-        return Err(params_error("hmacSha256", value, "a key, then the data"));
+        return Err(params_error(name, value, "a key, then the data"));
     };
     if data.is_empty() {
-        return Err(params_error("hmacSha256", value, "a key, then the data"));
+        return Err(params_error(name, value, "a key, then the data"));
     }
-    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes()).expect("HMAC takes a key of any length");
+    let mut mac = hmac::Hmac::<D>::new_from_slice(key.as_bytes()).expect("HMAC takes a key of any length");
     mac.update(data.join(",").as_bytes());
     Ok(hex(&mac.finalize().into_bytes()))
+}
+
+/// D7: Base64 read back, standard or URL-safe, padded or not.
+fn base64_decode(value: &Value) -> Result<Vec<u8>, TemplateError> {
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+    let text = value.clone().into_text();
+    let text = text.trim();
+    [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD]
+        .iter()
+        .find_map(|engine| engine.decode(text).ok())
+        .ok_or_else(|| params_error("base64Decode", value, "Base64 text"))
+}
+
+/// D7: a shift of `now`'s time — `-1d`, `+2h`, `30m`, `10s`, `1w`.
+fn shift(text: &str) -> Option<chrono::TimeDelta> {
+    let text = text.trim();
+    let unit = text.chars().last()?;
+    let count: i64 = text[..text.len() - unit.len_utf8()]
+        .trim_start_matches('+')
+        .parse()
+        .ok()?;
+    match unit {
+        's' => chrono::TimeDelta::try_seconds(count),
+        'm' => chrono::TimeDelta::try_minutes(count),
+        'h' => chrono::TimeDelta::try_hours(count),
+        'd' => chrono::TimeDelta::try_days(count),
+        'w' => chrono::TimeDelta::try_weeks(count),
+        _ => None,
+    }
 }
 
 /// The environment variable `env(NAME)` names: one gathered beforehand, by
@@ -797,6 +849,43 @@ mod tests {
         assert_eq!(run("{{now(iso, utc)}}").as_deref(), Ok("2023-11-14T22:13:20Z"));
         assert!(run("{{now(%Q)}}").is_err(), "not a format: an error, not a panic");
         assert!(run("{{now(a, b, c)}}").is_err());
+        // D7: shifted.
+        assert_eq!(run("{{now(%Y-%m-%d, -1d, utc)}}").as_deref(), Ok("2023-11-13"));
+        assert_eq!(run("{{now(%H:%M, +2h, utc)}}").as_deref(), Ok("00:13"));
+        assert_eq!(run("{{now(-1w, utc)}}").as_deref(), Ok("2023-11-07T22:13:20Z"));
+        assert_eq!(run("{{now(%M, 30m, utc)}}").as_deref(), Ok("43"));
+    }
+
+    /// D7: digests, HMACs and decoding beside the ones there were.
+    #[test]
+    fn more_digests_and_decoding() {
+        assert_eq!(
+            run("{{sha1(abc)}}").as_deref(),
+            Ok("a9993e364706816aba3e25717850c26c9cd0d89d")
+        );
+        assert_eq!(
+            run("{{sha512(abc)}}").as_deref(),
+            Ok(
+                "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+            )
+        );
+        // RFC 2202 and RFC 4231, test case 2.
+        assert_eq!(
+            run("{{hmacSha1(Jefe, what do ya want for nothing?)}}").as_deref(),
+            Ok("effcdf6ae5eb2fa2d27416d5f184df9c259a7c79")
+        );
+        assert_eq!(
+            run("{{hmacSha512(Jefe, what do ya want for nothing?)}}").as_deref(),
+            Ok(
+                "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737"
+            )
+        );
+        assert!(run("{{hmacSha1(only-a-key)}}").is_err());
+        assert_eq!(run("{{base64Decode(aGVsbG8=)}}").as_deref(), Ok("hello"));
+        assert_eq!(run("{{b64d(aGVsbG8)}}").as_deref(), Ok("hello"), "unpadded");
+        assert_eq!(run("{{base64Decode.base64(é)}}").as_deref(), Ok("é"), "both ways");
+        assert!(run("{{base64Decode(not base64!)}}").is_err());
+        assert_eq!(run("{{urlDecode(a%20b%26c%3Dd%2F%C3%A9)}}").as_deref(), Ok("a b&c=d/é"));
     }
 
     #[test]

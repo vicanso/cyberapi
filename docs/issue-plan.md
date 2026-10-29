@@ -200,3 +200,4 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | F6 | 本机数据保护：桌面版每天自动备份到 `backups/`（现有格式，留 7 份，可关）；树里删除接口 / 目录后 10 秒内可撤销，按原 id 和位置放回（`cyberapi_core::undo`，经 `TreeStore::replace` 写回，不加 store 方法），响应历史不恢复 | 已完成 |
 | F5 | 复制 / 移动到其他项目：右键菜单选目标项目和目录，带上请求全部内容和目录设置，用新 id；移动是复制后删除，历史不跟过去；完成后列出目标项目里没有的变量（`cyberapi_core::transfer`） | 已完成 |
 | A6 | 响应结构校验：断言多一种对象 Schema（JSON Schema，draft 2020-12，不取远程 `$ref`）；OpenAPI 导入时第一个 2xx 的 JSON schema 成为一条“来自导入”的断言（B7 同步时更新它），导出 OpenAPI 时用它作响应 schema；校验库要能编译到 wasm（`jsonschema` 关掉默认 feature）；数据模型编号 18 | 已完成 |
+| D7 | 补全模板函数（第 4 节的可选项）：`base64Decode`（`b64d`）、`urlDecode`、`sha1`、`sha512`、`hmacSha1`、`hmacSha512`，`now` 可带偏移（`now(%Y-%m-%d, -1d)`，单位 s / m / h / d / w）；不改数据模型 | 已完成 |

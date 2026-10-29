@@ -97,6 +97,8 @@ jsonschema = { version = "0.60.2", default-features = false }
 # timeout it reads no clock, which a page has not.
 similar = { version = "2.7.0", default-features = false, features = ["text"] }
 sha2 = "0.11.1"
+# D7's sha1() and hmacSha1(): pure Rust, the same family as sha2.
+sha1 = "0.11.0"
 rust-i18n = "4.2.4"
 snafu = "0.9.2"
 # The bridge's store: one `Any` code path over PostgreSQL and MySQL, chosen

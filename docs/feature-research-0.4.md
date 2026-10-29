@@ -150,7 +150,7 @@
 - **F7 并排查看 / 在新窗口打开标签（M–L）：** 需求有证据（Postman #9180）。工作区的状态现在是为一个窗口设计的，要先写设计：桌面版标签右键“在新窗口打开”，新窗口只显示这一个接口的请求和响应，和主窗口共用同一个 `ApiState`。
 - **A7 压测（M）：** 运行弹窗加“压测”：选一个接口，并发 1–50、按次数或时长，显示吞吐、P50 / P95 / P99、错误率，不写历史。只在桌面版提供：bridge 每个账号同时最多 16 个请求。Postman、Apidog 有，没查到投票数据。
 - **B8 导入 `.http` 文件（S–M）：** VS Code REST Client、JetBrains HTTP Client 的格式：`###` 分隔请求，`@name = value` 成为共用变量，`http-client.env.json` 成为命名环境，`http-client.private.env.json` 的值作为秘密变量的值；`> {% %}` 响应处理脚本忽略并说明。用户多，但需求没查证。
-- **D7 补全模板函数（S）：** `base64Decode`、`sha1`、`sha512`、`hmacSha1`、`hmacSha512`、`urlDecode`，`now` 支持偏移（如 `now(%Y-%m-%d, -1d)`）。不写脚本时，国内接口常见的签名靠这些拼。JWT 生成属于 C1，不在其中。
+- **D7 补全模板函数（S）：** `base64Decode`、`sha1`、`sha512`、`hmacSha1`、`hmacSha512`、`urlDecode`，`now` 支持偏移（如 `now(%Y-%m-%d, -1d)`）。不写脚本时，国内接口常见的签名靠这些拼。JWT 生成属于 C1，不在其中。**已完成**：`base64Decode`（别名 `b64d`）认标准和 URL 安全两种字母表、有无补位都行，解出的是字节（链在别的函数前面时原样传下去）；`urlDecode` 同 `decodeURIComponent`（`+` 不变成空格）；偏移写在格式之后、`utc` 之前，单位 s / m / h / d / w。
 
 ## 5. 不建议做
 
