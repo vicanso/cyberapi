@@ -625,6 +625,22 @@ paste_curl_into = "粘贴 cURL 到此目录"
 no_curl = "剪贴板里不是 cURL 命令。可以在浏览器开发者工具的网络面板里，对请求选“复制为 cURL”。"
 clipboard_unreadable = "无法读取剪贴板：%{reason}"
 
+[source]
+open = "从来源同步…"
+title = "从来源同步"
+about = "重新取回项目导入时用的地址：项目已有的接口会更新（地址、Query、请求头和请求体；认证、断言和设置保留），新的接口加到来源原来所在的位置，不会删除任何接口。"
+sync = "同步"
+not_address = "请填写 http 或 https 地址。"
+up_to_date = "没有要添加或更新的：项目和来源一致。"
+would = "同步会添加 %{added}、%{folders}，更新 %{updated}。"
+same = "%{apis}和来源一致。"
+missing = "项目里有、来源里没有的 %{apis}保持不变：%{names}"
+name_separator = "、"
+and_more = " …"
+forget = "不再记住来源"
+remember = "记住这个地址作为项目的来源，以后可以“从来源同步”"
+replace = "把项目的来源换成这个地址"
+
 [export]
 project = "导出项目"
 folder = "导出此目录"

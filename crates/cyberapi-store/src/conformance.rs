@@ -316,6 +316,7 @@ async fn deleting_a_collection_takes_its_content(storage: &Storage, probe: &dyn 
         ProjectSettings {
             auth: Auth::None,
             secret_variables: vec![VariableId::from("v")],
+            ..Default::default()
         },
     )
     .await
@@ -584,6 +585,11 @@ async fn settings_are_kept(storage: &Storage) {
         },
         // D3: which variables are secret is the project's.
         secret_variables: vec![VariableId::from("v1")],
+        // B7: and where it syncs from.
+        source: Some(cyberapi_core::model::ImportSource {
+            url: "https://api.test/openapi.json".into(),
+            folder: Some(users.item.id.clone()),
+        }),
     };
     tree.set_project_settings(collection.id.clone(), project.clone())
         .await

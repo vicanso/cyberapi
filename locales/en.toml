@@ -625,6 +625,22 @@ paste_curl_into = "Paste cURL into this folder"
 no_curl = "The clipboard holds no cURL command. In a browser's developer tools, Network panel, a request's “Copy as cURL” gives one."
 clipboard_unreadable = "The clipboard could not be read: %{reason}"
 
+[source]
+open = "Sync from source…"
+title = "Sync from source"
+about = "Fetches the address the project was imported from again: the APIs it has are updated (address, query, headers and body — how they sign in, their assertions and settings stay), new ones are added where the source's went, and none are removed."
+sync = "Sync"
+not_address = "Type an http or https address."
+up_to_date = "Nothing to add or update: the project is up to date with it."
+would = "Syncing adds %{added} and %{folders}, and updates %{updated}."
+same = "%{apis} the source has as they are."
+missing = "%{apis} the project has and the source does not stay as they are: %{names}"
+name_separator = ", "
+and_more = " …"
+forget = "Keep no source"
+remember = "Keep this address as the project's source, to sync from later"
+replace = "Make this address the project's source instead"
+
 [export]
 project = "Export the project"
 folder = "Export this folder"

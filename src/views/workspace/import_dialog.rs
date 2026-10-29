@@ -9,6 +9,7 @@ use cyberapi_core::ItemId;
 use cyberapi_core::import::{self, Format, ImportBundle};
 use cyberapi_core::tree::TreeData;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent, Paste};
 use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
@@ -31,7 +32,7 @@ const HELD_SHOWN: usize = 64 * 1024;
 
 /// B3: the text, when it is an address to fetch what to import from: one
 /// http or https URL, nothing around it.
-fn address(text: &str) -> Option<&str> {
+pub(super) fn address(text: &str) -> Option<&str> {
     let trimmed = text.trim();
     let scheme = |prefix: &str| {
         trimmed
@@ -222,6 +223,10 @@ struct ImportView {
     known: usize,
     update: bool,
     fetching: Option<Task<()>>,
+    /// B7: the address the text was fetched from, and whether the project
+    /// keeps it as its source.
+    fetched_from: Option<String>,
+    remember: bool,
     highlighted: &'static str,
     /// The latest `describe`; a newer one drops it.
     describing: Task<()>,
@@ -255,6 +260,8 @@ impl ImportView {
             known: 0,
             update: false,
             fetching: None,
+            fetched_from: None,
+            remember: true,
             highlighted: "json",
             describing: Task::ready(()),
             _changes: changes,
@@ -269,6 +276,7 @@ impl ImportView {
     /// Puts `text` in place of what the dialog had: a big one is held, and
     /// the editor shows its start.
     fn fill(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.fetched_from = None;
         let held = text.len() > HELD_ABOVE;
         let shown = if held {
             shown_start(&text).to_string()
@@ -365,14 +373,17 @@ impl ImportView {
         if self.fetching.is_some() {
             return;
         }
-        let fetched = crate::states::AppStore::global(cx).fetch_text(url, cx);
+        let fetched = crate::states::AppStore::global(cx).fetch_text(url.clone(), cx);
         self.error = None;
         self.fetching = Some(cx.spawn_in(window, async move |this, cx| {
             let fetched = fetched.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.fetching = None;
                 match fetched {
-                    Ok(text) => this.fill(text, window, cx),
+                    Ok(text) => {
+                        this.fill(text, window, cx);
+                        this.fetched_from = Some(url);
+                    }
                     Err(why) => {
                         this.error = Some(t!("import.fetch_failed", why = why).to_string());
                         cx.notify();
@@ -381,6 +392,27 @@ impl ImportView {
             });
         }));
         cx.notify();
+    }
+
+    /// B7: what keeping the address fetched from as the project's source is
+    /// called; nothing when nothing was fetched, or the project keeps it.
+    fn source_choice(&self) -> Option<String> {
+        let fetched = self.fetched_from.as_ref()?;
+        let kept = self
+            .into
+            .as_ref()
+            .and_then(|into| into.tree.settings.source.as_ref())
+            .map(|source| &source.url);
+        match kept {
+            Some(kept) if kept == fetched => None,
+            Some(_) => Some(t!("source.replace").to_string()),
+            None => Some(t!("source.remember").to_string()),
+        }
+    }
+
+    /// B7: the source the import gives the project, when it gives one.
+    fn source(&self) -> Option<String> {
+        self.fetched_from.clone().filter(|_| self.remember)
     }
 
     fn pick(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -535,6 +567,18 @@ impl Render for ImportView {
                         }),
                 )
             })
+            // B7: the address fetched from, kept for syncing again.
+            .when_some(self.source_choice(), |this, label| {
+                this.child(
+                    Checkbox::new("import-remember")
+                        .checked(self.remember)
+                        .label(label)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.remember = *checked;
+                            cx.notify();
+                        })),
+                )
+            })
             .when_some(self.error.clone(), |this, message| {
                 this.child(div().text_sm().text_color(danger).child(message))
             })
@@ -569,12 +613,13 @@ fn open(title: String, import: OnImport, into: Option<Arc<MergeInto>>, window: &
         let submit = {
             let (view, import) = (view.clone(), import.clone());
             move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                let (text, again) = {
+                let (text, again, source) = {
                     let view = view.read(cx);
-                    (view.text(cx), (view.known > 0).then_some(view.update))
+                    (view.text(cx), (view.known > 0).then_some(view.update), view.source())
                 };
                 match import::parse(&text) {
-                    Ok(bundle) => {
+                    Ok(mut bundle) => {
+                        bundle.source = source;
                         import(bundle, again, window, cx);
                         true
                     }
@@ -731,12 +776,18 @@ mod tests {
                 "{:?}",
                 view.found
             );
+            // B7: kept as the project's source unless the reader says not.
+            assert_eq!(view.source().as_deref(), Some("https://specs.test/spec"));
+            assert_eq!(view.source_choice(), Some(t!("source.remember").to_string()));
         });
+        view.update(cx, |view, _| view.remember = false);
+        cx.read(|cx| assert_eq!(view.read(cx).source(), None));
 
         cx.update_window(window, |_, window, cx| {
             view.update(cx, |view, cx| view.fill(String::new(), window, cx))
         })
         .expect("the window is open");
+        cx.read(|cx| assert_eq!(view.read(cx).source_choice(), None, "a text not fetched has no source"));
         paste_into(window, &view, "https://specs.test/gone", cx);
         fetch(cx);
         cx.read(|cx| {

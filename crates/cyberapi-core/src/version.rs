@@ -42,7 +42,8 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 /// 13: a project's secret variables (D3, `ProjectSettings::secret_variables`).
 /// 14: OAuth 2.0's authorization code (C4, `OAuth2::authorization_url` /
 ///    `redirect_port`, `Grant::AuthorizationCode`).
-pub const MODEL: u32 = 14;
+/// 15: the address a project syncs from (B7, `ProjectSettings::source`).
+pub const MODEL: u32 = 15;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

@@ -28,8 +28,8 @@ use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::import::{ImportBundle, ImportEnvironment, ImportItem};
 use cyberapi_core::inherit::{self, Inherited};
 use cyberapi_core::model::{
-    ApiSetting, Collection, Environment, Folder, FolderSettings, HttpMethod, HttpRequest, ProjectSettings, Variable,
-    VariableCategory,
+    ApiSetting, Collection, Environment, Folder, FolderSettings, HttpMethod, HttpRequest, ImportSource,
+    ProjectSettings, Variable, VariableCategory,
 };
 use cyberapi_core::prefs::{RequestTab, Scratch, WorkspacePrefs};
 use cyberapi_core::response::{HttpResponse, RECENT_LIMIT};
@@ -2116,7 +2116,8 @@ impl WorkspaceState {
     }
 
     pub fn import(&mut self, parent: Option<ItemId>, bundle: ImportBundle, cx: &mut Context<Self>) {
-        self.import_settings(bundle.auth, bundle.environments, cx);
+        let source = source_of(bundle.source, &parent);
+        self.import_settings(bundle.auth, bundle.environments, source, cx);
         let call = self
             .sender
             .storage
@@ -2180,7 +2181,8 @@ impl WorkspaceState {
             }
         }
         let merge = cyberapi_core::import::merge::merge(&data, parent.as_ref(), &bundle.items, update);
-        self.import_settings(bundle.auth, bundle.environments, cx);
+        let source = source_of(bundle.source, &parent);
+        self.import_settings(bundle.auth, bundle.environments, source, cx);
         let (apis, folders) = merge.added();
         let again = Some((merge.updates.len(), merge.matched - merge.updates.len()));
         let known: Vec<&str> = self.environment.iter().map(|variable| variable.name.as_str()).collect();
@@ -2249,16 +2251,62 @@ impl WorkspaceState {
         }
     }
 
+    /// B7: where the project syncs from, when it has a source.
+    pub fn source(&self) -> Option<&ImportSource> {
+        self.data.settings.source.as_ref()
+    }
+
+    /// B7: the folder a sync goes into: the source's, while the project
+    /// still has it; the top level otherwise.
+    pub fn source_folder(&self) -> Option<ItemId> {
+        let folder = self.source()?.folder.as_ref()?;
+        self.data
+            .folders
+            .iter()
+            .any(|known| &known.id == folder)
+            .then(|| folder.clone())
+    }
+
+    /// B7: what was fetched from `url` again: the APIs the project has are
+    /// updated, new ones added where the source's went, none removed; `url`
+    /// stays the source.
+    pub fn sync_from_source(&mut self, url: String, mut bundle: ImportBundle, cx: &mut Context<Self>) {
+        bundle.source = Some(url);
+        let folder = self.source_folder();
+        self.import_again(folder, bundle, true, cx);
+    }
+
+    /// B7: the project keeps no source.
+    pub fn forget_source(&mut self, cx: &mut Context<Self>) {
+        if self.data.settings.source.is_some() {
+            let settings = ProjectSettings {
+                source: None,
+                ..self.data.settings.clone()
+            };
+            self.set_project_settings(settings, cx);
+        }
+    }
+
     /// B4: what an import brings besides its items: how the project signs
     /// in, unless it does already; named environments, made where the
     /// project has none of the name (in any case), each given the variables
-    /// it lacks.
-    fn import_settings(&mut self, auth: Auth, environments: Vec<ImportEnvironment>, cx: &mut Context<Self>) {
-        if auth.signs() && !self.data.settings.auth.signs() {
-            let settings = ProjectSettings {
-                auth,
-                ..self.data.settings.clone()
-            };
+    /// it lacks. B7: the source it was fetched from, when the reader keeps
+    /// it.
+    fn import_settings(
+        &mut self,
+        auth: Auth,
+        environments: Vec<ImportEnvironment>,
+        source: Option<ImportSource>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut settings = self.data.settings.clone();
+        if auth.signs() && !settings.auth.signs() {
+            settings.auth = auth;
+        }
+        if source.is_some() {
+            settings.source = source;
+        }
+        if settings != self.data.settings {
             self.set_project_settings(settings, cx);
         }
         let environments: Vec<ImportEnvironment> = environments
@@ -2497,6 +2545,15 @@ impl WorkspaceState {
 
 /// Whose pins. Tests build a workspace with no application installed; that
 /// reader is the desktop's one reader.
+/// B7: the source an import keeps: the address it was fetched from, and
+/// the folder it went into.
+fn source_of(url: Option<String>, parent: &Option<ItemId>) -> Option<ImportSource> {
+    url.map(|url| ImportSource {
+        url,
+        folder: parent.clone(),
+    })
+}
+
 fn pin_scope(cx: &gpui_kit::App) -> String {
     let account = cx
         .try_global::<AppStore>()
@@ -3048,6 +3105,72 @@ mod tests {
         let list = kept.apis.iter().find(|api| api.name == "list").expect("list");
         assert_eq!(list.request.query[0].key, "page");
         assert_eq!(list.request.headers[0].key, "X-New");
+    }
+
+    /// B7: an import fetched from an address keeps it as the project's
+    /// source, with the folder it went into; syncing from it updates what
+    /// the project has, adds what is new there, removes nothing; forgotten,
+    /// the project keeps no source.
+    #[gpui_kit::test]
+    async fn a_project_syncs_from_the_address_it_was_imported_from(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_folder(None, "spec".into(), cx));
+        cx.run_until_parked();
+        let spec = find(&state, "spec", cx);
+        let parse = |text: &str| cyberapi_core::import::parse(text).expect("a collection");
+        let url = "https://api.test/openapi.json".to_string();
+        let mut first = parse(
+            r#"{"info": {"name": "Shop"}, "item": [
+                {"name": "list", "request": {"method": "GET", "url": "{{host}}/orders"}},
+                {"name": "drop", "request": {"method": "DELETE", "url": "{{host}}/orders/:id"}}
+            ]}"#,
+        );
+        first.source = Some(url.clone());
+        state.update(cx, |state, cx| state.import(Some(spec.clone()), first, cx));
+        cx.run_until_parked();
+        let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        assert_eq!(
+            kept.settings.source,
+            Some(ImportSource {
+                url: url.clone(),
+                folder: Some(spec.clone()),
+            }),
+            "kept, with the folder it went into"
+        );
+
+        let second = parse(
+            r#"{"info": {"name": "Shop"}, "item": [
+                {"name": "list", "request": {"method": "GET", "url": "{{host}}/orders?page=1"}},
+                {"name": "make", "request": {"method": "POST", "url": "{{host}}/orders"}}
+            ]}"#,
+        );
+        state.update(cx, |state, cx| state.sync_from_source(url.clone(), second, cx));
+        cx.run_until_parked();
+        let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        let mut apis: Vec<(&str, &str)> = kept
+            .apis
+            .iter()
+            .map(|api| (api.name.as_str(), api.request.uri.as_str()))
+            .collect();
+        apis.sort();
+        assert_eq!(
+            apis,
+            [
+                ("drop", "{{host}}/orders/:id"),
+                ("list", "{{host}}/orders"),
+                ("make", "{{host}}/orders"),
+            ],
+            "updated (the query split off), added, the one the source lacks left"
+        );
+        let in_spec = kept.folders.iter().find(|folder| folder.id == spec).expect("spec");
+        assert_eq!(in_spec.children.len(), 3, "what is new goes where the source's went");
+
+        state.update(cx, |state, cx| state.forget_source(cx));
+        cx.run_until_parked();
+        let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        assert_eq!(kept.settings.source, None);
     }
 
     /// Each change saves the whole state; the last one made is the one kept,

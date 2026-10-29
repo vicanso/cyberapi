@@ -100,6 +100,48 @@ pub fn merge(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem], upd
     merge
 }
 
+/// B7: what syncing from a source would do, told before it is done.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Preview {
+    /// The APIs and folders added.
+    pub added: (usize, usize),
+    /// The project's APIs the source changes.
+    pub updated: usize,
+    /// The project's APIs the source has as they are.
+    pub same: usize,
+    /// The project's APIs the source does not have, as the project keeps
+    /// them: left as they are. A gRPC call is never among them.
+    pub missing: Vec<ItemId>,
+}
+
+/// B7: what importing `items` into `parent` of `tree` again, updating what
+/// it has, would do.
+pub fn preview(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem]) -> Preview {
+    let merge = merge(tree, parent, items, true);
+    let mut keys = std::collections::HashSet::new();
+    let mut stack: Vec<&ImportItem> = items.iter().collect();
+    while let Some(item) = stack.pop() {
+        match item {
+            ImportItem::Api { request, .. } => keys.extend(key(request)),
+            ImportItem::Folder { children, .. } => stack.extend(children),
+        }
+    }
+    let (mut had, mut missing) = (0, Vec::new());
+    for api in &tree.apis {
+        match key(&api.request) {
+            Some(key) if keys.contains(&key) => had += 1,
+            Some(_) => missing.push(api.id.clone()),
+            None => {}
+        }
+    }
+    Preview {
+        added: merge.added(),
+        updated: merge.updates.len(),
+        same: had - merge.updates.len(),
+        missing,
+    }
+}
+
 struct Walk<'a> {
     tree: &'a TreeData,
     known: &'a HashMap<(HttpMethod, String), &'a crate::model::ApiSetting>,
@@ -147,11 +189,13 @@ impl Walk<'_> {
             return false;
         };
         self.merge.matched += 1;
-        // Once each: the first of the import's that has it.
+        // Once each: the first of the import's that has it; none when the
+        // import would leave it as it is.
         if self.update && !self.merge.updates.iter().any(|(id, _)| id == &found.id) {
-            self.merge
-                .updates
-                .push((found.id.clone(), updated(&found.request, request)));
+            let request = updated(&found.request, request);
+            if request != found.request {
+                self.merge.updates.push((found.id.clone(), request));
+            }
         }
         true
     }
@@ -391,5 +435,40 @@ mod tests {
         let merge = merge(&tree, Some(&"f-users".into()), &items, false);
         assert_eq!(merge.matched, 1);
         assert_eq!(merge.additions, vec![(Some("f-users".into()), vec![items[1].clone()])]);
+    }
+
+    #[test]
+    fn an_api_the_import_leaves_as_it_is_is_not_updated() {
+        let items = vec![imported_api("login", HttpMethod::Post, "{{HOST}}/login")];
+        let merge = merge(&project(), None, &items, true);
+        assert_eq!(merge.matched, 1);
+        assert!(merge.updates.is_empty(), "nothing to write");
+    }
+
+    #[test]
+    fn a_preview_counts_what_a_sync_does_and_names_what_the_source_lacks() {
+        let mut tree = project();
+        tree.apis.push(api("a-mine", HttpMethod::Delete, "{{HOST}}/cache"));
+        tree.apis.push(api("a-grpc", HttpMethod::Grpc, "localhost:50051"));
+        let items = vec![
+            imported_folder(
+                "users",
+                vec![
+                    imported_api("list", HttpMethod::Get, "{{HOST}}/users"),
+                    imported_api("one", HttpMethod::Get, "{{API}}/users/:userId"),
+                    imported_api("make", HttpMethod::Post, "{{API}}/users"),
+                ],
+            ),
+            imported_api("login", HttpMethod::Post, "{{HOST}}/login"),
+        ];
+        assert_eq!(
+            preview(&tree, None, &items),
+            Preview {
+                added: (1, 0),
+                updated: 1,
+                same: 2,
+                missing: vec!["a-mine".into()],
+            }
+        );
     }
 }

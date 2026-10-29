@@ -89,12 +89,26 @@ pub struct ProjectSettings {
     /// (`crate::secrets`); their own values stay empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub secret_variables: Vec<crate::VariableId>,
+    /// B7: the address the project was imported from, to sync from again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<ImportSource>,
 }
 
 impl ProjectSettings {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
+}
+
+/// B7: where a project's APIs came from: an http(s) address, and the
+/// folder they went into (`None` the top level). A file's path is not kept:
+/// it is another on each machine.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ImportSource {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<ItemId>,
 }
 
 /// What kind of request an API holds. Only HTTP exists; the column was left

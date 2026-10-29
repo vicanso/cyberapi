@@ -52,6 +52,7 @@ enum Command {
     NewFolder,
     NewScratch,
     Import,
+    SyncSource,
     Run,
     Recent,
     Variables,
@@ -68,6 +69,7 @@ impl Command {
             Self::NewFolder => t!("workspace.new_folder"),
             Self::NewScratch => t!("workspace.new_scratch"),
             Self::Import => t!("import.title"),
+            Self::SyncSource => t!("source.open"),
             Self::Run => t!("run.project"),
             Self::Recent => t!("recent.open"),
             Self::Variables => t!("palette.variables"),
@@ -85,6 +87,7 @@ impl Command {
             Self::NewFolder => Icons::FolderPlus,
             Self::NewScratch => Icons::FilePlus,
             Self::Import => Icons::Import,
+            Self::SyncSource => Icons::RefreshCw,
             Self::Run => Icons::Play,
             Self::Recent => Icons::Clock,
             Self::Variables => Icons::Globe,
@@ -162,19 +165,20 @@ impl PaletteView {
         }
     }
 
-    fn commands(&self) -> Vec<Command> {
+    fn commands(&self, cx: &App) -> Vec<Command> {
         let mut commands = Vec::new();
-        if self.workspace.as_ref().and_then(WeakEntity::upgrade).is_some() {
+        if let Some(workspace) = self.workspace.as_ref().and_then(WeakEntity::upgrade) {
             commands.extend([
                 Command::NewApi,
                 Command::NewFolder,
                 Command::NewScratch,
                 Command::Import,
-                Command::Run,
-                Command::Recent,
-                Command::Variables,
-                Command::Projects,
             ]);
+            // B7: an editor's, as importing is.
+            if workspace.read(cx).editable() {
+                commands.push(Command::SyncSource);
+            }
+            commands.extend([Command::Run, Command::Recent, Command::Variables, Command::Projects]);
         }
         commands.extend([Command::Settings, Command::Cookies, Command::Shortcuts]);
         commands
@@ -218,7 +222,7 @@ impl PaletteView {
             }
         }
         items.extend(
-            self.commands()
+            self.commands(cx)
                 .into_iter()
                 .filter(|command| found(&command.label()))
                 .map(Item::Command),
@@ -284,6 +288,7 @@ impl PaletteView {
                     });
                 }
                 (Command::Import, Some(weak), _) => open_import_dialog(weak, None, window, cx),
+                (Command::SyncSource, _, Some(state)) => super::source_dialog::open_source_dialog(state, window, cx),
                 (Command::Run, _, Some(state)) => open_run_dialog(state, None, window, cx),
                 (Command::Recent, _, Some(state)) => open_recent_dialog(state, window, cx),
                 (Command::Variables, _, Some(state)) => {

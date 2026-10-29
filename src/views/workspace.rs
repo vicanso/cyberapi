@@ -21,6 +21,7 @@ mod response_panel;
 mod run_dialog;
 mod schema_browser;
 mod settings_dialogs;
+mod source_dialog;
 mod tabs;
 mod tree_panel;
 mod versions_dialog;

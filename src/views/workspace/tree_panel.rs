@@ -943,7 +943,7 @@ fn project_menu(
 ) -> PopupMenu {
     let (for_api, for_folder) = (state.clone(), state.clone());
     let (for_import, for_export) = (state.clone(), state.clone());
-    let for_paste = state.clone();
+    let (for_paste, for_source) = (state.clone(), state.clone());
     let menu = if editable {
         menu.item(
             PopupMenuItem::new(t!("workspace.new_api").to_string())
@@ -972,6 +972,16 @@ fn project_menu(
             PopupMenuItem::new(t!("import.title").to_string())
                 .icon(Icons::Import)
                 .on_click(move |_, window, cx| open_import_dialog(for_import.clone(), None, window, cx)),
+        )
+        // B7.
+        .item(
+            PopupMenuItem::new(t!("source.open").to_string())
+                .icon(Icons::RefreshCw)
+                .on_click(move |_, window, cx| {
+                    if let Some(state) = for_source.upgrade() {
+                        super::source_dialog::open_source_dialog(state, window, cx);
+                    }
+                }),
         )
     } else {
         menu

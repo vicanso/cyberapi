@@ -76,6 +76,10 @@ pub struct ImportBundle {
     /// B4: named environments.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub environments: Vec<ImportEnvironment>,
+    /// B7: the address it was fetched from, when the project is to keep it
+    /// as its source. The reader's choice, not the document's.
+    #[serde(skip)]
+    pub source: Option<String>,
 }
 
 /// A named environment an import brings (B4), with its variables, name and

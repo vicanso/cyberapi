@@ -344,6 +344,11 @@ mod tests {
                     },
                     // D3: which are secret goes along; their values do not.
                     secret_variables: vec!["v1".into()],
+                    // B7: and where it syncs from.
+                    source: Some(crate::model::ImportSource {
+                        url: "https://api.test/openapi.json".into(),
+                        folder: Some("f".into()),
+                    }),
                 },
             )],
         }
