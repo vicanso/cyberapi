@@ -16,6 +16,7 @@ chrono = { workspace = true }
 imagesize = { workspace = true }
 hmac = { workspace = true }
 jsonpath-rust = { workspace = true }
+jsonschema = { workspace = true }
 md-5 = { workspace = true }
 mime_guess = { workspace = true }
 percent-encoding = { workspace = true }

@@ -3,17 +3,23 @@
 //! with how the response the panel shows holds up to it. Under them, what a
 //! run takes from the answer for the requests after it (A2): a name, what
 //! of the answer, and what it would take from the response shown.
+//!
+//! A6: a schema is no one line: its row opens it in a dialog's editor.
 
 use crate::states::ApiState;
+use crate::views::name_dialog::ok_button;
 use crate::views::settings::Choice;
 use cyberapi_core::assertions::{Assertion, Checked, Extraction, Op, Problem, Subject, TYPES};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::dialog::{DialogClose, DialogFooter};
+use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -23,6 +29,9 @@ use rust_i18n::t;
 
 type Choices = Entity<SelectState<Vec<Choice>>>;
 
+/// A6: where a new schema starts.
+const SCHEMA_EXAMPLE: &str = "{\n    \"type\": \"object\",\n    \"required\": [\"id\"],\n    \"properties\": {\n        \"id\": { \"type\": \"integer\" }\n    }\n}\n";
+
 pub(super) fn subject_label(subject: Subject) -> String {
     match subject {
         Subject::Status => t!("assertions.status"),
@@ -31,6 +40,7 @@ pub(super) fn subject_label(subject: Subject) -> String {
         Subject::Body => t!("assertions.body"),
         Subject::Latency => t!("assertions.latency"),
         Subject::Size => t!("assertions.size"),
+        Subject::Schema => t!("assertions.schema"),
     }
     .to_string()
 }
@@ -47,6 +57,7 @@ pub(super) fn op_label(op: Op) -> String {
         Op::Less => t!("assertions.less"),
         Op::Greater => t!("assertions.greater"),
         Op::IsType => t!("assertions.is_type"),
+        Op::Conforms => t!("assertions.conforms"),
     }
     .to_string()
 }
@@ -61,6 +72,7 @@ pub(super) fn problem_text(problem: &Problem) -> String {
         Problem::NotANumber => t!("assertions.not_a_number").to_string(),
         Problem::UnknownType => t!("assertions.unknown_type", types = TYPES.join(", ")).to_string(),
         Problem::NoTarget => t!("assertions.no_target").to_string(),
+        Problem::Schema(why) => t!("assertions.bad_schema", why = why).to_string(),
     }
 }
 
@@ -99,6 +111,10 @@ struct Row {
     ops: Choices,
     target: Entity<InputState>,
     expected: Entity<InputState>,
+    /// A6: the schema's text, edited in a dialog.
+    schema: String,
+    /// A6: an import's, until the reader edits it.
+    imported: bool,
     _subscriptions: Vec<Subscription>,
     /// The comparison list's, made again with it when the subject changes.
     _ops: Subscription,
@@ -148,12 +164,15 @@ impl AssertionsEditor {
     fn push_take(&mut self, extraction: &Extraction, window: &mut Window, cx: &mut Context<Self>) {
         let id = self.next;
         self.next += 1;
-        let subject_index = Subject::ALL
+        let subject_index = Subject::EXTRACTED
             .iter()
             .position(|each| *each == extraction.subject)
             .unwrap_or(0);
         let subjects = Self::choices(
-            Subject::ALL.iter().map(|subject| subject_label(*subject)).collect(),
+            Subject::EXTRACTED
+                .iter()
+                .map(|subject| subject_label(*subject))
+                .collect(),
             subject_index,
             window,
             cx,
@@ -179,7 +198,7 @@ impl AssertionsEditor {
                 window,
                 move |this, _, event: &SelectEvent<Vec<Choice>>, window, cx| {
                     if let SelectEvent::Confirm(Some(index)) = event
-                        && let Some(subject) = Subject::ALL.get(*index)
+                        && let Some(subject) = Subject::EXTRACTED.get(*index)
                         && let Some(take) = this.takes.iter_mut().find(|take| take.id == id)
                     {
                         take.subject = *subject;
@@ -396,10 +415,15 @@ impl AssertionsEditor {
                 .placeholder(target_placeholder(assertion.subject))
                 .default_value(assertion.target.clone())
         });
+        let schema = assertion.subject == Subject::Schema;
         let expected = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(expected_placeholder(assertion.subject, assertion.op))
-                .default_value(assertion.expected.clone())
+                .default_value(if schema {
+                    String::new()
+                } else {
+                    assertion.expected.clone()
+                })
         });
         let changed = |this: &mut Self, _: Entity<InputState>, event: &InputEvent, cx: &mut Context<Self>| {
             if matches!(event, InputEvent::Change) {
@@ -430,8 +454,91 @@ impl AssertionsEditor {
             ops,
             target,
             expected,
+            schema: if schema {
+                assertion.expected.clone()
+            } else {
+                String::new()
+            },
+            imported: assertion.imported,
             _subscriptions: subscriptions,
             _ops: ops_subscription,
+        });
+    }
+
+    /// A6: the row's schema in a dialog's editor; Save keeps it. An
+    /// import's becomes the reader's own once changed.
+    fn edit_schema(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.iter().find(|row| row.id == id) else {
+            return;
+        };
+        let imported = row.imported;
+        let text = match row.schema.trim() {
+            "" => SCHEMA_EXAMPLE.to_string(),
+            _ => row.schema.clone(),
+        };
+        let editor = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("json")
+                .line_number(true)
+                .soft_wrap(false)
+                .tab_size(crate::views::json_tab())
+                .default_value(text.clone())
+        });
+        let this = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let save = {
+                let (editor, this, before) = (editor.clone(), this.clone(), text.clone());
+                move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
+                    let written = editor.read(cx).value().to_string();
+                    let _ = this.update(cx, |this, cx| {
+                        if let Some(row) = this.rows.iter_mut().find(|row| row.id == id) {
+                            if written != before {
+                                row.imported = false;
+                            }
+                            row.schema = written;
+                        }
+                        this.write(cx);
+                    });
+                    true
+                }
+            };
+            let muted = cx.theme().muted_foreground;
+            dialog
+                .title(t!("assertions.schema_title").to_string())
+                .w(px(640.))
+                .child(crate::views::dialog_body(
+                    v_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(t!("assertions.schema_hint").to_string()),
+                        )
+                        .when(imported, |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(t!("assertions.schema_imported").to_string()),
+                            )
+                        })
+                        .child(
+                            div()
+                                .h(px(360.))
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded_md()
+                                .child(Editor::new(&editor).h_full().bordered(false)),
+                        ),
+                ))
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))
+                        .child(ok_button("assertion-schema-save", t!("common.save").to_string(), save)),
+                )
+                // Enter is the editor's.
+                .on_ok(|_, _, _| false)
         });
     }
 
@@ -511,11 +618,14 @@ impl AssertionsEditor {
                     String::new()
                 },
                 op: row.op,
-                expected: if row.op.takes_value() {
+                expected: if row.subject == Subject::Schema {
+                    row.schema.clone()
+                } else if row.op.takes_value() {
                     row.expected.read(cx).value().to_string()
                 } else {
                     String::new()
                 },
+                imported: row.imported,
             })
             .collect()
     }
@@ -529,7 +639,11 @@ impl AssertionsEditor {
     /// How the row's assertion fared: nothing with no response, for a row
     /// turned off, or one whose value is not written yet.
     fn outcome(&self, index: usize, row: &Row, cx: &App) -> Option<Result<Checked, Problem>> {
-        if row.op.takes_value() && row.expected.read(cx).value().trim().is_empty() {
+        let expected = match row.subject {
+            Subject::Schema => row.schema.trim().is_empty(),
+            _ => row.op.takes_value() && row.expected.read(cx).value().trim().is_empty(),
+        };
+        if expected {
             return None;
         }
         let checks = self.api.read(cx).checks()?;
@@ -594,7 +708,38 @@ impl Render for AssertionsEditor {
                                 this.child(div().flex_1().min_w_0().child(Input::new(&row.target).small()))
                             })
                             .child(div().w(px(110.)).flex_none().child(Select::new(&row.ops).small()))
-                            .when(row.op.takes_value(), |this| {
+                            // A6: the schema opens in a dialog.
+                            .when(row.subject == Subject::Schema, |this| {
+                                let label = match row.schema.trim().is_empty() {
+                                    true => t!("assertions.schema_write"),
+                                    false => t!("assertions.schema_edit"),
+                                };
+                                this.child(
+                                    h_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .gap_1p5()
+                                        .items_center()
+                                        .child(
+                                            Button::new(("assertion-schema", id))
+                                                .outline()
+                                                .xsmall()
+                                                .label(label.to_string())
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    this.edit_schema(id, window, cx)
+                                                })),
+                                        )
+                                        .when(row.imported, |this| {
+                                            this.child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(muted)
+                                                    .child(t!("assertions.from_import").to_string()),
+                                            )
+                                        }),
+                                )
+                            })
+                            .when(row.subject != Subject::Schema && row.op.takes_value(), |this| {
                                 this.child(div().flex_1().min_w_0().child(Input::new(&row.expected).small()))
                             })
                             // Room for the inputs left by what a row has not.

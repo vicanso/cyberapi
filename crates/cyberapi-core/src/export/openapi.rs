@@ -252,6 +252,35 @@ fn responses(request: &crate::model::HttpRequest) -> Value {
     if out.is_empty() {
         out.insert("200".into(), json!({"description": "OK"}));
     }
+    // A6: a schema the answer is checked against says it better than one
+    // read off an example: the first 2xx answer's JSON has it.
+    let checked = request
+        .assertions
+        .iter()
+        .filter(|assertion| assertion.enabled && assertion.subject == crate::assertions::Subject::Schema)
+        .find_map(|assertion| serde_json::from_str::<Value>(&assertion.expected).ok());
+    if let Some(schema) = checked {
+        let status = out
+            .keys()
+            .find(|status| status.starts_with('2'))
+            .cloned()
+            .unwrap_or_else(|| "200".into());
+        let entry = out.entry(status).or_insert_with(|| json!({"description": "OK"}));
+        if let Some(entry) = entry.as_object_mut() {
+            let content = entry.entry("content").or_insert_with(|| json!({}));
+            if let Some(content) = content.as_object_mut() {
+                let media = content
+                    .keys()
+                    .find(|media| media.contains("json"))
+                    .cloned()
+                    .unwrap_or_else(|| "application/json".into());
+                let body = content.entry(media).or_insert_with(|| json!({}));
+                if let Some(body) = body.as_object_mut() {
+                    body.insert("schema".into(), schema);
+                }
+            }
+        }
+    }
     Value::Object(out)
 }
 
@@ -425,6 +454,10 @@ mod tests {
                         uri: "{{HOST}}/users/{{id}}".into(),
                         query: vec![kv("expand", "true"), kv("page", "2")],
                         headers: vec![kv("X-Trace", "t"), kv("Accept", "application/json")],
+                        // A6.
+                        assertions: vec![crate::assertions::Assertion::imported_schema(
+                            &json!({"type": "object", "required": ["id"]}),
+                        )],
                         ..Default::default()
                     },
                 ),
@@ -489,6 +522,11 @@ mod tests {
         );
         let get = &doc["paths"]["/users/{id}"]["get"];
         assert_eq!(get["summary"], "get user");
+        // A6: what the answer is checked against is its schema.
+        assert_eq!(
+            get["responses"]["200"]["content"]["application/json"]["schema"],
+            json!({"type": "object", "required": ["id"]})
+        );
         assert_eq!(get["tags"], json!(["users"]));
         let parameters = get["parameters"].as_array().expect("parameters");
         let named: Vec<(&str, &str)> = parameters

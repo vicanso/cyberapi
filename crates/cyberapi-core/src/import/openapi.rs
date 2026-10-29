@@ -14,6 +14,12 @@
 //! header or the query, its values left for the reader to fill in. An
 //! operation that asks for another, or for none (`security: []`), signs in
 //! so itself. OAuth and OpenID Connect have no counterpart here yet.
+//!
+//! A6: the schema of an operation's first 2xx JSON response is an enabled
+//! assertion that the answer conforms to it, marked as the import's: made
+//! to stand alone (its `$ref`s written in) and read as JSON Schema
+//! (OpenAPI 3.0's `nullable` and boolean exclusive bounds put its way).
+//! One too big to keep with every API is left out.
 
 use super::{ImportBundle, ImportItem, kv};
 use crate::auth::{Auth, KeyPlace};
@@ -23,6 +29,87 @@ use serde_json::{Map, Value, json};
 
 const METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "options", "head"];
 const MAX_DEPTH: usize = 8;
+/// A6: the most parts of a response's schema written out, `$ref`s in; one
+/// with more is no assertion.
+const SCHEMA_PARTS: usize = 4_000;
+
+/// A6: the schema of `op`'s first 2xx response with JSON in it: OpenAPI 3's
+/// `content`, or Swagger's own `schema`.
+fn response_schema<'a>(root: &'a Value, op: &'a Value) -> Option<&'a Value> {
+    let (_, response) = op
+        .get("responses")?
+        .as_object()?
+        .iter()
+        .find(|(status, _)| status.starts_with('2'))?;
+    let response = resolve(root, response);
+    if let Some(content) = response.get("content").and_then(Value::as_object) {
+        return content
+            .iter()
+            .find(|(kind, _)| kind.contains("json"))
+            .and_then(|(_, media)| media.get("schema"));
+    }
+    response.get("schema")
+}
+
+/// A6: `schema` standing alone as JSON Schema: its `$ref`s written in, to
+/// [`MAX_DEPTH`] (past it, anything goes), and OpenAPI's ways put JSON
+/// Schema's. `None` past [`SCHEMA_PARTS`].
+fn standalone(root: &Value, schema: &Value, depth: usize, parts: &mut usize) -> Option<Value> {
+    *parts += 1;
+    if *parts > SCHEMA_PARTS {
+        return None;
+    }
+    let Value::Object(fields) = schema else {
+        return Some(schema.clone());
+    };
+    if fields.contains_key("$ref") {
+        if depth >= MAX_DEPTH {
+            return Some(json!({}));
+        }
+        let target = resolve(root, schema);
+        // A `$ref` this document does not hold: anything goes.
+        if std::ptr::eq(target, schema) {
+            return Some(json!({}));
+        }
+        return standalone(root, target, depth + 1, parts);
+    }
+    let mut out = Map::new();
+    for (key, value) in fields {
+        let value = match key.as_str() {
+            // What is data, not a schema.
+            "example" | "examples" | "enum" | "default" | "const" => value.clone(),
+            _ => match value {
+                Value::Object(_) => standalone(root, value, depth, parts)?,
+                Value::Array(items) => Value::Array(
+                    items
+                        .iter()
+                        .map(|item| standalone(root, item, depth, parts))
+                        .collect::<Option<Vec<_>>>()?,
+                ),
+                other => other.clone(),
+            },
+        };
+        out.insert(key.clone(), value);
+    }
+    // OpenAPI 3.0 and Swagger: a null allowed besides the type.
+    let nullable = [out.remove("nullable"), out.remove("x-nullable")]
+        .into_iter()
+        .flatten()
+        .any(|flag| flag == Value::Bool(true));
+    if nullable && let Some(Value::String(kind)) = out.get("type").cloned() {
+        out.insert("type".into(), json!([kind, "null"]));
+    }
+    // OpenAPI 3.0: an exclusive bound is a flag on the bound.
+    for (flag, bound) in [("exclusiveMinimum", "minimum"), ("exclusiveMaximum", "maximum")] {
+        if let Some(Value::Bool(exclusive)) = out.get(flag).cloned() {
+            out.remove(flag);
+            if exclusive && let Some(value) = out.remove(bound) {
+                out.insert(flag.into(), value);
+            }
+        }
+    }
+    Some(Value::Object(out))
+}
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or_default()
@@ -317,6 +404,10 @@ fn operation(
             request.body = serde_json::to_string(&fields).unwrap_or_default();
         }
     }
+    // A6: what its answer is to look like.
+    if let Some(schema) = response_schema(json, op).and_then(|schema| standalone(json, schema, 0, &mut 0)) {
+        request.assertions = vec![crate::assertions::Assertion::imported_schema(&schema)];
+    }
     // B4: an operation's own security, where it is not the document's.
     if let Some(own) = op.get("security").and_then(|requirements| security(json, requirements))
         && json
@@ -480,6 +571,59 @@ mod tests {
         .expect("JSON");
         let request = first_api(&parse(&json).items).clone();
         assert!(request.body.contains("next"));
+    }
+
+    /// A6: the first 2xx JSON response's schema, standing alone, checks
+    /// the answer; OpenAPI 3.0's ways read as JSON Schema's.
+    #[test]
+    fn a_responses_schema_becomes_an_assertion() {
+        use crate::assertions::{Subject, check};
+        let json: Value = serde_json::from_str(
+            r##"{"openapi": "3.0.1", "paths": {
+                    "/orders/{id}": {"get": {"summary": "order", "responses": {
+                        "404": {"description": "none"},
+                        "200": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Order"}}}}}}},
+                    "/ping": {"get": {"summary": "ping", "responses": {"204": {"description": "nothing"}}}}},
+                "components": {"schemas": {
+                    "Order": {"type": "object", "required": ["id"], "properties": {
+                        "id": {"type": "integer", "minimum": 0, "exclusiveMinimum": true},
+                        "note": {"type": "string", "nullable": true},
+                        "next": {"$ref": "#/components/schemas/Order"}}}}}}"##,
+        )
+        .expect("JSON");
+        let bundle = parse(&json);
+        let order = first_api(&bundle.items);
+        let [assertion] = &order.assertions[..] else {
+            panic!("one assertion: {:?}", order.assertions);
+        };
+        assert!(assertion.imported && assertion.enabled && assertion.subject == Subject::Schema);
+        assert!(!assertion.expected.contains("$ref"), "{}", assertion.expected);
+        let answer = |body: &str| crate::response::HttpResponse {
+            status: Some(200),
+            body: body.as_bytes().to_vec(),
+            ..Default::default()
+        };
+        let holds = |body: &str| {
+            let response = answer(body);
+            check(assertion, &response, response.body_json().as_ref())
+                .expect("checked")
+                .passed
+        };
+        assert!(holds(r#"{"id": 1, "note": null, "next": {"id": 2}}"#));
+        assert!(!holds(r#"{"id": 0}"#), "the bound is exclusive");
+        assert!(!holds(r#"{"note": "x"}"#), "id is required");
+        let ImportItem::Api { request: ping, .. } = &bundle.items[1] else {
+            panic!("an API");
+        };
+        assert!(ping.assertions.is_empty(), "no JSON answered");
+
+        // Swagger's own `schema`.
+        let swagger: Value = serde_json::from_str(
+            r##"{"swagger": "2.0", "paths": {"/n": {"get": {"responses": {"200": {"schema": {"type": "array", "items": {"type": "string"}}}}}}}}"##,
+        )
+        .expect("JSON");
+        let listed = first_api(&parse(&swagger).items).clone();
+        assert_eq!(listed.assertions.len(), 1);
     }
 
     /// B4: the document's security is the project's auth, values empty; an

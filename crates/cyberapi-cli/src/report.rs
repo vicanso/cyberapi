@@ -91,6 +91,7 @@ fn subject(assertion: &Assertion) -> String {
         Subject::Body => "body".into(),
         Subject::Latency => "time (ms)".into(),
         Subject::Size => "size (bytes)".into(),
+        Subject::Schema => "the body".into(),
     }
 }
 
@@ -106,6 +107,7 @@ fn op(op: Op) -> &'static str {
         Op::Less => "is less than",
         Op::Greater => "is more than",
         Op::IsType => "is of type",
+        Op::Conforms => "conforms to its schema",
     }
 }
 
@@ -118,6 +120,7 @@ fn problem(problem: &Problem) -> String {
         Problem::NotANumber => "that is no number".into(),
         Problem::UnknownType => format!("the type is one of {}", TYPES.join(", ")),
         Problem::NoTarget => "it names no header or path".into(),
+        Problem::Schema(why) => format!("the schema does not read: {why}"),
     }
 }
 
@@ -134,7 +137,8 @@ pub fn details(result: &StepResult, assertions: &[Assertion]) -> Vec<String> {
         let Some(assertion) = assertions.get(*index) else {
             continue;
         };
-        let asked = match assertion.op.takes_value() {
+        // A6: a schema is too long to repeat.
+        let asked = match assertion.op.takes_value() && assertion.subject != Subject::Schema {
             true => format!(
                 "{} {} {}",
                 subject(assertion),

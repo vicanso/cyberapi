@@ -5,6 +5,7 @@
 
 use super::ImportItem;
 use crate::ItemId;
+use crate::assertions::{Assertion, Subject};
 use crate::model::{HttpMethod, HttpRequest};
 use crate::tree::TreeData;
 use std::collections::HashMap;
@@ -68,7 +69,29 @@ fn key(request: &HttpRequest) -> Option<(HttpMethod, String)> {
 
 /// `existing` updated from `imported`: its method, address, query,
 /// headers and body; how it signs in, its assertions and its settings stay.
+/// A6: but for the assertions an import wrote, which are the import's
+/// again — unless the reader checks the body against a schema of their
+/// own, which stands for it.
 pub fn updated(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
+    let own_schema = existing
+        .assertions
+        .iter()
+        .any(|assertion| assertion.subject == Subject::Schema && !assertion.imported);
+    let mut assertions: Vec<Assertion> = existing
+        .assertions
+        .iter()
+        .filter(|assertion| !assertion.imported)
+        .cloned()
+        .collect();
+    if !own_schema {
+        assertions.extend(
+            imported
+                .assertions
+                .iter()
+                .filter(|assertion| assertion.imported)
+                .cloned(),
+        );
+    }
     HttpRequest {
         method: imported.method,
         uri: imported.uri.clone(),
@@ -76,6 +99,7 @@ pub fn updated(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
         body: imported.body.clone(),
         query: imported.query.clone(),
         headers: imported.headers.clone(),
+        assertions,
         ..existing.clone()
     }
 }
@@ -397,6 +421,38 @@ mod tests {
             "into the folder of the same name; a folder whose APIs are all known is not made"
         );
         assert_eq!(merge.added(), (2, 1));
+    }
+
+    /// A6: the import's assertions are the import's again; the reader's
+    /// stay, and a schema of their own stands for the import's.
+    #[test]
+    fn the_imports_assertions_are_updated() {
+        let schema = |kind: &str| Assertion::imported_schema(&serde_json::json!({ "type": kind }));
+        let own = Assertion {
+            expected: "200".into(),
+            ..Default::default()
+        };
+        let existing = HttpRequest {
+            assertions: vec![own.clone(), schema("array")],
+            ..Default::default()
+        };
+        let incoming = HttpRequest {
+            assertions: vec![schema("object")],
+            ..Default::default()
+        };
+        assert_eq!(
+            updated(&existing, &incoming).assertions,
+            [own.clone(), schema("object")]
+        );
+        let edited = Assertion {
+            imported: false,
+            ..schema("string")
+        };
+        let theirs = HttpRequest {
+            assertions: vec![edited.clone()],
+            ..Default::default()
+        };
+        assert_eq!(updated(&theirs, &incoming).assertions, [edited]);
     }
 
     #[test]

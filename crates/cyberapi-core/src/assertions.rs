@@ -4,6 +4,11 @@
 //! was. The API keeps them in its request; the panel checks whichever
 //! response it shows against the ones the API has now.
 //!
+//! A6: whether the body's JSON conforms to a JSON Schema the assertion
+//! holds as its text: draft 2020-12, or the draft its `$schema` names; its
+//! `$ref`s within itself only — nothing is fetched. One an OpenAPI import
+//! wrote is marked so, and is the one a sync from the source updates.
+//!
 //! A2: what is taken from an answer the same way — an [`Extraction`] —
 //! under a name the requests after it in a run (A3) read as
 //! `{{value(name)}}` (or as a URI's `{{name}}` prefix). Only a run uses
@@ -24,8 +29,12 @@ pub struct Assertion {
     pub op: Op,
     /// What the answer is compared with, as written: a number for the
     /// comparisons of size, a pattern for `Matches`, a type's name for
-    /// `IsType`. `Exists` and `NotExists` have none.
+    /// `IsType`. `Exists` and `NotExists` have none. A6: a schema's text.
     pub expected: String,
+    /// A6: written by an import, from the API's definition: a sync from
+    /// the source replaces it, and leaves the reader's own.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub imported: bool,
 }
 
 impl Default for Assertion {
@@ -36,6 +45,21 @@ impl Default for Assertion {
             target: String::new(),
             op: Op::default(),
             expected: String::new(),
+            imported: false,
+        }
+    }
+}
+
+impl Assertion {
+    /// A6: an enabled check that the body conforms to `schema`, written by
+    /// an import.
+    pub fn imported_schema(schema: &Value) -> Self {
+        Self {
+            subject: Subject::Schema,
+            op: Op::Conforms,
+            expected: crate::format::json(schema),
+            imported: true,
+            ..Default::default()
         }
     }
 }
@@ -57,10 +81,23 @@ pub enum Subject {
     Latency,
     /// Its size on the wire, in bytes.
     Size,
+    /// A6: the body's JSON, against a JSON Schema.
+    Schema,
 }
 
 impl Subject {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
+        Self::Status,
+        Self::Header,
+        Self::Json,
+        Self::Body,
+        Self::Latency,
+        Self::Size,
+        Self::Schema,
+    ];
+
+    /// What a run can take a value from (A2): not a schema.
+    pub const EXTRACTED: [Self; 6] = [
         Self::Status,
         Self::Header,
         Self::Json,
@@ -92,6 +129,7 @@ impl Subject {
                 Greater,
                 IsType,
             ],
+            Self::Schema => &[Conforms],
         }
     }
 }
@@ -114,6 +152,8 @@ pub enum Op {
     /// A JSON value's type: `string`, `number`, `boolean`, `null`,
     /// `array`, `object`.
     IsType,
+    /// A6: it conforms to the schema given.
+    Conforms,
 }
 
 impl Op {
@@ -122,6 +162,9 @@ impl Op {
         !matches!(self, Self::Exists | Self::NotExists)
     }
 }
+
+/// A6: how many places a body does not conform at are said.
+pub const SCHEMA_ERRORS: usize = 3;
 
 /// The JSON types `IsType` knows, as written.
 pub const TYPES: [&str; 6] = ["string", "number", "boolean", "null", "array", "object"];
@@ -151,6 +194,8 @@ pub enum Problem {
     UnknownType,
     /// A header or a path with no name.
     NoTarget,
+    /// A6: the schema does not read, or refers outside itself: why.
+    Schema(String),
 }
 
 impl Problem {
@@ -165,6 +210,7 @@ impl Problem {
             Self::NotANumber => "that is no number".into(),
             Self::UnknownType => format!("the type is one of {}", TYPES.join(", ")),
             Self::NoTarget => "it names no header or path".into(),
+            Self::Schema(why) => format!("the schema does not read: {why}"),
         }
     }
 }
@@ -223,10 +269,38 @@ fn number_text(number: f64) -> String {
 /// Checks `assertion` against `response`, whose body read as JSON is `json`
 /// (`None` when it is no JSON): read once for every check of it.
 pub fn check(assertion: &Assertion, response: &HttpResponse, json: Option<&Value>) -> Result<Checked, Problem> {
+    if assertion.subject == Subject::Schema {
+        return conforms(&assertion.expected, response, json);
+    }
     let found = found(assertion.subject, &assertion.target, response, json)?;
     let actual = found.as_ref().map(Found::shown);
     let passed = compare(assertion.op, found.as_ref(), assertion.expected.trim())?;
     Ok(Checked { passed, actual })
+}
+
+/// A6: whether the body's JSON conforms to `schema` (its text); what does
+/// not is said by the first [`SCHEMA_ERRORS`] places, each a JSON pointer
+/// and why.
+fn conforms(schema: &str, response: &HttpResponse, json: Option<&Value>) -> Result<Checked, Problem> {
+    if response.status.is_none() {
+        return Err(Problem::NoResponse);
+    }
+    let schema: Value = serde_json::from_str(schema).map_err(|error| Problem::Schema(error.to_string()))?;
+    let validator = jsonschema::validator_for(&schema).map_err(|error| Problem::Schema(error.to_string()))?;
+    let doc = json.ok_or(Problem::NotJson)?;
+    let places: Vec<String> = validator
+        .iter_errors(doc)
+        .take(SCHEMA_ERRORS)
+        .map(|error| {
+            let at = error.instance_path().to_string();
+            let at = if at.is_empty() { "/".to_string() } else { at };
+            format!("{at}: {error}")
+        })
+        .collect();
+    Ok(Checked {
+        passed: places.is_empty(),
+        actual: (!places.is_empty()).then(|| places.join("; ")),
+    })
 }
 
 /// What `subject` (named by `target`) is in `response`: `None` for nothing.
@@ -260,6 +334,8 @@ fn found<'a>(
                 .collect();
             (!values.is_empty()).then(|| Found::Text(values.join(", ").into()))
         }
+        // Checked whole by `conforms`; nothing to take.
+        Subject::Schema => None,
         Subject::Json => {
             let doc = json.ok_or(Problem::NotJson)?;
             let matches = crate::json_filter::filter(doc, target).map_err(Problem::Path)?;
@@ -354,6 +430,8 @@ fn compare(op: Op, found: Option<&Found>, expected: &str) -> Result<bool, Proble
             }
             json_type(found) == expected
         }
+        // Only a schema conforms, and `conforms` checks it.
+        Op::Conforms => false,
     })
 }
 
@@ -418,7 +496,7 @@ pub type Outcomes = Vec<(usize, Result<Checked, Problem>)>;
 pub fn reads_json(assertions: &[Assertion]) -> bool {
     assertions
         .iter()
-        .any(|assertion| assertion.enabled && assertion.subject == Subject::Json)
+        .any(|assertion| assertion.enabled && matches!(assertion.subject, Subject::Json | Subject::Schema))
 }
 
 /// Every enabled assertion's outcome, `json` as for [`check`].
@@ -482,7 +560,11 @@ impl Reported {
             subject: assertion.subject,
             target: assertion.target.clone(),
             op: assertion.op,
-            expected: assertion.expected.clone(),
+            // A6: a schema is too long to repeat in every answer.
+            expected: match assertion.subject {
+                Subject::Schema => String::new(),
+                _ => assertion.expected.clone(),
+            },
             passed,
             actual,
             error,
@@ -533,6 +615,55 @@ mod tests {
 
     fn passes(subject: Subject, target: &str, op: Op, expected: &str) -> bool {
         holds(subject, target, op, expected).expect("checked").passed
+    }
+
+    /// A6: the body against a schema; where it does not conform, the first
+    /// places; a schema that does not read, or reaches outside itself, is
+    /// said to.
+    #[test]
+    fn a_body_conforms_to_a_schema_or_says_where_not() {
+        let schema = |text: &str| holds(Subject::Schema, "", Op::Conforms, text);
+        let conforms = schema(
+            r##"{"type": "object", "required": ["id", "name"], "properties": {"id": {"type": "integer"},
+                "items": {"type": "array", "items": {"$ref": "#/$defs/item"}}},
+                "$defs": {"item": {"type": "object", "properties": {"n": {"type": "integer"}}}}}"##,
+        )
+        .expect("checked");
+        assert_eq!(
+            conforms,
+            Checked {
+                passed: true,
+                actual: None
+            }
+        );
+        let not = schema(
+            r#"{"type": "object", "properties": {"id": {"type": "string"}, "name": {"maxLength": 2},
+                "tags": {"items": {"type": "integer"}}}}"#,
+        )
+        .expect("checked");
+        assert!(!not.passed);
+        let said = not.actual.expect("where");
+        assert_eq!(said.matches("; ").count(), SCHEMA_ERRORS - 1, "{said}");
+        assert!(said.contains("/id: "), "{said}");
+        // Draft 7, as its `$schema` says.
+        assert!(
+            schema(r#"{"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}"#)
+                .expect("checked")
+                .passed
+        );
+        assert!(matches!(schema("{not json"), Err(Problem::Schema(_))));
+        assert!(matches!(
+            schema(r#"{"$ref": "https://example.com/schema.json"}"#),
+            Err(Problem::Schema(_))
+        ));
+        let text = HttpResponse {
+            status: Some(200),
+            body: b"plain".to_vec(),
+            ..Default::default()
+        };
+        let assertion = Assertion::imported_schema(&serde_json::json!({"type": "object"}));
+        assert_eq!(check(&assertion, &text, None), Err(Problem::NotJson));
+        assert!(assertion.imported && assertion.enabled);
     }
 
     #[test]
@@ -738,10 +869,12 @@ mod tests {
 
     #[test]
     fn every_subject_offers_only_what_means_something() {
-        for subject in Subject::ALL {
+        for subject in Subject::EXTRACTED {
             assert!(!subject.ops().is_empty());
             assert_eq!(subject.ops()[0], Op::Equals, "equals first");
         }
+        // A6: a schema only conforms.
+        assert_eq!(Subject::Schema.ops(), [Op::Conforms]);
         assert!(!Subject::Status.ops().contains(&Op::Exists));
         assert!(Subject::Json.ops().contains(&Op::IsType));
         // Kept as written; an older row without `enabled` is on.

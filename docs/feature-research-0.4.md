@@ -138,6 +138,12 @@
   - 运行器、命令行（在 CI 里做契约测试）、MCP `send_api` 的断言结果自动包含它。
   - 校验库要能编译到 wasm：先试 `jsonschema` 关掉默认 feature（远程 `$ref`）能否编译到 wasm32，不能就用 `boon`。
 - **落点：** core 的 `assertions`（新的 `Subject`）和 `import/openapi.rs`、`export`；界面是断言编辑器。
+- **实现时的补充（已完成）：**
+  - 校验库用 `jsonschema` 0.60，关掉默认 feature（没有远程 `$ref`、不读文件），能编译到 wasm32，依赖里没有 `inventory` 之类要跑构造函数的东西。
+  - 新增 `Subject::Schema` 和 `Op::Conforms`，Schema 文本存在 `expected`，`Assertion.imported` 标出来自导入的。“提取”（A2）不能选 Schema（`Subject::EXTRACTED`）。
+  - 导入时把 Schema 写成独立的一份（`$ref` 展开，深度同示例生成的上限，超过 4000 个节点就不生成这条断言），OpenAPI 3.0 的 `nullable`、布尔的 `exclusiveMinimum/Maximum` 换成 JSON Schema 的写法。导出时原样写回，不把 `type: [T, "null"]` 换回 3.0 的 `nullable`。
+  - 合并（再次导入“更新已有的”、从来源同步）：去掉旧的来自导入的断言、加上新的；读者有自己的 Schema 断言（包括改过的导入那条）时不再加导入的。读者删掉导入的那条后，下次同步会再加回来——**待维护者确认**是否要记住“读者不要这条”。
+  - MCP 的回答里 Schema 断言不重复 Schema 文本；命令行写成“the body conforms to its schema”。
 
 ## 4. 可做可不做
 
