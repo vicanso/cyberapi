@@ -4706,6 +4706,42 @@ mod tests {
         );
     }
 
+    /// A7: a load test sends the API so many times and counts them; none
+    /// is kept in its history.
+    #[gpui_kit::test]
+    async fn a_load_test_counts_what_it_sent(cx: &mut TestAppContext) {
+        use cyberapi_core::load::{Limit, Plan};
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_api(None, "a".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| api.set_uri("http://a.test/1".into(), cx));
+        cx.executor().advance_clock(SAVE_DELAY);
+        cx.run_until_parked();
+        let a = find(&state, "a", cx);
+        let load = cx.new(|cx| super::super::LoadState::new(state.clone(), a.clone(), cx));
+        let plan = Plan {
+            senders: 3,
+            limit: Limit::Count(7),
+        };
+        load.update(cx, |load, cx| load.start(plan, HashMap::new(), cx));
+        assert!(load.read_with(cx, |load, _| load.running()));
+        for _ in 0..10 {
+            cx.executor().advance_clock(Duration::from_millis(400));
+            cx.run_until_parked();
+        }
+        load.read_with(cx, |load, _| {
+            assert!(!load.running(), "over");
+            assert_eq!(load.failure(), None);
+            assert_eq!((load.summary().sent, load.summary().failed), (7, 0));
+            assert_eq!(load.plan(), Some(plan));
+        });
+        let kept = storage.history().list(collection.id.clone(), a).await.expect("list");
+        assert!(kept.is_empty(), "nothing kept");
+    }
+
     /// D4: the project's newest responses, any API's; one picked opens its
     /// API and is shown there, its request put back.
     #[gpui_kit::test]

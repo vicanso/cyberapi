@@ -202,3 +202,4 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | A6 | 响应结构校验：断言多一种对象 Schema（JSON Schema，draft 2020-12，不取远程 `$ref`）；OpenAPI 导入时第一个 2xx 的 JSON schema 成为一条“来自导入”的断言（B7 同步时更新它），导出 OpenAPI 时用它作响应 schema；校验库要能编译到 wasm（`jsonschema` 关掉默认 feature）；数据模型编号 18 | 已完成 |
 | D7 | 补全模板函数（第 4 节的可选项）：`base64Decode`（`b64d`）、`urlDecode`、`sha1`、`sha512`、`hmacSha1`、`hmacSha512`，`now` 可带偏移（`now(%Y-%m-%d, -1d)`，单位 s / m / h / d / w）；不改数据模型 | 已完成 |
 | B8 | 导入 `.http` 文件（第 4 节的可选项）：REST Client / JetBrains HTTP Client 的 `###` 请求、`@变量`、多行 Query、表单和 multipart、GraphQL、WEBSOCKET、`HTTP/2`、`# @name` / `@no-redirect` / `@prompt`，系统变量换成模板函数；`http-client.env.json` 和 REST Client 的环境设置成为命名环境（`import/http_file.rs`）；命令行也能直接运行 `.http` 文件 | 已完成 |
+| A7 | 压测（第 4 节的可选项，只有桌面版）：树里接口的右键菜单“压测…”，并发 1–50，按次数（≤ 10 万）或时长（≤ 600 秒），显示吞吐、错误率、平均 / 最快 / 最慢、P50 / P90 / P95 / P99 和各状态码、错误的数量，不写历史；规则在 `cyberapi_core::load`，服务 `cyberapi_service::load`；生产环境先确认 | 已完成 |

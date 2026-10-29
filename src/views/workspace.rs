@@ -8,6 +8,7 @@ mod compare_dialog;
 mod docs_editor;
 mod event_stream;
 mod import_dialog;
+mod load_dialog;
 mod mock_dialog;
 mod move_dialog;
 mod palette;

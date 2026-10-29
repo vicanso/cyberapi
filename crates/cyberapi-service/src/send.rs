@@ -940,6 +940,60 @@ mod tests {
         })
     }
 
+    /// A7: every send of a load test told, none kept; one that ends by its
+    /// count sends that many. A WebSocket is not load tested.
+    #[test]
+    fn a_load_test_sends_so_many_and_keeps_none() {
+        use cyberapi_core::load::{Limit, Plan};
+        let setup = setup(ok(200, "ok"));
+        variable(&setup, VariableCategory::Environment, "HOST", "https://api.test");
+        let api = new_api(&setup, "ping");
+        let samples = Arc::new(Mutex::new(Vec::new()));
+        let told = samples.clone();
+        let plan = Plan {
+            senders: 4,
+            limit: Limit::Count(10),
+        };
+        pollster::block_on(crate::load::load(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            HttpRequest {
+                uri: "{{HOST}}/ping".into(),
+                ..Default::default()
+            },
+            Answers::default(),
+            plan,
+            Arc::new(move |sample| told.lock().expect("samples").push(sample)),
+        ))
+        .expect("sent");
+        let samples = samples.lock().expect("samples");
+        assert_eq!(samples.len(), 10);
+        assert!(
+            samples
+                .iter()
+                .all(|sample| sample.status == Some(200) && sample.size == 2 && !sample.failed())
+        );
+        let sent = setup.engine.sent.lock().expect("sent");
+        assert_eq!(sent.len(), 10);
+        assert!(sent.iter().all(|request| request.url == "https://api.test/ping"));
+        let kept = pollster::block_on(setup.storage.history().list(setup.collection.clone(), api)).expect("list");
+        assert!(kept.is_empty(), "nothing kept");
+
+        let socket = pollster::block_on(crate::load::load(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            HttpRequest {
+                method: HttpMethod::WebSocket,
+                uri: "wss://api.test".into(),
+                ..Default::default()
+            },
+            Answers::default(),
+            plan,
+            Arc::new(|_| {}),
+        ));
+        assert!(socket.is_err());
+    }
+
     /// The schema is asked of the API's endpoint as the API is sent — its
     /// environment, its headers — and kept nowhere.
     #[test]

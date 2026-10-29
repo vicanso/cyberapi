@@ -163,6 +163,17 @@ pub fn opens_oauth_browser() -> bool {
     false
 }
 
+/// A7: whether this build load tests an API: a page's sends go through
+/// the bridge, which lets an account have only so many at once.
+#[cfg(not(target_family = "wasm"))]
+pub fn load_tests() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn load_tests() -> bool {
+    false
+}
+
 /// G2: whether this build serves mocks.
 #[cfg(not(target_family = "wasm"))]
 pub fn serves_mocks() -> bool {

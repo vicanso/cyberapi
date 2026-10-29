@@ -1209,6 +1209,25 @@ fn item_menu(
                     }),
             )
         }
+        // A7: on the desktop, sent over and over; a viewer may send it too.
+        ItemKind::Api if this_build::load_tests() => {
+            let (load_state, load_id, load_name) = (state.clone(), id.clone(), name.to_string());
+            menu.item(
+                PopupMenuItem::new(t!("load.menu").to_string())
+                    .icon(Icons::Gauge)
+                    .on_click(move |_, window, cx| {
+                        if let Some(workspace) = load_state.upgrade() {
+                            super::load_dialog::open_load_dialog(
+                                workspace,
+                                load_id.clone(),
+                                load_name.clone(),
+                                window,
+                                cx,
+                            );
+                        }
+                    }),
+            )
+        }
         ItemKind::Api => menu,
     };
     // F5: into another project; a viewer copies what they read.

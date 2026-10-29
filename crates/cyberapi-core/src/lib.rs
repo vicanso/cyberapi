@@ -28,6 +28,7 @@ pub mod import;
 pub mod inherit;
 pub mod json_filter;
 pub mod json_view;
+pub mod load;
 pub mod local_only;
 pub mod mcp;
 pub mod media;
