@@ -87,6 +87,8 @@ struct Naming {
 
 struct VariablesEditor {
     state: Entity<VariablesState>,
+    /// D6: whose settings say which environments are production.
+    workspace: Entity<WorkspaceState>,
     /// A viewer reads them only (§9.2).
     editable: bool,
     rows: HashMap<VariableId, Row>,
@@ -116,6 +118,7 @@ impl VariablesEditor {
         ];
         Self {
             state,
+            workspace,
             editable,
             rows: HashMap::new(),
             naming: None,
@@ -192,9 +195,13 @@ impl VariablesEditor {
             None,
         )];
         for (index, environment) in state.environments().iter().enumerate() {
+            let mut name = environment.name.clone();
+            if self.workspace.read(cx).protects(&environment.id) {
+                name += &t!("environments.production_mark");
+            }
             buttons.push(button(
                 ("variables-layer", index).into(),
-                environment.name.clone(),
+                name,
                 Some(environment.id.clone()),
             ));
         }
@@ -282,10 +289,26 @@ impl VariablesEditor {
             )
         } else if let (Some(environment), true) = (&shown, editable) {
             let (rename, delete) = (environment.id.clone(), environment.id.clone());
+            let (production, marked) = (
+                environment.id.clone(),
+                self.workspace.read(cx).protects(&environment.id),
+            );
             Some(
                 h_flex()
                     .gap_1()
                     .items_center()
+                    // D6.
+                    .child(
+                        Checkbox::new("environment-production")
+                            .checked(marked)
+                            .label(t!("environments.production").to_string())
+                            .mr_2()
+                            .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                let (id, on) = (production.clone(), *checked);
+                                this.workspace
+                                    .update(cx, |workspace, cx| workspace.set_production(id, on, cx));
+                            })),
+                    )
                     .child(
                         Button::new("environment-rename")
                             .ghost()

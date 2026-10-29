@@ -82,10 +82,21 @@ impl GraphQlBody {
         Ok(Value::Object(fields))
     }
 
-    /// Whether the operation it runs is a subscription: the one named
-    /// `operation_name`, or the document's first. A scan of the top level
-    /// of the query, its comments and strings skipped.
+    /// Whether the operation it runs is a subscription.
     pub fn is_subscription(&self) -> bool {
+        self.operation() == Some("subscription")
+    }
+
+    /// D6: whether the operation it runs is a mutation.
+    pub fn is_mutation(&self) -> bool {
+        self.operation() == Some("mutation")
+    }
+
+    /// What the operation it runs is — `query`, `mutation` or
+    /// `subscription` — the one named `operation_name`, or the document's
+    /// first; `None` when there is none. A scan of the top level of the
+    /// query, its comments and strings skipped.
+    pub fn operation(&self) -> Option<&'static str> {
         let wanted = self.operation_name.trim();
         let mut depth = 0usize;
         let mut chars = self.query.chars().peekable();
@@ -116,7 +127,9 @@ impl GraphQlBody {
                             _ => ("", ""),
                         };
                         if !keyword.is_empty() && (wanted.is_empty() || name == wanted) {
-                            return keyword == "subscription";
+                            return ["query", "mutation", "subscription"]
+                                .into_iter()
+                                .find(|known| *known == keyword);
                         }
                     }
                     words.clear();
@@ -135,7 +148,7 @@ impl GraphQlBody {
                 _ => {}
             }
         }
-        false
+        None
     }
 
     /// A GET's query parameters: `query`, and `variables` (compact JSON) and
@@ -321,6 +334,11 @@ mod tests {
         assert!(!body(both, "").is_subscription(), "the first runs");
         assert!(body(both, "S").is_subscription());
         assert!(!body("fragment F on T { a } query { ...F }", "").is_subscription());
+        // D6.
+        assert!(body("mutation Out { logout }", "").is_mutation());
+        assert!(!body(both, "S").is_mutation());
+        assert_eq!(body("{ me }", "").operation(), Some("query"));
+        assert_eq!(body("fragment F on T { a }", "").operation(), None);
     }
 
     #[test]

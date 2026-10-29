@@ -8,6 +8,7 @@
 use super::response_panel::HistoryRow;
 use crate::states::{RunState, WorkspaceState};
 use crate::this_build;
+use crate::views::inline_confirm::inline_confirm;
 use cyberapi_core::ItemId;
 use cyberapi_core::assertions::tally;
 use cyberapi_core::response::format_duration;
@@ -65,6 +66,8 @@ struct RunView {
     prompts: Vec<(String, Entity<InputState>)>,
     /// Why the data did not read, or a picked file could not be.
     error: Option<String>,
+    /// D6: asking whether a run in production should start.
+    confirming: bool,
     _observe: Subscription,
 }
 
@@ -99,11 +102,34 @@ impl RunView {
             data,
             prompts,
             error: None,
+            confirming: false,
             _observe: observe,
         }
     }
 
+    /// D6: whether starting is asked about first: in production, some of
+    /// what runs may change something there.
+    fn asks_first(&self, cx: &App) -> bool {
+        let workspace = self.workspace.read(cx);
+        let apis = &workspace.tree_data().apis;
+        self.run.read(cx).planned().iter().any(|planned| {
+            apis.iter()
+                .find(|api| api.id == planned.api)
+                .is_some_and(|api| workspace.asks_before(&api.request, cx))
+        })
+    }
+
     fn start(&mut self, cx: &mut Context<Self>) {
+        if self.asks_first(cx) {
+            self.confirming = true;
+            cx.notify();
+            return;
+        }
+        self.start_unasked(cx);
+    }
+
+    fn start_unasked(&mut self, cx: &mut Context<Self>) {
+        self.confirming = false;
         let data = self.data.read(cx).value().to_string();
         let prompts = self
             .prompts
@@ -326,13 +352,41 @@ impl Render for RunView {
                         .children(prompts),
                 )
             })
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(action)
-                    .child(div().text_sm().text_color(muted).child(summary)),
-            )
+            .map(|this| {
+                if !self.confirming {
+                    return this.child(
+                        h_flex()
+                            .gap_3()
+                            .items_center()
+                            .child(action)
+                            .child(div().text_sm().text_color(muted).child(summary)),
+                    );
+                }
+                // D6: asked in the dialog — one over it is not drawn in a page.
+                let environment = self
+                    .workspace
+                    .read(cx)
+                    .current_environment()
+                    .map(|environment| environment.name.clone())
+                    .unwrap_or_default();
+                let (keep, go) = (cx.entity().downgrade(), cx.entity().downgrade());
+                this.child(inline_confirm(
+                    t!("production.title").to_string(),
+                    t!("production.run_ask", environment = environment).to_string(),
+                    None,
+                    t!("run.start").to_string(),
+                    move |_, cx| {
+                        let _ = keep.update(cx, |this, cx| {
+                            this.confirming = false;
+                            cx.notify();
+                        });
+                    },
+                    move |_, cx| {
+                        let _ = go.update(cx, |this, cx| this.start_unasked(cx));
+                    },
+                    cx,
+                ))
+            })
             .when(!rows.is_empty(), |this| {
                 this.child(
                     div()

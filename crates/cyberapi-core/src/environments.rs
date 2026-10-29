@@ -6,7 +6,22 @@
 //! alone, as before there were environments.
 
 use crate::EnvironmentId;
-use crate::model::{Environment, Variable, VariableCategory};
+use crate::graphql::GraphQlBody;
+use crate::model::{ContentType, Environment, HttpMethod, HttpRequest, Variable, VariableCategory};
+
+/// D6: whether sending `request` in an environment marked as production is
+/// asked about first: whatever may change something there — an HTTP method
+/// other than GET, HEAD or OPTIONS, a GraphQL mutation, a gRPC call, a
+/// WebSocket connection. A GraphQL query or subscription is not, whatever
+/// its method.
+pub fn asks_first(request: &HttpRequest) -> bool {
+    if request.content_type == ContentType::GraphQl
+        && !matches!(request.method, HttpMethod::Grpc | HttpMethod::WebSocket)
+    {
+        return GraphQlBody::read(&request.body).is_mutation();
+    }
+    !matches!(request.method, HttpMethod::Get | HttpMethod::Head | HttpMethod::Options)
+}
 
 /// The variables a send in `current` reads, as the old rules read a
 /// project's: the shared ones not stood in for, then the environment's. A
@@ -74,6 +89,40 @@ pub fn reordered(environments: &[Environment], order: &[EnvironmentId]) -> Vec<E
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn what_may_change_something_is_asked_about_first() {
+        let request = |method: HttpMethod| HttpRequest {
+            method,
+            ..Default::default()
+        };
+        for method in [HttpMethod::Get, HttpMethod::Head, HttpMethod::Options] {
+            assert!(!asks_first(&request(method)), "{method:?}");
+        }
+        for method in [
+            HttpMethod::Post,
+            HttpMethod::Put,
+            HttpMethod::Patch,
+            HttpMethod::Delete,
+            HttpMethod::Grpc,
+            HttpMethod::WebSocket,
+        ] {
+            assert!(asks_first(&request(method)), "{method:?}");
+        }
+        let graphql = |query: &str| HttpRequest {
+            method: HttpMethod::Post,
+            content_type: ContentType::GraphQl,
+            body: GraphQlBody {
+                query: query.into(),
+                ..Default::default()
+            }
+            .to_body(),
+            ..Default::default()
+        };
+        assert!(!asks_first(&graphql("{ me { id } }")), "a query, though POSTed");
+        assert!(!asks_first(&graphql("subscription { tick }")));
+        assert!(asks_first(&graphql("mutation { logout }")));
+    }
 
     fn variable(category: VariableCategory, name: &str, value: &str, environment: Option<&str>) -> Variable {
         Variable {

@@ -23,6 +23,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use cyberapi_core::EnvironmentId;
 use cyberapi_core::access::CollectionRole;
 use cyberapi_core::auth::{Auth, KeyPlace};
 use cyberapi_core::directory::McpToken;
@@ -32,12 +33,13 @@ use cyberapi_core::inherit::{AuthSource, Inherited, inherited};
 use cyberapi_core::mcp::{
     MAX_RESULT_BYTES, MAX_TEXT_CHARS, cut, find_api, listing, masked, masked_body, masked_params,
 };
-use cyberapi_core::model::{ApiSetting, Collection, ContentType, Environment, HttpMethod, KvParam, VariableCategory};
+use cyberapi_core::model::{
+    ApiSetting, Collection, ContentType, Environment, HttpMethod, KvParam, ProjectSettings, VariableCategory,
+};
 use cyberapi_core::oauth::Grant;
 use cyberapi_core::response::{BodyKind, HttpResponse};
 use cyberapi_core::template::{Answers, NoEnv, NoFiles};
 use cyberapi_core::version;
-use cyberapi_core::{EnvironmentId, VariableId};
 use cyberapi_service::Sender;
 use cyberapi_store::Storage;
 use cyberapi_store_sql::Account;
@@ -416,7 +418,7 @@ async fn project(storage: &Storage, arguments: &Json) -> Result<Collection, Stri
 async fn api(
     storage: &Storage,
     arguments: &Json,
-) -> Result<(Collection, ApiSetting, String, Inherited, Vec<VariableId>), String> {
+) -> Result<(Collection, ApiSetting, String, Inherited, ProjectSettings), String> {
     let collection = project(storage, arguments).await?;
     let data = storage.tree().load(collection.id.clone()).await.map_err(failed)?;
     let api = find_api(&data, argument(arguments, "api")?)?.clone();
@@ -426,7 +428,7 @@ async fn api(
         .map(|line| line.path)
         .unwrap_or_else(|| api.name.clone());
     let inherited = inherited(&data, &api.id);
-    Ok((collection, api, path, inherited, data.settings.secret_variables))
+    Ok((collection, api, path, inherited, data.settings))
 }
 
 /// H1: an API made where `arguments` say, with the request they give.
@@ -805,12 +807,25 @@ async fn get_history(storage: &Storage, arguments: &Json) -> Result<Json, String
 }
 
 async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let (collection, api, _, inherited, secret) = api(storage, arguments).await?;
+    let (collection, api, _, inherited, settings) = api(storage, arguments).await?;
     let environment = chosen_environment(storage, &collection, arguments).await?;
     if collection.role < CollectionRole::Editor {
         return Err(format!(
             "sending needs an editor's role in {:?}; this account views it",
             collection.name
+        ));
+    }
+    // D6: in production, what may change something waits for a person to
+    // say it goes; an assistant cannot.
+    if let Some(environment) = &environment
+        && settings.protects(Some(&environment.id))
+        && cyberapi_core::environments::asks_first(&api.request)
+    {
+        return Err(format!(
+            "{:?} is marked as production, and a {} request may change something there: send it from the app, \
+             or choose another environment",
+            environment.name,
+            api.request.method.as_str()
         ));
     }
     let Some(_sending) = bridge.inner.in_flight.start(&account.id) else {
@@ -848,7 +863,7 @@ async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, argumen
             .secret_values(collection.id.clone())
             .await
             .unwrap_or_default()
-            .of(&secret),
+            .of(&settings.secret_variables),
     };
     // H1: the results ride on this answer only. The history keeps the
     // response as any send does, without them.

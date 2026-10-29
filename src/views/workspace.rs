@@ -12,6 +12,7 @@ mod mock_dialog;
 mod move_dialog;
 mod palette;
 mod pins;
+mod production_confirm;
 mod project_title;
 mod prompt_dialog;
 mod recent_dialog;

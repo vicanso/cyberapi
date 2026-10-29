@@ -920,6 +920,16 @@ hint = "How the project's APIs and folders sign in when they inherit and no fold
 none = "No environment"
 switch_tooltip = "The environment you send in: its variables come before the shared ones. It is yours alone."
 manage = "Manage environments…"
+production = "Production: asked before a request that may change something is sent"
+production_mark = " · production"
+production_tooltip = "You are in production: a request that may change something — anything but GET, HEAD, OPTIONS and GraphQL queries — is asked about before it goes. Editors mark which environments are production, under Manage environments…, for the whole project."
+
+[production]
+title = "Send in production?"
+ask = "“%{environment}” is marked as production, and this request may change something there:"
+send = "Send anyway"
+stop_asking = "Don't ask again in this project until the app quits"
+run_ask = "“%{environment}” is marked as production, and some of what runs may change something there."
 
 [assertions]
 hint = "Checks of the answer, no script needed: each row is checked against the response shown, as you edit it."

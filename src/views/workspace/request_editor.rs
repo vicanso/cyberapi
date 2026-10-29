@@ -1163,7 +1163,8 @@ impl RequestEditor {
     }
 
     /// F5.1: sends — after asking for what its `prompt`s (D1) and its
-    /// `openFile` need — or cancels the request on its way.
+    /// `openFile` need, and in production whether it should (D6) — or
+    /// cancels the request on its way.
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush(cx);
         let api = self.api.read(cx);
@@ -1174,6 +1175,33 @@ impl RequestEditor {
                 .update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
             return;
         }
+        // D6: what starts — not a message on what is open — in production.
+        let workspace = self.workspace.read(cx);
+        if api.sending_since().is_none() && workspace.asks_before(api.request(), cx) {
+            let request = api.request();
+            let what = match (request.content_type, request.method) {
+                (ContentType::GraphQl, HttpMethod::Get | HttpMethod::Post) => format!("mutation {}", request.uri),
+                (_, method) => format!("{} {}", method.as_str(), request.uri),
+            };
+            let environment = workspace
+                .current_environment()
+                .map(|environment| environment.name.clone())
+                .unwrap_or_default();
+            let (editor, workspace) = (cx.entity().downgrade(), self.workspace.downgrade());
+            super::production_confirm::confirm_production(environment, what, window, cx, move |stop, window, cx| {
+                if stop {
+                    let _ = workspace.update(cx, |workspace, cx| workspace.stop_asking(cx));
+                }
+                let _ = editor.update(cx, |editor, cx| editor.send_unasked(window, cx));
+            });
+            return;
+        }
+        self.send_unasked(window, cx);
+    }
+
+    /// Sends, once whatever asks first (D6) has.
+    fn send_unasked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let api = self.api.read(cx);
         let workspace = self.workspace.read(cx);
         let inherited = workspace.inherited(api.api());
         let needs = send::needs(api.request(), &workspace.global_headers(), &inherited);

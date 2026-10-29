@@ -18,6 +18,7 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Sizable as _, StyledExt as _, h_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
@@ -56,18 +57,32 @@ impl ProjectTitle {
     fn environment_switch(&self, cx: &mut Context<Self>) -> AnyElement {
         let state = self.state.read(cx);
         let current = state.current_environment().map(|environment| environment.id.clone());
-        let named = state.named_environments().to_vec();
-        let label = state
+        // D6: production stands out, and says so in the menu.
+        let production = state.in_production();
+        let named: Vec<(cyberapi_core::model::Environment, bool)> = state
+            .named_environments()
+            .iter()
+            .map(|environment| (environment.clone(), state.protects(&environment.id)))
+            .collect();
+        let mut label = state
             .current_environment()
             .map(|environment| environment.name.clone())
             .unwrap_or_else(|| t!("environments.none").to_string());
+        if production {
+            label += &t!("environments.production_mark");
+        }
         let workspace = self.state.downgrade();
         Button::new("environment-switch")
-            .ghost()
+            .when(production, |button| button.danger())
+            .when(!production, |button| button.ghost())
             .xsmall()
             .icon(Icons::Globe)
             .label(label)
-            .tooltip(t!("environments.switch_tooltip").to_string())
+            .tooltip(if production {
+                t!("environments.production_tooltip").to_string()
+            } else {
+                t!("environments.switch_tooltip").to_string()
+            })
             .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
                 let pick = |id| {
                     let workspace = workspace.clone();
@@ -83,9 +98,13 @@ impl ProjectTitle {
                 let menu = if named.is_empty() {
                     menu
                 } else {
-                    named.iter().fold(menu.separator(), |menu, environment| {
+                    named.iter().fold(menu.separator(), |menu, (environment, production)| {
+                        let mut name = environment.name.clone();
+                        if *production {
+                            name += &t!("environments.production_mark");
+                        }
                         menu.item(
-                            PopupMenuItem::new(environment.name.clone())
+                            PopupMenuItem::new(name)
                                 .checked(current.as_ref() == Some(&environment.id))
                                 .on_click(pick(Some(environment.id.clone()))),
                         )

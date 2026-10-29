@@ -732,7 +732,7 @@ async fn tool(router: &Router, token: &str, name: &str, arguments: Value) -> (Va
 async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     use cyberapi_core::access::{CollectionRole, Grantee};
     use cyberapi_core::directory::NewMcpToken;
-    use cyberapi_core::model::{HttpRequest, KvParam, VariableCategory};
+    use cyberapi_core::model::{HttpRequest, KvParam, ProjectSettings, VariableCategory};
     use cyberapi_store::{NewCollection, NewVariable};
     use cyberapi_store_sql::NewAccount;
 
@@ -823,7 +823,7 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
             name: "user".into(),
             value: "stage-user".into(),
             enabled: true,
-            environment: Some(staging.id),
+            environment: Some(staging.id.clone()),
         })
         .await
         .expect("a variable in it");
@@ -1000,6 +1000,56 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
         failed && nowhere.as_str().is_some_and(|why| why.contains("staging")),
         "{nowhere}"
     );
+    // D6: in production, what may change something is refused; a GET goes.
+    let drop = storage
+        .tree()
+        .create_api(project.id.clone(), None, "drop".into())
+        .await
+        .expect("an API")
+        .item;
+    storage
+        .tree()
+        .save_request(
+            project.id.clone(),
+            drop.id.clone(),
+            HttpRequest {
+                method: HttpMethod::Delete,
+                uri: "{{HOST}}/ping".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("its request");
+    storage
+        .tree()
+        .set_project_settings(
+            project.id.clone(),
+            ProjectSettings {
+                protected_environments: vec![staging.id.clone()],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("staging is production");
+    let (refused, failed) = tool(
+        &router,
+        &sender.secret,
+        "send_api",
+        json!({"project": "shop", "api": "drop", "environment": "staging"}),
+    )
+    .await;
+    assert!(
+        failed && refused.as_str().is_some_and(|why| why.contains("production")),
+        "{refused}"
+    );
+    let (read, failed) = tool(
+        &router,
+        &sender.secret,
+        "send_api",
+        json!({"project": "shop", "api": "ping", "environment": "staging"}),
+    )
+    .await;
+    assert!(!failed, "a GET goes: {read}");
 
     // H1: making and changing, with a token allowed to; never with another.
     let (refused, failed) = tool(

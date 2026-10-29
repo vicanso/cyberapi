@@ -920,6 +920,16 @@ hint = "项目里选“继承”、且上层目录没有设置认证的接口和
 none = "不使用环境"
 switch_tooltip = "当前环境：发送时这个环境里的变量优先于共用的。只对你自己生效。"
 manage = "管理环境…"
+production = "生产环境：发送可能改动数据的请求前先确认"
+production_mark = " · 生产"
+production_tooltip = "当前是生产环境：发送可能改动数据的请求（GET、HEAD、OPTIONS 和 GraphQL 查询以外的）前会先确认。哪些环境是生产环境由编辑者在“管理环境…”里标记，整个项目共用。"
+
+[production]
+title = "在生产环境发送？"
+ask = "当前环境“%{environment}”标为生产环境，这个请求可能改动那里的数据："
+send = "仍然发送"
+stop_asking = "这个项目到退出应用前不再询问"
+run_ask = "当前环境“%{environment}”标为生产环境，要运行的请求里有可能改动那里数据的。"
 
 [assertions]
 hint = "不用写脚本就能检查响应：每一行都会对当前显示的响应检查，边改边看结果。"

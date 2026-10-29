@@ -349,6 +349,8 @@ mod tests {
                         url: "https://api.test/openapi.json".into(),
                         folder: Some("f".into()),
                     }),
+                    // D6: and which environments are production.
+                    protected_environments: vec!["e".into()],
                 },
             )],
         }

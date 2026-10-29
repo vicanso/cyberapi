@@ -92,11 +92,20 @@ pub struct ProjectSettings {
     /// B7: the address the project was imported from, to sync from again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<ImportSource>,
+    /// D6: the environments marked as production: sending what may change
+    /// something there is asked about first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub protected_environments: Vec<EnvironmentId>,
 }
 
 impl ProjectSettings {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// D6: whether `environment` is marked as production; none never is.
+    pub fn protects(&self, environment: Option<&EnvironmentId>) -> bool {
+        environment.is_some_and(|environment| self.protected_environments.contains(environment))
     }
 }
 

@@ -590,6 +590,8 @@ async fn settings_are_kept(storage: &Storage) {
             url: "https://api.test/openapi.json".into(),
             folder: Some(users.item.id.clone()),
         }),
+        // D6: and which environments are production.
+        protected_environments: vec![cyberapi_core::EnvironmentId::from("e1")],
     };
     tree.set_project_settings(collection.id.clone(), project.clone())
         .await

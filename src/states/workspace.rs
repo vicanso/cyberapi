@@ -991,6 +991,49 @@ impl WorkspaceState {
         self.named.iter().find(|environment| &environment.id == id)
     }
 
+    /// D6: whether the reader's environment is marked as production.
+    pub fn in_production(&self) -> bool {
+        self.data
+            .settings
+            .protects(self.current_environment().map(|environment| &environment.id))
+    }
+
+    /// D6: whether `environment` is marked as production.
+    pub fn protects(&self, environment: &EnvironmentId) -> bool {
+        self.data.settings.protects(Some(environment))
+    }
+
+    /// D6: `environment` marked as production, or not; an editor's, as the
+    /// rest of the project's settings are.
+    pub fn set_production(&mut self, environment: EnvironmentId, on: bool, cx: &mut Context<Self>) {
+        if self.protects(&environment) == on {
+            return;
+        }
+        let mut settings = self.data.settings.clone();
+        settings.protected_environments.retain(|kept| kept != &environment);
+        if on {
+            settings.protected_environments.push(environment);
+        }
+        self.set_project_settings(settings, cx);
+    }
+
+    /// D6: whether sending `request` now is asked about first: the reader's
+    /// environment is production, the request may change something there,
+    /// and the reader has not said to stop asking in this project.
+    pub fn asks_before(&self, request: &HttpRequest, cx: &gpui_kit::App) -> bool {
+        self.in_production()
+            && cyberapi_core::environments::asks_first(request)
+            && !cx
+                .try_global::<Unasked>()
+                .is_some_and(|unasked| unasked.0.contains(&self.collection.id))
+    }
+
+    /// D6: no more asking before sends in production in this project, until
+    /// the app quits.
+    pub fn stop_asking(&self, cx: &mut gpui_kit::App) {
+        cx.default_global::<Unasked>().0.insert(self.collection.id.clone());
+    }
+
     /// #61: the reader's environment, their own (kept with their state of
     /// the project, not the project's).
     pub fn set_environment(&mut self, environment: Option<EnvironmentId>, cx: &mut Context<Self>) {
@@ -2545,6 +2588,13 @@ impl WorkspaceState {
 
 /// Whose pins. Tests build a workspace with no application installed; that
 /// reader is the desktop's one reader.
+/// D6: the projects whose sends in production the reader said not to be
+/// asked about again, while the app runs.
+#[derive(Default)]
+struct Unasked(HashSet<cyberapi_core::CollectionId>);
+
+impl gpui_kit::Global for Unasked {}
+
 /// B7: the source an import keeps: the address it was fetched from, and
 /// the folder it went into.
 fn source_of(url: Option<String>, parent: &Option<ItemId>) -> Option<ImportSource> {
@@ -3171,6 +3221,53 @@ mod tests {
         cx.run_until_parked();
         let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
         assert_eq!(kept.settings.source, None);
+    }
+
+    /// D6: an environment marked as production is the project's to keep;
+    /// in it, what may change something is asked about, until the reader
+    /// says to stop asking in this project.
+    #[gpui_kit::test]
+    async fn sends_in_production_are_asked_about(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        let prod = storage
+            .variables()
+            .create_environment(collection.id.clone(), "prod".into())
+            .await
+            .expect("an environment");
+        state.update(cx, |state, cx| state.refresh_environments(cx));
+        cx.run_until_parked();
+        let post = HttpRequest {
+            method: HttpMethod::Post,
+            ..Default::default()
+        };
+        let get = HttpRequest::default();
+        let asks = |request: &HttpRequest, cx: &mut TestAppContext| {
+            state.read_with(cx, |state, cx| state.asks_before(request, cx))
+        };
+        state.update(cx, |state, cx| state.set_production(prod.id.clone(), true, cx));
+        cx.run_until_parked();
+        assert!(!asks(&post, cx), "not while in no environment");
+        state.update(cx, |state, cx| state.set_environment(Some(prod.id.clone()), cx));
+        cx.run_until_parked();
+        assert!(state.read_with(cx, |state, _| state.in_production()));
+        assert!(asks(&post, cx));
+        assert!(!asks(&get, cx), "a GET goes");
+        let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        assert_eq!(
+            kept.settings.protected_environments,
+            vec![prod.id.clone()],
+            "the project's"
+        );
+
+        state.update(cx, |state, cx| state.stop_asking(cx));
+        assert!(!asks(&post, cx), "not again while the app runs");
+
+        state.update(cx, |state, cx| state.set_production(prod.id.clone(), false, cx));
+        cx.run_until_parked();
+        let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        assert!(kept.settings.protected_environments.is_empty());
     }
 
     /// Each change saves the whole state; the last one made is the one kept,
