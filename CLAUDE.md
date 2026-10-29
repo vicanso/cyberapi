@@ -85,7 +85,7 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 - `cyberapi-web`：浏览器入口。把 GUI crate 编译成 wasm，只负责平台、UI 字体和资源来源；通过 `cyberapi_gui::launch` 进入应用。有自己的 `rust-toolchain.toml`（nightly + wasm32），必须在该目录下构建。`www/index.html` 拉取 `fonts/IBMPlexSans.ttf` 和 wasm 后调用 `run(origin, ui_font)`。
 - UI 只依赖 `gpui-kit` 一个 crate：GPUI 是 `gpui_kit::*`，组件是 `gpui_kit::component`，图标是 `gpui_kit::assets`，平台是 `gpui_kit::platform`（wasm 上还有 `gpui_kit::web`）。不要再单独引入 `gpui-pre-*`。
   - **桌面版的引擎是 GPUI Fast**：桌面依赖表里的 gpui-kit 打开了 `gpui-fast`，`gpui_kit::*` 和 `gpui_kit::platform` 随之换成 Fast，代码不用改。浏览器版仍是默认的 gpui-pre（wasm 不读那张表，`cyberapi-web` 按名字构建 gpui-pre 的 web 平台），所以别把 `gpui-fast` 加到普通 `[dependencies]` 或 workspace 依赖上。
-  - **锁文件的两个精确版本**：gpui-kit 的 GPUI Fast 后端把 `cocoa` 锁在 `=0.26.0`、`unicode-properties` 锁在 `=0.1.3`。不要用 `cargo update` 把这两个包升上去；打开 gpui-kit 的新 feature（例如 `test-support`）时如果报 “failed to select a version for `cocoa`”，说明锁文件里是更高的版本，需要重新生成锁文件（`cargo generate-lockfile`）。
+  - **锁文件里仍要守住的版本**：`gpui-fast-web` 0.1.12 把 `unicode-properties` 锁在 `=0.1.3`。不要用 `cargo update` 把它升上去。0.8.1 的 `gpui-pre-macos` 0.3.10 / `gpui-fast-macos` 0.1.12 不再依赖 `cocoa` crate（0.8.0 的 macOS 后端曾锁 `cocoa =0.26.0`）。升级 gpui-kit 时只更新这一支，不要对整个锁文件做 `cargo update`。
   - **依赖的本地补丁在 `patches/`**（根 `Cargo.toml` 的 `[patch.crates-io]`，`[workspace] exclude` 让它们不参与 lint 和测试）：目前是 `accesskit_macos` 0.26.3 加上 AccessKit 的修复（PR #835，发布在 0.27.2），修带 Touch Bar 的 Mac 上关窗口崩溃（`_NSTouchBarFinderObservation invalidate` 抛 `NSRangeException`）。GPUI 的 macOS 后端还在 accesskit 0.24 / accesskit_macos 0.26 上，`[patch]` 换不上 0.27.2；GPUI 升上去之后删掉补丁。原因、上游链接、怎么重新生成、怎么用 Xcode 的 Touch Bar 模拟器（Window → Touch Bar → Show Touch Bar）在没有 Touch Bar 的 Mac 上复现，都在 `patches/README.md`。**升级 gpui-kit 时先看这里**：新版本若已用上 accesskit_macos ≥ 0.27.2，补丁就该删了；若 accesskit_macos 仍是 0.26.x 但不再是 0.26.3，`Cargo.lock` 会提示补丁没被使用，按 README 对新版本重新生成。
 
 ## 一份代码，两个目标
@@ -112,6 +112,6 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 ## GPUI
 
 - 启动顺序：先 `gpui_kit::init(cx)`，再用 `gpui_kit::open_window` 开窗（它会挂上 `Root`，弹窗、通知、tooltip 依赖它）。
-- 不要臆造 API：以 `~/.cargo/registry/src/*/gpui-kit-0.8.0`、`gpui-component-0.8.0`、`gpui-pre-0.3.9` 的源码为准。
+- 不要臆造 API：以 `~/.cargo/registry/src/*/gpui-kit-0.8.1`、`gpui-component-0.8.1`、`gpui-pre-0.3.10` 的源码为准。桌面版的 `gpui-fast` 是 0.1.12，和这份 gpui-pre 是同一套上游快照。`KeyBinding::new` 只接受显式的 `cmd-` / `ctrl-`；`secondary-` 用 `KeyBinding::load(..., cx)`（`views::secondary_binding`）。
 - 需要 `#[derive(IntoElement)]` 等派生宏时，在 `src/lib.rs` 加 `extern crate gpui_kit as gpui;`，宏展开出的 `gpui::…` 路径才能解析。
 - 布局的最小宽度来自内容：`min_w_0` / `overflow_hidden` 只让元素自己能收缩，不改变它算进父级最小宽度的内容宽度。父级不肯收缩时（组件库的 `TitleBar` 内层是 `flex_shrink_0`），一行里能裁剪的部分要给 `.w(px(0.))` 再 `flex_1`，否则内容多了会把整行撑出窗口（`root.rs` 标题栏左侧：七个置顶就把设置菜单挤了出去）。

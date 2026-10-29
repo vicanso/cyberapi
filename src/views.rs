@@ -67,9 +67,24 @@ use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, ColorName, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _,
+    Action, AnyElement, App, InteractiveElement as _, IntoElement as _, KeyBinding, KeyBindingContextPredicate,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
 };
+
+/// A `secondary-` binding: Command on macOS, Control elsewhere.
+///
+/// gpui-pre 0.3.10's `KeyBinding::new` parses with `Keystroke::parse`, which
+/// rejects that alias. `KeyBinding::load` resolves it from the host. Explicit
+/// `cmd-` / `ctrl-` bindings stay on `KeyBinding::new`.
+pub(crate) fn secondary_binding(cx: &App, keystrokes: &str, action: impl Action, context: Option<&str>) -> KeyBinding {
+    let context = context.map(|context| {
+        KeyBindingContextPredicate::parse(context)
+            .unwrap_or_else(|err| panic!("key context {context:?}: {err}"))
+            .into()
+    });
+    KeyBinding::load(keystrokes, Box::new(action), context, false, None, cx)
+        .unwrap_or_else(|err| panic!("key binding {keystrokes:?}: {err}"))
+}
 
 /// The Tab of an editor that holds JSON: as many spaces as the JSON written
 /// everywhere is indented by.

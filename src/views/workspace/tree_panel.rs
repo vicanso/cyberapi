@@ -60,24 +60,24 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("right", Open, Some(KEY_CONTEXT)),
         KeyBinding::new("enter", Toggle, Some(KEY_CONTEXT)),
         KeyBinding::new("f2", Rename, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-d", Duplicate, Some(KEY_CONTEXT)),
+        crate::views::secondary_binding(cx, "secondary-d", Duplicate, Some(KEY_CONTEXT)),
     ]);
-    cx.bind_keys(remove_keys());
+    cx.bind_keys(remove_keys(cx));
 }
 
 /// Delete, and Cmd-Backspace as a Mac's Finder has it. The key shown is
 /// the one bound last: the one this platform deletes with.
 #[cfg(target_os = "macos")]
-fn remove_keys() -> [KeyBinding; 2] {
+fn remove_keys(cx: &App) -> [KeyBinding; 2] {
     [
         KeyBinding::new("delete", Remove, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-backspace", Remove, Some(KEY_CONTEXT)),
+        crate::views::secondary_binding(cx, "secondary-backspace", Remove, Some(KEY_CONTEXT)),
     ]
 }
 #[cfg(not(target_os = "macos"))]
-fn remove_keys() -> [KeyBinding; 2] {
+fn remove_keys(cx: &App) -> [KeyBinding; 2] {
     [
-        KeyBinding::new("secondary-backspace", Remove, Some(KEY_CONTEXT)),
+        crate::views::secondary_binding(cx, "secondary-backspace", Remove, Some(KEY_CONTEXT)),
         KeyBinding::new("delete", Remove, Some(KEY_CONTEXT)),
     ]
 }

@@ -90,37 +90,38 @@ pub fn pin_action(index: usize) -> Option<Box<dyn gpui_kit::Action>> {
 pub(crate) const KEY_CONTEXT: &str = "Workspace";
 
 /// F3.12, for both platforms: `secondary` is Cmd on macOS and Ctrl elsewhere
-/// (#22 — the old app listened for Cmd alone).
+/// (#22 — the old app listened for Cmd alone). `secondary_binding` resolves
+/// that alias; `KeyBinding::new` no longer does.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("secondary-n", NewApi, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-shift-n", NewFolder, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-n", NewApi, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-shift-n", NewFolder, Some(KEY_CONTEXT)),
         // F10.5: pasting where no field takes it. A field binds the same keys
         // closer in, and keeps its own paste.
-        KeyBinding::new("secondary-v", PasteCurl, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-v", PasteCurl, Some(KEY_CONTEXT)),
         // F5.1 from the keyboard, wherever focus is in the workspace — in
         // a field too, ahead of the field's own Cmd/Ctrl-Enter (bound later,
         // so it wins over the kit's).
-        KeyBinding::new("secondary-enter", Send, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-enter", Send, Some("Workspace > Input")),
+        super::secondary_binding(cx, "secondary-enter", Send, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-enter", Send, Some("Workspace > Input")),
         // #64: to the API search, Enter there opening the first found; a
         // field that cannot search hands the same keys on as its `Search`.
-        KeyBinding::new("secondary-f", FindApi, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-l", FocusUrl, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-f", FindApi, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-l", FocusUrl, Some(KEY_CONTEXT)),
         // F1: as a browser's. On a Mac the menu's Close Window takes Cmd-W
         // first, and the workspace answers its action instead.
-        KeyBinding::new("secondary-w", CloseTab, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-w", CloseTab, Some(KEY_CONTEXT)),
         KeyBinding::new("ctrl-tab", NextTab, Some(KEY_CONTEXT)),
         KeyBinding::new("ctrl-shift-tab", PreviousTab, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-1", Pin1, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-2", Pin2, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-3", Pin3, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-4", Pin4, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-5", Pin5, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-6", Pin6, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-7", Pin7, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-8", Pin8, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-9", Pin9, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-1", Pin1, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-2", Pin2, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-3", Pin3, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-4", Pin4, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-5", Pin5, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-6", Pin6, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-7", Pin7, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-8", Pin8, Some(KEY_CONTEXT)),
+        super::secondary_binding(cx, "secondary-9", Pin9, Some(KEY_CONTEXT)),
     ]);
     tree_panel::bind_keys(cx);
 }

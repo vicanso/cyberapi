@@ -32,7 +32,8 @@ pub const ROOT_CONTEXT: &str = "CyberApi";
 
 /// ⌘/Ctrl-K, on every page of the main window.
 pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([gpui_kit::KeyBinding::new(
+    cx.bind_keys([crate::views::secondary_binding(
+        cx,
         "secondary-k",
         OpenPalette,
         Some(ROOT_CONTEXT),

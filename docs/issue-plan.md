@@ -32,7 +32,7 @@
 
 ## 搁置：#63 的可见搜索按钮
 
-gpui-kit 0.8.0 编辑器自带的查找栏在输入时会全选已输入的内容（打 “chatcmpl” 得到 “hatcmpl”），原因见组件库的 `InputBaseState::set_search_query` 和 `input/overlay.rs` 的 `SearchSignature`。加一个按钮只会把人引向这个问题。gpui-kit 升级后先在响应体的查找栏里打一个多字母的词，正常了再加按钮：聚焦响应体编辑器后 `window.dispatch_action(Box::new(Search), cx)`，提示用 `tooltip_with_action(.., &Search, Some("Input"))`。#63 的另一半（JSONPath 过滤）在第 2 批。
+gpui-kit 0.8.1（`gpui-base` 0.8.1）编辑器自带的查找栏仍会在输入时全选已输入的内容（打 “chatcmpl” 得到 “hatcmpl”）。`InputBaseState::set_search_query` 在查询变化时改 `anchor_offset`，`input/overlay.rs` 的 `SearchSignature` 因此重新 `select_all`。加一个按钮只会把人引向这个问题。查找栏正常之后再加：聚焦响应体编辑器后 `window.dispatch_action(Box::new(Search), cx)`，提示用 `tooltip_with_action(.., &Search, Some("Input"))`。#63 的另一半（JSONPath 过滤）在第 2 批。
 
 ## 第 1 批：小而独立
 

@@ -24,7 +24,7 @@ not registered as an observer.'
 - AccessKit [issue #823](https://github.com/accesskit/accesskit/issues/823)（同样的现象和分析）、[PR #835](https://github.com/accesskit/accesskit/pull/835)（修复，2026-10-23 合并）、发布在 **accesskit_macos 0.27.2**（2026-10-25）。0.26.x 没有补丁版。
 - gpui-kit [issue #3192](https://github.com/longbridge/gpui-kit/issues/3192)、Zed [issue #64819](https://github.com/zed-industries/zed/issues/64819) / [PR #65186](https://github.com/zed-industries/zed/pull/65186)（改成不用动态子类）报的是同一个崩溃，截至 2026-10-26 都还开着。
 
-**为什么不直接用 0.27.2**：gpui-fast-macos / gpui-pre-macos（截至 0.1.11 / 0.3.10）要求 `accesskit_macos = "0.26"`、`accesskit = "0.24"`，而 0.27.2 依赖 accesskit 0.25。`[patch]` 不能放宽版本要求（指向 0.27.2 时 Cargo 提示 patch was not used）；把 0.27.2 改个版本号硬塞进来，GPUI 的 `TreeUpdate`、`ActivationHandler`、`ActionHandler` 是 0.24 的类型，编译不过。
+**为什么不直接用 0.27.2**：gpui-fast-macos / gpui-pre-macos（截至 0.1.12 / 0.3.10，即 gpui-kit 0.8.1）要求 `accesskit_macos = "0.26"`、`accesskit = "0.24"`，而 0.27.2 依赖 accesskit 0.25。`[patch]` 不能放宽版本要求（指向 0.27.2 时 Cargo 提示 patch was not used）；把 0.27.2 改个版本号硬塞进来，GPUI 的 `TreeUpdate`、`ActivationHandler`、`ActionHandler` 是 0.24 的类型，编译不过。
 
 **补丁的内容**：crates.io 上 0.26.3 原样的源码，只有 `src/subclass.rs` 换成 PR #835 的版本（PR 里 `adapters/macos/src/subclass.rs` 的改动原样应用，结果与 0.27.2 的 `src/subclass.rs` 逐字节相同；PR 里新增的测试没有带过来）。修复的做法：释放适配器时看视图真正的类（`object_getClass`，`[view class]` 会被 KVO 骗），被 KVO 再子类化过的话就不动类，只释放 AccessKit 的状态；子类上的方法发现状态已经没了，就转给原来的类处理。没有 KVO 时和原来一样换回类。
 

@@ -50,7 +50,12 @@ pub(crate) const KEY_CONTEXT: &str = "Dashboard";
 
 /// `secondary-f` puts the caret in the search box, as zedis's list does.
 pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("secondary-f", FocusSearch, Some(KEY_CONTEXT))]);
+    cx.bind_keys([super::secondary_binding(
+        cx,
+        "secondary-f",
+        FocusSearch,
+        Some(KEY_CONTEXT),
+    )]);
 }
 
 /// The same with Cmd, for a page in a Mac's browser, where `secondary` is

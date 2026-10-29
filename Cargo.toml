@@ -41,7 +41,7 @@ repository = "https://github.com/vicanso/cyberapi"
 # platform (`gpui_kit::platform`, and `gpui_kit::web` on wasm), the component
 # library (`gpui_kit::component`) and its icons (`gpui_kit::assets`). It pins
 # the `gpui-pre-*` family itself, so there is no second version to keep in step.
-gpui-kit = "0.8.0"
+gpui-kit = "0.8.1"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 # The in-tree crates. `crates/*` compile for wasm as well as natively.
