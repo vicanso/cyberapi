@@ -41,7 +41,7 @@
 | BUG-23 | F5 | 低 | 桌面版复制进服务器副本时用内存里缓存的绑定，基准修订号可能是旧的，下次打开出现不该有的冲突 | 可能；已修复 |
 | BUG-24 | F6 | 低 | 撤销通知持有工作区的强引用：离开项目再回来，点旧通知会在已分离的状态上撤销（网页会用旧草稿盖掉新的） | 读代码确认；已修复 |
 | BUG-25 | B8 | 低 | multipart 某段内容以 `<` 开头（XML、HTML）被当成读文件 | 读代码确认；已修复 |
-| BUG-26 | B8 | 低 | 带 UTF-8 BOM 的 `.http` 文件认不出 | 可能 |
+| BUG-26 | B8 | 低 | 带 UTF-8 BOM 的 `.http` 文件认不出 | 可能；已修复 |
 | BUG-27 | D7 | 低 | `md5` / `sha*` / `hmac*` / `urlEncode` 都按文本取输入，链在 `base64Decode` 或 `readFile` 后面时非 UTF-8 字节被换成 U+FFFD，结果是错的 | 读代码确认 |
 | PERF-1 | 树 | 高 | 树面板每帧重建所有行（含关键字搜索、拼音匹配），不用 `uniform_list` | 已核实；已修复 |
 | PERF-2 | GraphQL | 高 | GraphQL 响应在每帧和每次编辑时整份解析 `errors` | 已核实；已修复 |
@@ -263,11 +263,13 @@
 - 修复：两条都要：一段的内容只有一行、`<` 后跟空白、再有路径时才是读文件，其余（`<?xml …`、`<html>`、多行内容）原样作为文本。
   - 测试：`graphql_websocket_multipart_and_http2` 加了一段 XML（两行，`<?xml` 开头）和一段 `<html></html>`，都导入成文本（任何 `<` 都读文件时它失败）。
 
-### BUG-26 带 BOM 的 `.http` 文件认不出（B8，低，可能）
+### BUG-26 带 BOM 的 `.http` 文件认不出（B8，低，可能）——已修复
 
 - 位置：`http_file.rs:132-145`，`import/mod.rs:200`。
 - 原因：`trim` 不去 U+FEFF，第一行的 `###`、注释、`@变量`、方法都匹配不上，落到 JSON / YAML 解析报错。
 - 修复方向：`detect` / `parse` 先去掉开头的 BOM（对所有文本格式都有好处）。
+- 修复：照做，`import::detect` 和 `parse` 先去掉开头的 U+FEFF，所以所有格式都受益（JSON 也是：`serde_json` 不认 BOM）。导入弹窗、“获取”、从来源同步、命令行都经过这两个函数。
+  - 测试：`a_byte_order_mark_is_left_out`（带 BOM 的 `.http`、Postman JSON、cURL 都认得出并能导入；不去掉 BOM 时它失败）。
 
 ### BUG-27 摘要函数按文本取字节输入（D7，低）
 

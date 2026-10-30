@@ -197,6 +197,7 @@ pub enum ImportError {
 /// F10.2. A document is JSON or, when it is not, YAML (#59): an OpenAPI
 /// document is as often written in one as in the other.
 pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportError> {
+    let text = without_bom(text);
     let trimmed = text.trim_start();
     // `get`, not a slice: four bytes may end inside a character.
     if trimmed.get(..4).is_some_and(|start| start.eq_ignore_ascii_case("curl")) {
@@ -249,8 +250,15 @@ fn document(text: &str) -> Result<serde_json::Value, ImportError> {
     }
 }
 
+/// BUG-26: `text` without the byte-order mark an editor on Windows may
+/// start a file with: no format reads it, and `trim` keeps it.
+fn without_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
 /// F10.1–F10.3: whatever was pasted or picked.
 pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
+    let text = without_bom(text);
     let (format, json) = detect(text)?;
     let name = json.as_ref().and_then(|json| json_name(format, json));
     let bundle = match (format, json) {
@@ -404,6 +412,27 @@ fn kv(key: &str, value: &str, enabled: bool) -> KvParam {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    /// BUG-26: a file that starts with a byte-order mark reads as without.
+    #[test]
+    fn a_byte_order_mark_is_left_out() {
+        let http = "\u{feff}### login\nPOST https://api.test/login\n";
+        assert_eq!(detect(http).map(|(format, _)| format), Ok(Format::Http));
+        let names: Vec<String> = parse(http)
+            .expect("imported")
+            .items
+            .iter()
+            .map(|item| match item {
+                ImportItem::Api { name, .. } | ImportItem::Folder { name, .. } => name.clone(),
+            })
+            .collect();
+        assert_eq!(names, ["login"]);
+        let postman = "\u{feff}{\"info\": {\"name\": \"shop\"}, \"item\": []}";
+        assert_eq!(detect(postman).map(|(format, _)| format), Ok(Format::Postman));
+        let curl = "\u{feff}curl https://api.test/ping";
+        assert_eq!(detect(curl).map(|(format, _)| format), Ok(Format::Curl));
+        assert!(parse(curl).is_ok());
+    }
 
     /// C4: OAuth 2.0's grants asked without a browser come in from each
     /// format that has them; one asked in a browser inherits.
