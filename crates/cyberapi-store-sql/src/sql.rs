@@ -288,7 +288,6 @@ pub const PROJECT_SETTINGS_DELETE: &str = "DELETE FROM project_settings WHERE co
 pub const FOLDER_OWNER: &str = "SELECT collection FROM folders WHERE id = $1";
 pub const API_OWNER: &str = "SELECT collection FROM apis WHERE id = $1";
 pub const VARIABLE_OWNER: &str = "SELECT collection FROM variables WHERE id = $1";
-pub const API_IDS_OF: &str = "SELECT id FROM apis WHERE collection = $1";
 pub const API_REWRITE: &str = "UPDATE apis \
     SET name = $1, category = $2, request = $3, created_at = $4, updated_at = $5 WHERE id = $6 AND collection = $7";
 pub const FOLDERS_DELETE_OF: &str = "DELETE FROM folders WHERE collection = $1";
@@ -469,7 +468,6 @@ mod tests {
         FOLDER_OWNER,
         API_OWNER,
         VARIABLE_OWNER,
-        API_IDS_OF,
         API_REWRITE,
         FOLDERS_DELETE_OF,
         VARIABLES_DELETE_OF,

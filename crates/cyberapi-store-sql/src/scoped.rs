@@ -220,13 +220,15 @@ impl Scoped {
     /// G4: the project as it is, kept as a version before it is replaced
     /// whole, by this account; the oldest beyond `KEPT_VERSIONS` go. An
     /// empty one — a project made to be uploaded into — is not kept.
-    async fn keep_version(&self, conn: &mut AnyConnection, current: &Collection) -> Result<(), StoreError> {
+    /// G4: `current` as it is, kept as a version unless it is empty; what
+    /// it is, for what replaces it to be told apart from it.
+    async fn keep_version(&self, conn: &mut AnyConnection, current: &Collection) -> Result<ProjectConfig, StoreError> {
         let collection = &current.id;
         let config = self
             .config_of(conn, collection, current.name.clone(), current.description.clone())
             .await?;
         if config.is_empty() {
-            return Ok(());
+            return Ok(config);
         }
         let by = sqlx::query(self.dialect.sql(sql::ACCOUNT_INFO))
             .bind(self.account())
@@ -262,7 +264,7 @@ impl Scoped {
                 .await
                 .map_err(db)?;
         }
-        Ok(())
+        Ok(config)
     }
 
     async fn tree_data(&self, conn: &mut AnyConnection, collection: &CollectionId) -> Result<TreeData, StoreError> {
@@ -1047,23 +1049,43 @@ impl TreeStore for Scoped {
                 });
             }
             // G4: what it was, kept before it is replaced.
-            this.keep_version(&mut tx, &current).await?;
+            let before = this.keep_version(&mut tx, &current).await?;
             let id = collection.as_str().to_string();
+            // PERF-7: only an id the project did not have may be another
+            // project's; asked one at a time, a sync of a big project asked
+            // for every item twice.
+            let had_items: HashSet<&str> = before
+                .folders
+                .iter()
+                .map(|folder| folder.id.as_str())
+                .chain(before.apis.iter().map(|api| api.id.as_str()))
+                .collect();
+            let had_variables: HashSet<&str> = before.variables.iter().map(|variable| variable.id.as_str()).collect();
+            let had_environments: HashSet<&str> = before
+                .environments
+                .iter()
+                .map(|environment| environment.id.as_str())
+                .collect();
             let items = config.folders.iter().map(|folder| folder.id.as_str());
             let items = items.chain(config.apis.iter().map(|api| api.id.as_str()));
             let owned = items
+                .filter(|item| !had_items.contains(item))
                 .map(|item| (item, [sql::FOLDER_OWNER, sql::API_OWNER].as_slice()))
                 .chain(
                     config
                         .variables
                         .iter()
-                        .map(|variable| (variable.id.as_str(), [sql::VARIABLE_OWNER].as_slice())),
+                        .map(|variable| variable.id.as_str())
+                        .filter(|variable| !had_variables.contains(variable))
+                        .map(|variable| (variable, [sql::VARIABLE_OWNER].as_slice())),
                 )
                 .chain(
                     config
                         .environments
                         .iter()
-                        .map(|environment| (environment.id.as_str(), [sql::ENVIRONMENT_OWNER].as_slice())),
+                        .map(|environment| environment.id.as_str())
+                        .filter(|environment| !had_environments.contains(environment))
+                        .map(|environment| (environment, [sql::ENVIRONMENT_OWNER].as_slice())),
                 );
             for (item, statements) in owned {
                 for statement in statements {
@@ -1079,19 +1101,12 @@ impl TreeStore for Scoped {
                     }
                 }
             }
-            let had: HashSet<String> = sqlx::query(this.dialect.sql(sql::API_IDS_OF))
-                .bind(id.clone())
-                .fetch_all(&mut *tx)
-                .await
-                .map_err(db)?
-                .iter()
-                .map(|row| rows::text(row, 0))
-                .collect::<Result<_, _>>()?;
+            let had: HashMap<&str, &ApiSetting> = before.apis.iter().map(|api| (api.id.as_str(), api)).collect();
             let staying: HashSet<&str> = config.apis.iter().map(|api| api.id.as_str()).collect();
             // An API that goes takes its responses with it.
-            for gone in had.iter().filter(|api| !staying.contains(api.as_str())) {
+            for gone in had.keys().filter(|api| !staying.contains(*api)) {
                 sqlx::query(this.dialect.sql(sql::API_DELETE))
-                    .bind(gone.clone())
+                    .bind(gone.to_string())
                     .bind(id.clone())
                     .execute(&mut *tx)
                     .await
@@ -1120,14 +1135,25 @@ impl TreeStore for Scoped {
                     .execute(&mut *tx)
                     .await
                     .map_err(db)?;
-                // The rows of before went with their folders.
-                this.write_folder_settings(&mut tx, &collection, &folder.id, &folder.settings)
-                    .await?;
+                // The rows of before went with their folders: one is
+                // written only where the folder sets something.
+                if !folder.settings.is_empty() {
+                    this.write_folder_settings(&mut tx, &collection, &folder.id, &folder.settings)
+                        .await?;
+                }
             }
             this.write_project_settings(&mut tx, &collection, &config.settings)
                 .await?;
             for api in &config.apis {
-                if had.contains(api.id.as_str()) {
+                if let Some(was) = had.get(api.id.as_str()) {
+                    // PERF-7: one as it was is not written again.
+                    if was.name == api.name
+                        && was.request == api.request
+                        && was.created_at == api.created_at
+                        && was.updated_at == api.updated_at
+                    {
+                        continue;
+                    }
                     sqlx::query(this.dialect.sql(sql::API_REWRITE))
                         .bind(api.name.clone())
                         .bind("http")
@@ -1168,8 +1194,16 @@ impl TreeStore for Scoped {
                     .execute(&mut *tx)
                     .await
                     .map_err(db)?;
-                this.write_variable_environment(&mut tx, &collection, &variable.id, variable.environment.as_ref())
-                    .await?;
+                // Its row of before went with it.
+                if let Some(environment) = &variable.environment {
+                    sqlx::query(this.dialect.sql(sql::VARIABLE_ENVIRONMENT_INSERT))
+                        .bind(variable.id.as_str().to_string())
+                        .bind(id.clone())
+                        .bind(environment.as_str().to_string())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db)?;
+                }
             }
             let top = TreeChange {
                 top_order: Some(config.top_order.clone()),
