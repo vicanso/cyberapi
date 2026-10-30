@@ -69,8 +69,8 @@ struct Compared {
 
 /// G8: a version being compared.
 struct Comparing {
-    /// Its place in the list, newest first.
-    at: usize,
+    /// Its id: a restore puts a version before it in the list (BUG-21).
+    id: String,
     /// Compared with the version after it, rather than the project now.
     with_next: bool,
     found: Option<Result<Arc<Compared>, String>>,
@@ -90,18 +90,20 @@ impl VersionsView {
         }
     }
 
-    /// G8: the version at `at` compared with the project now, or with the
+    /// G8: version `id` compared with the project now, or with the
     /// version after it.
-    fn compare(&mut self, at: usize, with_next: bool, cx: &mut Context<Self>) {
+    fn compare(&mut self, id: String, with_next: bool, cx: &mut Context<Self>) {
         let workspace = self.workspace.read(cx);
         let Some(Ok(versions)) = workspace.versions() else {
             return;
         };
-        let Some(version) = versions.get(at) else { return };
+        let Some(at) = versions.iter().position(|version| version.id == id) else {
+            return;
+        };
         // The newest's next version is the project now.
         let with_next = with_next && at > 0;
         let after = with_next.then(|| versions[at - 1].id.clone());
-        let Some(reading) = workspace.compared_versions(version.id.clone(), after, cx) else {
+        let Some(reading) = workspace.compared_versions(id.clone(), after, cx) else {
             return;
         };
         let reading = cx.spawn(async move |this, cx| {
@@ -123,7 +125,7 @@ impl VersionsView {
         });
         self.confirming = None;
         self.comparing = Some(Comparing {
-            at,
+            id,
             with_next,
             found: None,
             open: None,
@@ -225,21 +227,25 @@ impl VersionsView {
         let theme = cx.theme();
         let (muted, border) = (theme.muted_foreground, theme.border);
         let note = |text: String| div().py_6().text_sm().text_color(muted).child(text).into_any_element();
-        let when = match self.workspace.read(cx).versions() {
+        // Where it is in the list now: none once the server no longer
+        // keeps it.
+        let (when, has_next) = match self.workspace.read(cx).versions() {
             Some(Ok(versions)) => versions
-                .get(comparing.at)
-                .map(|version| {
-                    version
+                .iter()
+                .position(|version| version.id == comparing.id)
+                .map(|at| {
+                    let when = versions[at]
                         .saved_at
                         .get()
                         .with_timezone(&chrono::Local)
                         .format("%Y-%m-%d %H:%M")
-                        .to_string()
+                        .to_string();
+                    (when, at > 0)
                 })
                 .unwrap_or_default(),
-            _ => String::new(),
+            _ => Default::default(),
         };
-        let (at, with_next) = (comparing.at, comparing.with_next);
+        let (id, with_next) = (comparing.id.clone(), comparing.with_next);
         let header = h_flex()
             .gap_2()
             .items_center()
@@ -264,7 +270,7 @@ impl VersionsView {
                 [t!("versions.with_now"), t!("versions.with_next")]
                     .into_iter()
                     .enumerate()
-                    .filter(|(index, _)| *index == 0 || at > 0)
+                    .filter(|(index, _)| *index == 0 || has_next)
                     .fold(
                         ButtonGroup::new("versions-against").compact().xsmall().outline(),
                         |group, (index, label)| {
@@ -278,7 +284,7 @@ impl VersionsView {
                     .on_click(cx.listener(move |this, picks: &Vec<usize>, _, cx| {
                         let next = picks.first() == Some(&1);
                         if next != with_next {
-                            this.compare(at, next, cx);
+                            this.compare(id.clone(), next, cx);
                         }
                     })),
             );
@@ -497,7 +503,10 @@ impl Render for VersionsView {
                                     .ghost()
                                     .xsmall()
                                     .label(t!("versions.compare").to_string())
-                                    .on_click(cx.listener(move |this, _, _, cx| this.compare(at, false, cx))),
+                                    .on_click({
+                                        let id = id.clone();
+                                        cx.listener(move |this, _, _, cx| this.compare(id.clone(), false, cx))
+                                    }),
                             )
                             .when(can_restore, |row| {
                                 let id = id.clone();
