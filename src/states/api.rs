@@ -35,7 +35,7 @@ use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody, ReplyReader};
 use cyberapi_core::model::{ApiSetting, ContentType, Example, HttpMethod, HttpRequest, KvParam};
 use cyberapi_core::prefs::RequestSettings;
-use cyberapi_core::response::{HttpResponse, RESPONSE_LIMIT, StreamEnd};
+use cyberapi_core::response::{HISTORY_BODY_LIMIT, HttpResponse, RESPONSE_LIMIT, StreamEnd};
 use cyberapi_core::send::PrepareError;
 use cyberapi_core::sse;
 use cyberapi_core::template::{Answers, TemplateError};
@@ -1553,6 +1553,13 @@ impl ApiState {
                 }
                 self.responses.insert(0, Arc::new(response));
                 self.responses.truncate(self.sender.sending.history_size());
+                // PERF-8: only the newest keeps its whole body; the one it
+                // follows is now as the history keeps it.
+                if let Some(before) = self.responses.get_mut(1)
+                    && before.body.len() > HISTORY_BODY_LIMIT
+                {
+                    *before = Arc::new(before.for_history());
+                }
                 self.shown = None;
                 // What a `get` path's fields were read from is not the last.
                 let api = self.api.clone();

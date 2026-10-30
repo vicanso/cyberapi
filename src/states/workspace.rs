@@ -5095,6 +5095,52 @@ mod tests {
         });
     }
 
+    /// PERF-8: only the newest answer is held whole; the one before it is
+    /// as the history keeps it, its big body left out.
+    #[gpui_kit::test]
+    async fn only_the_newest_answer_is_held_whole(cx: &mut TestAppContext) {
+        use cyberapi_core::response::HISTORY_BODY_LIMIT;
+        struct Big;
+        impl HttpEngine for Big {
+            fn send(&self, _: PreparedRequest) -> SendFuture {
+                Box::pin(async {
+                    Ok(Exchange {
+                        status: 200,
+                        body: vec![b'x'; HISTORY_BODY_LIMIT + 1],
+                        ..Default::default()
+                    })
+                })
+            }
+        }
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let sender = Sender {
+            engine: Arc::new(Big),
+            ..sender(&storage, true)
+        };
+        let state = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.create_api(None, "big".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| api.set_uri("https://a.test".into(), cx));
+        for _ in 0..2 {
+            // Not a double click.
+            std::thread::sleep(Duration::from_millis(210));
+            api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
+            cx.run_until_parked();
+        }
+        api.read_with(cx, |api, _| {
+            let held: Vec<(usize, Option<u64>)> = api
+                .responses()
+                .iter()
+                .map(|response| (response.body.len(), response.body_omitted))
+                .collect();
+            let whole = HISTORY_BODY_LIMIT + 1;
+            assert_eq!(held, [(whole, None), (0, Some(whole as u64))]);
+        });
+    }
+
     #[gpui_kit::test]
     async fn choosing_a_response_puts_its_request_back(cx: &mut TestAppContext) {
         let storage = MemoryStore::new().storage();
