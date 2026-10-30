@@ -22,8 +22,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ListSizingBehavior,
+    ParentElement as _, PathPromptOptions, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    div, px, uniform_list,
 };
 use rust_i18n::t;
 
@@ -180,7 +181,10 @@ impl RunView {
         t!("run.done", held = held, failed = failed, time = elapsed).to_string()
     }
 
-    fn row(&self, index: usize, result: &StepResult, cx: &mut Context<Self>) -> AnyElement {
+    /// A step's row: its answer in two lines, then a line of what it noted
+    /// — always there, so every row is as tall and the list draws only the
+    /// rows in view (PERF-5).
+    fn row(&self, index: usize, result: &StepResult, cx: &App) -> AnyElement {
         let theme = cx.theme();
         let (muted, danger, success) = (theme.muted_foreground, theme.danger, theme.success);
         let run = self.run.read(cx);
@@ -222,16 +226,26 @@ impl RunView {
                                 .text_color(danger)
                                 .child(t!("run.not_sent").to_string()),
                         )
-                        .child(name.clone()),
+                        .child(div().min_w_0().truncate().child(name.clone())),
                 )
-                .child(div().text_xs().text_color(danger).child(why.clone()))
+                .child(div().text_xs().truncate().text_color(danger).child(why.clone()))
                 .into_any_element(),
         };
         let open = result.response.as_ref().ok().map(|response| response.id.clone());
         let (workspace, api) = (self.workspace.clone(), planned.map(|planned| planned.api));
         let hover = cx.theme().accent;
+        let notes = if notes.is_empty() {
+            // As tall as a line of notes.
+            vec![div().child("\u{a0}")]
+        } else {
+            notes
+                .into_iter()
+                .map(|(text, color)| div().min_w_0().truncate().text_color(color).child(text))
+                .collect()
+        };
         h_flex()
             .id(("run-row", index))
+            .w_full()
             .px_2()
             .py_1p5()
             .gap_2()
@@ -242,11 +256,11 @@ impl RunView {
                 row.child(div().w(px(36.)).flex_none().text_color(muted).child(pass))
             })
             .child(
-                v_flex().flex_1().min_w_0().child(body).children(
-                    notes
-                        .into_iter()
-                        .map(|(text, color)| div().text_xs().truncate().text_color(color).child(text)),
-                ),
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(body)
+                    .child(h_flex().gap_3().text_xs().overflow_hidden().children(notes)),
             )
             // Picked once the run is over: closing the dialog would stop it.
             .when(!running && open.is_some(), |row| {
@@ -281,12 +295,7 @@ impl Render for RunView {
         let running = self.run.read(cx).running();
         let empty = self.run.read(cx).planned().is_empty();
         let summary = self.summary(cx);
-        let results: Vec<StepResult> = self.run.read(cx).results().to_vec();
-        let rows: Vec<AnyElement> = results
-            .iter()
-            .enumerate()
-            .map(|(index, result)| self.row(index, result, cx))
-            .collect();
+        let count = self.run.read(cx).results().len();
         let prompts: Vec<AnyElement> = self
             .prompts
             .iter()
@@ -387,16 +396,25 @@ impl Render for RunView {
                     cx,
                 ))
             })
-            .when(!rows.is_empty(), |this| {
+            .when(count > 0, |this| {
                 this.child(
-                    div()
-                        .id("run-results")
-                        .max_h(px(360.))
-                        .overflow_y_scroll()
-                        .border_t_1()
-                        .border_color(border)
-                        .pt_1()
-                        .child(v_flex().gap_0p5().children(rows)),
+                    div().border_t_1().border_color(border).pt_1().child(
+                        uniform_list(
+                            "run-results",
+                            count,
+                            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                                let run = this.run.read(cx);
+                                let results = run.results().get(range.clone()).unwrap_or_default();
+                                results
+                                    .iter()
+                                    .zip(range)
+                                    .map(|(result, index)| this.row(index, result, cx))
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .with_sizing_behavior(ListSizingBehavior::Infer)
+                        .max_h(px(360.)),
+                    ),
                 )
             })
     }

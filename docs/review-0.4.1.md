@@ -47,7 +47,7 @@
 | PERF-2 | GraphQL | 高 | GraphQL 响应在每帧和每次编辑时整份解析 `errors` | 已核实；已修复 |
 | PERF-3 | 响应 | 高 | 大响应先整份格式化再截断，都在 UI 线程上，每次切回标签再做一遍 | 已核实；部分修复 |
 | PERF-4 | bridge | 高 | 首页每 10 秒统计全库所有项目的接口数再过滤；页面同时重读全部草稿 | 已核实；已修复 |
-| PERF-5 | 运行器 | 中高 | 运行弹窗每帧克隆并渲染全部结果 | 读代码确认 |
+| PERF-5 | 运行器 | 中高 | 运行弹窗每帧克隆并渲染全部结果 | 读代码确认；已修复 |
 | PERF-6 | 流 | 中高 | 打开着的流每 100ms 重绘整个窗口直到关闭；WebSocket / gRPC 流的收发记录没有上限且存三份 | 读代码确认 |
 | PERF-7 | bridge | 中高 | 同步 / 上传逐行写入，约 3 ×（接口 + 目录）次往返，全程持锁 | 读代码确认 |
 | PERF-8 | 内存 | 中 | 每个标签把新收到的完整响应体（最多 64 MB）留在内存里，最多 history_size 条 | 已核实 |
@@ -295,11 +295,12 @@
 - 修复方向：SQL 加 `WHERE collection IN (看得到的)` 或和可见性查询 join；接口数比列表刷新得慢一些；草稿只在写入后重读。
 - 修复：`API_COUNTS` 只统计账号经团队、账号授权、团队授权能到达的项目（和 `COLLECTIONS_VISIBLE` 同样的三条路，子查询 `IN (… UNION …)`，PostgreSQL 和 MySQL 都能用，走 `apis_collection` 索引），角色的精确判断仍在 Rust 里按 `visible()` 过滤。页面的草稿按文本的哈希记下读过的结果（`drafts_local::all` 返回 `Rc<Draft>`），文本没变就不再解析；仍然每次轮询读 localStorage，所以别的标签页写的草稿照样能看到。接口数的刷新频率没改。测试：`access.rs` 加了账号授权和团队授权两种情况（`make test-sql`，PostgreSQL 和 MySQL 都跑了；去掉账号授权那一路时两个库都失败），`a_draft_as_it_was_is_not_read_again`（让缓存不命中时失败）。
 
-### PERF-5 运行弹窗每帧克隆并渲染全部结果（中高）
+### PERF-5 运行弹窗每帧克隆并渲染全部结果（中高）——已修复
 
 - 位置：`src/views/workspace/run_dialog.rs:284-289`（`results().to_vec()`，每条一个行元素），`:393-399`（一个滚动 `div`）。每个 `StepResult` 的 `HttpResponse::summary` 还带着完整的 `HttpRequest` 和响应头。
 - 情况：带数据的运行（CSV 行数 × 接口数，成千上万步）越跑越卡。
 - 修复方向：`uniform_list` 按下标渲染，借用而不克隆。
+- 修复：照上面做。结果列表是 `uniform_list`（`ListSizingBehavior::Infer`，最多 360px 高），只画看得见的行，直接借用 `RunState` 里的结果。为了行高一致，每行的附注（断言通过几条、提取了什么、出错原因）合成一行，没有附注时也占一行，未发送的原因截断成一行。没有视图测试，也还没在应用里看过。
 
 ### PERF-6 打开着的流一直每 100ms 重绘，收发记录无上限（中高）
 
