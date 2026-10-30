@@ -228,6 +228,9 @@ struct ImportView {
     /// B7: the address the text was fetched from, and whether the project
     /// keeps it as its source.
     fetched_from: Option<String>,
+    /// What the editor showed of it: the text changed from that is not
+    /// the address's any more (BUG-14).
+    fetched_shown: Option<SharedString>,
     remember: bool,
     highlighted: &'static str,
     /// The latest `describe`; a newer one drops it.
@@ -249,6 +252,10 @@ impl ImportView {
         let changes = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 let text = editor.read(cx).value();
+                if this.fetched_from.is_some() && this.fetched_shown.as_ref() != Some(&text) {
+                    this.fetched_from = None;
+                    this.fetched_shown = None;
+                }
                 this.describe(text, cx);
             }
         });
@@ -263,6 +270,7 @@ impl ImportView {
             update: false,
             fetching: None,
             fetched_from: None,
+            fetched_shown: None,
             remember: true,
             highlighted: "json",
             describing: Task::ready(()),
@@ -279,6 +287,7 @@ impl ImportView {
     /// the editor shows its start.
     fn fill(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         self.fetched_from = None;
+        self.fetched_shown = None;
         let held = text.len() > HELD_ABOVE;
         let shown = if held {
             shown_start(&text).to_string()
@@ -385,6 +394,7 @@ impl ImportView {
                     Ok(text) => {
                         this.fill(text, window, cx);
                         this.fetched_from = Some(url);
+                        this.fetched_shown = Some(this.editor.read(cx).value());
                     }
                     Err(why) => {
                         this.error = Some(t!("import.fetch_failed", why = why).to_string());
