@@ -2802,10 +2802,19 @@ impl WorkspaceState {
             .map(|copy| copy.copy.put_back_local(undo.local.clone()));
         let call: StoreFuture<TreeData> = Box::pin(async move {
             let tree = storage.tree();
-            let at = tree.config(collection.clone()).await?;
-            let mut config = at.config;
-            undo::put_back(&mut config, &deleted);
-            tree.replace(collection.clone(), config, Some(at.revision)).await?;
+            // An open API's save landing between the read and the write
+            // makes the write stale: read again, once (BUG-10).
+            let mut tries = 2;
+            loop {
+                let at = tree.config(collection.clone()).await?;
+                let mut config = at.config;
+                undo::put_back(&mut config, &deleted);
+                match tree.replace(collection.clone(), config, Some(at.revision)).await {
+                    Ok(_) => break,
+                    Err(StoreError::Stale { .. }) if tries > 1 => tries -= 1,
+                    Err(error) => return Err(error),
+                }
+            }
             if let Some(local) = local {
                 local.await?;
             }
@@ -2827,7 +2836,16 @@ impl WorkspaceState {
                 this.save_prefs(cx);
                 cx.notify();
             }
-            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+            Err(error) => {
+                // Not undone: still to be, while no delete came after it,
+                // its notice back (BUG-10).
+                if this.undo.is_none() {
+                    let (name, apis, count) = (undo.deleted.name.clone(), undo.deleted.apis.len(), undo.count);
+                    this.undo = Some(undo);
+                    cx.emit(WorkspaceEvent::Deleted { name, apis, count });
+                }
+                cx.emit(WorkspaceEvent::Failed(error));
+            }
         });
     }
 
@@ -3608,6 +3626,150 @@ mod tests {
         cx.run_until_parked();
         let last = storage.tree().load(collection.id.clone()).await.expect("the tree");
         assert!(last.folders.iter().any(|folder| folder.id == users.id), "back");
+    }
+
+    use cyberapi_core::CollectionId;
+    use cyberapi_core::tree::TreeChange;
+    use cyberapi_store::TreeStore;
+
+    /// A project's tree where, while `races` lasts, someone else's write
+    /// lands right after each read of it whole.
+    struct Racing {
+        inner: MemoryStore,
+        races: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl TreeStore for Racing {
+        fn load(&self, collection: CollectionId) -> StoreFuture<TreeData> {
+            self.inner.load(collection)
+        }
+        fn create_folder(
+            &self,
+            collection: CollectionId,
+            parent: Option<ItemId>,
+            name: String,
+        ) -> StoreFuture<cyberapi_store::Inserted<Folder>> {
+            self.inner.create_folder(collection, parent, name)
+        }
+        fn create_api(
+            &self,
+            collection: CollectionId,
+            parent: Option<ItemId>,
+            name: String,
+        ) -> StoreFuture<cyberapi_store::Inserted<ApiSetting>> {
+            self.inner.create_api(collection, parent, name)
+        }
+        fn rename(&self, collection: CollectionId, item: ItemId, name: String) -> StoreFuture<()> {
+            self.inner.rename(collection, item, name)
+        }
+        fn save_request(&self, collection: CollectionId, api: ItemId, request: HttpRequest) -> StoreFuture<ApiSetting> {
+            self.inner.save_request(collection, api, request)
+        }
+        fn set_folder_settings(
+            &self,
+            collection: CollectionId,
+            folder: ItemId,
+            settings: FolderSettings,
+        ) -> StoreFuture<Folder> {
+            self.inner.set_folder_settings(collection, folder, settings)
+        }
+        fn set_project_settings(&self, collection: CollectionId, settings: ProjectSettings) -> StoreFuture<()> {
+            self.inner.set_project_settings(collection, settings)
+        }
+        fn move_item(&self, collection: CollectionId, item: ItemId, to: Placement) -> StoreFuture<TreeChange> {
+            self.inner.move_item(collection, item, to)
+        }
+        fn import(
+            &self,
+            collection: CollectionId,
+            parent: Option<ItemId>,
+            items: Vec<ImportItem>,
+        ) -> StoreFuture<cyberapi_store::Imported> {
+            self.inner.import(collection, parent, items)
+        }
+        fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<cyberapi_core::tree::Removal> {
+            self.inner.delete(collection, item)
+        }
+        fn config(&self, collection: CollectionId) -> StoreFuture<ConfigAt> {
+            let (inner, races) = (self.inner.clone(), self.races.clone());
+            Box::pin(async move {
+                let at = inner.config(collection.clone()).await?;
+                let raced = races
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| left.checked_sub(1))
+                    .is_ok();
+                if raced {
+                    inner.create_folder(collection, None, "theirs".into()).await?;
+                }
+                Ok(at)
+            })
+        }
+        fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64> {
+            self.inner.replace(collection, config, base)
+        }
+    }
+
+    /// BUG-10: an undo whose write a save beats is read again and made;
+    /// one that cannot be made stays to undo, and says so again.
+    #[gpui_kit::test]
+    async fn an_undo_a_save_beats_is_tried_again(cx: &mut TestAppContext) {
+        let inner = MemoryStore::new();
+        let races = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let backend = Arc::new(inner.clone());
+        let storage = Storage::new(
+            backend.clone(),
+            Arc::new(Racing {
+                inner,
+                races: races.clone(),
+            }),
+            backend.clone(),
+            backend.clone(),
+            backend.clone(),
+            backend,
+        );
+        let collection = project(&storage).await;
+        let users = storage
+            .tree()
+            .create_folder(collection.id.clone(), None, "users".into())
+            .await
+            .expect("a folder")
+            .item
+            .id;
+        let state = open(&storage, collection.clone(), cx);
+        let told = Rc::new(RefCell::new(Vec::new()));
+        let seen = told.clone();
+        cx.update(|cx| {
+            cx.subscribe(&state, move |_, event: &WorkspaceEvent, _| match event {
+                WorkspaceEvent::Deleted { count, .. } => seen.borrow_mut().push(format!("deleted {count}")),
+                WorkspaceEvent::Failed(_) => seen.borrow_mut().push("failed".into()),
+                _ => {}
+            })
+            .detach()
+        });
+        let has_users = |cx: &mut TestAppContext| {
+            state.read_with(cx, |state, _| {
+                state.data.folders.iter().any(|folder| folder.id == users)
+            })
+        };
+
+        state.update(cx, |state, cx| state.delete(users.clone(), cx));
+        cx.run_until_parked();
+        races.store(1, Ordering::Relaxed);
+        state.update(cx, |state, cx| state.undo_delete(1, cx));
+        cx.run_until_parked();
+        assert!(has_users(cx), "read again, and undone");
+        assert_eq!(*told.borrow(), ["deleted 1"]);
+
+        // Beaten every time: not undone, and it can still be.
+        state.update(cx, |state, cx| state.delete(users.clone(), cx));
+        cx.run_until_parked();
+        races.store(2, Ordering::Relaxed);
+        state.update(cx, |state, cx| state.undo_delete(2, cx));
+        cx.run_until_parked();
+        assert!(!has_users(cx));
+        assert_eq!(*told.borrow(), ["deleted 1", "deleted 2", "deleted 2", "failed"]);
+        state.update(cx, |state, cx| state.undo_delete(2, cx));
+        cx.run_until_parked();
+        assert!(has_users(cx), "undone the second time asked");
     }
 
     /// D6: an environment marked as production is the project's to keep;
