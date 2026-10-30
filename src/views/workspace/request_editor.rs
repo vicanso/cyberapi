@@ -14,7 +14,7 @@ use crate::views::json_tree::{JsonTree, json_view_switch};
 use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::open_variables_dialog;
 use crate::views::template_hints::{self, HintSource};
-use cyberapi_core::graphql::{self, GraphQlBody};
+use cyberapi_core::graphql::GraphQlBody;
 use cyberapi_core::grpc::{FROM_REFLECTION, GrpcBody};
 use cyberapi_core::import::{request_from_curl, split_url};
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
@@ -905,14 +905,16 @@ impl RequestEditor {
             .filter(|response| {
                 response.request.content_type == ContentType::GraphQl
                     && GraphQlBody::read(&response.request.body).query == query
-            })
-            .map(|response| (response.id.clone(), graphql::response_error_places(&response.body)));
-        let key = found.as_ref().map(|(id, _)| (id.clone(), query.clone()));
+            });
+        // What is marked already is not read again (PERF-2).
+        let key = found.map(|response| (response.id.clone(), query.clone()));
         if key == self.marked {
             return;
         }
+        let places = found
+            .map(|response| api.graphql_errors(response).places.clone())
+            .unwrap_or_default();
         self.marked = key;
-        let places = found.map(|(_, places)| places).unwrap_or_default();
         let marks: Vec<gpui_kit::base::input::Diagnostic> = places
             .into_iter()
             .map(|place| {

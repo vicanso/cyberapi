@@ -358,6 +358,16 @@ pub struct ApiState {
     /// A1: the last outcomes; the editor and the panel ask for them every
     /// frame.
     checks: RefCell<Option<Checks>>,
+    /// PERF-2: a GraphQL answer's errors, by the response they are of: the
+    /// panel asks every frame, the query editor at every change.
+    graphql_errors: RefCell<Option<(String, Rc<GraphQlErrors>)>>,
+}
+
+/// What a GraphQL answer's `errors` say, and where in the query.
+#[derive(Default)]
+pub struct GraphQlErrors {
+    pub messages: Vec<String>,
+    pub places: Vec<cyberapi_core::graphql::ErrorPlace>,
 }
 
 /// A1: outcomes, with the response and the assertions they came of.
@@ -448,6 +458,7 @@ impl ApiState {
             own_grpc: RefCell::new(None),
             checked_json: RefCell::new(None),
             checks: RefCell::new(None),
+            graphql_errors: RefCell::new(None),
         };
         state.load_history(cx);
         state
@@ -751,6 +762,26 @@ impl ApiState {
             None
         };
         Some(assertions::extract(extraction, response, json.as_deref()))
+    }
+
+    /// `response`'s GraphQL errors, read once: from the JSON the assertions
+    /// read too.
+    pub fn graphql_errors(&self, response: &HttpResponse) -> Rc<GraphQlErrors> {
+        if let Some((id, errors)) = &*self.graphql_errors.borrow()
+            && id == &response.id
+        {
+            return errors.clone();
+        }
+        let errors = Rc::new(
+            self.json_of(response)
+                .map(|json| GraphQlErrors {
+                    messages: cyberapi_core::graphql::errors_in(&json),
+                    places: cyberapi_core::graphql::error_places_in(&json),
+                })
+                .unwrap_or_default(),
+        );
+        *self.graphql_errors.borrow_mut() = Some((response.id.clone(), errors.clone()));
+        errors
     }
 
     fn json_of(&self, response: &HttpResponse) -> Option<Arc<serde_json::Value>> {

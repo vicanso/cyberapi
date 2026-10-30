@@ -173,10 +173,14 @@ fn is_operation(word: &str) -> bool {
 /// with the path it came from when it has one. Empty for a response that
 /// is not GraphQL's or has none.
 pub fn response_errors(body: &[u8]) -> Vec<String> {
-    let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else {
-        return Vec::new();
-    };
-    let Some(Value::Array(errors)) = fields.get("errors") else {
+    serde_json::from_slice::<Value>(body)
+        .map(|json| errors_in(&json))
+        .unwrap_or_default()
+}
+
+/// [`response_errors`] of a body read already (PERF-2).
+pub fn errors_in(json: &Value) -> Vec<String> {
+    let Some(Value::Array(errors)) = json.get("errors") else {
         return Vec::new();
     };
     errors
@@ -215,10 +219,14 @@ pub struct ErrorPlace {
 
 /// Every place the response's `errors` name in the query.
 pub fn response_error_places(body: &[u8]) -> Vec<ErrorPlace> {
-    let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else {
-        return Vec::new();
-    };
-    let Some(Value::Array(errors)) = fields.get("errors") else {
+    serde_json::from_slice::<Value>(body)
+        .map(|json| error_places_in(&json))
+        .unwrap_or_default()
+}
+
+/// [`response_error_places`] of a body read already (PERF-2).
+pub fn error_places_in(json: &Value) -> Vec<ErrorPlace> {
+    let Some(Value::Array(errors)) = json.get("errors") else {
         return Vec::new();
     };
     errors

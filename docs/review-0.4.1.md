@@ -42,7 +42,7 @@
 | BUG-26 | B8 | 低 | 带 UTF-8 BOM 的 `.http` 文件认不出 | 可能 |
 | BUG-27 | D7 | 低 | `md5` / `sha*` / `hmac*` / `urlEncode` 都按文本取输入，链在 `base64Decode` 或 `readFile` 后面时非 UTF-8 字节被换成 U+FFFD，结果是错的 | 读代码确认 |
 | PERF-1 | 树 | 高 | 树面板每帧重建所有行（含关键字搜索、拼音匹配），不用 `uniform_list` | 已核实；已修复 |
-| PERF-2 | GraphQL | 高 | GraphQL 响应在每帧和每次编辑时整份解析 `errors` | 已核实 |
+| PERF-2 | GraphQL | 高 | GraphQL 响应在每帧和每次编辑时整份解析 `errors` | 已核实；已修复 |
 | PERF-3 | 响应 | 高 | 大响应先整份格式化再截断，都在 UI 线程上，每次切回标签再做一遍 | 已核实 |
 | PERF-4 | bridge | 高 | 首页每 10 秒统计全库所有项目的接口数再过滤；页面同时重读全部草稿 | 已核实 |
 | PERF-5 | 运行器 | 中高 | 运行弹窗每帧克隆并渲染全部结果 | 读代码确认 |
@@ -265,10 +265,11 @@
 - 修复方向：行缓存在 `WorkspaceState` 里，只在树、关键字、展开集合变化时重算；用 `uniform_list` 渲染（行高本来就固定，拖放落点用 行号 × 行高 算）。
 - 修复：`WorkspaceState::rows()` 返回 `Rc<[Row]>`，按（树的构建次数、关键字、展开的目录）缓存，树每次重建经 `build_tree` 计数。树面板换成 `uniform_list`，每帧只生成看得到的行（目录的接口数、拼音高亮也只对这些行算）；滚动句柄换成 `UniformListScrollHandle`，拖放落点仍是“偏移 ÷ 行高”，拖到末尾的那条线改成按行数定位的覆盖层，滚到选中项改用列表自己的延迟滚动（不再需要等下一帧）。测试 `the_rows_are_made_once_for_what_they_show`：没变时是同一份行，树、展开、关键字变了才重做；树的构建不计数时它失败。**界面没有在真实应用里看过**：滚动、拖放（含末尾的线）、打开项目时滚到选中项、行下方空白处的右键菜单、重命名，需要手动确认一遍。
 
-### PERF-2 GraphQL 响应每帧整份解析（高，GraphQL 用户）
+### PERF-2 GraphQL 响应每帧整份解析（高，GraphQL 用户）——已修复
 
 - 位置：`src/views/workspace/response_panel.rs:1064-1065`（`render` 里 `graphql::response_errors(&response.body)`，整个响应体 `serde_json::from_slice`，新响应最多 64 MB）；`src/views/workspace/request_editor.rs:891-905`（`mark_graphql_errors` 在 `ApiState` 每次通知时执行，先解析 `GraphQlBody` 和 `response_error_places`，之后才比较缓存的 `key`，缓存没省下解析）。
 - 修复方向：每个响应 id 只算一次（放在 `ApiState` 里，和 `checked_json` 一起）；`mark_graphql_errors` 先算 key 再解析。
+- 修复：`ApiState::graphql_errors(response)` 按响应 id 缓存错误文字和位置，用断言共用的那份已解析的 JSON（`json_of`），core 多了不再解析的 `graphql::errors_in` / `error_places_in`。响应区的错误条和查询编辑器的标记都用它；`mark_graphql_errors` 先比较（响应 id，查询）再取位置。测试 `a_graphql_answers_errors_are_read_once`；让缓存永不命中时它失败。
 
 ### PERF-3 大响应先整份处理再截断，且在 UI 线程上（高）
 

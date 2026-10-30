@@ -9,7 +9,6 @@ use crate::states::{ApiState, AppStore, WorkspaceState};
 use crate::this_build;
 use crate::views::json_tree::{JsonTree, response_view_switch};
 use cyberapi_core::code::CodeTarget;
-use cyberapi_core::graphql;
 use cyberapi_core::grpc::GrpcStatus;
 use cyberapi_core::media::{self, HEX_LIMIT, ImageType};
 use cyberapi_core::model::{ContentType, HttpMethod};
@@ -1062,11 +1061,11 @@ impl ResponsePanel {
         });
         // A GraphQL answer says it failed in its `errors`, often with a 200.
         let graphql = (response.request.content_type == ContentType::GraphQl)
-            .then(|| graphql::response_errors(&response.body))
-            .filter(|errors| !errors.is_empty())
+            .then(|| self.api.read(cx).graphql_errors(response))
+            .filter(|errors| !errors.messages.is_empty())
             .map(|errors| {
-                let shown: Vec<&str> = errors.iter().take(3).map(String::as_str).collect();
-                let text = crate::i18n::counted("response.graphql_errors", errors.len());
+                let shown: Vec<&str> = errors.messages.iter().take(3).map(String::as_str).collect();
+                let text = crate::i18n::counted("response.graphql_errors", errors.messages.len());
                 let danger = cx.theme().danger;
                 v_flex()
                     .px_3()

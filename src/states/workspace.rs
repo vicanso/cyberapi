@@ -4823,6 +4823,58 @@ mod tests {
         });
     }
 
+    /// PERF-2: a GraphQL answer's errors are read once for the response,
+    /// however often the panel and the editor ask.
+    #[gpui_kit::test]
+    async fn a_graphql_answers_errors_are_read_once(cx: &mut TestAppContext) {
+        struct Failing;
+        impl HttpEngine for Failing {
+            fn send(&self, _: PreparedRequest) -> SendFuture {
+                Box::pin(async {
+                    Ok(Exchange {
+                        status: 200,
+                        body: br#"{"data": null, "errors": [{"message": "no such field",
+                            "locations": [{"line": 2, "column": 3}], "path": ["me"]}]}"#
+                            .to_vec(),
+                        ..Default::default()
+                    })
+                })
+            }
+        }
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let sender = Sender {
+            engine: Arc::new(Failing),
+            ..sender(&storage, true)
+        };
+        let state = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.create_api(None, "me".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| {
+            api.set_method(HttpMethod::Post, cx);
+            api.set_uri("https://a.test/graphql".into(), cx);
+            api.set_content_type(cyberapi_core::model::ContentType::GraphQl, cx);
+            api.send_or_cancel(Answers::default(), cx);
+        });
+        cx.run_until_parked();
+        api.read_with(cx, |api, _| {
+            let response = api.shown_response().expect("answered");
+            let errors = api.graphql_errors(response);
+            assert_eq!(errors.messages, ["no such field (me)"]);
+            assert_eq!(
+                errors
+                    .places
+                    .iter()
+                    .map(|place| (place.line, place.column))
+                    .collect::<Vec<_>>(),
+                [(2, 3)]
+            );
+            assert!(Rc::ptr_eq(&errors, &api.graphql_errors(response)), "read once");
+        });
+    }
+
     /// E1: a WebSocket API connects, hears and sends messages as they go,
     /// and once closed keeps what went each way as its answer.
     #[gpui_kit::test]
