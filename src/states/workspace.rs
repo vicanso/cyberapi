@@ -2805,33 +2805,49 @@ impl WorkspaceState {
         let store = AppStore::global(cx);
         let storage = store.storage().clone();
         let server = store.server().cloned();
-        let copy = server.as_ref().and_then(|server| {
+        // The account's copy, as the server state knows; its base as the
+        // copy store has it now — a sync in a workspace moves it on without
+        // telling the server state (BUG-23).
+        let copies = server.as_ref().and_then(|server| {
             let server = server.read(cx);
-            let binding = server.mine(&target.id)?.clone();
-            Some((
-                server.copies()?.clone(),
-                sync::CopyBinding {
-                    unsynced: true,
-                    ..binding
-                },
-            ))
+            server.mine(&target.id)?;
+            server.copies().cloned()
         });
-        let unsynced = copy.as_ref().map(|(_, binding)| binding.clone());
         let to = target.id.clone();
-        let call: StoreFuture<Vec<String>> = Box::pin(async move {
+        let call: StoreFuture<(Vec<String>, Option<sync::CopyBinding>)> = Box::pin(async move {
             storage.tree().import(to.clone(), folder, vec![item]).await?;
-            if let Some((copies, binding)) = copy {
-                copies.bind(binding).await?;
+            let mut unsynced = None;
+            if let Some(copies) = copies {
+                let bound = copies
+                    .copies()
+                    .await?
+                    .into_iter()
+                    .find(|binding| binding.collection == to);
+                if let Some(binding) = bound {
+                    let binding = sync::CopyBinding {
+                        unsynced: true,
+                        ..binding
+                    };
+                    copies.bind(binding.clone()).await?;
+                    unsynced = Some(binding);
+                }
             }
+            // What they read and the project lacks, when that can be told:
+            // the copy is made either way.
             let mut names = Vec::new();
             for category in [VariableCategory::Environment, VariableCategory::Custom] {
-                let variables = storage.variables().list(to.clone(), category).await?;
-                names.extend(variables.into_iter().map(|variable| variable.name));
+                match storage.variables().list(to.clone(), category).await {
+                    Ok(variables) => names.extend(variables.into_iter().map(|variable| variable.name)),
+                    Err(error) => {
+                        warn!(%error, "the variables of a project copied into were not read");
+                        return Ok((Vec::new(), unsynced));
+                    }
+                }
             }
-            Ok(cyberapi_core::transfer::missing(&read, &names))
+            Ok((cyberapi_core::transfer::missing(&read, &names), unsynced))
         });
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
-            Ok(missing) => {
+            Ok((missing, unsynced)) => {
                 if let (Some(server), Some(binding)) = (&server, unsynced) {
                     server.update(cx, |server, cx| server.note_bound(vec![binding], cx));
                 }

@@ -38,7 +38,7 @@
 | BUG-20 | G8 | 低中 | 版本对比里请求体、说明、示例各是一整行，改了什么看不出来；gRPC 的描述符可能是几百 KB 的一行 | 读代码确认；已修复 |
 | BUG-21 | G8 | 低 | 对比按版本在列表里的位置记，恢复或刷新后列表变了，对比的就不是原来那个版本 | 可能；已修复 |
 | BUG-22 | A6 | 低 | 导出 `openapi: 3.0.3` 时写入 2020-12 的 Schema（`type: [x, "null"]`、数值形式的 `exclusiveMinimum`、`$defs`），别的工具会拒绝 | 读代码确认；已修复 |
-| BUG-23 | F5 | 低 | 桌面版复制进服务器副本时用内存里缓存的绑定，基准修订号可能是旧的，下次打开出现不该有的冲突 | 可能 |
+| BUG-23 | F5 | 低 | 桌面版复制进服务器副本时用内存里缓存的绑定，基准修订号可能是旧的，下次打开出现不该有的冲突 | 可能；已修复 |
 | BUG-24 | F6 | 低 | 撤销通知持有工作区的强引用：离开项目再回来，点旧通知会在已分离的状态上撤销（网页会用旧草稿盖掉新的） | 读代码确认 |
 | BUG-25 | B8 | 低 | multipart 某段内容以 `<` 开头（XML、HTML）被当成读文件 | 读代码确认 |
 | BUG-26 | B8 | 低 | 带 UTF-8 BOM 的 `.http` 文件认不出 | 可能 |
@@ -236,12 +236,14 @@
 - 修复：照维护者的决定转回 3.0 的写法，`export/schema_30.rs` 的 `openapi_30`：`type` 里的 `null` 变成 `nullable: true`，多个类型变成 `anyOf`；导入写的 `anyOf: [X, {type: null}]` 变回 X 加 `nullable`（X 是 `$ref` 或和外层有同名字段时放进 `allOf`）；数值的 `exclusiveMinimum` / `exclusiveMaximum` 变成边界加布尔标志，同时有包含的边界时取更严的；`const` 变成一个值的 `enum`，`examples` 取第一个作 `example`；指向自身的 `$ref`（`#`、`#/$defs/…`、`#/definitions/…`）展开，最多 8 层，再深就是 `{}`；外部的 `$ref` 原样保留；布尔 Schema 变成 `{}` / `{not: {}}`；旧 draft 的元组 `items` 变成各项的 `anyOf`；3.0 没有的关键字（`$schema`、`$id`、`$defs`、`if`/`then`/`else`、`prefixItems`、`patternProperties`、`unevaluated*` 等）去掉。只用于导出写的响应 Schema（从示例推出的本来就是 3.0 的写法）。`FEATURES` 两份都写了。
   - 测试：`a_null_allowed_is_nullable`、`an_exclusive_bound_is_a_flag`、`its_own_definitions_are_written_in`，导出测试 `servers_paths_and_parameters` 里的断言 Schema 带了 `type: [string, null]`（去掉转换时它失败；去掉边界的转换时 `an_exclusive_bound_is_a_flag` 失败）。
 
-### BUG-23 桌面版复制进服务器副本时基准修订号可能是旧的（F5，低，可能）
+### BUG-23 桌面版复制进服务器副本时基准修订号可能是旧的（F5，低，可能）——已修复
 
 - 位置：`src/states/workspace.rs:2717-2734`。
 - 原因：绑定取自 `ServerState::mine()` 的内存缓存，只有首页和复制会 `note_bound`；在工作区里同步（`ServerCopy::pushed` → `persist` → `bind`）不更新这份缓存。同步 B 后经命令面板到 A、再复制进 B，写下 `{base: 旧, unsynced: true}`，下次打开 B 出现不该有的冲突，选“用服务器的”就丢了复制进去的条目。
 - 另：导入成功但 `bind` 或读变量失败时，复制已完成但报错，绑定可能没标未同步。
 - 修复方向：`bind` 前从 `ServerCopyStore` 读当前绑定，而不是用缓存；或者同步时也 `note_bound`。
+- 修复：照第一种做。`ServerState::mine` 只用来判断目标是不是这个账号的副本；导入之后从 `ServerCopyStore::copies` 读目标现在的绑定，标成未同步写回，再把写下的这份交给 `note_bound`。另一处：导入和标记都成功后，读目标的变量失败不再算复制失败（复制已经做了；移动时原来的条目照常删掉），只是不提示缺哪些变量，日志里记一条。
+  - 测试：`an_api_goes_into_another_project` 先在本机库里把绑定的基准往后挪（像在工作区里同步过一样，不告诉 `ServerState`），复制后检查绑定是未同步、基准是挪过的那个（写入旧基准时它失败）。
 
 ### BUG-24 撤销通知持有工作区的强引用（F6，低）
 

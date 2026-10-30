@@ -983,7 +983,15 @@ async fn an_api_goes_into_another_project(cx: &mut TestAppContext) {
         .detach();
     });
     cx.run_until_parked();
-    assert_eq!(machine.binding(&theirs.id).map(|binding| binding.unsynced), Some(false));
+    let bound = machine.binding(&theirs.id).expect("bound");
+    assert!(!bound.unsynced);
+    // BUG-23: a sync in its workspace moves the copy's base on, and the
+    // server state is not told.
+    let synced = cyberapi_core::sync::CopyBinding {
+        base: Some(bound.base.unwrap_or_default() + 5),
+        ..bound
+    };
+    pollster::block_on(machine.local.bind(synced.clone())).expect("synced");
 
     workspace.update(cx, |state, cx| {
         state.transfer(ping.id.clone(), theirs.clone(), None, false, cx)
@@ -991,7 +999,14 @@ async fn an_api_goes_into_another_project(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(api_names(&storage, &theirs.id), ["ping"], "in the copy");
     assert_eq!(api_names(&storage, &mine.id), ["ping"], "and still here");
-    assert_eq!(machine.binding(&theirs.id).map(|binding| binding.unsynced), Some(true));
+    assert_eq!(
+        machine.binding(&theirs.id),
+        Some(cyberapi_core::sync::CopyBinding {
+            unsynced: true,
+            ..synced
+        }),
+        "unsynced, over the base it was synced to"
+    );
     assert!(
         told.borrow().iter().any(|event| matches!(
             event,
