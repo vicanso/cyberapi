@@ -34,6 +34,10 @@ pub struct EventStream {
     /// are shown.
     kept: Option<(String, Arc<Vec<Event>>)>,
     scroll: UniformListScrollHandle,
+    /// How many of the events were looked at for an id, and whether one
+    /// had: the live stream's only grow, so only the new ones are looked
+    /// at in each frame (PERF-6).
+    ids: (usize, bool),
     /// The event picked, and its data in an editor.
     picked: Option<Picked>,
     _subscriptions: Vec<Subscription>,
@@ -54,6 +58,7 @@ impl EventStream {
             api,
             kept: None,
             scroll: UniformListScrollHandle::new(),
+            ids: (0, false),
             picked: None,
             _subscriptions: vec![watching],
         }
@@ -78,6 +83,7 @@ impl EventStream {
     }
 
     fn reset(&mut self, cx: &mut Context<Self>) {
+        self.ids = (0, false);
         self.picked = None;
         self.scroll = UniformListScrollHandle::new();
         cx.notify();
@@ -135,7 +141,7 @@ impl EventStream {
         cx.notify();
     }
 
-    fn row(&self, index: usize, event: &Event, ids: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn row(&self, index: usize, event: &Event, ids: bool, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let picked = self.picked.as_ref().is_some_and(|picked| picked.index == index);
         let mut data: String = event.data.chars().take(ROW_DATA).collect();
@@ -199,9 +205,17 @@ fn at(at: Option<u64>) -> String {
 
 impl Render for EventStream {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.events(cx).len();
         // The id column, for a stream that gives ids.
-        let ids = self.events(cx).iter().any(|event| event.id.is_some());
+        let (count, ids) = {
+            let events = self.events(cx);
+            let (looked, had) = match self.ids {
+                (looked, had) if looked <= events.len() => (looked, had),
+                _ => (0, false),
+            };
+            let had = had || events[looked..].iter().any(|event| event.id.is_some());
+            (events.len(), had)
+        };
+        self.ids = (count, ids);
         let live = self.kept.is_none();
         // Following the newest while the reader is at it.
         if live && self.scroll.is_scrolled_to_end() != Some(false) {
@@ -227,17 +241,11 @@ impl Render for EventStream {
             "sse-events",
             count,
             cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                let events: Vec<(usize, Event)> = this
-                    .events(cx)
-                    .iter()
-                    .enumerate()
-                    .skip(range.start)
-                    .take(range.len())
-                    .map(|(index, event)| (index, event.clone()))
-                    .collect();
+                let events = this.events(cx).get(range.clone()).unwrap_or_default();
                 events
                     .iter()
-                    .map(|(index, event)| this.row(*index, event, ids, cx).into_any_element())
+                    .zip(range)
+                    .map(|(event, index)| this.row(index, event, ids, cx).into_any_element())
                     .collect::<Vec<_>>()
             }),
         )

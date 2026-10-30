@@ -9,7 +9,7 @@ use crate::oauth;
 use crate::send::{SendFailure, Sender, Unanswered, add_cookies, keep_cookies, kept, prepare};
 use cyberapi_core::graphql_ws::{self, Message};
 use cyberapi_core::model::{ContentType, HttpRequest};
-use cyberapi_core::response::{Exchange, HttpResponse, HttpStats, SentRequest, StreamEnd, StreamInfo};
+use cyberapi_core::response::{Exchange, HttpResponse, HttpStats, RESPONSE_LIMIT, SentRequest, StreamEnd, StreamInfo};
 use cyberapi_core::secrets;
 use cyberapi_core::send::{self, PrepareError, PreparedRequest};
 use cyberapi_core::template::Answers;
@@ -246,9 +246,22 @@ pub async fn subscribe(
 /// kept in the history.
 pub async fn drive(
     sender: Sender,
+    subscription: Subscription,
+    events: UnboundedSender<Heard>,
+    stop: oneshot::Receiver<()>,
+) -> HttpResponse {
+    drive_within(sender, subscription, events, stop, RESPONSE_LIMIT).await
+}
+
+/// [`drive`], the results kept to `limit` bytes: once they reach it the
+/// subscription is completed and closed, and the answer says it was cut —
+/// as an event stream's is at the most the engine reads (PERF-6).
+async fn drive_within(
+    sender: Sender,
     mut subscription: Subscription,
     events: UnboundedSender<Heard>,
     stop: oneshot::Receiver<()>,
+    limit: usize,
 ) -> HttpResponse {
     let mut stop = stop.fuse();
     let mut stopping = false;
@@ -337,6 +350,14 @@ pub async fn drive(
                 }
                 break;
             }
+        }
+        if body.len() >= limit && !stopping {
+            ended = StreamEnd::Cut;
+            stopping = true;
+            let _ = subscription
+                .outgoing
+                .unbounded_send(SocketOut::Send(Frame::Text(graphql_ws::complete())));
+            let _ = subscription.outgoing.unbounded_send(SocketOut::Close);
         }
     }
     finish(&sender, subscription.head, body, arrivals, ended).await
@@ -634,6 +655,71 @@ mod tests {
             assert_eq!(shown.len(), 1);
             assert_eq!(shown[0].event, NEXT);
             assert_eq!(shown[0].at, Some(9));
+        });
+    }
+
+    /// PERF-6: results stop being kept at the limit: the subscription is
+    /// completed and closed, and the answer says it was cut.
+    #[test]
+    fn a_subscription_ends_at_the_limit() {
+        pollster::block_on(async {
+            let (_storage, engine, sender, collection, api) = setup().await;
+            let opening = subscribe(
+                sender.clone(),
+                collection,
+                api,
+                request("wss://a.test/graphql"),
+                Answers::default(),
+            );
+            let serving = async {
+                let (mut sent, told) = wait_server(&engine).await;
+                sent.next().await.expect("init");
+                told.unbounded_send((
+                    SocketIn::Message(Frame::Text("{\"type\":\"connection_ack\"}".into())),
+                    1,
+                ))
+                .expect("ack");
+                sent.next().await.expect("subscribe");
+                (sent, told)
+            };
+            let (started, (mut sent, told)) = futures::future::join(opening, serving).await;
+            let Started::Open(subscription) = started.expect("opened") else {
+                panic!("not open");
+            };
+            let next = |n: u32| {
+                SocketIn::Message(Frame::Text(format!(
+                    "{{\"id\":\"1\",\"type\":\"next\",\"payload\":{{\"data\":{{\"n\":{n}}}}}}}"
+                )))
+            };
+            let (events_tx, mut events) = mpsc::unbounded();
+            let (_stop_tx, stop_rx) = oneshot::channel();
+            let driving = drive_within(sender, subscription, events_tx, stop_rx, 40);
+            let feeding = async {
+                told.unbounded_send((next(1), 5)).expect("next");
+                told.unbounded_send((next(2), 6)).expect("next");
+                // Past the limit: complete, then close.
+                let complete = sent.next().await.expect("complete");
+                assert!(matches!(complete, SocketOut::Send(Frame::Text(text)) if text.contains("complete")));
+                assert_eq!(sent.next().await, Some(SocketOut::Close));
+                told.unbounded_send((next(3), 7)).expect("next");
+                told.unbounded_send((
+                    SocketIn::Closed {
+                        code: Some(1000),
+                        reason: String::new(),
+                    },
+                    8,
+                ))
+                .expect("closed");
+            };
+            let (response, _) = futures::future::join(driving, feeding).await;
+            assert_eq!(
+                response.stream.as_ref().map(|stream| stream.ended.clone()),
+                Some(StreamEnd::Cut)
+            );
+            let heard: Vec<String> = std::iter::from_fn(|| events.try_recv().ok())
+                .map(|heard| heard.data)
+                .collect();
+            assert_eq!(heard.len(), 3, "what came while closing is still told: {heard:?}");
         });
     }
 }

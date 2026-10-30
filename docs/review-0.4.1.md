@@ -48,7 +48,7 @@
 | PERF-3 | 响应 | 高 | 大响应先整份格式化再截断，都在 UI 线程上，每次切回标签再做一遍 | 已核实；部分修复 |
 | PERF-4 | bridge | 高 | 首页每 10 秒统计全库所有项目的接口数再过滤；页面同时重读全部草稿 | 已核实；已修复 |
 | PERF-5 | 运行器 | 中高 | 运行弹窗每帧克隆并渲染全部结果 | 读代码确认；已修复 |
-| PERF-6 | 流 | 中高 | 打开着的流每 100ms 重绘整个窗口直到关闭；WebSocket / gRPC 流的收发记录没有上限且存三份 | 读代码确认 |
+| PERF-6 | 流 | 中高 | 打开着的流每 100ms 重绘整个窗口直到关闭；WebSocket / gRPC 流的收发记录没有上限且存三份 | 读代码确认；已修复 |
 | PERF-7 | bridge | 中高 | 同步 / 上传逐行写入，约 3 ×（接口 + 目录）次往返，全程持锁 | 读代码确认 |
 | PERF-8 | 内存 | 中 | 每个标签把新收到的完整响应体（最多 64 MB）留在内存里，最多 history_size 条 | 已核实 |
 | PERF-9 | 历史 | 中 | 打开标签时读全部历史连同响应体；桌面版占着唯一的数据库连接 | 读代码确认 |
@@ -302,11 +302,18 @@
 - 修复方向：`uniform_list` 按下标渲染，借用而不克隆。
 - 修复：照上面做。结果列表是 `uniform_list`（`ListSizingBehavior::Infer`，最多 360px 高），只画看得见的行，直接借用 `RunState` 里的结果。为了行高一致，每行的附注（断言通过几条、提取了什么、出错原因）合成一行，没有附注时也占一行，未发送的原因截断成一行。没有视图测试，也还没在应用里看过。
 
-### PERF-6 打开着的流一直每 100ms 重绘，收发记录无上限（中高）
+### PERF-6 打开着的流一直每 100ms 重绘，收发记录无上限（中高）——已修复
 
 - 位置：`request_editor.rs:1259-1273`（`sending_since()` 有值时每 100ms 通知；`ApiState::connect` 直到连接关闭都保持发送中，`states/api.rs:1137`）；每条 WebSocket 消息各自 `cx.notify()`（`:1092-1098`），没有事件流那样的 `LIVE_FRAME` 合批；每条消息存三份：`OpenSocket.messages`、`LiveStream.body`、`LiveStream.events`（`api.rs:179、260-264`）；没有类似 `RESPONSE_LIMIT` 的上限（那个只管握手，`cyberapi-http/src/socket.rs`）；gRPC 客户端流（`OpenCall.messages`）一样；`EventStream::render` 每帧扫一遍全部事件。
 - 情况：WebSocket、SSE、gRPC 流开几分钟到几小时：没有消息时 CPU 也不低，内存一直涨。
 - 修复方向：连上之后把计时降到每秒一次或停掉；消息按帧合批；记录按大小或条数设上限并说明被截断。
+- 修复：
+  - 计时：流打开着（`ApiState::live()` 有值）时请求编辑器每秒重绘一次，按钮和状态行显示整秒（`views::workspace::waited` / `waited_tick`）；等待响应时仍是 100ms、显示到十分之一秒。
+  - 合批：WebSocket、流式 gRPC 调用、GraphQL 订阅收到的消息和事件流一样，一帧（`LIVE_FRAME`，50ms）内到的一起处理、重绘一次。
+  - 上限：WebSocket 和流式 gRPC 调用的收发记录到 `RESPONSE_LIMIT`（64 MB，`ApiState.live_limit`，测试用小值）时，WebSocket 发出关闭、gRPC 调用放弃，之后收发的都不记、不再发送，存进历史的结束原因是 `StreamEnd::Cut`（和事件流到上限时一样显示“被截断”）。GraphQL 订阅在服务的 `graphql_ws::drive` 里同样处理：到上限时发 `complete` 再关闭，结束原因 `Cut`。和维护者定的“不再记新的、保留开头、写明截断”一致；另外连接也随之关闭，不留一个只收不记的连接。`docs/FEATURES*.md` 的 WebSocket 一节加了一句。
+  - 事件列表：是否有 id 一列只看新到的事件（`EventStream.ids`），行直接借用，不再每帧扫描、克隆全部事件。
+  - 没做的：消息仍存三份（`OpenSocket.messages`、`LiveStream.body`、`LiveStream.events`），上限让它们都有界。
+  - 测试：`a_websocket_is_closed_once_it_has_kept_the_most`（达到上限后发出关闭、不再记也不再发、历史里是 `Cut`），`graphql_ws::a_subscription_ends_at_the_limit`；去掉上限时前者失败、后者卡住。流式 gRPC 调用的上限没有单独的测试（和 WebSocket 共用 `LiveStream::full`）。计时和事件列表没有视图测试。
 
 ### PERF-7 bridge 同步 / 上传逐行写入（中高，大项目）
 

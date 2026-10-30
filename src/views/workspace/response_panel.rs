@@ -652,15 +652,15 @@ impl ResponsePanel {
         };
         let status: AnyElement = match (sending, response) {
             (Some(started), _) => {
-                let waited = started.elapsed().as_secs_f32();
                 let text = match live {
                     Some((.., true)) => t!("response.stream_stopping").to_string(),
                     Some((_, events, size, false)) => format!(
-                        "{} · {} · {waited:.1}s",
+                        "{} · {} · {}",
                         crate::i18n::counted("response.events_count", events),
-                        format_size(size as u64)
+                        format_size(size as u64),
+                        super::waited(started, true)
                     ),
-                    None => format!("{} {waited:.1}s", t!("response.sending")),
+                    None => format!("{} {}", t!("response.sending"), super::waited(started, false)),
                 };
                 h_flex()
                     .gap_2()

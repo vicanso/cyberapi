@@ -184,6 +184,22 @@ pub fn bind_mac_page_keys(cx: &mut App) {
     ]);
 }
 
+/// How long a request has been out since `started`: to a tenth of a second
+/// while it waits, in whole seconds while a stream is open — then the time
+/// is redrawn only once a second (PERF-6).
+pub(crate) fn waited(started: web_time::Instant, live: bool) -> String {
+    let waited = started.elapsed();
+    match live {
+        true => format!("{}s", waited.as_secs()),
+        false => format!("{:.1}s", waited.as_secs_f32()),
+    }
+}
+
+/// How often the time a request has been out is redrawn.
+pub(crate) fn waited_tick(live: bool) -> std::time::Duration {
+    std::time::Duration::from_millis(if live { 1000 } else { 100 })
+}
+
 /// The color of a method's label (§6): DELETE red, the methods with a body
 /// green, a gRPC call magenta, a WebSocket cyan (E1), the rest blue.
 pub fn method_color(method: HttpMethod, cx: &App) -> Hsla {

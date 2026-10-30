@@ -35,7 +35,7 @@ use cyberapi_core::graphql_schema::Schema;
 use cyberapi_core::grpc::{self, Definitions, FROM_REFLECTION, GrpcBody, ReplyReader};
 use cyberapi_core::model::{ApiSetting, ContentType, Example, HttpMethod, HttpRequest, KvParam};
 use cyberapi_core::prefs::RequestSettings;
-use cyberapi_core::response::{HttpResponse, StreamEnd};
+use cyberapi_core::response::{HttpResponse, RESPONSE_LIMIT, StreamEnd};
 use cyberapi_core::send::PrepareError;
 use cyberapi_core::sse;
 use cyberapi_core::template::{Answers, TemplateError};
@@ -179,6 +179,9 @@ struct OpenSocket {
     messages: Vec<(bool, Frame, u64)>,
     /// When it opened: a message's time is after it.
     opened: Instant,
+    /// What went each way reached the most kept: it is being closed, and
+    /// nothing more is kept (PERF-6).
+    cut: bool,
 }
 
 /// E2: an open gRPC call whose request streams. Messages go out on it one
@@ -193,6 +196,9 @@ struct OpenCall {
     /// call never is, until it ends.
     finished: bool,
     bidi: bool,
+    /// What went each way reached the most kept: it is given up, and
+    /// nothing more is kept (PERF-6).
+    cut: bool,
     reader: Option<ReplyReader>,
     status: Option<u16>,
     headers: Vec<(String, String)>,
@@ -240,6 +246,12 @@ impl LiveStream {
             Reader::Socket => Vec::new(),
         };
         self.events.extend(events);
+    }
+
+    /// PERF-6: what came holds the most a stream keeps, as an event
+    /// stream's body does at the most the engine reads.
+    fn full(&self, limit: usize) -> bool {
+        self.body.len() >= limit
     }
 
     /// E1: a WebSocket's, its messages added as they go and come.
@@ -331,6 +343,9 @@ pub struct ApiState {
     sending: Option<Sending>,
     /// The event stream being answered, while it comes.
     live: Option<LiveStream>,
+    /// PERF-6: the most a WebSocket's or a streaming gRPC call's messages
+    /// keep; [`RESPONSE_LIMIT`], a test's less.
+    live_limit: usize,
     /// E1: the WebSocket open, while it is.
     socket: Option<OpenSocket>,
     /// E2: the gRPC call open, while it is.
@@ -445,6 +460,7 @@ impl ApiState {
             save_task: None,
             saves: Arc::default(),
             sending: None,
+            live_limit: RESPONSE_LIMIT,
             live: None,
             socket: None,
             call: None,
@@ -982,6 +998,12 @@ impl ApiState {
         self.live.as_ref()
     }
 
+    /// PERF-6: a test's limit on what a stream keeps.
+    #[cfg(test)]
+    pub fn limit_live(&mut self, limit: usize) {
+        self.live_limit = limit;
+    }
+
     /// E3: subscribes when the rendered address is a WebSocket, and sends
     /// otherwise. Results show as they come; stopping sends `complete`.
     fn subscribe_graphql(&mut self, answers: Answers, cx: &mut Context<Self>) {
@@ -1033,11 +1055,18 @@ impl ApiState {
                 // `cx` here is the task's, whose spawn takes the app alone.
                 let listening = this.clone();
                 let follow = cx.spawn(async move |cx| {
-                    while let Some(event) = heard.next().await {
+                    // What comes in a frame's time is taken in together.
+                    while let Some(first) = heard.next().await {
+                        let mut events = vec![first];
+                        while let Ok(more) = heard.try_recv() {
+                            events.push(more);
+                        }
                         if listening
                             .update(cx, |this, cx| {
                                 if let Some(live) = this.live.as_mut() {
-                                    live.graphql_event(&event);
+                                    for event in &events {
+                                        live.graphql_event(event);
+                                    }
                                 }
                                 cx.notify();
                             })
@@ -1045,6 +1074,7 @@ impl ApiState {
                         {
                             return;
                         }
+                        cx.background_executor().timer(LIVE_FRAME).await;
                     }
                 });
                 if this
@@ -1125,6 +1155,7 @@ impl ApiState {
                         outgoing,
                         messages: Vec::new(),
                         opened: Instant::now(),
+                        cut: false,
                     });
                     cx.notify();
                 })
@@ -1136,31 +1167,35 @@ impl ApiState {
                 code: None,
                 reason: String::new(),
             };
-            while let Some((came, at)) = incoming.next().await {
-                let SocketIn::Message(frame) = came else {
-                    last = came;
-                    break;
-                };
-                let heard = this.update(cx, |this, cx| {
-                    if let Some(socket) = this.socket.as_mut() {
-                        socket.messages.push((false, frame.clone(), at));
-                    }
-                    if let Some(live) = this.live.as_mut() {
-                        live.message(false, &frame, at);
-                    }
-                    cx.notify();
-                });
-                if heard.is_err() {
-                    return;
+            // What comes in a frame's time is taken in together (PERF-6).
+            while let Some(first) = incoming.next().await {
+                let mut came = vec![first];
+                while let Ok(more) = incoming.try_recv() {
+                    came.push(more);
                 }
+                let Ok(ended) = this.update(cx, |this, cx| this.heard_socket(came, cx)) else {
+                    return;
+                };
+                if let Some(ended) = ended {
+                    last = ended;
+                    break;
+                }
+                cx.background_executor().timer(LIVE_FRAME).await;
             }
-            let Ok((messages, stopping)) = this.update(cx, |this, _| {
-                let messages = this.socket.take().map(|socket| socket.messages).unwrap_or_default();
-                (messages, this.live.as_ref().is_some_and(|live| live.stopping))
+            let Ok((messages, stopping, cut)) = this.update(cx, |this, _| {
+                let (messages, cut) = this
+                    .socket
+                    .take()
+                    .map(|socket| (socket.messages, socket.cut))
+                    .unwrap_or_default();
+                (messages, this.live.as_ref().is_some_and(|live| live.stopping), cut)
             }) else {
                 return;
             };
-            let ended = socket::ending(&last, stopping);
+            let ended = match cut {
+                true => StreamEnd::Cut,
+                false => socket::ending(&last, stopping),
+            };
             let kept = cx.background_spawn(socket::keep(sender, head, messages, ended)).await;
             let _ = this.update(cx, |this, cx| this.answered(Ok(kept), cx));
         });
@@ -1172,6 +1207,38 @@ impl ApiState {
             replies: None,
         });
         cx.notify();
+    }
+
+    /// E1: what came on the open WebSocket, kept and shown; what ended it,
+    /// when something did.
+    fn heard_socket(&mut self, came: Vec<(SocketIn, u64)>, cx: &mut Context<Self>) -> Option<SocketIn> {
+        cx.notify();
+        for (came, at) in came {
+            let SocketIn::Message(frame) = came else {
+                return Some(came);
+            };
+            self.keep_message(false, frame, at);
+        }
+        None
+    }
+
+    /// E1: a message that went or came on the open WebSocket, kept — till
+    /// what is kept is full: then the socket is closed, and nothing more
+    /// kept (PERF-6).
+    fn keep_message(&mut self, sent: bool, frame: Frame, at: u64) {
+        let (Some(socket), Some(live)) = (self.socket.as_mut(), self.live.as_mut()) else {
+            return;
+        };
+        if socket.cut {
+            return;
+        }
+        live.message(sent, &frame, at);
+        socket.messages.push((sent, frame, at));
+        if live.full(self.live_limit) {
+            socket.cut = true;
+            live.stopping = true;
+            let _ = socket.outgoing.unbounded_send(SocketOut::Close);
+        }
     }
 
     /// E1: whether the WebSocket is open, so a message can go.
@@ -1200,13 +1267,13 @@ impl ApiState {
 
     fn say(&mut self, text: String, cx: &mut Context<Self>) {
         let Some(socket) = self.socket.as_mut() else { return };
+        if socket.cut {
+            return;
+        }
         let frame = Frame::Text(text);
         let at = socket.opened.elapsed().as_millis() as u64;
         if socket.outgoing.unbounded_send(SocketOut::Send(frame.clone())).is_ok() {
-            socket.messages.push((true, frame.clone(), at));
-            if let Some(live) = self.live.as_mut() {
-                live.message(true, &frame, at);
-            }
+            self.keep_message(true, frame, at);
         }
         cx.notify();
     }
@@ -1252,6 +1319,7 @@ impl ApiState {
                         opened: Instant::now(),
                         finished: false,
                         bidi,
+                        cut: false,
                         reader,
                         status: None,
                         headers: Vec::new(),
@@ -1264,11 +1332,19 @@ impl ApiState {
             {
                 return;
             }
-            while let Some(came) = incoming.next().await {
-                let ended = this.update(cx, |this, cx| this.heard(came, cx)).unwrap_or(true);
+            // What comes in a frame's time is taken in together (PERF-6).
+            while let Some(first) = incoming.next().await {
+                let mut came = vec![first];
+                while let Ok(more) = incoming.try_recv() {
+                    came.push(more);
+                }
+                let ended = this
+                    .update(cx, |this, cx| came.into_iter().any(|came| this.heard(came, cx)))
+                    .unwrap_or(true);
                 if ended {
                     break;
                 }
+                cx.background_executor().timer(LIVE_FRAME).await;
             }
             // `outgoing` is dropped only now: dropping it earlier would
             // reset a call whose request was finished and whose reply is
@@ -1286,9 +1362,12 @@ impl ApiState {
                 headers,
                 trailers,
                 failed,
+                cut,
                 ..
             } = call;
-            let ended = if stopping {
+            let ended = if cut {
+                StreamEnd::Cut
+            } else if stopping {
                 StreamEnd::Stopped
             } else if let Some(message) = failed {
                 StreamEnd::Failed { message }
@@ -1365,15 +1444,24 @@ impl ApiState {
         }
     }
 
-    /// A turn of the open call, shown now and kept when it ends.
+    /// A turn of the open call, shown now and kept when it ends — till
+    /// what is kept is full: then the call is given up, and nothing more
+    /// kept (PERF-6).
     fn turn(&mut self, sent: bool, text: String, at: u64, cx: &mut Context<Self>) {
-        if let Some(call) = self.call.as_mut() {
-            call.messages.push((sent, text.clone(), at));
-        }
-        if let Some(live) = self.live.as_mut() {
-            live.grpc_turn(sent, &text, at);
-        }
         cx.notify();
+        let (Some(call), Some(live)) = (self.call.as_mut(), self.live.as_mut()) else {
+            return;
+        };
+        if call.cut {
+            return;
+        }
+        live.grpc_turn(sent, &text, at);
+        call.messages.push((sent, text, at));
+        if live.full(self.live_limit) {
+            call.cut = true;
+            live.stopping = true;
+            let _ = call.outgoing.unbounded_send(CallOut::Cancel);
+        }
     }
 
     /// E2: whether the call is open, so a message can go.
@@ -1408,16 +1496,13 @@ impl ApiState {
 
     fn say_grpc(&mut self, text: String, framed: Vec<u8>, cx: &mut Context<Self>) {
         let Some(call) = self.call.as_mut() else { return };
-        if call.finished {
+        if call.finished || call.cut {
             return;
         }
         let at = call.opened.elapsed().as_millis() as u64;
         if call.outgoing.unbounded_send(CallOut::Data(framed)).is_ok() {
             let text = if text.trim().is_empty() { "{}".into() } else { text };
-            call.messages.push((true, text.clone(), at));
-            if let Some(live) = self.live.as_mut() {
-                live.grpc_turn(true, &text, at);
-            }
+            self.turn(true, text, at, cx);
         }
         cx.notify();
     }

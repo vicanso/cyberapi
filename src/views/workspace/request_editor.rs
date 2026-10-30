@@ -39,7 +39,6 @@ use gpui_kit::{
 };
 use rust_i18n::t;
 use std::collections::HashMap;
-use std::time::Duration;
 
 /// The headers one types most, offered in the header list's menu: the
 /// name, and the value's usual start.
@@ -1265,16 +1264,22 @@ impl RequestEditor {
         .detach();
     }
 
-    /// Ticks while a request is out, for the time it has taken.
+    /// Ticks while a request is out, for the time it has taken: once a
+    /// second while a stream is open, which may be for hours (PERF-6).
     fn follow_sending(&mut self, cx: &mut Context<Self>) {
         let sending = self.api.read(cx).sending_since().is_some();
         if sending && self.ticker.is_none() {
             self.ticker = Some(cx.spawn(async move |this, cx| {
+                let mut tick = super::waited_tick(false);
                 loop {
-                    cx.background_executor().timer(Duration::from_millis(100)).await;
-                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    cx.background_executor().timer(tick).await;
+                    let Ok(live) = this.update(cx, |this, cx| {
+                        cx.notify();
+                        this.api.read(cx).live().is_some()
+                    }) else {
                         return;
-                    }
+                    };
+                    tick = super::waited_tick(live);
                 }
             }));
         } else if !sending {
@@ -1519,13 +1524,13 @@ impl RequestEditor {
                             .danger()
                             .small()
                             .label(format!(
-                                "{} {:.1}s",
+                                "{} {}",
                                 if streaming {
                                     t!("editor.stop_stream")
                                 } else {
                                     t!("editor.cancel_send")
                                 },
-                                started.elapsed().as_secs_f32()
+                                super::waited(started, streaming)
                             ))
                             .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
                         None => Button::new("request-send")
@@ -1756,13 +1761,13 @@ impl RequestEditor {
                 .danger()
                 .small()
                 .label(format!(
-                    "{} {:.1}s",
+                    "{} {}",
                     if open {
                         t!("editor.ws_disconnect")
                     } else {
                         t!("editor.cancel_send")
                     },
-                    started.elapsed().as_secs_f32()
+                    super::waited(started, open)
                 ))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.api
@@ -1790,13 +1795,13 @@ impl RequestEditor {
                 .danger()
                 .small()
                 .label(format!(
-                    "{} {:.1}s",
+                    "{} {}",
                     if open {
                         t!("editor.ws_disconnect")
                     } else {
                         t!("editor.cancel_send")
                     },
-                    started.elapsed().as_secs_f32()
+                    super::waited(started, open)
                 ))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.api

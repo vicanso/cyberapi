@@ -4911,37 +4911,45 @@ mod tests {
         });
     }
 
-    /// E1: a WebSocket API connects, hears and sends messages as they go,
-    /// and once closed keeps what went each way as its answer.
-    #[gpui_kit::test]
-    async fn a_websocket_connects_and_keeps_its_messages(cx: &mut TestAppContext) {
-        use cyberapi_core::ws::{self, Frame};
-        use cyberapi_http::{OpenFuture, Opened, Socket, SocketIn, SocketOut};
-        use futures::channel::mpsc;
-        type Server = (
-            mpsc::UnboundedReceiver<SocketOut>,
-            mpsc::UnboundedSender<(SocketIn, u64)>,
-        );
-        struct Sockets(Arc<std::sync::Mutex<Option<Server>>>);
-        impl HttpEngine for Sockets {
-            fn send(&self, _: PreparedRequest) -> SendFuture {
-                Box::pin(std::future::pending())
-            }
-            fn open_socket(&self, _: PreparedRequest) -> OpenFuture {
-                let (outgoing, sent) = mpsc::unbounded();
-                let (told, incoming) = mpsc::unbounded();
-                *self.0.lock().expect("server") = Some((sent, told));
-                Box::pin(async move {
-                    Ok(Opened::Socket(Socket {
-                        status: 101,
-                        headers: Vec::new(),
-                        stats: Default::default(),
-                        outgoing,
-                        incoming,
-                    }))
-                })
-            }
+    type SocketServer = (
+        futures::channel::mpsc::UnboundedReceiver<cyberapi_http::SocketOut>,
+        futures::channel::mpsc::UnboundedSender<(cyberapi_http::SocketIn, u64)>,
+    );
+
+    /// E1: an engine whose WebSockets the test is the server of.
+    struct Sockets(Arc<std::sync::Mutex<Option<SocketServer>>>);
+
+    impl HttpEngine for Sockets {
+        fn send(&self, _: PreparedRequest) -> SendFuture {
+            Box::pin(std::future::pending())
         }
+        fn open_socket(&self, _: PreparedRequest) -> cyberapi_http::OpenFuture {
+            let (outgoing, sent) = futures::channel::mpsc::unbounded();
+            let (told, incoming) = futures::channel::mpsc::unbounded();
+            *self.0.lock().expect("server") = Some((sent, told));
+            Box::pin(async move {
+                Ok(cyberapi_http::Opened::Socket(cyberapi_http::Socket {
+                    status: 101,
+                    headers: Vec::new(),
+                    stats: Default::default(),
+                    outgoing,
+                    incoming,
+                }))
+            })
+        }
+    }
+
+    /// E1: a WebSocket API opened on a [`Sockets`] engine, its workspace,
+    /// and its server.
+    async fn open_socket(
+        cx: &mut TestAppContext,
+    ) -> (
+        Storage,
+        Collection,
+        Entity<WorkspaceState>,
+        Entity<ApiState>,
+        SocketServer,
+    ) {
         let storage = MemoryStore::new().storage();
         let collection = project(&storage).await;
         let server = Arc::new(std::sync::Mutex::new(None));
@@ -4962,7 +4970,17 @@ mod tests {
         api.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
         cx.run_until_parked();
         assert!(api.read_with(cx, |api, _| api.socket_open()), "open");
-        let (mut sent, told) = server.lock().expect("server").take().expect("opened");
+        let server = server.lock().expect("server").take().expect("opened");
+        (storage, collection, state, api, server)
+    }
+
+    /// E1: a WebSocket API connects, hears and sends messages as they go,
+    /// and once closed keeps what went each way as its answer.
+    #[gpui_kit::test]
+    async fn a_websocket_connects_and_keeps_its_messages(cx: &mut TestAppContext) {
+        use cyberapi_core::ws::{self, Frame};
+        use cyberapi_http::{SocketIn, SocketOut};
+        let (storage, collection, _state, api, (mut sent, told)) = open_socket(cx).await;
 
         told.unbounded_send((SocketIn::Message(Frame::Text("welcome".into())), 5))
             .expect("open");
@@ -5000,6 +5018,8 @@ mod tests {
             9,
         ))
         .expect("open");
+        // What comes is taken in a frame at a time.
+        cx.executor().advance_clock(Duration::from_millis(100));
         cx.run_until_parked();
         api.read_with(cx, |api, _| {
             assert!(!api.socket_open() && api.sending_since().is_none() && api.live().is_none());
@@ -5024,6 +5044,55 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// PERF-6: once what went each way is as much as is kept, the socket
+    /// is closed, nothing more is kept, and what is says it was cut.
+    #[gpui_kit::test]
+    async fn a_websocket_is_closed_once_it_has_kept_the_most(cx: &mut TestAppContext) {
+        use cyberapi_core::response::StreamEnd;
+        use cyberapi_core::ws::Frame;
+        use cyberapi_http::{SocketIn, SocketOut};
+        let (_storage, _collection, _state, api, (mut sent, told)) = open_socket(cx).await;
+        api.update(cx, |api, _| api.limit_live(64));
+        let message = |text: &str| (SocketIn::Message(Frame::Text(text.into())), 5);
+        told.unbounded_send(message("one")).expect("open");
+        cx.run_until_parked();
+        assert!(sent.try_recv().is_err(), "room for more");
+        cx.executor().advance_clock(Duration::from_millis(100));
+        for _ in 0..3 {
+            told.unbounded_send(message("a longer message")).expect("open");
+        }
+        cx.run_until_parked();
+        assert_eq!(sent.try_recv().ok(), Some(SocketOut::Close));
+        assert!(api.read_with(cx, |api, _| api.live().is_some_and(|live| live.stopping)));
+        // What comes while it closes is not kept, nor is what is sent.
+        cx.executor().advance_clock(Duration::from_millis(100));
+        told.unbounded_send(message("after")).expect("open");
+        cx.run_until_parked();
+        api.update(cx, |api, cx| api.send_message(Answers::default(), cx));
+        cx.run_until_parked();
+        assert!(sent.try_recv().is_err(), "nothing sent once closing");
+        told.unbounded_send((
+            SocketIn::Closed {
+                code: Some(1000),
+                reason: String::new(),
+            },
+            9,
+        ))
+        .expect("open");
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        api.read_with(cx, |api, _| {
+            let shown = api.shown_response().expect("kept");
+            assert_eq!(
+                shown.stream.as_ref().map(|stream| stream.ended.clone()),
+                Some(StreamEnd::Cut)
+            );
+            let kept: Vec<String> = shown.stream_events().into_iter().map(|event| event.data).collect();
+            // The second reached the most: the third came after.
+            assert_eq!(kept, ["one", "a longer message"]);
+        });
     }
 
     #[gpui_kit::test]
