@@ -74,9 +74,11 @@ struct Comparing {
     /// Compared with the version after it, rather than the project now.
     with_next: bool,
     found: Option<Result<Arc<Compared>, String>>,
-    /// The edited API whose request is shown, and the comparison of it.
-    open: Option<(ItemId, Arc<diff::Compared>)>,
+    /// The edited API whose request is shown, and the comparison of it:
+    /// `None` while it is worked out, away from the window (PERF-16).
+    open: Option<(ItemId, Option<Arc<diff::Compared>>)>,
     _reading: Task<()>,
+    _opening: Option<Task<()>>,
 }
 
 impl VersionsView {
@@ -130,6 +132,7 @@ impl VersionsView {
             found: None,
             open: None,
             _reading: reading,
+            _opening: None,
         });
         cx.notify();
     }
@@ -139,17 +142,32 @@ impl VersionsView {
         let Some(comparing) = &mut self.comparing else { return };
         if comparing.open.as_ref().is_some_and(|(open, _)| open == &id) {
             comparing.open = None;
+            comparing._opening = None;
         } else if let Some(Ok(found)) = &comparing.found {
-            let text = |config: &ProjectConfig| {
-                config
-                    .apis
-                    .iter()
-                    .find(|api| api.id == id)
-                    .map(|api| versions::request_text(&api.request))
-                    .unwrap_or_default()
-            };
-            let compared = diff::compare(&text(&found.old), &text(&found.new));
-            comparing.open = Some((id, Arc::new(compared)));
+            let (found, of) = (found.clone(), id.clone());
+            let work = cx.background_spawn(async move {
+                let text = |config: &ProjectConfig| {
+                    config
+                        .apis
+                        .iter()
+                        .find(|api| api.id == of)
+                        .map(|api| versions::request_text(&api.request))
+                        .unwrap_or_default()
+                };
+                diff::compare(&text(&found.old), &text(&found.new))
+            });
+            comparing.open = Some((id.clone(), None));
+            comparing._opening = Some(cx.spawn(async move |this, cx| {
+                let compared = Arc::new(work.await);
+                let _ = this.update(cx, |this, cx| {
+                    if let Some((open, shown)) = this.comparing.as_mut().and_then(|comparing| comparing.open.as_mut())
+                        && open == &id
+                    {
+                        *shown = Some(compared);
+                    }
+                    cx.notify();
+                });
+            }));
         }
         cx.notify();
     }
@@ -386,6 +404,9 @@ impl VersionsView {
             .and_then(|comparing| comparing.open.as_ref())
             .filter(|(open, _)| open == &item.id)
             .map(|(_, compared)| compared.clone());
+        // Open, and still worked out.
+        let working = matches!(open, Some(None));
+        let open = open.flatten();
         let id = item.id.clone();
         let theme = cx.theme();
         let rows: Vec<AnyElement> = open
@@ -429,6 +450,16 @@ impl VersionsView {
                     .hover(|row| row.bg(theme.accent))
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle_request(id.clone(), cx))),
             )
+            .when(working, |this| {
+                this.child(
+                    div()
+                        .my_1()
+                        .px_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(t!("compare.working").to_string()),
+                )
+            })
             .when(open.is_some(), |this| {
                 this.child(
                     v_flex()
