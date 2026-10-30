@@ -276,8 +276,16 @@ fn multipart(body: &str, boundary: &str) -> Option<Vec<KvParam>> {
             continue;
         };
         let content = content.trim_end_matches(['\r', '\n']);
-        let value = match content.trim().strip_prefix('<') {
-            Some(path) => format!("file://{}", path.trim()),
+        // A file is `< path` on its line, a space after the `<`: `<?xml`,
+        // `<html>` are text (BUG-25).
+        let file = content
+            .trim()
+            .strip_prefix('<')
+            .filter(|path| path.starts_with(char::is_whitespace) && !path.contains('\n'))
+            .map(str::trim)
+            .filter(|path| !path.is_empty());
+        let value = match file {
+            Some(path) => format!("file://{path}"),
             None => content.to_string(),
         };
         fields.push(kv(&name, &value, true));
@@ -731,6 +739,16 @@ Content-Disposition: form-data; name="image"; filename="a.png"
 Content-Type: image/png
 
 < ./a.png
+--Edge
+Content-Disposition: form-data; name="meta"
+Content-Type: application/xml
+
+<?xml version="1.0"?>
+<meta/>
+--Edge
+Content-Disposition: form-data; name="page"
+
+<html></html>
 --Edge--
 "#;
         assert!(is_http(text));
@@ -761,7 +779,16 @@ Content-Type: image/png
         assert_eq!(upload.settings.http_version, Some(HttpVersion::Http2));
         assert_eq!(upload.content_type, ContentType::Multipart);
         let fields: Vec<KvParam> = serde_json::from_str(&upload.body).expect("fields");
-        assert_eq!(fields, [kv("title", "A, B", true), kv("image", "file://./a.png", true)]);
+        assert_eq!(
+            fields,
+            [
+                kv("title", "A, B", true),
+                kv("image", "file://./a.png", true),
+                // BUG-25: no file to read.
+                kv("meta", "<?xml version=\"1.0\"?>\n<meta/>", true),
+                kv("page", "<html></html>", true),
+            ]
+        );
     }
 
     #[test]
