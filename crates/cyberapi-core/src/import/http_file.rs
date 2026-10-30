@@ -134,14 +134,39 @@ pub(super) fn is_http(text: &str) -> bool {
         let line = line.trim_start();
         line.starts_with("###") || variable(line).is_some()
     });
-    for line in text.lines() {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut at = 0;
+    while let Some(line) = lines.get(at) {
         let line = line.trim();
         if line.is_empty() || line.starts_with("###") || comment(line).is_some() || variable(line).is_some() {
+            at += 1;
+            continue;
+        }
+        if let Some(next) = after_script(&lines, at) {
+            at = next;
             continue;
         }
         return request_line(line).is_some_and(|request| request.named || marked);
     }
     false
+}
+
+/// Where what follows a pre-request script that starts at `lines[at]` is:
+/// `< {% … %}`, to the line that closes it, or `< file.js`. `None` when
+/// that line starts none. JetBrains runs them before the request; they are
+/// left out, as the handlers after a response are (BUG-16).
+fn after_script(lines: &[&str], at: usize) -> Option<usize> {
+    let after = lines.get(at)?.trim_start().strip_prefix('<')?;
+    let rest = after.trim_start();
+    if let Some(script) = rest.strip_prefix("{%") {
+        if script.contains("%}") {
+            return Some(at + 1);
+        }
+        let closed = lines[at + 1..].iter().position(|line| line.contains("%}"));
+        return Some(closed.map_or(lines.len(), |end| at + 1 + end + 1));
+    }
+    // A file's name comes after a space: `<?xml` is not one.
+    (after.starts_with(char::is_whitespace) && !rest.is_empty()).then_some(at + 1)
 }
 
 /// What a system variable is in this app's functions; `None` for one it
@@ -351,6 +376,10 @@ fn request(title: &str, lines: &[&str], environment: &mut Vec<(String, String)>)
             environment.retain(|(known, _)| known != key);
             environment.push((key.to_string(), value.to_string()));
             at += 1;
+            continue;
+        }
+        if let Some(next) = after_script(lines, at) {
+            at = next;
             continue;
         }
         break;
@@ -761,6 +790,49 @@ Content-Type: image/png
         assert!(!is_http("# a comment\nopenapi: 3.0.0\npaths: {}\n"));
         assert!(!is_http("get: {summary: x}"));
         assert!(!is_http(r#"{"item": []}"#));
+        assert!(!is_http("<?xml version=\"1.0\"?>\n<a>GET</a>"));
+    }
+
+    /// BUG-16: a pre-request script before a request is left out, and the
+    /// request kept — the first of the file too.
+    #[test]
+    fn a_pre_request_script_is_left_out() {
+        let file = r#"< {%
+    request.variables.set("id", "7");
+%}
+GET https://shop.test/orders/{{id}}
+
+###
+< ./sign.js
+// @name signed
+POST https://shop.test/orders
+
+###
+< {% request.variables.set("a", "1"); %}
+DELETE https://shop.test/orders/1
+"#;
+        assert!(is_http(file));
+        let bundle = parse(file);
+        let found: Vec<(&str, HttpMethod, &str)> = apis(&bundle)
+            .into_iter()
+            .map(|(name, request)| (name, request.method, request.uri.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    "https://shop.test/orders/{{id}}",
+                    HttpMethod::Get,
+                    "https://shop.test/orders/{{id}}"
+                ),
+                ("signed", HttpMethod::Post, "https://shop.test/orders"),
+                (
+                    "https://shop.test/orders/1",
+                    HttpMethod::Delete,
+                    "https://shop.test/orders/1"
+                ),
+            ]
+        );
     }
 
     #[test]
