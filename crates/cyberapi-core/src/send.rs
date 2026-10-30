@@ -355,6 +355,11 @@ pub fn encode_uri_component(text: &str) -> String {
     utf8_percent_encode(text, URI_COMPONENT).to_string()
 }
 
+/// [`encode_uri_component`] of bytes that need not be UTF-8 (BUG-27).
+pub fn encode_uri_bytes(bytes: &[u8]) -> String {
+    percent_encoding::percent_encode(bytes, URI_COMPONENT).to_string()
+}
+
 /// The text a JSON-looking body is sent as: lines starting with `//` are
 /// comments and go (4.3).
 pub fn strip_json_comments(body: &str) -> String {

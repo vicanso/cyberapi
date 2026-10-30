@@ -42,7 +42,7 @@
 | BUG-24 | F6 | 低 | 撤销通知持有工作区的强引用：离开项目再回来，点旧通知会在已分离的状态上撤销（网页会用旧草稿盖掉新的） | 读代码确认；已修复 |
 | BUG-25 | B8 | 低 | multipart 某段内容以 `<` 开头（XML、HTML）被当成读文件 | 读代码确认；已修复 |
 | BUG-26 | B8 | 低 | 带 UTF-8 BOM 的 `.http` 文件认不出 | 可能；已修复 |
-| BUG-27 | D7 | 低 | `md5` / `sha*` / `hmac*` / `urlEncode` 都按文本取输入，链在 `base64Decode` 或 `readFile` 后面时非 UTF-8 字节被换成 U+FFFD，结果是错的 | 读代码确认 |
+| BUG-27 | D7 | 低 | `md5` / `sha*` / `hmac*` / `urlEncode` 都按文本取输入，链在 `base64Decode` 或 `readFile` 后面时非 UTF-8 字节被换成 U+FFFD，结果是错的 | 读代码确认；已修复 |
 | PERF-1 | 树 | 高 | 树面板每帧重建所有行（含关键字搜索、拼音匹配），不用 `uniform_list` | 已核实；已修复 |
 | PERF-2 | GraphQL | 高 | GraphQL 响应在每帧和每次编辑时整份解析 `errors` | 已核实；已修复 |
 | PERF-3 | 响应 | 高 | 大响应先整份格式化再截断，都在 UI 线程上，每次切回标签再做一遍 | 已核实；部分修复 |
@@ -271,11 +271,13 @@
 - 修复：照做，`import::detect` 和 `parse` 先去掉开头的 U+FEFF，所以所有格式都受益（JSON 也是：`serde_json` 不认 BOM）。导入弹窗、“获取”、从来源同步、命令行都经过这两个函数。
   - 测试：`a_byte_order_mark_is_left_out`（带 BOM 的 `.http`、Postman JSON、cURL 都认得出并能导入；不去掉 BOM 时它失败）。
 
-### BUG-27 摘要函数按文本取字节输入（D7，低）
+### BUG-27 摘要函数按文本取字节输入（D7，低）——已修复
 
 - 位置：`template.rs:421-430`。
 - 原因：`md5`、`sha*`、`hmac*`、`urlEncode` 都用 `into_text()`（`from_utf8_lossy`）。`{{sha256.base64Decode(AAEC/w==)}}` 算的是把 0xFF 换成 U+FFFD 后的文本，不是字节 `[0, 1, 2, 255]`。`md5.readFile` 原来就有这个问题，D7 多了一条路。
 - 修复方向：这些函数对 `Value::Bytes` 直接用字节（新增 `into_bytes` 已有）。
+- 修复：`md5`、`sha1`、`sha256`、`sha512` 和 `urlEncode` 改用 `into_bytes()`（文本照旧是它的 UTF-8 字节），`urlEncode` 用新的 `send::encode_uri_bytes` 按字节编码。`hmac*` 没有改：它从参数里分出密钥和数据，接在 `base64Decode` / `readFile` 后面时只有一个参数，本来就报“要密钥和数据”，不会算错。
+  - 测试：`more_digests_and_decoding` 加了 `sha256` / `md5` / `sha1` / `urlEncode` 接在 `base64Decode(AAEC/w==)`（字节 0、1、2、255）后面的结果，和普通文本的 `urlEncode`（改回按文本时它失败）。
 
 ## 性能
 

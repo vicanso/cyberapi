@@ -418,11 +418,13 @@ pub fn evaluate(expr: &Expr, inputs: &Inputs, files: &dyn FileReader) -> Result<
             "readTextFile" | "rtf" => Value::Text(String::from_utf8_lossy(&read(&value, files)?).into_owned()),
             "readFile" | "rf" => Value::Bytes(read(&value, files)?),
             "base64" | "b64" => Value::Text(base64::engine::general_purpose::STANDARD.encode(value.into_bytes())),
-            "md5" => Value::Text(hex(&md5::Md5::digest(value.into_text().as_bytes()))),
-            "sha256" => Value::Text(hex(&sha2::Sha256::digest(value.into_text().as_bytes()))),
+            // Of the bytes a file or `base64Decode` gives, as they are
+            // (BUG-27).
+            "md5" => Value::Text(hex(&md5::Md5::digest(value.into_bytes()))),
+            "sha256" => Value::Text(hex(&sha2::Sha256::digest(value.into_bytes()))),
             // D7.
-            "sha1" => Value::Text(hex(&sha1::Sha1::digest(value.into_text().as_bytes()))),
-            "sha512" => Value::Text(hex(&sha2::Sha512::digest(value.into_text().as_bytes()))),
+            "sha1" => Value::Text(hex(&sha1::Sha1::digest(value.into_bytes()))),
+            "sha512" => Value::Text(hex(&sha2::Sha512::digest(value.into_bytes()))),
             "base64Decode" | "b64d" => Value::Bytes(base64_decode(&value)?),
             "urlDecode" => Value::Text(
                 percent_encoding::percent_decode_str(&value.into_text())
@@ -453,7 +455,7 @@ pub fn evaluate(expr: &Expr, inputs: &Inputs, files: &dyn FileReader) -> Result<
             "randomString" => Value::Text(random_string(&value, &inputs.draws)?),
             "now" => Value::Text(now(&value, inputs)?),
             "hmacSha256" => Value::Text(hmac::<sha2::Sha256>("hmacSha256", &value)?),
-            "urlEncode" => Value::Text(crate::send::encode_uri_component(&value.into_text())),
+            "urlEncode" => Value::Text(crate::send::encode_uri_bytes(&value.into_bytes())),
             "get" | "g" => {
                 let text = value.into_text();
                 let [api, path] = text.split(',').collect::<Vec<_>>()[..] else {
@@ -915,6 +917,28 @@ mod tests {
         assert_eq!(run("{{base64Decode.base64(é)}}").as_deref(), Ok("é"), "both ways");
         assert!(run("{{base64Decode(not base64!)}}").is_err());
         assert_eq!(run("{{urlDecode(a%20b%26c%3Dd%2F%C3%A9)}}").as_deref(), Ok("a b&c=d/é"));
+        // BUG-27: the bytes 0, 1, 2, 255 — not text, which has no 255.
+        assert_eq!(
+            run("{{sha256.base64Decode(AAEC/w==)}}").as_deref(),
+            Ok("3d1f57c984978ef98a18378c8166c1cb8ede02c03eeb6aee7e2f121dfeee3e56")
+        );
+        assert_eq!(
+            run("{{md5.base64Decode(AAEC/w==)}}").as_deref(),
+            Ok("0416dab819887333af831f8c765ac2ae")
+        );
+        assert_eq!(
+            run("{{sha1.base64Decode(AAEC/w==)}}").as_deref(),
+            Ok("c62c27924f4c967f5eddb1850c091d54c7a2ab58")
+        );
+        assert_eq!(
+            run("{{urlEncode.base64Decode(AAEC/w==)}}").as_deref(),
+            Ok("%00%01%02%FF")
+        );
+        assert_eq!(
+            run("{{urlEncode(a b/é)}}").as_deref(),
+            Ok("a%20b%2F%C3%A9"),
+            "text as before"
+        );
     }
 
     #[test]
