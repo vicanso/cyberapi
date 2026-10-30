@@ -1240,6 +1240,30 @@ mod tests {
         assert_eq!((status.name(), status.message.as_str()), ("UNAVAILABLE", "down"));
         assert!(failed.body.is_empty() && failed.notice.is_none());
 
+        // BUG-8: load tested, a call that fails so is a failure, though
+        // its HTTP status is 200.
+        let samples = Arc::new(Mutex::new(Vec::new()));
+        let told = samples.clone();
+        pollster::block_on(crate::load::load(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            call.clone(),
+            Answers::default(),
+            cyberapi_core::load::Plan {
+                senders: 1,
+                limit: cyberapi_core::load::Limit::Count(2),
+            },
+            Arc::new(move |sample| told.lock().expect("samples").push(sample)),
+        ))
+        .expect("sent");
+        let samples = samples.lock().expect("samples");
+        assert_eq!(samples.len(), 2);
+        assert!(
+            samples
+                .iter()
+                .all(|sample| sample.status == Some(200) && sample.grpc == Some(14) && sample.failed())
+        );
+
         // A reply the definitions do not read is kept as it came, with why.
         setup
             .engine

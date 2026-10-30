@@ -73,6 +73,9 @@ pub struct Sample {
     pub took: Duration,
     /// What the server answered; `None` when it did not.
     pub status: Option<u16>,
+    /// A gRPC call's own status code, which an HTTP 200 carries (BUG-8);
+    /// `None` for any other request.
+    pub grpc: Option<u32>,
     /// Why it was not answered.
     pub error: Option<String>,
     /// The body's size.
@@ -80,10 +83,10 @@ pub struct Sample {
 }
 
 impl Sample {
-    /// Not answered, or answered with an error status: there are no
-    /// assertions to say otherwise.
+    /// Not answered, or answered with an error status — HTTP's, or a gRPC
+    /// call's other than OK: there are no assertions to say otherwise.
     pub fn failed(&self) -> bool {
-        self.status.is_none_or(|status| status >= 400)
+        self.status.is_none_or(|status| status >= 400) || self.grpc.is_some_and(|code| code != 0)
     }
 }
 
@@ -91,6 +94,8 @@ impl Sample {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Outcome {
     Status(u16),
+    /// A gRPC call's status code, its HTTP status a 200.
+    Grpc(u32),
     /// Not answered, and why.
     Error(String),
 }
@@ -145,9 +150,10 @@ pub fn summary(samples: &[Sample], elapsed: Duration) -> Summary {
     let total: Duration = took.iter().sum();
     let mut outcomes: Vec<(Outcome, usize)> = Vec::new();
     for sample in samples {
-        let outcome = match (&sample.status, &sample.error) {
-            (Some(status), _) => Outcome::Status(*status),
-            (None, error) => Outcome::Error(error.clone().unwrap_or_default()),
+        let outcome = match (&sample.status, sample.grpc, &sample.error) {
+            (Some(status), Some(code), _) if *status < 400 => Outcome::Grpc(code),
+            (Some(status), _, _) => Outcome::Status(*status),
+            (None, _, error) => Outcome::Error(error.clone().unwrap_or_default()),
         };
         match outcomes.iter_mut().find(|(known, _)| *known == outcome) {
             Some((_, count)) => *count += 1,
@@ -190,6 +196,7 @@ mod tests {
             at: ms(took),
             took: ms(took),
             status,
+            grpc: None,
             error: status.is_none().then(|| "refused".to_string()),
             size: 10,
         }
@@ -233,6 +240,26 @@ mod tests {
             ]
         );
         assert_eq!(super::summary(&[], ms(5)), Summary::default());
+    }
+
+    /// BUG-8: a gRPC call fails by its own status, which comes in an HTTP
+    /// 200; an HTTP error before it (a proxy's 502) is still that.
+    #[test]
+    fn a_grpc_call_fails_by_its_status() {
+        let call = |status: u16, grpc: u32| Sample {
+            status: Some(status),
+            grpc: Some(grpc),
+            ..sample(10, Some(status))
+        };
+        let samples = [call(200, 0), call(200, 14), call(200, 14), call(502, 14)];
+        assert!(!samples[0].failed());
+        assert!(samples[1].failed());
+        let summary = summary(&samples, Duration::from_secs(1));
+        assert_eq!(summary.failed, 3);
+        assert_eq!(
+            summary.outcomes,
+            [(Outcome::Grpc(14), 2), (Outcome::Status(502), 1), (Outcome::Grpc(0), 1)]
+        );
     }
 
     #[test]

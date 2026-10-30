@@ -21,7 +21,7 @@
 | BUG-5 | F7 | 中 | 标签被重建（同事的修改到达、放弃本地修改）后关闭独立窗口，旧请求被写回存储，下次同步盖掉同事的修改 | 已核实；已修复 |
 | BUG-6 | F6 | 中 | 有一个备份的文件名时间晚于现在（时钟调回、跨时区），自动备份变成每小时一次，一周的备份被冲掉 | 已核实；已修复 |
 | BUG-7 | A7 | 中 | 压测结束时的用时和吞吐包含最多约 0.6 秒的刷新等待和准备时间，短测试的吞吐被低估很多 | 已核实；已修复 |
-| BUG-8 | A7 | 中 | gRPC 调用失败（HTTP 200 + 非 0 的 `grpc-status`）算作成功 | 读代码确认 |
+| BUG-8 | A7 | 中 | gRPC 调用失败（HTTP 200 + 非 0 的 `grpc-status`）算作成功 | 读代码确认；已修复 |
 | BUG-9 | F6 | 中低 | 撤销计数会重用、旧通知的“撤销”按钮点了没反应；第一次删除的计时器会提前结束第二次的撤销 | 已核实 |
 | BUG-10 | F6 | 中低 | 撤销先取走记录再执行；和正在保存的接口撞上得到 `Stale` 时只报错，删除变成永久 | 可能 |
 | BUG-11 | A6 | 中低 | 导入的 Schema 行改成别的检查或停用后仍标着“来自导入”，从来源同步时被删掉换成新的 | 读代码确认 |
@@ -122,11 +122,12 @@
 - 修复方向：用样本里最晚的 `Sample.at`（已经是从测试开始量的）作为用时；运行中显示的用时同理。
 - 修复：`LoadState` 记下目前最晚的 `Sample.at`（`sent_for`，每批增量更新，不扫描全部样本）。跑完时用它作用时和吞吐的分母；运行中的吞吐也用它，界面上走动的计时仍按墙上时间。手动停止时仍用从开始到停止的墙上时间：卡住的服务器不该让吞吐看起来更高。测试 `a_test_takes_as_long_as_its_sends`；改回 `started.elapsed()` 时它失败。
 
-### BUG-8 压测把失败的 gRPC 调用算作成功（A7，中）
+### BUG-8 压测把失败的 gRPC 调用算作成功（A7，中）——已修复
 
 - 位置：`crates/cyberapi-service/src/load.rs:58-66`，`crates/cyberapi-core/src/load.rs:85-87`。
 - 原因：只有 `status >= 400` 算失败；gRPC 总是 HTTP 200，错误在 `grpc-status`（trailers，或只有 trailers 的应答在头里）。一个总是返回 UNAVAILABLE 的一元调用显示错误率 0%。
 - 修复方向：对 gRPC 读 `GrpcStatus`，非 0 算失败，结果里按 gRPC 状态分类。
+- 修复：`Sample.grpc` 记下 gRPC 调用的状态码（trailers，或只有 trailers 的应答的头；都没有算 UNKNOWN），非 0 算失败；HTTP 本身出错（如代理的 502）仍按 HTTP 状态。结果多一种 `Outcome::Grpc`，弹窗里按状态名显示（`UNAVAILABLE`）。测试：core 的 `a_grpc_call_fails_by_its_status`，以及服务的 gRPC 测试里加的一次压测（HTTP 200 + `grpc-status: 14` 算失败）；`failed()` 去掉 gRPC 的判断时两者都失败。
 
 ### BUG-9 撤销的计数会重用，旧通知的按钮无效（F6，中低）
 

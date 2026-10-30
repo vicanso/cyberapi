@@ -255,6 +255,16 @@ impl LoadView {
             .children(summary.outcomes.iter().take(OUTCOMES_SHOWN).map(|(outcome, count)| {
                 let (label, bad) = match outcome {
                     Outcome::Status(status) => (status.to_string(), *status >= 400),
+                    // BUG-8: by the code's name, as the response panel says it.
+                    Outcome::Grpc(code) => (
+                        cyberapi_core::grpc::GrpcStatus {
+                            code: *code,
+                            message: String::new(),
+                        }
+                        .name()
+                        .to_string(),
+                        *code != 0,
+                    ),
                     Outcome::Error(why) => (why.clone(), true),
                 };
                 h_flex()

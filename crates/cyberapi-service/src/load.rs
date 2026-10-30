@@ -8,7 +8,7 @@
 
 use crate::oauth;
 use crate::send::{SendFailure, Sender, Unanswered, add_cookies, prepare};
-use cyberapi_core::grpc::GrpcBody;
+use cyberapi_core::grpc::{GrpcBody, GrpcStatus};
 use cyberapi_core::load::{Plan, Sample};
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest};
 use cyberapi_core::template::Answers;
@@ -49,6 +49,7 @@ pub async fn load(
             .map_err(|failure| failure.to_string())?;
     }
     oauth::sign(&sender, &mut prepared, false).await?;
+    let grpc = request.method == HttpMethod::Grpc;
     let plan = plan.bounded();
     let started = AtomicU32::new(0);
     let begun = Instant::now();
@@ -62,6 +63,7 @@ pub async fn load(
                     at: begun.elapsed(),
                     took,
                     status: Some(exchange.status),
+                    grpc: grpc.then(|| grpc_code(&exchange)),
                     error: None,
                     size: exchange.body_size,
                 },
@@ -69,6 +71,7 @@ pub async fn load(
                     at: begun.elapsed(),
                     took,
                     status: None,
+                    grpc: None,
                     error: Some(error.to_string()),
                     size: 0,
                 },
@@ -77,4 +80,12 @@ pub async fn load(
     };
     futures::future::join_all((0..plan.senders_needed()).map(|_| one())).await;
     Ok(())
+}
+
+/// A gRPC call's status (BUG-8): in the trailers, or the headers of an
+/// answer that is trailers only. None at all is UNKNOWN, as clients take
+/// it.
+fn grpc_code(exchange: &cyberapi_http::Exchange) -> u32 {
+    let ended: Vec<(String, String)> = exchange.headers.iter().chain(&exchange.trailers).cloned().collect();
+    GrpcStatus::read(&ended).map_or(2, |status| status.code)
 }
