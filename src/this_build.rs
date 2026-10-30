@@ -328,7 +328,8 @@ pub fn keep_backup(name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, Strin
             let _ = std::fs::remove_file(&writing);
             error.to_string()
         })?;
-    for old in cyberapi_core::backup::pruned(&file_names(&dir)) {
+    let now = chrono::Local::now().naive_local();
+    for old in cyberapi_core::backup::pruned(&file_names(&dir), now) {
         if let Err(error) = std::fs::remove_file(dir.join(&old)) {
             tracing::warn!(%error, old, "an old backup could not be removed");
         }

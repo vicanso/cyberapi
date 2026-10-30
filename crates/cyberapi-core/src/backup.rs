@@ -67,26 +67,46 @@ pub fn made_at(name: &str) -> Option<chrono::NaiveDateTime> {
     chrono::NaiveDateTime::parse_from_str(at, NAMED_AT).ok()
 }
 
+/// F6: how far ahead of the wall clock a backup's name may be and still
+/// count as made a moment ago: the reader crossed time zones westward,
+/// which a name — the wall clock's — does not say. Further ahead, the
+/// clock was wrong when it was made (BUG-6).
+const AHEAD: chrono::TimeDelta = chrono::TimeDelta::hours(26);
+
+/// Whether a backup named for `made` was named by a clock that was wrong.
+fn misdated(made: chrono::NaiveDateTime, now: chrono::NaiveDateTime) -> bool {
+    now.checked_add_signed(AHEAD).is_some_and(|ahead| made > ahead)
+}
+
 /// F6: whether, with the files `names` in the backups' folder, another is
 /// due `now` (the wall clock): there is none, or the newest is [`EVERY`]
-/// old. One from the future — the clock was put back — waits no longer.
+/// old. One a little ahead of the clock was made a moment ago, elsewhere;
+/// one far ahead counts for nothing — else every check would find it, and
+/// a backup would be due each time (BUG-6).
 pub fn due<S: AsRef<str>>(names: &[S], now: chrono::NaiveDateTime) -> bool {
-    match names.iter().filter_map(|name| made_at(name.as_ref())).max() {
-        Some(newest) => newest > now || now - newest >= EVERY,
-        None => true,
-    }
+    let newest = names
+        .iter()
+        .filter_map(|name| made_at(name.as_ref()))
+        .filter(|made| !misdated(*made, now))
+        .max();
+    newest.is_none_or(|newest| now.signed_duration_since(newest) >= EVERY)
 }
 
 /// F6: those of `names` to remove so that only the newest [`KEPT`] backups
-/// stay. What is not a backup is never among them.
-pub fn pruned<S: AsRef<str>>(names: &[S]) -> Vec<String> {
-    let mut backups: Vec<(chrono::NaiveDateTime, &str)> = names
+/// stay, `now`. One named far ahead of the clock is the oldest — made before
+/// the clock was put right — and goes first; else it would outlast every
+/// new one. What is not a backup is never among them.
+pub fn pruned<S: AsRef<str>>(names: &[S], now: chrono::NaiveDateTime) -> Vec<String> {
+    let mut backups: Vec<(bool, chrono::NaiveDateTime, &str)> = names
         .iter()
-        .filter_map(|name| Some((made_at(name.as_ref())?, name.as_ref())))
+        .filter_map(|name| {
+            let made = made_at(name.as_ref())?;
+            Some((!misdated(made, now), made, name.as_ref()))
+        })
         .collect();
     backups.sort();
     let extra = backups.len().saturating_sub(KEPT);
-    backups[..extra].iter().map(|(_, name)| name.to_string()).collect()
+    backups[..extra].iter().map(|(_, _, name)| name.to_string()).collect()
 }
 
 impl Backup {
@@ -326,18 +346,44 @@ mod tests {
             .chain(["notes.txt".to_string(), "cyberapi-backup-x.zip".to_string()])
             .collect();
         assert_eq!(made_at(&names[0]), Some(at("2026-10-01 09:30")), "the name's own time");
-        assert!(!due(&names, at("2026-10-10 09:00")));
+        let now = at("2026-10-10 09:00");
+        assert!(!due(&names, now));
         assert!(due(&names, at("2026-10-10 09:30")));
-        assert!(due(&names, at("2026-10-08 09:00")), "the clock was put back");
-        assert!(due(&["notes.txt"], at("2026-10-10 09:00")));
+        assert!(due(&["notes.txt"], now));
         assert_eq!(
-            pruned(&names),
+            pruned(&names, now),
             [
                 "cyberapi-backup-2026-10-01-093000.zip",
                 "cyberapi-backup-2026-10-02-093000.zip"
             ]
         );
-        assert!(pruned(&names[..7]).is_empty());
+        assert!(pruned(&names[..7], now).is_empty());
+    }
+
+    /// BUG-6: a backup named ahead of the clock does not make one due on
+    /// every check, nor outlast every new one.
+    #[test]
+    fn a_backup_ahead_of_the_clock_keeps_the_day() {
+        let at = |text: &str| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M").expect("a time");
+        let name = |at: &str| format!("cyberapi-backup-{at}.zip");
+        // Westward across seven time zones: the newest is seven hours
+        // ahead, and was made a moment ago.
+        let newest = [name("2026-10-09-160000")];
+        assert!(!due(&newest, at("2026-10-09 09:00")));
+        assert!(!due(&newest, at("2026-10-10 09:00")));
+        assert!(due(&newest, at("2026-10-10 16:00")), "a day after it");
+
+        // Made while the clock was a year ahead: they count for nothing.
+        let mut names: Vec<String> = (1..=7).map(|day| name(&format!("2027-10-{day:02}-093000"))).collect();
+        let now = at("2026-10-10 09:00");
+        assert!(due(&names, now));
+        names.push(name("2026-10-10-090000"));
+        assert!(!due(&names, at("2026-10-10 10:00")), "an hour later, not again");
+        assert_eq!(
+            pruned(&names, at("2026-10-10 10:00")),
+            [name("2027-10-01-093000")],
+            "the misdated go first, not the one just made"
+        );
     }
 
     use super::*;
