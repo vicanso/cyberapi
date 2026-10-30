@@ -123,9 +123,18 @@ impl ApartView {
                     window.remove_window();
                 }
             }),
-            // What was typed last goes back with the tab.
+            // What was typed last goes back with the tab — while the tab is
+            // still this window's. One started again from the server's or
+            // an import's request, or closed, is not written over (BUG-5).
             cx.on_release(|this, cx| {
-                this.editor.update(cx, |editor, cx| editor.flush(cx));
+                let still = this
+                    .workspace
+                    .read(cx)
+                    .kept_api(&this.id)
+                    .is_some_and(|kept| kept.entity_id() == this.api.entity_id());
+                if still {
+                    this.editor.update(cx, |editor, cx| editor.flush(cx));
+                }
                 if cx
                     .try_global::<Open>()
                     .is_some_and(|open| open.0.contains_key(&this.id))
@@ -311,5 +320,110 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(windows(cx), 0, "the tab closed, its window with it");
         assert!(cx.read(|cx| cx.try_global::<Open>().is_none_or(|open| open.0.is_empty())));
+    }
+
+    /// What was typed in the window goes with it when it closes — unless
+    /// the tab was started again from another request first (BUG-5): then
+    /// it would write the old request back over the new one.
+    #[gpui_kit::test]
+    async fn closing_writes_back_only_the_tab_still_open(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let storage = store.storage();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            AppStore::init(
+                storage.clone(),
+                Arc::new(NoEngine),
+                AppPrefs::default(),
+                Extras::default(),
+                cx,
+            );
+        });
+        let collection = storage
+            .collections()
+            .create(NewCollection {
+                name: "p".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("create");
+        let workspace = cx.new(|cx| {
+            let sender = AppStore::global(cx).sender(cx);
+            WorkspaceState::new(sender, collection.clone(), cx)
+        });
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, cx| workspace.create_api(None, "list".into(), cx));
+        cx.run_until_parked();
+        let id = workspace.read_with(cx, |workspace, _| workspace.tabs()[0].id.clone());
+        let api = workspace.read_with(cx, |workspace, _| workspace.kept_api(&id).cloned().expect("kept"));
+        api.update(cx, |api, cx| api.set_uri("https://a.test/orders".into(), cx));
+        cx.run_until_parked();
+        let stored = || {
+            let (storage, collection, id) = (storage.clone(), collection.id.clone(), id.clone());
+            // The store is in memory: its calls finish as they are made.
+            futures::executor::block_on(async move {
+                let data = storage.tree().load(collection).await.expect("load");
+                data.apis
+                    .into_iter()
+                    .find(|api| api.id == id)
+                    .map(|api| api.request)
+                    .expect("there")
+            })
+        };
+        // Typed in the window, then the window closed.
+        let apart = |cx: &mut TestAppContext| {
+            workspace.update(cx, |workspace, cx| workspace.part(&id, cx));
+            let api = workspace.read_with(cx, |workspace, _| workspace.kept_api(&id).cloned().expect("kept"));
+            let (built, kept) = (workspace.clone(), id.clone());
+            let (handle, view) = cx
+                .update(|cx| {
+                    gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+                        cx.new(|cx| ApartView::new(built, kept, api, window, cx))
+                    })
+                })
+                .expect("open");
+            cx.run_until_parked();
+            (handle, view)
+        };
+        let type_uri = |handle: AnyWindowHandle, view: &Entity<ApartView>, text: &str, cx: &mut TestAppContext| {
+            let editor = view.read_with(cx, |view, _| view.editor.clone());
+            handle
+                .update(cx, |_, window, cx| {
+                    editor.update(cx, |editor, cx| editor.type_uri(text, window, cx))
+                })
+                .expect("open");
+        };
+
+        let (handle, view) = apart(cx);
+        type_uri(handle, &view, "https://a.test/typed", cx);
+        drop(view);
+        let _ = handle.update(cx, |_, window, _| window.remove_window());
+        cx.run_until_parked();
+        assert_eq!(stored().uri, "https://a.test/typed", "what was typed went with it");
+
+        // Typed again; meanwhile an import updates the API, which starts
+        // its tab again and so closes the window.
+        api.update(cx, |api, cx| api.set_uri("https://a.test/orders".into(), cx));
+        cx.run_until_parked();
+        let (handle, view) = apart(cx);
+        type_uri(handle, &view, "https://a.test/stale", cx);
+        drop(view);
+        let bundle = cyberapi_core::import::parse(
+            r#"{"info": {"name": "Shop"}, "item": [
+                {"name": "list", "request": {"method": "GET", "url": "https://a.test/orders",
+                    "header": [{"key": "X-New", "value": "1"}]}}
+            ]}"#,
+        )
+        .expect("a collection");
+        workspace.update(cx, |workspace, cx| workspace.import_again(None, bundle, true, cx));
+        cx.run_until_parked();
+        assert_eq!(windows(cx), 0, "started again, the window closed");
+        let request = stored();
+        assert_eq!(request.uri, "https://a.test/orders", "not written back");
+        assert!(
+            request.headers.iter().any(|header| header.key == "X-New"),
+            "the import's request stays: {:?}",
+            request.headers
+        );
     }
 }

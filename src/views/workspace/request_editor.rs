@@ -508,6 +508,14 @@ impl RequestEditor {
         self.uri.read(cx).value().to_string()
     }
 
+    /// `text` in the address field, not given to the API yet: typed, and
+    /// neither entered nor left.
+    #[cfg(test)]
+    pub(super) fn type_uri(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.uri
+            .update(cx, |uri, cx| uri.set_value(text.to_string(), window, cx));
+    }
+
     /// The keys to the URI field now, its text selected to type over (#64).
     pub fn focus_uri_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.uri.update(cx, |input, cx| {
