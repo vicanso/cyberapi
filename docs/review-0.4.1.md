@@ -56,7 +56,7 @@
 | PERF-11 | 命令面板 | 中 | 打开命令面板读最多 50 个项目的全部内容，每帧对全部接口做拼音匹配 | 读代码确认 |
 | PERF-12 | A7 | 中 | 压测每 300ms 在 UI 线程上排序全部样本（最多 100 万） | 已核实；暂不处理 |
 | PERF-13 | 网页 | 中 | 服务器项目每次修改都把整个项目序列化进 localStorage | 读代码确认 |
-| PERF-14 | bridge | 中 | PostgreSQL 的 `responses` 没有以 `api` 开头的索引，删接口时级联删除逐条全表扫描 | 已核实 |
+| PERF-14 | bridge | 中 | PostgreSQL 的 `responses` 没有以 `api` 开头的索引，删接口时级联删除逐条全表扫描 | 已核实；已修复 |
 | PERF-15 | bridge | 低中 | `/v1/send` 只按账号限并发，没有全局内存上限 | 读代码确认 |
 | PERF-16 | G8 | 低 | 版本对比展开接口时 `diff::compare` 在 UI 线程上同步执行（响应对比是放到后台的） | 读代码确认 |
 | Q-1 | B7 | 低 | 来源地址是项目数据，谁都能改；别人打开“从来源同步”时桌面版立即去取，可指向本机或内网 | 读代码确认 |
@@ -358,10 +358,11 @@
 - 情况：大项目里每次停顿输入（300ms 保存）就整份序列化一次；还可能撞上约 5 MB 的 localStorage 上限。
 - 修复方向：合并到空闲时再写（防抖），或按条目存增量；指纹增量计算。
 
-### PERF-14 PostgreSQL 的 `responses` 缺 `api` 索引（中，bridge）
+### PERF-14 PostgreSQL 的 `responses` 缺 `api` 索引（中，bridge）——已修复
 
 - 位置：`crates/cyberapi-store-sql/migrations/postgres/0002_responses.sql`：只有 `(account, api, seq)` 和 `(collection)` 两个索引，外键 `api REFERENCES apis(id) ON DELETE CASCADE`。PostgreSQL 的级联对每个删掉的 `apis` 行执行 `WHERE api = $1`，没有以 `api` 开头的索引就是全表扫描；删一个 2000 个接口的项目约 2000 次扫描。MySQL 的 InnoDB 会自己给外键建索引，没有这个问题。
 - 修复方向：PostgreSQL 新增一个迁移 `CREATE INDEX responses_api_only ON responses (api)`；MySQL 那边对应一个空步骤（两套迁移逐列对应）。
+- 修复：迁移 10（`0010_cascade_indexes.sql`）。PostgreSQL 加 `responses (api)`，顺带加 `variable_environments (environment)`：删环境时的级联同样没有以它开头的索引（其余外键都有）。MySQL 的第 10 步只有 `SELECT 1`。另外发现新加的迁移文件不会触发重新编译（`sqlx::migrate!` 在编译时读目录），已有的构建会一直用旧的一套，所以加了 `crates/cyberapi-store-sql/build.rs`（`rerun-if-changed=migrations`，sqlx 推荐的做法）。`make test-sql` 通过，两边 `_sqlx_migrations` 都到了第 10 步，PostgreSQL 里能看到两个新索引。
 
 ### PERF-15 bridge `/v1/send` 没有全局内存上限（低中）
 
