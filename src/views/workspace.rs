@@ -537,7 +537,7 @@ impl WorkspaceView {
                         selected.editor.update(cx, |editor, cx| editor.flush(cx));
                     }
                     this.follow_selection(window, cx);
-                    crate::this_build::open_apart(this_state.clone(), id.clone(), cx);
+                    crate::this_build::open_apart(this_state.clone(), id.clone(), window, cx);
                 }
                 // F5: where it went, and what it reads that is not there.
                 WorkspaceEvent::Transferred {
@@ -827,8 +827,8 @@ impl WorkspaceView {
                             .outline()
                             .small()
                             .label(t!("apart.show").to_string())
-                            .on_click(move |_, _, cx| {
-                                crate::this_build::open_apart(state.clone(), show_id.clone(), cx)
+                            .on_click(move |_, window, cx| {
+                                crate::this_build::open_apart(state.clone(), show_id.clone(), window, cx)
                             }),
                     )
                     .child(

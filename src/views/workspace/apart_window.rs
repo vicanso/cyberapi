@@ -14,9 +14,9 @@ use cyberapi_core::ItemId;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::{ActiveTheme as _, TitleBar, h_flex, v_flex};
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Global, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, WindowBounds, WindowOptions, div, px,
-    size,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, DisplayId, Entity, FocusHandle, Global,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, WindowBounds,
+    WindowOptions, div, px, size,
 };
 use std::collections::HashMap;
 use tracing::error;
@@ -34,9 +34,11 @@ pub fn is_apart_window(window: AnyWindowHandle, cx: &App) -> bool {
         .is_some_and(|open| open.0.values().any(|handle| *handle == window))
 }
 
-/// Opens `id`'s tab of `workspace` in a window of its own, or brings that
-/// window forward.
-pub fn open_apart(workspace: Entity<WorkspaceState>, id: ItemId, cx: &mut App) {
+/// Opens `id`'s tab of `workspace` in a window of its own, on `display`
+/// (the main window's), or brings that window forward. The display is the
+/// caller's to say: the main window is the one being updated then, and
+/// could not be asked from here (BUG-18).
+pub fn open_apart(workspace: Entity<WorkspaceState>, id: ItemId, display: Option<DisplayId>, cx: &mut App) {
     if let Some(open) = cx.try_global::<Open>().and_then(|open| open.0.get(&id).copied())
         && open.update(cx, |_, window, _| window.activate_window()).is_ok()
     {
@@ -46,10 +48,6 @@ pub fn open_apart(workspace: Entity<WorkspaceState>, id: ItemId, cx: &mut App) {
         workspace.update(cx, |workspace, cx| workspace.join(&id, cx));
         return;
     };
-    let display = cx
-        .active_window()
-        .and_then(|window| window.update(cx, |_, window, cx| window.display(cx)).ok().flatten())
-        .map(|display| display.id());
     let mut titlebar = TitleBar::title_bar_options();
     titlebar.title = Some(APP_NAME.into());
     let options = WindowOptions {
@@ -305,7 +303,7 @@ mod tests {
         let a = workspace.read_with(cx, |workspace, _| workspace.tabs()[0].id.clone());
         let part = |cx: &mut TestAppContext| {
             workspace.update(cx, |workspace, cx| workspace.part(&a, cx));
-            cx.update(|cx| open_apart(workspace.clone(), a.clone(), cx));
+            cx.update(|cx| open_apart(workspace.clone(), a.clone(), None, cx));
             cx.run_until_parked();
         };
 

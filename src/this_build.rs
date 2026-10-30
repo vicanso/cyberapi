@@ -177,11 +177,22 @@ pub fn opens_windows() -> bool {
 /// F7: `id`'s tab of `workspace` in a window of its own, or that window
 /// brought forward; in a page, it stays where it is.
 #[cfg(not(target_family = "wasm"))]
-pub fn open_apart(workspace: gpui_kit::Entity<crate::states::WorkspaceState>, id: ItemId, cx: &mut gpui_kit::App) {
-    crate::views::open_apart(workspace, id, cx);
+pub fn open_apart(
+    workspace: gpui_kit::Entity<crate::states::WorkspaceState>,
+    id: ItemId,
+    window: &gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+) {
+    let near = window.display(cx).map(|display| display.id());
+    crate::views::open_apart(workspace, id, near, cx);
 }
 #[cfg(target_family = "wasm")]
-pub fn open_apart(workspace: gpui_kit::Entity<crate::states::WorkspaceState>, id: ItemId, cx: &mut gpui_kit::App) {
+pub fn open_apart(
+    workspace: gpui_kit::Entity<crate::states::WorkspaceState>,
+    id: ItemId,
+    _: &gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+) {
     workspace.update(cx, |workspace, cx| workspace.join(&id, cx));
 }
 
