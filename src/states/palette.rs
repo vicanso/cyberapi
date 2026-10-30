@@ -4,7 +4,8 @@
 //! most recently changed first, up to [`OTHER_PROJECTS`] of them.
 
 use super::AppStore;
-use cyberapi_core::model::{ApiSetting, Collection, HttpMethod};
+use cyberapi_core::model::{ApiSetting, Collection, HttpMethod, split_env_prefix};
+use cyberapi_core::search::matches_text_or_pinyin;
 use cyberapi_core::tree::{Tree, TreeData};
 use cyberapi_core::{CollectionId, ItemId};
 use gpui_kit::{AppContext as _, Context, Task};
@@ -20,8 +21,37 @@ pub struct FoundApi {
     pub api: ItemId,
     pub name: String,
     pub method: HttpMethod,
+    /// F8: its URI without an `{{ENV}}` prefix, as the tree searches it.
+    pub path: String,
     /// Its folders' names, `/` between.
     pub folders: String,
+}
+
+impl FoundApi {
+    /// F8: whether `query` matches this API's folders, name, method or path
+    /// (and, for another project's API, that project's name), whole or word by
+    /// word.
+    pub fn matches(&self, query: &str, with_project: bool) -> bool {
+        let query = query.trim();
+        if query.is_empty() {
+            return true;
+        }
+        let text = if with_project {
+            format!(
+                "{} {} {} {} {}",
+                self.collection.name,
+                self.folders,
+                self.name,
+                self.method.as_str(),
+                self.path
+            )
+        } else {
+            format!("{} {} {} {}", self.folders, self.name, self.method.as_str(), self.path)
+        };
+        matches_text_or_pinyin(&text, query)
+            || (query.contains(char::is_whitespace)
+                && query.split_whitespace().all(|part| matches_text_or_pinyin(&text, part)))
+    }
 }
 
 /// Whether the other projects' APIs have been read.
@@ -62,11 +92,13 @@ pub fn found_in(collection: &Collection, data: &TreeData) -> Vec<FoundApi> {
                 parent = node.and_then(|node| node.parent()).cloned();
             }
             folders.reverse();
+            let (_, path) = split_env_prefix(&api.request.uri);
             Some(FoundApi {
                 collection: collection.clone(),
                 api: id,
                 name: api.name.clone(),
                 method: api.request.method,
+                path: path.to_string(),
                 folders: folders.join("/"),
             })
         })
@@ -256,5 +288,39 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(names(&early, cx), ["mine", "theirs"]);
         assert!(!early.read_with(cx, |palette, _| palette.reading()));
+    }
+
+    #[test]
+    fn finds_an_api_by_its_path_without_its_env_prefix() {
+        let collection = Collection {
+            id: "c1".into(),
+            name: "Shop".into(),
+            ..Default::default()
+        };
+        let mut api = ApiSetting {
+            id: "a1".into(),
+            name: "创建订单".into(),
+            ..Default::default()
+        };
+        api.request.method = HttpMethod::Post;
+        api.request.uri = "{{API_HOST}}/v1/orders/{id}".into();
+        let data = TreeData {
+            apis: vec![api],
+            folders: Vec::new(),
+            top_order: vec!["a1".into()],
+            settings: Default::default(),
+        };
+
+        let found = found_in(&collection, &data);
+        assert_eq!(found.len(), 1);
+        let entry = &found[0];
+        assert_eq!(entry.path, "/v1/orders/{id}");
+        assert!(entry.matches("/v1/orders", false));
+        assert!(entry.matches("orders/{id}", false));
+        assert!(entry.matches("POST /v1/orders", false));
+        assert!(entry.matches("cjdd /v1", false));
+        assert!(!entry.matches("API_HOST", false));
+        assert!(!entry.matches("Shop /v1", false));
+        assert!(entry.matches("Shop /v1", true));
     }
 }

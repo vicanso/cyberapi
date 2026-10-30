@@ -1,6 +1,7 @@
-//! F2: the command palette, ⌘/Ctrl-K — one field to find an API in any
-//! project (by name, folder or method, pinyin too), open a project, switch
-//! the environment or run a command. ↑ and ↓ move, Enter picks, Esc closes.
+//! F2 / F8: the command palette, ⌘/Ctrl-K — one field to find an API in
+//! any project (by name, path, folder or method, pinyin too), open a
+//! project, switch the environment or run a command. ↑ and ↓ move, Enter
+//! picks, Esc closes.
 
 use super::recent_dialog::open_recent_dialog;
 use super::run_dialog::open_run_dialog;
@@ -212,14 +213,13 @@ impl PaletteView {
         let found = |text: &str| query.is_empty() || matches_text_or_pinyin(text, &query);
         let index = self.index.read(cx);
         let open_id = self.open.as_ref().map(|collection| &collection.id);
-        let api_text = |api: &FoundApi| format!("{} {} {}", api.folders, api.name, api.method.as_str());
         let (own, others): (Vec<&FoundApi>, Vec<&FoundApi>) =
             index.apis().iter().partition(|api| Some(&api.collection.id) == open_id);
         let mut items: Vec<Item> = Vec::new();
         let own_shown = if query.is_empty() { 12 } else { SHOWN };
         items.extend(
             own.into_iter()
-                .filter(|api| found(&api_text(api)))
+                .filter(|api| api.matches(&query, false))
                 .take(own_shown)
                 .cloned()
                 .map(Item::Api),
@@ -261,7 +261,7 @@ impl PaletteView {
             items.extend(
                 others
                     .into_iter()
-                    .filter(|api| found(&api_text(api)))
+                    .filter(|api| api.matches(&query, true))
                     .cloned()
                     .map(Item::Api),
             );
@@ -328,7 +328,7 @@ impl PaletteView {
     fn row(&self, at: usize, item: &Item, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (muted, accent) = (theme.muted_foreground, theme.accent);
-        let (lead, title, note): (AnyElement, String, String) = match item {
+        let (lead, title, path, note): (AnyElement, String, Option<String>, String) = match item {
             Item::Api(found) => {
                 let mut note = found.folders.clone();
                 if Some(&found.collection.id) != self.open.as_ref().map(|open| &open.id) {
@@ -338,6 +338,7 @@ impl PaletteView {
                         format!("{} · {note}", found.collection.name)
                     };
                 }
+                let path = (!found.path.is_empty() && found.path != found.name).then(|| found.path.clone());
                 (
                     div()
                         .w(px(40.))
@@ -347,24 +348,48 @@ impl PaletteView {
                         .child(method_label(found.method))
                         .into_any_element(),
                     found.name.clone(),
+                    path,
                     note,
                 )
             }
             Item::Environment(_, name) => (
                 Icon::new(Icons::Globe).small().text_color(muted).into_any_element(),
                 name.clone(),
+                None,
                 t!("palette.environment").to_string(),
             ),
             Item::Command(command) => (
                 Icon::new(command.icon()).small().text_color(muted).into_any_element(),
                 command.label(),
+                None,
                 t!("palette.command").to_string(),
             ),
             Item::Project(collection) => (
                 Icon::new(Icons::Folder).small().text_color(muted).into_any_element(),
                 collection.name.clone(),
+                None,
                 t!("palette.project").to_string(),
             ),
+        };
+        let middle = match path {
+            Some(path) => h_flex()
+                .w(px(0.))
+                .flex_1()
+                .gap_2()
+                .items_center()
+                .overflow_hidden()
+                .child(div().flex_none().max_w(px(240.)).truncate().child(title))
+                .child(
+                    div()
+                        .w(px(0.))
+                        .flex_1()
+                        .truncate()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(path),
+                )
+                .into_any_element(),
+            None => div().w(px(0.)).flex_1().truncate().child(title).into_any_element(),
         };
         h_flex()
             .id(("palette-row", at))
@@ -378,16 +403,18 @@ impl PaletteView {
             .when(at == self.chosen, |row| row.bg(accent))
             .hover(move |style| style.bg(accent))
             .child(div().w(px(40.)).flex_none().flex().justify_center().child(lead))
-            .child(div().flex_1().min_w_0().truncate().child(title))
-            .child(
-                div()
-                    .flex_none()
-                    .max_w(px(240.))
-                    .truncate()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(note),
-            )
+            .child(middle)
+            .when(!note.is_empty(), |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .max_w(px(200.))
+                        .truncate()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(note),
+                )
+            })
             .on_click(cx.listener(move |this, _, window, cx| this.pick(at, window, cx)))
             .into_any_element()
     }
