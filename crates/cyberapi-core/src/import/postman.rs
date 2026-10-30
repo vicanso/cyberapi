@@ -35,6 +35,7 @@ fn pairs(value: Option<&Value>, key: &str) -> Vec<KvParam> {
                         text(item, "value"),
                         !item.get("disabled").and_then(Value::as_bool).unwrap_or(false),
                     )
+                    .with_description(description(item.get("description")))
                 })
                 .collect()
         })
@@ -242,6 +243,7 @@ fn item(value: &Value) -> Option<ImportItem> {
                                     &value,
                                     !field.get("disabled").and_then(Value::as_bool).unwrap_or(false),
                                 )
+                                .with_description(description(field.get("description")))
                             })
                             .collect()
                     })

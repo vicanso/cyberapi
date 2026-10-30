@@ -230,6 +230,7 @@ fn params(value: &Value, what: &str) -> Result<Vec<KvParam>, String> {
                 key: key.clone(),
                 value: text(value),
                 enabled: true,
+                ..Default::default()
             })
             .collect()),
         Value::Array(items) => items
@@ -243,6 +244,12 @@ fn params(value: &Value, what: &str) -> Result<Vec<KvParam>, String> {
                     key: name.trim().to_string(),
                     value: item.get("value").map(text).unwrap_or_default(),
                     enabled: item.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+                    description: item
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
                 })
             })
             .collect(),
@@ -461,6 +468,7 @@ mod tests {
                 key: "X-A".into(),
                 value: "1".into(),
                 enabled: true,
+                ..Default::default()
             }],
             body: "{}".into(),
             ..Default::default()

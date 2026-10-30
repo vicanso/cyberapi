@@ -380,16 +380,21 @@ fn operation(
     let mut form: Vec<KvParam> = Vec::new();
     for parameter in parameters {
         let name = text(parameter, "name");
+        let desc = text(parameter, "description").trim();
         match text(parameter, "in") {
-            "query" => request.query.push(kv(name, &parameter_value(json, parameter), true)),
-            "header" => request.headers.push(kv(name, &parameter_value(json, parameter), true)),
+            "query" => request
+                .query
+                .push(kv(name, &parameter_value(json, parameter), true).with_description(desc)),
+            "header" => request
+                .headers
+                .push(kv(name, &parameter_value(json, parameter), true).with_description(desc)),
             "formData" => {
                 let value = if text(parameter, "type") == "file" {
                     "file://".to_string()
                 } else {
                     parameter_value(json, parameter)
                 };
-                form.push(kv(name, &value, true));
+                form.push(kv(name, &value, true).with_description(desc));
             }
             // Swagger 2's body.
             "body" => {
@@ -448,6 +453,8 @@ fn operation(
                     properties
                         .iter()
                         .map(|(name, property)| {
+                            let resolved = resolve(json, property);
+                            let desc = text(resolved, "description").trim();
                             let value = if kind.contains("multipart") && is_binary_property(json, property) {
                                 "file://".to_string()
                             } else {
@@ -456,7 +463,7 @@ fn operation(
                                     other => other.to_string(),
                                 }
                             };
-                            kv(name, &value, true)
+                            kv(name, &value, true).with_description(desc)
                         })
                         .collect()
                 })

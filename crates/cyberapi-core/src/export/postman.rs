@@ -115,6 +115,9 @@ fn variables(variables: &[KvParam]) -> Value {
             if !kv.enabled {
                 variable["disabled"] = json!(true);
             }
+            if !kv.description.trim().is_empty() {
+                variable["description"] = json!(kv.description.trim());
+            }
             variable
         })
         .collect()
@@ -165,7 +168,7 @@ fn item(item: &Item<'_>) -> Value {
     }
 }
 
-/// `[{key, value, disabled}]`.
+/// `[{key, value, disabled, description}]`.
 fn pairs(list: &[KvParam]) -> Vec<Value> {
     list.iter()
         .filter(|kv| !kv.key.trim().is_empty())
@@ -173,6 +176,9 @@ fn pairs(list: &[KvParam]) -> Vec<Value> {
             let mut pair = json!({"key": kv.key, "value": kv.value});
             if !kv.enabled {
                 pair["disabled"] = Value::Bool(true);
+            }
+            if !kv.description.trim().is_empty() {
+                pair["description"] = json!(kv.description.trim());
             }
             pair
         })
@@ -231,6 +237,9 @@ fn request(request: &HttpRequest) -> Value {
                         if !kv.enabled {
                             field["disabled"] = Value::Bool(true);
                         }
+                        if !kv.description.trim().is_empty() {
+                            field["description"] = json!(kv.description.trim());
+                        }
                         field
                     })
                     .collect();
@@ -283,6 +292,7 @@ mod tests {
             key: key.into(),
             value: value.into(),
             enabled,
+            ..Default::default()
         }
     }
 
@@ -441,5 +451,40 @@ mod tests {
         assert_eq!(json["auth"]["type"], "apikey");
         assert_eq!(json["item"].as_array().map(Vec::len), Some(2));
         assert!(json.get("variable").is_none());
+    }
+
+    /// F10: query, header, formdata and variable descriptions round-trip.
+    #[test]
+    fn parameter_descriptions_come_back() {
+        let form =
+            serde_json::to_string(&[kv("file", "file:///a.png", true).with_description("Attachment")]).expect("JSON");
+        let data = TreeData {
+            folders: Vec::new(),
+            apis: vec![api(
+                "a1",
+                "upload",
+                HttpRequest {
+                    method: HttpMethod::Post,
+                    uri: "{{HOST}}/upload".into(),
+                    query: vec![kv("page", "1", true).with_description("Page number")],
+                    headers: vec![kv("X-Key", "k", true).with_description("Client key")],
+                    variables: vec![kv("limit", "10", true).with_description("Batch limit")],
+                    content_type: ContentType::Multipart,
+                    body: form,
+                    ..Default::default()
+                },
+            )],
+            top_order: vec![ItemId::new("a1")],
+            settings: ProjectSettings::default(),
+        };
+        let text = postman(&data, None, "files", &[]);
+        let bundle = crate::import::parse(&text).expect("a collection");
+        let crate::import::ImportItem::Api { request, .. } = &bundle.items[0] else {
+            panic!("expected an API");
+        };
+        assert_eq!(request.query[0].description, "Page number");
+        assert_eq!(request.headers[0].description, "Client key");
+        assert_eq!(request.variables[0].description, "Batch limit");
+        assert_eq!(form_fields(&request.body)[0].description, "Attachment");
     }
 }

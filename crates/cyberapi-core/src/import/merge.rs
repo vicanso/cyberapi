@@ -67,6 +67,36 @@ fn key(request: &HttpRequest) -> Option<(HttpMethod, String)> {
     (request.method != HttpMethod::Grpc).then(|| (request.method, path_key(&request.uri)))
 }
 
+/// F10: a parameter's description the reader wrote stays when the import
+/// gives none for that key; one the import gives updates it.
+fn keep_descriptions(
+    existing: &[crate::model::KvParam],
+    imported: &[crate::model::KvParam],
+    ignore_case: bool,
+) -> Vec<crate::model::KvParam> {
+    imported
+        .iter()
+        .map(|kv| {
+            if kv.description.trim().is_empty()
+                && let Some(had) = existing.iter().find(|had| {
+                    !had.description.trim().is_empty()
+                        && if ignore_case {
+                            had.key.eq_ignore_ascii_case(&kv.key)
+                        } else {
+                            had.key == kv.key
+                        }
+                })
+            {
+                return crate::model::KvParam {
+                    description: had.description.clone(),
+                    ..kv.clone()
+                };
+            }
+            kv.clone()
+        })
+        .collect()
+}
+
 /// `existing` updated from `imported`: its method, address, query,
 /// headers and body; how it signs in, its assertions and its settings stay.
 /// A6: but for the assertions an import wrote, which are the import's
@@ -94,13 +124,24 @@ pub fn updated(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
                 .cloned(),
         );
     }
+    let body = if existing.content_type.is_key_value() && imported.content_type.is_key_value() {
+        let fields = crate::send::form_fields(&imported.body);
+        let kept = keep_descriptions(&crate::send::form_fields(&existing.body), &fields, false);
+        if kept == fields {
+            imported.body.clone()
+        } else {
+            serde_json::to_string(&kept).unwrap_or_else(|_| imported.body.clone())
+        }
+    } else {
+        imported.body.clone()
+    };
     HttpRequest {
         method: imported.method,
         uri: imported.uri.clone(),
         content_type: imported.content_type,
-        body: imported.body.clone(),
-        query: imported.query.clone(),
-        headers: imported.headers.clone(),
+        body,
+        query: keep_descriptions(&existing.query, &imported.query, false),
+        headers: keep_descriptions(&existing.headers, &imported.headers, true),
         assertions,
         ..existing.clone()
     }
@@ -503,6 +544,7 @@ mod tests {
             key: "X-Mine".into(),
             value: "1".into(),
             enabled: true,
+            ..Default::default()
         }];
         let merge = merge(&tree, None, &spec(), true);
         assert_eq!(merge.matched, 5);
@@ -584,5 +626,41 @@ mod tests {
         assert_eq!(missing, ["a-one".into(), "a-ban".into()] as [ItemId; 2]);
         let missing = preview(&tree, None, &items).missing;
         assert_eq!(missing.len(), 4, "at the top level, the whole project: {missing:?}");
+    }
+
+    /// F10: a parameter description the reader wrote stays when the import
+    /// gives none for that key, and is updated when the import gives one.
+    #[test]
+    fn parameter_descriptions_stay_or_update() {
+        let kv = |key: &str, value: &str, desc: &str| {
+            KvParam {
+                key: key.into(),
+                value: value.into(),
+                enabled: true,
+                ..Default::default()
+            }
+            .with_description(desc)
+        };
+        let existing = HttpRequest {
+            content_type: crate::model::ContentType::Form,
+            body: serde_json::to_string(&[kv("user", "a", "Login name"), kv("role", "dev", "Own note")]).expect("JSON"),
+            query: vec![kv("page", "1", "Own page note"), kv("size", "20", "Old size")],
+            headers: vec![kv("X-Trace", "1", "Correlation id")],
+            ..Default::default()
+        };
+        let incoming = HttpRequest {
+            content_type: crate::model::ContentType::Form,
+            body: serde_json::to_string(&[kv("user", "b", "Account handle"), kv("role", "ops", "")]).expect("JSON"),
+            query: vec![kv("page", "2", ""), kv("size", "50", "Items per page")],
+            headers: vec![kv("x-trace", "2", "")],
+            ..Default::default()
+        };
+        let merged = updated(&existing, &incoming);
+        assert_eq!(merged.query[0].description, "Own page note");
+        assert_eq!(merged.query[1].description, "Items per page");
+        assert_eq!(merged.headers[0].description, "Correlation id");
+        let fields = crate::send::form_fields(&merged.body);
+        assert_eq!(fields[0].description, "Account handle");
+        assert_eq!(fields[1].description, "Own note");
     }
 }

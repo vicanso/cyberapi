@@ -584,6 +584,7 @@ mod tests {
             key: "X".into(),
             value: "1".into(),
             enabled: true,
+            ..Default::default()
         });
         let mut project = config.clone();
         project.settings.auth = crate::auth::Auth::Bearer { token: "t".into() };

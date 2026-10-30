@@ -4445,6 +4445,7 @@ mod tests {
             key: key.into(),
             value: value.into(),
             enabled: true,
+            ..Default::default()
         }
     }
 
@@ -4723,6 +4724,7 @@ mod tests {
             key: "code".into(),
             value: "{{prompt(code)}}".into(),
             enabled: true,
+            ..Default::default()
         }];
         api.update(cx, |api, cx| api.set_query(query, cx));
         let answers = Answers {

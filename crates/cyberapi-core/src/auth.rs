@@ -248,6 +248,7 @@ mod tests {
             key: key.into(),
             value: value.into(),
             enabled,
+            ..Default::default()
         }
     }
 

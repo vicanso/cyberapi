@@ -22,8 +22,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task, Window, div, px,
+    relative,
 };
 use rust_i18n::t;
+use std::collections::HashMap;
 use std::time::Duration;
 
 const REPORT_DELAY: Duration = Duration::from_millis(200);
@@ -51,12 +53,15 @@ struct Row {
     enabled: bool,
     key: Entity<InputState>,
     value: Entity<InputState>,
-    _subscriptions: [Subscription; 2],
+    description: Entity<InputState>,
+    _subscriptions: [Subscription; 3],
 }
 
-/// The list as text, while it is edited so.
+/// The list as text, while it is edited so; parameter descriptions stay with
+/// their keys across the round-trip (F10).
 struct Bulk {
     text: Entity<EditorState>,
+    descriptions: HashMap<String, String>,
     _events: Subscription,
     _hints: Option<[Subscription; 2]>,
 }
@@ -129,13 +134,17 @@ impl KvEditor {
         cx.notify();
     }
 
-    /// What the two columns are called.
-    fn labels(&self) -> (String, String) {
-        (t!("editor.key").to_string(), t!("editor.value").to_string())
+    /// What the three columns are called (F10).
+    fn labels(&self) -> (String, String, String) {
+        (
+            t!("editor.key").to_string(),
+            t!("editor.value").to_string(),
+            t!("docs.description").to_string(),
+        )
     }
 
     fn push_row(&mut self, kv: &KvParam, window: &mut Window, cx: &mut Context<Self>) {
-        let (key_label, value_label) = self.labels();
+        let (key_label, value_label, description_label) = self.labels();
         let key = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(key_label)
@@ -145,6 +154,11 @@ impl KvEditor {
             InputState::new(window, cx)
                 .placeholder(value_label)
                 .default_value(kv.value.clone())
+        });
+        let description = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(description_label)
+                .default_value(kv.description.clone())
         });
         let watch_key = cx.subscribe_in(&key, window, |this, _, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::Change) {
@@ -163,11 +177,17 @@ impl KvEditor {
                 _ => {}
             },
         );
-        let subscriptions = [watch_key, watch_value];
+        let watch_description = cx.subscribe_in(&description, window, |this, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.edited(window, cx);
+            }
+        });
+        let subscriptions = [watch_key, watch_value, watch_description];
         self.rows.push(Row {
             enabled: kv.enabled,
             key,
             value,
+            description,
             _subscriptions: subscriptions,
         });
     }
@@ -175,7 +195,15 @@ impl KvEditor {
     /// The rows as a list; the blank last one is not part of it.
     pub fn list(&self, cx: &gpui_kit::App) -> Vec<KvParam> {
         if let Some(bulk) = &self.bulk {
-            return kv_from_text(&bulk.text.read(cx).value());
+            return kv_from_text(&bulk.text.read(cx).value())
+                .into_iter()
+                .map(|mut kv| {
+                    if let Some(description) = bulk.descriptions.get(&kv.key) {
+                        kv.description = description.clone();
+                    }
+                    kv
+                })
+                .collect();
         }
         self.rows
             .iter()
@@ -183,6 +211,7 @@ impl KvEditor {
                 key: row.key.read(cx).value().to_string(),
                 value: row.value.read(cx).value().to_string(),
                 enabled: row.enabled,
+                description: row.description.read(cx).value().to_string(),
             })
             .filter(|kv| !kv.key.is_empty() || !kv.value.is_empty())
             .collect()
@@ -191,7 +220,9 @@ impl KvEditor {
     fn edited(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Typing in the blank row makes the next one.
         if let Some(last) = self.rows.last()
-            && (!last.key.read(cx).value().is_empty() || !last.value.read(cx).value().is_empty())
+            && (!last.key.read(cx).value().is_empty()
+                || !last.value.read(cx).value().is_empty()
+                || !last.description.read(cx).value().is_empty())
         {
             self.push_row(
                 &KvParam {
@@ -335,6 +366,7 @@ impl KvEditor {
                 key: key.into(),
                 value: value.into(),
                 enabled: true,
+                ..Default::default()
             },
             window,
             cx,
@@ -365,7 +397,13 @@ impl KvEditor {
             self.report_later(cx);
             return;
         }
-        let text = kv_text(&self.list(cx));
+        let current = self.list(cx);
+        let descriptions = current
+            .iter()
+            .filter(|kv| !kv.key.is_empty() && !kv.description.is_empty())
+            .map(|kv| (kv.key.clone(), kv.description.clone()))
+            .collect();
+        let text = kv_text(&current);
         let hints = self.hints.clone();
         let example = match self.options.example {
             "" => "name: value",
@@ -391,6 +429,7 @@ impl KvEditor {
         let follow = hints.map(|_| template_hints::watch(&text, window, cx));
         self.bulk = Some(Bulk {
             text,
+            descriptions,
             _events: events,
             _hints: follow,
         });
@@ -472,7 +511,7 @@ impl Render for KvEditor {
                 )
                 .into_any_element();
         }
-        let (key_label, value_label) = self.labels();
+        let (key_label, value_label, description_label) = self.labels();
         let last = self.rows.len().saturating_sub(1);
         // A row of the common ones, from a menu.
         let presets = (!self.options.presets.is_empty()).then(|| {
@@ -516,8 +555,16 @@ impl Render for KvEditor {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .child(cell().w_2_5().flex_none().px_2().child(key_label))
-                    .child(cell().flex_1().min_w_0().px_2().child(value_label)),
+                    .child(cell().w(relative(0.28)).min_w_0().flex_none().px_2().child(key_label))
+                    .child(cell().flex_1().min_w_0().px_2().child(value_label))
+                    .child(
+                        cell()
+                            .w(relative(0.28))
+                            .min_w_0()
+                            .flex_none()
+                            .px_2()
+                            .child(description_label),
+                    ),
             )
             .child(actions().children(presets).child(toggle));
         let rows = self.rows.iter().enumerate().map(|(index, row)| {
@@ -561,7 +608,8 @@ impl Render for KvEditor {
                         .when(!blank && !row.enabled, |this| this.opacity(0.45))
                         .child(
                             cell()
-                                .w_2_5()
+                                .w(relative(0.28))
+                                .min_w_0()
                                 .flex_none()
                                 .child(Input::new(&row.key).small().appearance(false)),
                         )
@@ -584,6 +632,13 @@ impl Render for KvEditor {
                                         cx,
                                     ))
                                 }),
+                        )
+                        .child(
+                            cell()
+                                .w(relative(0.28))
+                                .min_w_0()
+                                .flex_none()
+                                .child(Input::new(&row.description).small().appearance(false)),
                         ),
                 )
                 .child(

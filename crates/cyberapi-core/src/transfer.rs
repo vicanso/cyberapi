@@ -116,6 +116,7 @@ mod tests {
             key: key.into(),
             value: value.into(),
             enabled: true,
+            ..Default::default()
         }
     }
 

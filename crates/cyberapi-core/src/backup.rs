@@ -419,6 +419,7 @@ mod tests {
                         key: "page".into(),
                         value: "1".into(),
                         enabled: true,
+                        ..Default::default()
                     }],
                 },
                 created_at: at(),

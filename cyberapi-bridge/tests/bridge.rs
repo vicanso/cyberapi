@@ -772,6 +772,7 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
         key: key.into(),
         value: value.into(),
         enabled: true,
+        ..Default::default()
     };
     storage
         .tree()

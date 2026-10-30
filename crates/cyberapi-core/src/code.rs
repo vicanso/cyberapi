@@ -495,6 +495,7 @@ mod tests {
             key: key.into(),
             value: value.into(),
             enabled: true,
+            ..Default::default()
         };
         let prepared = PreparedRequest {
             method: HttpMethod::Post,

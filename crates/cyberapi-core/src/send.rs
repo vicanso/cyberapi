@@ -263,6 +263,7 @@ pub fn fill_values(request: &HttpRequest, variables: &[Variable]) -> HttpRequest
         key: variable.name.trim().to_string(),
         value: variable.value.clone(),
         enabled: true,
+        ..Default::default()
     }));
     filled
 }
@@ -833,6 +834,7 @@ mod tests {
             key: key.into(),
             value: value.into(),
             enabled: true,
+            ..Default::default()
         }
     }
 
@@ -1007,6 +1009,7 @@ mod tests {
                     key: "X-Disabled".into(),
                     value: "v".into(),
                     enabled: false,
+                    ..Default::default()
                 },
             ],
             auth: Auth::Basic {
@@ -1049,6 +1052,7 @@ mod tests {
                     key: "X-Off".into(),
                     value: "1".into(),
                     enabled: false,
+                    ..Default::default()
                 },
                 kv("Authorization", "Basic folder-header"),
             ],
@@ -1249,6 +1253,7 @@ mod tests {
             key: "a".into(),
             value: "1".into(),
             enabled: false,
+            ..Default::default()
         }])
         .expect("json");
         assert_eq!(
@@ -1340,6 +1345,7 @@ mod tests {
                 key: "off".into(),
                 value: "x".into(),
                 enabled: false,
+                ..Default::default()
             },
             kv("名", "值!*'()"),
         ];

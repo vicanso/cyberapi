@@ -315,6 +315,16 @@ pub struct KvParam {
     pub value: String,
     /// Missing means disabled: the old app tested `!kv.enabled`.
     pub enabled: bool,
+    /// F10: what the parameter, header or field is for.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+impl KvParam {
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
 }
 
 /// A key / value list as text, one `key: value` per line and a disabled
@@ -346,6 +356,7 @@ pub fn kv_from_text(text: &str) -> Vec<KvParam> {
                 key: key.trim().to_string(),
                 value: value.trim().to_string(),
                 enabled,
+                ..Default::default()
             }
         })
         .filter(|kv| !kv.key.is_empty() || !kv.value.is_empty())
@@ -643,11 +654,13 @@ mod tests {
                 key: "Host".into(),
                 value: "a.test:8080".into(),
                 enabled: true,
+                ..Default::default()
             },
             KvParam {
                 key: "X-Off".into(),
                 value: "1".into(),
                 enabled: false,
+                ..Default::default()
             },
         ];
         let text = kv_text(&list);
@@ -661,16 +674,19 @@ mod tests {
                     key: "accept".into(),
                     value: "*/*".into(),
                     enabled: true,
+                    ..Default::default()
                 },
                 KvParam {
                     key: "x-a".into(),
                     value: "b".into(),
                     enabled: false,
+                    ..Default::default()
                 },
                 KvParam {
                     key: "flag".into(),
                     value: String::new(),
                     enabled: true,
+                    ..Default::default()
                 },
             ]
         );

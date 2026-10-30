@@ -487,11 +487,13 @@ async fn requests_are_saved(storage: &Storage) {
             key: "lang".into(),
             value: "zh".into(),
             enabled: true,
+            description: "UI language".into(),
         }],
         headers: vec![KvParam {
             key: "X-Trace".into(),
             value: "{{md5(a)}}".into(),
             enabled: false,
+            ..Default::default()
         }],
         // How it signs in (#66).
         auth: Auth::ApiKey {
@@ -527,6 +529,7 @@ async fn requests_are_saved(storage: &Storage) {
             key: "tenant".into(),
             value: "acme".into(),
             enabled: false,
+            description: "Tenant code".into(),
         }],
         // What it is for, and an example (F3).
         description: "Signs in.\n\n- user\n- password".into(),
@@ -574,6 +577,7 @@ async fn settings_are_kept(storage: &Storage) {
             key: "X-Team".into(),
             value: "users".into(),
             enabled: true,
+            description: "Owning team".into(),
         }],
         // F3: what it is for.
         description: "The team's own.".into(),
@@ -582,6 +586,7 @@ async fn settings_are_kept(storage: &Storage) {
             key: "team".into(),
             value: "users".into(),
             enabled: true,
+            ..Default::default()
         }],
     };
     let set = tree
@@ -2502,6 +2507,7 @@ pub async fn copies(storage: &Storage, copies: &dyn crate::ServerCopyStore) {
         key: "X-Team".into(),
         value: "users".into(),
         enabled: true,
+        description: "Owning team".into(),
     }];
     config.settings.auth = Auth::Bearer { token: "t".into() };
     config.environments.push(cyberapi_core::model::Environment {

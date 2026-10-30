@@ -202,13 +202,17 @@ fn parameters(request: &HttpRequest, path: &[String]) -> Vec<Value> {
                 continue;
             }
             let example = example(&kv.value);
-            out.push(json!({
+            let mut param = json!({
                 "name": name,
                 "in": place,
                 "required": false,
                 "schema": schema_of(&example),
                 "example": example,
-            }));
+            });
+            if !kv.description.trim().is_empty() {
+                param["description"] = json!(kv.description.trim());
+            }
+            out.push(param);
         }
     }
     out
@@ -334,7 +338,7 @@ fn request_body(request: &HttpRequest) -> Option<Value> {
             let multipart = request.content_type == ContentType::Multipart;
             let mut properties = Map::new();
             for kv in form_fields(&request.body).iter().filter(|kv| !kv.key.trim().is_empty()) {
-                let property = match kv.value.strip_prefix("file://") {
+                let mut property = match kv.value.strip_prefix("file://") {
                     Some(_) if multipart => json!({"type": "string", "format": "binary"}),
                     _ => {
                         let example = example(&kv.value);
@@ -343,6 +347,9 @@ fn request_body(request: &HttpRequest) -> Option<Value> {
                         schema
                     }
                 };
+                if !kv.description.trim().is_empty() {
+                    property["description"] = json!(kv.description.trim());
+                }
                 properties.insert(kv.key.trim().to_string(), property);
             }
             let kind = if multipart {
@@ -432,6 +439,7 @@ mod tests {
             key: key.into(),
             value: value.into(),
             enabled: true,
+            ..Default::default()
         }
     }
 
@@ -638,5 +646,43 @@ mod tests {
         let bundle = crate::import::parse(&yaml).expect("a document");
         assert_eq!(bundle.counts(), (3, 1));
         assert_eq!(bundle.auth, Auth::Bearer { token: String::new() });
+    }
+
+    /// F10: parameter and form field descriptions go out and import back.
+    #[test]
+    fn parameter_descriptions_come_back() {
+        let form = serde_json::to_string(&[
+            kv("avatar", "file://").with_description("Avatar PNG"),
+            kv("note", "hi").with_description("Short bio"),
+        ])
+        .expect("JSON");
+        let data = TreeData {
+            folders: Vec::new(),
+            apis: vec![api(
+                "a1",
+                "upload",
+                HttpRequest {
+                    method: HttpMethod::Post,
+                    uri: "{{HOST}}/upload".into(),
+                    query: vec![kv("dryRun", "false").with_description("Validate without saving")],
+                    headers: vec![kv("X-Trace", "1").with_description("Correlation id")],
+                    content_type: ContentType::Multipart,
+                    body: form,
+                    ..Default::default()
+                },
+            )],
+            top_order: vec![ItemId::new("a1")],
+            settings: ProjectSettings::default(),
+        };
+        let yaml = openapi(&data, None, "Files", &[("HOST".into(), "https://files.test".into())]);
+        let bundle = crate::import::parse(&yaml).expect("a document");
+        let crate::import::ImportItem::Api { request, .. } = &bundle.items[0] else {
+            panic!("expected an API");
+        };
+        assert_eq!(request.query[0].description, "Validate without saving");
+        assert_eq!(request.headers[0].description, "Correlation id");
+        let fields = form_fields(&request.body);
+        assert_eq!(fields[0].description, "Avatar PNG");
+        assert_eq!(fields[1].description, "Short bio");
     }
 }

@@ -49,7 +49,8 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 ///    `HttpRequest::variables`).
 /// 18: schema assertions (A6, `assertions::Subject::Schema`, `Op::Conforms`,
 ///    `Assertion::imported`).
-pub const MODEL: u32 = 18;
+/// 19: parameter descriptions (F10, `KvParam::description`).
+pub const MODEL: u32 = 19;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

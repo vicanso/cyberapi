@@ -404,6 +404,7 @@ pub fn split_url(url: &str) -> (String, Vec<KvParam>) {
             key: key.into_owned(),
             value: value.into_owned(),
             enabled: true,
+            ..Default::default()
         })
         .collect();
     (format!("{base}{fragment}"), pairs)
@@ -456,6 +457,7 @@ fn kv(key: &str, value: &str, enabled: bool) -> KvParam {
         key: key.to_string(),
         value: value.to_string(),
         enabled,
+        ..Default::default()
     }
 }
 

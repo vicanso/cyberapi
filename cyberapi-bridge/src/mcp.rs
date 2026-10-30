@@ -547,7 +547,13 @@ fn params_json(params: &[KvParam]) -> Json {
     Json::Array(
         masked_params(params)
             .into_iter()
-            .map(|param| json!({ "name": param.key, "value": param.value, "enabled": param.enabled }))
+            .map(|param| {
+                let mut out = json!({ "name": param.key, "value": param.value, "enabled": param.enabled });
+                if !param.description.is_empty() {
+                    out["description"] = json!(param.description);
+                }
+                out
+            })
             .collect(),
     )
 }

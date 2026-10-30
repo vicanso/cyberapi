@@ -57,6 +57,7 @@ fn pairs(value: Option<&Value>) -> Vec<KvParam> {
                         &variables(text(item, "value")),
                         !item.get("disabled").and_then(Value::as_bool).unwrap_or(false),
                     )
+                    .with_description(text(item, "description").trim())
                 })
                 .collect()
         })

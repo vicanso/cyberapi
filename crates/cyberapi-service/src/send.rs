@@ -862,6 +862,7 @@ mod tests {
             key: key.into(),
             value: value.into(),
             enabled: true,
+            ..Default::default()
         }
     }
 
@@ -2237,6 +2238,7 @@ mod tests {
                 key: "X-Team".into(),
                 value: "users".into(),
                 enabled: true,
+                ..Default::default()
             }],
             auth: cyberapi_core::auth::Auth::Bearer { token: "t0".into() },
             ..Default::default()
@@ -2298,6 +2300,7 @@ mod tests {
             key: key.into(),
             value: value.into(),
             enabled: true,
+            ..Default::default()
         };
         setup.sender.inherited = Inherited {
             variables: vec![kv("HOST", "https://folder.test"), kv("team", "folder"), kv("page", "1")],
