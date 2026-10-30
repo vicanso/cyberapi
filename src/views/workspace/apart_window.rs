@@ -200,6 +200,11 @@ impl ApartView {
 
 impl Render for ApartView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A closed dialog leaves nothing focused: the window takes it back,
+        // or ⌘W would hide the app and ⌘↵ go nowhere (BUG-17).
+        if window.focused(cx).is_none() {
+            self.focus.focus(window, cx);
+        }
         let theme = cx.theme();
         let name = self
             .title
