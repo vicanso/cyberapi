@@ -15,7 +15,7 @@
 | 编号 | 功能 | 严重度 | 一句话 | 核实 |
 |---|---|---|---|---|
 | BUG-1 | D7 | 高 | `now()` 的偏移大到溢出时 panic，release 构建 `panic = "abort"`，桌面版、命令行和经 MCP 发送的 bridge 整个进程退出 | 已核实；已修复 |
-| BUG-2 | D6 | 中高 | 生产环境确认后，请求里有 `prompt()` 时询问弹窗刚打开就被关掉，请求永远发不出去 | 已核实 |
+| BUG-2 | D6 | 中高 | 生产环境确认后，请求里有 `prompt()` 时询问弹窗刚打开就被关掉，请求永远发不出去 | 已核实；已修复 |
 | BUG-3 | F6 | 中高 | 删除“仅本地”的条目再撤销，它回来时不再是仅本地，下次同步会推给团队 | 读代码确认 |
 | BUG-4 | F7 | 中 | 独立窗口里请求编辑器的标签页跟着主窗口当前的接口走，点它会改别的接口的标签页 | 已核实 |
 | BUG-5 | F7 | 中 | 标签被重建（同事的修改到达、放弃本地修改）后关闭独立窗口，旧请求被写回存储，下次同步盖掉同事的修改 | 已核实（触发条件：可能） |
@@ -73,13 +73,14 @@
 - 修复方向：改用 `checked_add_signed`，溢出时返回模板错误；`shift` 也可以限一个合理范围（如 ±100 年）。加一条测试。
 - 修复：偏移本身超出 `TimeDelta`（如 `9223372036854775807s`，以前被当成格式原样输出）和加到当前时间后超出日历，都返回参数错误（“a shift the calendar reaches”），请求不发出。没有另限范围：一个世纪以内的偏移照常可用。测试 `now_is_iso_8601_or_formatted_local_or_utc` 覆盖正负两个方向，去掉修复时它因 panic 失败。同一文件里其他函数看过：`random` 用 i128 算区间，`randomString` 有长度上限，不会因输入 panic。
 
-### BUG-2 生产环境确认后，有 `prompt()` 的请求发不出去（D6，中高）
+### BUG-2 生产环境确认后，有 `prompt()` 的请求发不出去（D6，中高）——已修复
 
 - 位置：`src/views/workspace/production_confirm.rs:34`，`request_editor.rs:1190-1215`，`views/name_dialog.rs:36-37`。
 - 场景：当前环境标为生产，POST 请求里有 `{{prompt(...)}}`，点发送，再在确认框点“发送”。
 - 原因：确认框的 `go` 调用 `send_unasked`，后者同步打开询问弹窗（`open_prompt_dialog` → `open_dialog`），`go` 再返回 `true`，`ok_button` 随即 `close_dialog`。gpui-component 0.8.1 的 `close_dialog_internal` 关的是**最新的**弹窗（`rposition(|d| !d.closing)`），于是刚打开的询问弹窗被关，确认框留着。每次都这样。网页版还违反了“弹窗上不叠弹窗”。
 - 绕过：勾“到退出前不再询问”，取消，再从编辑器发送。
 - 修复方向：`go` 先关掉确认框（返回 `false` 并自己 `close_dialog`），再 `cx.defer` 调用 `send_unasked`；或者把询问并进确认框里（和运行弹窗一样就地询问）。
+- 修复：`confirm_production` 的“发送”先 `close_dialog` 关掉确认框（此时它是最新的弹窗），再调用 `send`，返回 `false` 让 `ok_button` 不再关一次。不需要 `defer`：组件库的关闭只是把确认框标为 closing（动画结束后移除），随后打开的询问弹窗是新的一层，不会被关。所有用它的路径（发送、WebSocket / gRPC 流的连接）都受益。测试 `the_dialog_a_send_opens_stays` 在真实的弹窗层上点“发送”，再点 send 自己打开的弹窗里的按钮；改回原来的顺序时它失败。
 
 ### BUG-3 撤销删除的“仅本地”条目后，它会被同步出去（F6，中高）
 

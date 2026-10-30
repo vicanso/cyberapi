@@ -12,7 +12,9 @@ use gpui_kit::{
 use rust_i18n::t;
 
 /// Asks whether `what` (the method and the address) goes in `environment`;
-/// `send` is told, when it does, whether to stop asking.
+/// `send` is told, when it does, whether to stop asking. This dialog is
+/// closed before `send` runs: what it opens itself — the `prompt`s it asks
+/// for (BUG-2) — is then the newest dialog, and stays.
 pub fn confirm_production(
     environment: String,
     what: String,
@@ -31,8 +33,10 @@ pub fn confirm_production(
             let (view, send) = (view.clone(), send.clone());
             move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                 let stop = view.read(cx).stop;
+                // Closing closes the newest dialog: it is to be this one.
+                window.close_dialog(cx);
                 send(stop, window, cx);
-                true
+                false
             }
         };
         dialog
@@ -80,5 +84,74 @@ impl Render for Asking {
                         cx.notify();
                     })),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::component::Root;
+    use gpui_kit::component::button::{Button, ButtonVariants as _};
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AnyWindowHandle, TestAppContext, size};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct Blank;
+
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// BUG-2: a send that asks for its `prompt`s in a dialog of its own
+    /// keeps that dialog once the production one is answered.
+    #[gpui_kit::test]
+    async fn the_dialog_a_send_opens_stays(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let handle: AnyWindowHandle = cx
+            .open_window(size(px(800.), px(600.)), |window, cx| {
+                let blank = cx.new(|_| Blank);
+                Root::new(blank, window, cx)
+            })
+            .into();
+        let answered = Rc::new(Cell::new(false));
+        let told = answered.clone();
+        cx.update_window(handle, |_, window, cx| {
+            confirm_production(
+                "prod".into(),
+                "POST /orders".into(),
+                window,
+                cx,
+                move |_, window, cx| {
+                    let told = told.clone();
+                    window.open_dialog(cx, move |dialog, _, _| {
+                        let told = told.clone();
+                        dialog.child(
+                            Button::new("asked")
+                                .primary()
+                                .label("asked")
+                                .on_click(move |_, _, _| told.set(true)),
+                        )
+                    });
+                },
+            );
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("production-send", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("asked").is_some(), "the send's own dialog is open");
+            window.click("asked", cx);
+        })
+        .expect("the window is open");
+        assert!(answered.get());
     }
 }
