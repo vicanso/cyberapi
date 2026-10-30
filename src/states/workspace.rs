@@ -45,7 +45,9 @@ use cyberapi_store::{Storage, StoreError, StoreFuture};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Task};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -139,6 +141,13 @@ struct Undo {
     local: Vec<ItemId>,
 }
 
+/// What the rows were made of (PERF-1).
+struct RowsOf {
+    tree: u64,
+    keyword: String,
+    expanded: Vec<ItemId>,
+}
+
 /// What opening a copy found: what this machine kept, and the server's
 /// project and content — or why not.
 type Opened = (Option<Kept>, Result<(Collection, ConfigAt), StoreError>);
@@ -172,6 +181,11 @@ pub struct WorkspaceState {
     collection: Collection,
     data: TreeData,
     tree: Tree,
+    /// Which `tree` it is: one more each time it is built again.
+    tree_built: u64,
+    /// PERF-1: the rows as last made, and of what — made again only when
+    /// the tree, the keyword or the open folders change, not each frame.
+    rows: RefCell<Option<(RowsOf, Rc<[Row]>)>>,
     prefs: WorkspacePrefs,
     load: Load,
     /// What to import once the tree has loaded: a project made from an
@@ -315,6 +329,8 @@ impl WorkspaceState {
             collection,
             data: TreeData::default(),
             tree: Tree::default(),
+            tree_built: 0,
+            rows: RefCell::new(None),
             prefs: WorkspacePrefs::default(),
             load: Load::Loading,
             waiting_import: None,
@@ -1733,7 +1749,7 @@ impl WorkspaceState {
     pub fn api_saved(&mut self, setting: ApiSetting, cx: &mut Context<Self>) {
         if let Some(api) = self.data.apis.iter_mut().find(|api| api.id == setting.id) {
             *api = setting;
-            self.tree = Tree::build(&self.data);
+            self.build_tree();
             cx.notify();
         }
     }
@@ -1796,9 +1812,29 @@ impl WorkspaceState {
         self.tree.get(selected).and_then(|node| node.parent()).cloned()
     }
 
-    pub fn rows(&self) -> Vec<Row> {
+    pub fn rows(&self) -> Rc<[Row]> {
+        if let Some((of, rows)) = &*self.rows.borrow()
+            && of.tree == self.tree_built
+            && of.keyword == self.keyword
+            && of.expanded == self.prefs.expanded
+        {
+            return rows.clone();
+        }
         let expanded: HashSet<ItemId> = self.prefs.expanded.iter().cloned().collect();
-        self.tree.rows(&expanded, &self.keyword)
+        let rows: Rc<[Row]> = self.tree.rows(&expanded, &self.keyword).into();
+        let of = RowsOf {
+            tree: self.tree_built,
+            keyword: self.keyword.clone(),
+            expanded: self.prefs.expanded.clone(),
+        };
+        *self.rows.borrow_mut() = Some((of, rows.clone()));
+        rows
+    }
+
+    /// The tree made again from the data.
+    fn build_tree(&mut self) {
+        self.tree = Tree::build(&self.data);
+        self.tree_built += 1;
     }
 
     /// Loads (or loads again) the tree and the reader's state of it. A
@@ -1874,7 +1910,7 @@ impl WorkspaceState {
 
     fn set_data(&mut self, data: TreeData, cx: &mut Context<Self>) {
         self.data = data;
-        self.tree = Tree::build(&self.data);
+        self.build_tree();
         self.sync_api(cx);
     }
 
@@ -2028,7 +2064,7 @@ impl WorkspaceState {
                     Ok(setting) => {
                         this.data.apis.push(setting);
                         this.data.apply(&change);
-                        this.tree = Tree::build(&this.data);
+                        this.build_tree();
                         this.open_folder(parent.as_ref());
                         for open in &mut this.prefs.open {
                             if *open == id {
@@ -2081,7 +2117,7 @@ impl WorkspaceState {
             Ok(inserted) => {
                 this.data.apis.push(inserted.item.clone());
                 this.data.apply(&inserted.change);
-                this.tree = Tree::build(&this.data);
+                this.build_tree();
                 this.open_folder(parent.as_ref());
                 this.created = Some(inserted.item.id.clone());
                 this.prefs.selected = Some(inserted.item.id);
@@ -2115,7 +2151,7 @@ impl WorkspaceState {
                 let folder: Folder = inserted.item;
                 this.data.folders.push(folder);
                 this.data.apply(&inserted.change);
-                this.tree = Tree::build(&this.data);
+                this.build_tree();
                 this.open_folder(parent.as_ref());
                 this.save_prefs(cx);
                 cx.notify();
@@ -2148,7 +2184,7 @@ impl WorkspaceState {
                 } else if let Some(api) = this.data.apis.iter_mut().find(|api| api.id == id) {
                     api.name = name;
                 }
-                this.tree = Tree::build(&this.data);
+                this.build_tree();
                 cx.notify();
             }
             Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
@@ -2210,7 +2246,7 @@ impl WorkspaceState {
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(change) => {
                 this.data.apply(&change);
-                this.tree = Tree::build(&this.data);
+                this.build_tree();
                 this.open_folder(to.parent.as_ref());
                 this.save_prefs(cx);
                 cx.notify();
@@ -2246,7 +2282,7 @@ impl WorkspaceState {
                 let copy = imported.apis.first().map(|api| api.id.clone());
                 this.data.apis.extend(imported.apis);
                 this.data.apply(&imported.change);
-                this.tree = Tree::build(&this.data);
+                this.build_tree();
                 let Some(copy) = copy else { return };
                 // Imported last in the folder: moved up beside the original.
                 if before.is_some() {
@@ -2295,7 +2331,7 @@ impl WorkspaceState {
                 this.data.folders.extend(imported.folders);
                 this.data.apis.extend(imported.apis);
                 this.data.apply(&imported.change);
-                this.tree = Tree::build(&this.data);
+                this.build_tree();
                 this.open_folder(parent.as_ref());
                 if let Some(api) = only {
                     this.select(&api, cx);
@@ -2394,7 +2430,7 @@ impl WorkspaceState {
                         this.data.folders.extend(imported.folders);
                         this.data.apis.extend(imported.apis);
                         this.data.apply(&imported.change);
-                        this.tree = Tree::build(&this.data);
+                        this.build_tree();
                         this.open_folder(place.as_ref());
                         this.save_prefs(cx);
                     }
@@ -2691,7 +2727,7 @@ impl WorkspaceState {
                     .and_then(|opened| this.prefs.open.iter().position(|open| open == opened))
                     .and_then(|at| this.tab_beside(at, &gone));
                 this.data.apply_removal(&removal);
-                this.tree = Tree::build(&this.data);
+                this.build_tree();
                 if this.prefs.selected.as_ref().is_some_and(gone) || beside.is_some() {
                     this.prefs.selected = beside;
                 }
@@ -3631,6 +3667,50 @@ mod tests {
     use cyberapi_core::CollectionId;
     use cyberapi_core::tree::TreeChange;
     use cyberapi_store::TreeStore;
+
+    /// PERF-1: the rows are made again only when what they show changes —
+    /// the tree, the keyword, the open folders — not each time asked.
+    #[gpui_kit::test]
+    async fn the_rows_are_made_once_for_what_they_show(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection, cx);
+        state.update(cx, |state, cx| state.create_folder(None, "users".into(), cx));
+        cx.run_until_parked();
+        let users = find(&state, "users", cx);
+        let rows = |cx: &mut TestAppContext| state.read_with(cx, |state, _| state.rows());
+        let names = |rows: &[Row], cx: &mut TestAppContext| -> Vec<String> {
+            state.read_with(cx, |state, _| {
+                rows.iter()
+                    .filter_map(|row| state.tree().get(&row.id).map(|node| node.name().to_string()))
+                    .collect()
+            })
+        };
+        let first = rows(cx);
+        assert!(Rc::ptr_eq(&first, &rows(cx)), "the same rows, not made again");
+
+        state.update(cx, |state, cx| {
+            state.create_api(Some(users.clone()), "login".into(), cx)
+        });
+        cx.run_until_parked();
+        let built = rows(cx);
+        assert!(!Rc::ptr_eq(&first, &built), "the tree changed");
+        assert!(state.read_with(cx, |state, _| state.prefs.expanded.contains(&users)));
+        assert_eq!(names(&built, cx), ["users", "login"]);
+        // The tree alone: the open folders are as they were.
+        state.update(cx, |state, cx| state.create_api(None, "health".into(), cx));
+        cx.run_until_parked();
+        assert_eq!(names(&rows(cx), cx), ["health", "users", "login"]);
+
+        state.update(cx, |state, cx| state.toggle_folder(&users, cx));
+        let folded = rows(cx);
+        assert_eq!(names(&folded, cx), ["health", "users"], "the folder closed");
+
+        state.update(cx, |state, cx| state.set_keyword("log".into(), cx));
+        let found = rows(cx);
+        assert_eq!(names(&found, cx), ["users", "login"], "found inside");
+        assert!(Rc::ptr_eq(&found, &rows(cx)));
+    }
 
     /// A project's tree where, while `races` lasts, someone else's write
     /// lands right after each read of it whole.

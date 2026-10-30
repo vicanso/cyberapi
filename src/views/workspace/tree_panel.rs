@@ -34,11 +34,13 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent, Entity, FocusHandle, Focusable as _,
-    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Pixels, Point, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, px, rems,
+    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Pixels, Point, Render, ScrollStrategy,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, UniformListScrollHandle, WeakEntity,
+    Window, div, px, rems, uniform_list,
 };
 use rust_i18n::t;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 /// How far each level of the tree is indented.
 const INDENT: f32 = 14.;
@@ -129,17 +131,15 @@ pub struct TreePanel {
     state: Entity<WorkspaceState>,
     search: Entity<InputState>,
     renaming: Option<Renaming>,
-    scroll: ScrollHandle,
-    /// A selection to scroll into view once its row is drawn: the API a
+    /// PERF-1: the rows are a uniform list — only those in view are drawn.
+    scroll: UniformListScrollHandle,
+    /// A selection to scroll into view once its row is there: the API a
     /// project opens again on (F3.8) — known only once its prefs are read,
     /// maybe after the rows — or one opened from a pin. A row already in
     /// view stays where it is.
     reveal: Option<ItemId>,
-    /// The rows' list draws for the first time: its scroll handle takes a
-    /// request only once it has been laid out, so the next frame reveals.
-    reveal_next_frame: bool,
     /// The rows as last drawn; the pointer is read against them.
-    drawn: Vec<Row>,
+    drawn: Rc<[Row]>,
     drop_target: Option<DropTarget>,
     /// The tree's own focus, for its keys.
     focus: FocusHandle,
@@ -189,10 +189,9 @@ impl TreePanel {
             state,
             search,
             renaming: None,
-            scroll: ScrollHandle::new(),
+            scroll: UniformListScrollHandle::new(),
             reveal: None,
-            reveal_next_frame: false,
-            drawn: Vec::new(),
+            drawn: Rc::from([]),
             drop_target: None,
             focus: cx.focus_handle(),
             cursor: None,
@@ -236,7 +235,7 @@ impl TreePanel {
             self.state.update(cx, |state, cx| state.select(&row.id, cx));
         }
         self.cursor = Some(row.id.clone());
-        self.scroll.scroll_to_item(index);
+        self.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
         cx.notify();
     }
 
@@ -356,7 +355,8 @@ impl TreePanel {
         if !bounds.contains(&position) {
             return None;
         }
-        let y = f32::from(position.y - bounds.origin.y - self.scroll.offset().y) / ROW_HEIGHT;
+        let scrolled = self.scroll.0.borrow().base_handle.offset().y;
+        let y = f32::from(position.y - bounds.origin.y - scrolled) / ROW_HEIGHT;
         let target = match self.drawn.get(y.max(0.).floor() as usize) {
             None => DropTarget::End,
             Some(row) => {
@@ -623,6 +623,8 @@ impl TreePanel {
             .id(key)
             .group(pin_group.clone())
             .relative()
+            // A uniform list lays each row out alone: the width is said.
+            .w_full()
             .h(px(ROW_HEIGHT))
             .pl(px(8. + INDENT * row.depth as f32))
             .pr_2()
@@ -849,50 +851,63 @@ impl TreePanel {
                     .as_ref()
                     .and_then(|id| rows.iter().position(|row| &row.id == id))
                 {
-                    // The list drew before this frame: its handle can scroll.
-                    if self.drawn.is_empty() {
-                        self.reveal_next_frame = true;
-                    } else {
-                        self.reveal = None;
-                        self.scroll.scroll_to_item(index);
-                    }
+                    // Done as the list is laid out, drawn before or not.
+                    self.reveal = None;
+                    self.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
                 }
                 let cursor = focused.then(|| self.cursor_at(&rows, cx)).flatten();
                 let local = self.state.read(cx).local_members();
-                let elements: Vec<AnyElement> = rows
-                    .iter()
-                    .enumerate()
-                    .map(|(index, row)| self.render_row(row, cursor == Some(index), &local, cx))
-                    .collect();
+                let count = rows.len();
+                self.drawn = rows;
+                // Only the rows in view are made, each frame (PERF-1).
+                let list = uniform_list(
+                    "tree-rows",
+                    count,
+                    cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                        let drawn = this.drawn.clone();
+                        range
+                            .filter_map(|index| Some((index, drawn.get(index)?)))
+                            .map(|(index, row)| this.render_row(row, cursor == Some(index), &local, cx))
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&self.scroll)
+                .size_full()
+                .px_1()
+                .pb_2();
                 let end = self.drop_target == Some(DropTarget::End);
                 let primary = cx.theme().primary;
-                self.drawn = rows;
+                // Below the last row, where it was a row of its own.
+                let end_at = px(count as f32 * ROW_HEIGHT) + self.scroll.0.borrow().base_handle.offset().y;
                 let (state, editable) = (self.state.downgrade(), self.state.read(cx).editable());
-                let list = div()
-                    .id("tree-rows")
-                    .size_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .px_1()
-                    .pb_2()
-                    .children(elements)
-                    .when(end, |this| this.child(div().mx_2().h(px(2.)).bg(primary)))
+                // The list keeps its own handle (a drop is placed by its
+                // offset), so its scrollbar is laid over it rather than the
+                // kit's scroll wrapper, which brings a handle of its own.
+                div()
+                    .id("tree-list")
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(list)
+                    .when(end, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top(end_at)
+                                .left(px(12.))
+                                .right(px(12.))
+                                .h(px(2.))
+                                .bg(primary),
+                        )
+                    })
+                    .child(div().absolute().inset_0().child(Scrollbar::vertical(&self.scroll)))
                     .on_drag_move(
                         cx.listener(|this, event: &DragMoveEvent<DraggedItem>, _, cx| this.on_drag_move(event, cx)),
                     )
                     .on_drop(cx.listener(|this, dragged: &DraggedItem, _, cx| this.on_drop(dragged, cx)))
                     // Below the rows, what the header's button offers: a row
                     // takes its own right-click first.
-                    .context_menu(move |menu, window, cx| project_menu(menu, &state, editable, window, cx));
-                // The list keeps its own handle (a drop is placed by its
-                // offset), so its scrollbar is laid over it rather than the
-                // kit's scroll wrapper, which brings a handle of its own.
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .relative()
-                    .child(list)
-                    .child(div().absolute().inset_0().child(Scrollbar::vertical(&self.scroll)))
+                    .context_menu(move |menu, window, cx| project_menu(menu, &state, editable, window, cx))
                     .into_any_element()
             }
         }
@@ -1384,9 +1399,5 @@ impl Render for TreePanel {
             .on_action(cx.listener(|this, _: &NewFolder, window, cx| this.new_here(ItemKind::Folder, window, cx)))
             .child(self.render_header(cx))
             .child(self.render_body(focused, cx))
-            .when(std::mem::take(&mut self.reveal_next_frame), |this| {
-                cx.on_next_frame(window, |_, _, cx| cx.notify());
-                this
-            })
     }
 }
