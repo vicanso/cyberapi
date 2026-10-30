@@ -135,6 +135,8 @@ struct Undo {
     deleted: undo::Deleted,
     pinned: Vec<ItemId>,
     expanded: Vec<ItemId>,
+    /// What of it was the reader's own (server-sync §3.4), to be again.
+    local: Vec<ItemId>,
 }
 
 /// What opening a copy found: what this machine kept, and the server's
@@ -2649,6 +2651,17 @@ impl WorkspaceState {
     fn delete_told(&mut self, id: ItemId, told: bool, cx: &mut Context<Self>) {
         // F6: what goes, kept to be put back.
         let deleted = undo::deleted(&self.data, &id).filter(|_| told);
+        // BUG-3: the delete drops the marks of the reader's own items in it.
+        let local: Vec<ItemId> = match (&deleted, &self.copy) {
+            (Some(deleted), Some(copy)) => copy
+                .copy
+                .local_items()
+                .roots
+                .into_iter()
+                .filter(|root| deleted.holds(root))
+                .collect(),
+            _ => Vec::new(),
+        };
         let call = self.sender.storage.tree().delete(self.collection.id.clone(), id);
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(removal) => {
@@ -2661,6 +2674,7 @@ impl WorkspaceState {
                         pinned: this.prefs.pinned.iter().filter(|id| gone(id)).cloned().collect(),
                         expanded: this.prefs.expanded.iter().filter(|id| gone(id)).cloned().collect(),
                         deleted,
+                        local,
                     });
                     cx.emit(WorkspaceEvent::Deleted { name, apis, count });
                 }
@@ -2774,12 +2788,21 @@ impl WorkspaceState {
         let storage = self.sender.storage.clone();
         let collection = self.collection.id.clone();
         let deleted = undo.deleted.clone();
+        // BUG-3: the reader's own again, or the next sync takes them up.
+        let local = self
+            .copy
+            .as_ref()
+            .filter(|_| !undo.local.is_empty())
+            .map(|copy| copy.copy.put_back_local(undo.local.clone()));
         let call: StoreFuture<TreeData> = Box::pin(async move {
             let tree = storage.tree();
             let at = tree.config(collection.clone()).await?;
             let mut config = at.config;
             undo::put_back(&mut config, &deleted);
             tree.replace(collection.clone(), config, Some(at.revision)).await?;
+            if let Some(local) = local {
+                local.await?;
+            }
             tree.load(collection).await
         });
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
@@ -5154,6 +5177,16 @@ mod tests {
             let scratch = find(&state, "scratch", cx);
             assert!(state.read_with(cx, |state, _| state.local_members().contains(&scratch)));
             assert!(!unsynced(&state, cx));
+
+            // BUG-3: deleted and put back, still the reader's own.
+            state.update(cx, |state, cx| state.delete(mine.clone(), cx));
+            cx.run_until_parked();
+            let count = state.read_with(cx, |state, _| state.undo.as_ref().map(|undo| undo.count));
+            state.update(cx, |state, cx| state.undo_delete(count.expect("undoable"), cx));
+            cx.run_until_parked();
+            assert_eq!(find(&state, "scratch", cx), scratch, "back");
+            assert!(state.read_with(cx, |state, _| state.is_local_root(&mine)));
+            assert!(!unsynced(&state, cx), "nothing of it to sync");
 
             // The server's do not go into it.
             let into_mine = Placement {

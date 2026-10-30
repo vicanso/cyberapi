@@ -412,27 +412,24 @@ impl ServerCopy {
         }
         let shared = self.shared.clone();
         shared.marks().pending += 1;
+        local_settled(shared, local)
+    }
+
+    /// F6: `items`, the reader's own when they were deleted, theirs again
+    /// once an undo has put them back (BUG-3). Marked as this runs, after
+    /// that write: a change landing before it would drop the marks again.
+    pub fn put_back_local(&self, items: Vec<ItemId>) -> StoreFuture<()> {
+        let shared = self.shared.clone();
         Box::pin(async move {
-            let read = shared.tree().config(shared.collection.clone()).await;
-            if let Ok(at) = &read {
-                let mut items = shared.local();
-                items.keep(&at.config);
-                shared.keep_local(&items);
-                let unsynced = items.unsynced(&at.config);
-                drop(items);
-                let mut marks = shared.marks();
-                marks.landed += 1;
-                // Not known: one made to sync is something to sync.
-                marks.unsynced = unsynced.unwrap_or(marks.unsynced || !local);
-            }
-            let kept = shared.persist().await;
+            shared.marks().pending += 1;
             {
-                let mut marks = shared.marks();
-                marks.pending = marks.pending.saturating_sub(1);
+                let mut local = shared.local();
+                for item in &items {
+                    local.mark(item);
+                }
+                shared.keep_local(&local);
             }
-            let _ = shared.news.unbounded_send(());
-            read?;
-            kept
+            local_settled(shared, true).await
         })
     }
 
@@ -526,6 +523,34 @@ pub fn push(
             // A push is written or in conflict.
             _ => Ok(Pushed::Conflict),
         }
+    })
+}
+
+/// After the reader's own items changed (`local`: marked, or made to sync):
+/// they are kept as the copy has them, and the copy is unsynced by what
+/// syncs of it. The change is counted pending already.
+fn local_settled(shared: Arc<Shared>, local: bool) -> StoreFuture<()> {
+    Box::pin(async move {
+        let read = shared.tree().config(shared.collection.clone()).await;
+        if let Ok(at) = &read {
+            let mut items = shared.local();
+            items.keep(&at.config);
+            shared.keep_local(&items);
+            let unsynced = items.unsynced(&at.config);
+            drop(items);
+            let mut marks = shared.marks();
+            marks.landed += 1;
+            // Not known: one made to sync is something to sync.
+            marks.unsynced = unsynced.unwrap_or(marks.unsynced || !local);
+        }
+        let kept = shared.persist().await;
+        {
+            let mut marks = shared.marks();
+            marks.pending = marks.pending.saturating_sub(1);
+        }
+        let _ = shared.news.unbounded_send(());
+        read?;
+        kept
     })
 }
 

@@ -16,7 +16,7 @@
 |---|---|---|---|---|
 | BUG-1 | D7 | 高 | `now()` 的偏移大到溢出时 panic，release 构建 `panic = "abort"`，桌面版、命令行和经 MCP 发送的 bridge 整个进程退出 | 已核实；已修复 |
 | BUG-2 | D6 | 中高 | 生产环境确认后，请求里有 `prompt()` 时询问弹窗刚打开就被关掉，请求永远发不出去 | 已核实；已修复 |
-| BUG-3 | F6 | 中高 | 删除“仅本地”的条目再撤销，它回来时不再是仅本地，下次同步会推给团队 | 读代码确认 |
+| BUG-3 | F6 | 中高 | 删除“仅本地”的条目再撤销，它回来时不再是仅本地，下次同步会推给团队 | 读代码确认；已修复 |
 | BUG-4 | F7 | 中 | 独立窗口里请求编辑器的标签页跟着主窗口当前的接口走，点它会改别的接口的标签页 | 已核实 |
 | BUG-5 | F7 | 中 | 标签被重建（同事的修改到达、放弃本地修改）后关闭独立窗口，旧请求被写回存储，下次同步盖掉同事的修改 | 已核实（触发条件：可能） |
 | BUG-6 | F6 | 中 | 有一个备份的文件名时间晚于现在（时钟调回、跨时区），自动备份变成每小时一次，一周的备份被冲掉 | 已核实 |
@@ -82,12 +82,13 @@
 - 修复方向：`go` 先关掉确认框（返回 `false` 并自己 `close_dialog`），再 `cx.defer` 调用 `send_unasked`；或者把询问并进确认框里（和运行弹窗一样就地询问）。
 - 修复：`confirm_production` 的“发送”先 `close_dialog` 关掉确认框（此时它是最新的弹窗），再调用 `send`，返回 `false` 让 `ok_button` 不再关一次。不需要 `defer`：组件库的关闭只是把确认框标为 closing（动画结束后移除），随后打开的询问弹窗是新的一层，不会被关。所有用它的路径（发送、WebSocket / gRPC 流的连接）都受益。测试 `the_dialog_a_send_opens_stays` 在真实的弹窗层上点“发送”，再点 send 自己打开的弹窗里的按钮；改回原来的顺序时它失败。
 
-### BUG-3 撤销删除的“仅本地”条目后，它会被同步出去（F6，中高）
+### BUG-3 撤销删除的“仅本地”条目后，它会被同步出去（F6，中高）——已修复
 
 - 位置：`src/states/workspace.rs:2764-2803`（`undo_delete`），`src/states/copy.rs:121-136`（`recount`），`crates/cyberapi-core/src/local_only.rs:202-204`（`keep`）。
 - 场景：在服务器项目（网页或桌面副本）里删掉一个标为仅本地的条目，点“撤销”。
 - 原因：删除经 `CopyStore::write` → `recount` → `local.keep(&config)`，`keep` 里 `roots.retain(|root| present.contains(root))` 去掉了这个标记并存下。撤销用 `put_back` + `replace` 按原 id 放回，但没有重新标为仅本地；下一次 `snapshot` → `syncable` 就把它连同子树推给团队。
 - 修复方向：`Undo` 记下删除时去掉的仅本地根，撤销成功后 `ServerCopy::set_local` 放回；加一条副本的状态测试。
+- 修复：`Undo.local` 记下删除前被删子树里的仅本地根；撤销的那个存储调用在 `replace` 之后接着执行 `ServerCopy::put_back_local`，它在运行时（而不是创建时）重新标记，再和 `set_local` 一样保存标记、按可同步部分重算是否未同步（共用的尾部抽成 `copy.rs` 的 `local_settled`）。放在同一个调用里，是因为撤销前先保存打开的接口，那些写入的 `recount` 会把提前加上的标记再去掉。测试 `the_readers_own_items_stay_here` 加了删除再撤销：条目回来、仍是仅本地、没有要同步的；去掉重新标记时它失败。
 
 ### BUG-4 独立窗口的请求标签页跟着主窗口当前的接口走（F7，中）
 
