@@ -25,7 +25,7 @@
 | BUG-9 | F6 | 中低 | 撤销计数会重用、旧通知的“撤销”按钮点了没反应；第一次删除的计时器会提前结束第二次的撤销 | 已核实；已修复 |
 | BUG-10 | F6 | 中低 | 撤销先取走记录再执行；和正在保存的接口撞上得到 `Stale` 时只报错，删除变成永久 | 可能；已修复 |
 | BUG-11 | A6 | 中低 | 导入的 Schema 行改成别的检查或停用后仍标着“来自导入”，从来源同步时被删掉换成新的 | 读代码确认；已修复 |
-| BUG-12 | A6 | 中低 | OpenAPI 3.0 转 JSON Schema：`$ref` / `allOf` 旁的 `nullable` 丢失；`properties` 下名叫 `nullable`、`example` 等的字段被当成关键字处理 | 读代码确认 |
+| BUG-12 | A6 | 中低 | OpenAPI 3.0 转 JSON Schema：`$ref` / `allOf` 旁的 `nullable` 丢失；`properties` 下名叫 `nullable`、`example` 等的字段被当成关键字处理 | 读代码确认；已修复（体积问题未处理） |
 | BUG-13 | B7 | 中低 | “从来源同步”弹窗里改了地址但没重新获取，旧地址取回的结果显示在新地址下，同步合并的是旧内容 | 读代码确认 |
 | BUG-14 | B7 | 低 | 导入弹窗获取过一个地址后，把内容整个换掉再导入，项目仍记住那个地址作为来源 | 读代码确认 |
 | BUG-15 | A7 | 中 | 每次发送都新建连接：时间里含握手；高速长时测试会用光本机端口，本机错误被算成服务器失败 | 可能 |
@@ -152,13 +152,14 @@
 - 修复方向：改对象、改比较方式、停用 / 启用都清掉 `imported`；`updated` 只换掉对象仍是 Schema 的导入行。
 - 修复：照上面做。断言编辑器改对象、改比较方式、点开关都清掉这一行的 `imported`，之后它是读者自己的（停用的 Schema 断言也算读者自己的，导入不会再加一条启用的）；`merge::updated` 只把对象仍是 Schema 的导入行当作导入的，所以修复之前已经存下的、改成别的检查的行也会留下。测试 `the_imports_assertions_are_updated` 加了这种行；`updated` 改回按标记过滤时它失败。编辑器那边没有视图测试。
 
-### BUG-12 OpenAPI 3.0 转 JSON Schema 不完整（A6，中低）
+### BUG-12 OpenAPI 3.0 转 JSON Schema 不完整（A6，中低）——已修复（体积问题未处理）
 
 - 位置：`crates/cyberapi-core/src/import/openapi.rs:57-112`（`standalone`）。
 - `nullable` 只在 `type` 是字符串时生效：3.0 常见的 `{"nullable": true, "allOf": [{"$ref": …}]}` 丢了 `nullable`；`{"$ref": …, "nullable": true}` 被整个换成目标。响应里出现 `null` 时断言失败。
 - 关键字处理也作用在 `properties` 这类“名字 → Schema”的表上：名叫 `nullable` / `x-nullable` 的属性被删掉（配合 `additionalProperties: false` 时合法的响应失败）；名叫 `default`、`example`、`examples`、`enum`、`const` 的属性被原样拷贝，里面的 `$ref` 不展开，编译失败，断言一直是“Schema 读不出来”。
 - 附带：每个接口存一份展开后的 Schema（最多 4000 个节点），大的规范会让项目（网页草稿在 localStorage）大好几 MB。
 - 修复方向：`properties`、`patternProperties`、`$defs` / `definitions` 按“名字 → Schema”处理；`nullable` 对没有 `type` 的情况写成 `anyOf: [原 Schema, {type: null}]`。补测试。
+- 修复：`standalone` 先读 `nullable` / `x-nullable`，展开（含 `$ref`）之后由 `or_null` 允许 `null`：有 `type` 时加进类型（字符串或数组），有 `enum` 时也把 `null` 加进去，没有 `type` 时写成 `anyOf`。`properties`、`patternProperties`、`definitions`、`$defs`、`dependentSchemas` 按“名字 → Schema”逐个转换，属性叫什么都行。测试 `a_responses_schema_becomes_an_assertion` 加了 `allOf` / `$ref` 旁的 `nullable`、带 `enum` 的可空引用、叫 `nullable` 和 `example` 的属性；让没有 `type` 的可空 Schema 保持原样时它失败。“附带”那条（每个接口存一份展开的 Schema）没有处理：要改成项目里共用一份定义、断言引用它，是数据模型的改动，先记在这里。
 
 ### BUG-13 “从来源同步”合并了旧地址的内容（B7，中低）
 

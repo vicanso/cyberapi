@@ -62,53 +62,92 @@ fn standalone(root: &Value, schema: &Value, depth: usize, parts: &mut usize) -> 
     let Value::Object(fields) = schema else {
         return Some(schema.clone());
     };
-    if fields.contains_key("$ref") {
-        if depth >= MAX_DEPTH {
-            return Some(json!({}));
-        }
+    // OpenAPI 3.0 and Swagger: a null allowed besides what it says — beside
+    // a `$ref` or an `allOf` too, where 3.0 specs often put it (BUG-12).
+    let nullable = ["nullable", "x-nullable"]
+        .iter()
+        .any(|flag| fields.get(*flag) == Some(&Value::Bool(true)));
+    let out = if fields.contains_key("$ref") {
         let target = resolve(root, schema);
-        // A `$ref` this document does not hold: anything goes.
-        if std::ptr::eq(target, schema) {
-            return Some(json!({}));
+        // Too deep, or a `$ref` this document does not hold: anything goes.
+        if depth >= MAX_DEPTH || std::ptr::eq(target, schema) {
+            json!({})
+        } else {
+            standalone(root, target, depth + 1, parts)?
         }
-        return standalone(root, target, depth + 1, parts);
-    }
-    let mut out = Map::new();
-    for (key, value) in fields {
-        let value = match key.as_str() {
-            // What is data, not a schema.
-            "example" | "examples" | "enum" | "default" | "const" => value.clone(),
-            _ => match value {
-                Value::Object(_) => standalone(root, value, depth, parts)?,
-                Value::Array(items) => Value::Array(
-                    items
-                        .iter()
-                        .map(|item| standalone(root, item, depth, parts))
-                        .collect::<Option<Vec<_>>>()?,
-                ),
-                other => other.clone(),
-            },
-        };
-        out.insert(key.clone(), value);
-    }
-    // OpenAPI 3.0 and Swagger: a null allowed besides the type.
-    let nullable = [out.remove("nullable"), out.remove("x-nullable")]
-        .into_iter()
-        .flatten()
-        .any(|flag| flag == Value::Bool(true));
-    if nullable && let Some(Value::String(kind)) = out.get("type").cloned() {
-        out.insert("type".into(), json!([kind, "null"]));
-    }
-    // OpenAPI 3.0: an exclusive bound is a flag on the bound.
-    for (flag, bound) in [("exclusiveMinimum", "minimum"), ("exclusiveMaximum", "maximum")] {
-        if let Some(Value::Bool(exclusive)) = out.get(flag).cloned() {
-            out.remove(flag);
-            if exclusive && let Some(value) = out.remove(bound) {
-                out.insert(flag.into(), value);
+    } else {
+        let mut out = Map::new();
+        for (key, value) in fields {
+            let value = match key.as_str() {
+                "nullable" | "x-nullable" => continue,
+                // What is data, not a schema.
+                "example" | "examples" | "enum" | "default" | "const" => value.clone(),
+                // Names, each to a schema: a property may be called
+                // `nullable` or `example` (BUG-12).
+                "properties" | "patternProperties" | "definitions" | "$defs" | "dependentSchemas" => match value {
+                    Value::Object(named) => Value::Object(
+                        named
+                            .iter()
+                            .map(|(name, schema)| Some((name.clone(), standalone(root, schema, depth, parts)?)))
+                            .collect::<Option<Map<_, _>>>()?,
+                    ),
+                    other => other.clone(),
+                },
+                _ => match value {
+                    Value::Object(_) => standalone(root, value, depth, parts)?,
+                    Value::Array(items) => Value::Array(
+                        items
+                            .iter()
+                            .map(|item| standalone(root, item, depth, parts))
+                            .collect::<Option<Vec<_>>>()?,
+                    ),
+                    other => other.clone(),
+                },
+            };
+            out.insert(key.clone(), value);
+        }
+        // OpenAPI 3.0: an exclusive bound is a flag on the bound.
+        for (flag, bound) in [("exclusiveMinimum", "minimum"), ("exclusiveMaximum", "maximum")] {
+            if let Some(Value::Bool(exclusive)) = out.get(flag).cloned() {
+                out.remove(flag);
+                if exclusive && let Some(value) = out.remove(bound) {
+                    out.insert(flag.into(), value);
+                }
             }
         }
+        Value::Object(out)
+    };
+    Some(if nullable { or_null(out) } else { out })
+}
+
+/// `schema`, with `null` allowed besides: added to its type, or to its
+/// `enum`, or else one of the two.
+fn or_null(schema: Value) -> Value {
+    let Value::Object(mut fields) = schema else {
+        return schema;
+    };
+    if fields.is_empty() {
+        return Value::Object(fields);
     }
-    Some(Value::Object(out))
+    if let Some(Value::Array(values)) = fields.get_mut("enum")
+        && !values.contains(&Value::Null)
+    {
+        values.push(Value::Null);
+    }
+    match fields.get("type").cloned() {
+        Some(Value::String(kind)) => {
+            fields.insert("type".into(), json!([kind, "null"]));
+            Value::Object(fields)
+        }
+        Some(Value::Array(mut kinds)) => {
+            if !kinds.contains(&json!("null")) {
+                kinds.push(json!("null"));
+            }
+            fields.insert("type".into(), Value::Array(kinds));
+            Value::Object(fields)
+        }
+        _ => json!({ "anyOf": [Value::Object(fields), { "type": "null" }] }),
+    }
 }
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -585,10 +624,16 @@ mod tests {
                         "200": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Order"}}}}}}},
                     "/ping": {"get": {"summary": "ping", "responses": {"204": {"description": "nothing"}}}}},
                 "components": {"schemas": {
-                    "Order": {"type": "object", "required": ["id"], "properties": {
+                    "Order": {"type": "object", "required": ["id"], "additionalProperties": false, "properties": {
                         "id": {"type": "integer", "minimum": 0, "exclusiveMinimum": true},
                         "note": {"type": "string", "nullable": true},
-                        "next": {"$ref": "#/components/schemas/Order"}}}}}}"##,
+                        "next": {"$ref": "#/components/schemas/Order"},
+                        "owner": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/Owner"}]},
+                        "status": {"$ref": "#/components/schemas/Status", "nullable": true},
+                        "nullable": {"type": "boolean"},
+                        "example": {"$ref": "#/components/schemas/Owner"}}},
+                    "Owner": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}},
+                    "Status": {"type": "string", "enum": ["open", "shut"]}}}}"##,
         )
         .expect("JSON");
         let bundle = parse(&json);
@@ -612,6 +657,14 @@ mod tests {
         assert!(holds(r#"{"id": 1, "note": null, "next": {"id": 2}}"#));
         assert!(!holds(r#"{"id": 0}"#), "the bound is exclusive");
         assert!(!holds(r#"{"note": "x"}"#), "id is required");
+        // BUG-12: `nullable` beside an `allOf` or a `$ref` holds; properties
+        // called `nullable` and `example` are properties.
+        assert!(holds(r#"{"id": 1, "owner": null, "status": null}"#));
+        assert!(holds(r#"{"id": 1, "owner": {"name": "a"}, "status": "open"}"#));
+        assert!(!holds(r#"{"id": 1, "owner": {}}"#), "the owner's name is required");
+        assert!(!holds(r#"{"id": 1, "status": "lost"}"#));
+        assert!(holds(r#"{"id": 1, "nullable": true, "example": {"name": "a"}}"#));
+        assert!(!holds(r#"{"id": 1, "example": {}}"#), "its $ref written in");
         let ImportItem::Api { request: ping, .. } = &bundle.items[1] else {
             panic!("an API");
         };
