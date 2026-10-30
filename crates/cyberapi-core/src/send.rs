@@ -448,7 +448,8 @@ pub fn json_problem(body: &str) -> Option<String> {
         text.replace_range(start..end, &value);
         from = start + value.len();
     }
-    serde_json::from_str::<serde_json::Value>(&text)
+    // Read, not kept: only whether it parses is asked.
+    serde_json::from_str::<serde::de::IgnoredAny>(&text)
         .err()
         .map(|error| error.to_string())
 }

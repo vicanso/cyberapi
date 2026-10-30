@@ -39,6 +39,10 @@ use gpui_kit::{
 };
 use rust_i18n::t;
 use std::collections::HashMap;
+use std::time::Duration;
+
+/// How long after the last keystroke the JSON body is checked.
+const JSON_CHECK_AFTER: Duration = Duration::from_millis(300);
 
 /// The headers one types most, offered in the header list's menu: the
 /// name, and the value's usual start.
@@ -92,8 +96,10 @@ pub struct RequestEditor {
     auth: Entity<AuthEditor>,
     /// Redraws the elapsed time while a request is out.
     ticker: Option<Task<()>>,
-    /// Why the JSON body would not parse, worked out as it changes.
+    /// Why the JSON body would not parse, worked out once typing stops.
     json_problem: Option<String>,
+    /// That being worked out; a newer change drops it.
+    json_check: Task<()>,
     /// The body as a tree, when this API's JSON is shown that way.
     json_tree: Entity<JsonTree>,
     /// `Some` while this API is showing the reader's choice. `None` follows
@@ -460,6 +466,7 @@ impl RequestEditor {
             docs,
             ticker: None,
             json_problem: None,
+            json_check: Task::ready(()),
             json_tree,
             body_as_tree: None,
             wrap,
@@ -472,15 +479,30 @@ impl RequestEditor {
         editor
     }
 
+    /// Works out why the JSON body would not parse once typing stops, off
+    /// the main thread: at each keystroke, a big body was parsed whole
+    /// (PERF-10).
     fn check_json(&mut self, cx: &mut Context<Self>) {
-        let request = self.api.read(cx).request();
-        let problem = (request.content_type == ContentType::Json)
-            .then(|| send::json_problem(&request.body))
-            .flatten();
-        if problem != self.json_problem {
-            self.json_problem = problem;
-            cx.notify();
+        if self.api.read(cx).request().content_type != ContentType::Json {
+            self.json_check = Task::ready(());
+            if self.json_problem.take().is_some() {
+                cx.notify();
+            }
+            return;
         }
+        self.json_check = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(JSON_CHECK_AFTER).await;
+            let Ok(body) = this.update(cx, |this, cx| this.api.read(cx).request().body.clone()) else {
+                return;
+            };
+            let problem = cx.background_spawn(async move { send::json_problem(&body) }).await;
+            let _ = this.update(cx, |this, cx| {
+                if problem != this.json_problem {
+                    this.json_problem = problem;
+                    cx.notify();
+                }
+            });
+        });
     }
 
     /// The tree, when this API was switched to it; otherwise the default.
@@ -673,7 +695,7 @@ impl RequestEditor {
         let (body, known, loading, open, finished) = {
             let api = self.api.read(cx);
             (
-                GrpcBody::read(&api.request().body),
+                api.grpc_body(),
                 api.grpc_definitions(cx),
                 api.loading_grpc(),
                 api.call_open(),
@@ -1288,10 +1310,21 @@ impl RequestEditor {
     }
 
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let request = self.api.read(cx).request().clone();
+        // What the bar shows of the request, not its body (PERF-10).
+        let (uri, variables, method, content_type, client_streams) = {
+            let api = self.api.read(cx);
+            let request = api.request();
+            (
+                request.uri.clone(),
+                request.variables.clone(),
+                request.method,
+                request.content_type,
+                request.method == HttpMethod::Grpc && api.grpc_body().client_streams(),
+            )
+        };
         let sending = self.api.read(cx).sending_since();
         let streaming = self.api.read(cx).live().is_some();
-        let (env, _) = split_env_prefix(&request.uri);
+        let (env, _) = split_env_prefix(&uri);
         let env = env.map(str::to_string);
         let mut environments: Vec<(String, String)> = self
             .workspace
@@ -1303,12 +1336,7 @@ impl RequestEditor {
         // D5: the folders' variables and the API's own stand in for the
         // environment's of the same names.
         let api_id = self.api.read(cx).api().clone();
-        for (name, value) in self
-            .workspace
-            .read(cx)
-            .inherited(&api_id)
-            .values(&request.variables, &[])
-        {
+        for (name, value) in self.workspace.read(cx).inherited(&api_id).values(&variables, &[]) {
             environments.retain(|(given, _)| *given != name);
             environments.push((name, value));
         }
@@ -1327,7 +1355,7 @@ impl RequestEditor {
         let paste = this.clone();
         let method_menu = {
             let this = this.clone();
-            let current = request.method;
+            let current = method;
             move |menu: gpui_kit::component::menu::PopupMenu,
                   _: &mut Window,
                   _: &mut Context<gpui_kit::component::menu::PopupMenu>| {
@@ -1411,7 +1439,7 @@ impl RequestEditor {
         };
         let theme = cx.theme();
         let (border, muted) = (theme.border, theme.muted_foreground);
-        let method_color = method_color(request.method, cx);
+        let method_color = method_color(method, cx);
         let env_color = if env_value.is_some() { theme.info } else { theme.warning };
         // F4.1–F4.4: the method, the environment and the URI read as one
         // address, the way a browser's bar does.
@@ -1443,7 +1471,7 @@ impl RequestEditor {
                                         .text_xs()
                                         .font_bold()
                                         .text_color(method_color)
-                                        .child(request.method.as_str()),
+                                        .child(method.as_str()),
                                 )
                                 .child(Icon::new(IconName::ChevronDown).xsmall().text_color(muted)),
                         )
@@ -1508,14 +1536,12 @@ impl RequestEditor {
                 .child(
                     match sending {
                         // E1: a WebSocket connects, and is closed or given up.
-                        _ if request.method == HttpMethod::WebSocket => self.socket_button(sending, cx),
+                        _ if method == HttpMethod::WebSocket => self.socket_button(sending, cx),
                         // E2: a method that streams from the client connects.
-                        _ if request.method == HttpMethod::Grpc && GrpcBody::read(&request.body).client_streams() => {
-                            self.grpc_call_button(sending, cx)
-                        }
+                        _ if client_streams => self.grpc_call_button(sending, cx),
                         // E3: a GraphQL API written at a WebSocket address subscribes.
-                        None if request.content_type == ContentType::GraphQl
-                            && cyberapi_core::graphql_ws::written_as_socket(&request.uri) =>
+                        None if content_type == ContentType::GraphQl
+                            && cyberapi_core::graphql_ws::written_as_socket(&uri) =>
                         {
                             self.graphql_subscribe_button(cx)
                         }
@@ -1553,8 +1579,10 @@ impl RequestEditor {
     }
 
     fn render_tabs(&self, tab: RequestTab, cx: &mut Context<Self>) -> impl IntoElement {
-        let request = self.api.read(cx).request().clone();
-        let tabs = RequestTab::for_request(&request);
+        // Read where it is: a clone of the request in each frame copied its
+        // body and examples (PERF-10).
+        let request = self.api.read(cx).request();
+        let tabs = RequestTab::for_request(request);
         // F4.13: how many entries are sent. A `//` line stays in the list and
         // is not counted (#43).
         let count = |list: &[cyberapi_core::model::KvParam]| list.iter().filter(|row| row.enabled).count();
@@ -1592,6 +1620,7 @@ impl RequestEditor {
                 name.to_string()
             }
         };
+        let labels: Vec<String> = tabs.iter().map(label).collect();
         let (workspace, api) = (self.workspace.downgrade(), self.api.clone());
         let owned: Vec<RequestTab> = tabs.to_vec();
         // F4.14: the column at 30%, 50% or 70% of what the tree leaves. One
@@ -1634,7 +1663,7 @@ impl RequestEditor {
             .small()
             .px_2()
             .selected_index(tabs.iter().position(|t| *t == tab).unwrap_or(0))
-            .children(tabs.iter().map(|tab| Tab::new().label(label(tab))))
+            .children(labels.into_iter().map(|label| Tab::new().label(label)))
             .suffix(presets)
             .on_click(move |index, _, cx| {
                 if let Some(tab) = owned.get(*index) {
@@ -1825,7 +1854,7 @@ impl RequestEditor {
     /// E1: a WebSocket's message: the text the next send sends, its
     /// templates rendered then, and the button that sends it once open.
     fn render_message(&self, cx: &mut Context<Self>) -> AnyElement {
-        let request = self.api.read(cx).request().clone();
+        let content_type = self.api.read(cx).request().content_type;
         let open = self.api.read(cx).socket_open();
         let muted = cx.theme().muted_foreground;
         let toolbar = h_flex()
@@ -1843,7 +1872,7 @@ impl RequestEditor {
                     .tooltip_with_action(t!("editor.ws_send_message").to_string(), &SendAction, Some(KEY_CONTEXT))
                     .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
             )
-            .when(request.content_type == ContentType::Json, |this| {
+            .when(content_type == ContentType::Json, |this| {
                 this.child(
                     Button::new("body-format")
                         .ghost()
@@ -1879,15 +1908,17 @@ impl RequestEditor {
     }
 
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
-        let request = self.api.read(cx).request().clone();
-        if request.method == HttpMethod::Grpc {
+        let (method, current) = {
+            let request = self.api.read(cx).request();
+            (request.method, request.content_type)
+        };
+        if method == HttpMethod::Grpc {
             return self.render_grpc(cx);
         }
-        if request.method == HttpMethod::WebSocket {
+        if method == HttpMethod::WebSocket {
             return self.render_message(cx);
         }
         let this = cx.entity().downgrade();
-        let current = request.content_type;
         let type_menu = move |menu: gpui_kit::component::menu::PopupMenu,
                               _: &mut Window,
                               _: &mut Context<gpui_kit::component::menu::PopupMenu>| {
@@ -1915,7 +1946,7 @@ impl RequestEditor {
                         h_flex()
                             .gap_1()
                             .items_center()
-                            .child(content_type_label(request.content_type))
+                            .child(content_type_label(current))
                             .child(
                                 Icon::new(IconName::ChevronDown)
                                     .xsmall()
@@ -1924,7 +1955,7 @@ impl RequestEditor {
                     )
                     .dropdown_menu_with_anchor(Anchor::TopLeft, type_menu),
             )
-            .when(request.content_type == ContentType::Json, |this| {
+            .when(current == ContentType::Json, |this| {
                 let tree = self.body_shows_tree(cx);
                 this.child(
                     Button::new("body-format")
@@ -1965,7 +1996,7 @@ impl RequestEditor {
                         ),
                 )
             });
-        let toolbar = toolbar.when(request.content_type == ContentType::GraphQl, |this| {
+        let toolbar = toolbar.when(current == ContentType::GraphQl, |this| {
             // The schema the query's fields are offered from: asked for
             // here, and asked again after the endpoint changed.
             let (asking, schema) = {
@@ -2011,9 +2042,9 @@ impl RequestEditor {
                     })),
             )
         });
-        let content: AnyElement = if request.content_type == ContentType::GraphQl {
+        let content: AnyElement = if current == ContentType::GraphQl {
             self.render_graphql(cx)
-        } else if request.content_type.is_key_value() {
+        } else if current.is_key_value() {
             div()
                 .id("request-form")
                 .flex_1()
@@ -2023,7 +2054,7 @@ impl RequestEditor {
                 .pb_2()
                 .child(self.form.clone())
                 .into_any_element()
-        } else if request.content_type == ContentType::Json && self.body_shows_tree(cx) {
+        } else if current == ContentType::Json && self.body_shows_tree(cx) {
             div()
                 .flex_1()
                 .min_h_0()

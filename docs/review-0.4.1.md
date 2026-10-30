@@ -52,7 +52,7 @@
 | PERF-7 | bridge | 中高 | 同步 / 上传逐行写入，约 3 ×（接口 + 目录）次往返，全程持锁 | 读代码确认；已修复 |
 | PERF-8 | 内存 | 中 | 每个标签把新收到的完整响应体（最多 64 MB）留在内存里，最多 history_size 条 | 已核实；已修复 |
 | PERF-9 | 历史 | 中 | 打开标签时读全部历史连同响应体；桌面版占着唯一的数据库连接 | 读代码确认 |
-| PERF-10 | 编辑器 | 中 | 请求编辑器每帧克隆整个请求三次；每次按键整份解析请求体 | 读代码确认 |
+| PERF-10 | 编辑器 | 中 | 请求编辑器每帧克隆整个请求三次；每次按键整份解析请求体 | 读代码确认；已修复 |
 | PERF-11 | 命令面板 | 中 | 打开命令面板读最多 50 个项目的全部内容，每帧对全部接口做拼音匹配 | 读代码确认 |
 | PERF-12 | A7 | 中 | 压测每 300ms 在 UI 线程上排序全部样本（最多 100 万） | 已核实；暂不处理 |
 | PERF-13 | 网页 | 中 | 服务器项目每次修改都把整个项目序列化进 localStorage | 读代码确认 |
@@ -338,10 +338,15 @@
 - 位置：`ApiState::load_history`（`api.rs:527-536`）每次打开标签执行，`HistoryStore::list` 读 `doc`（每条最多 2 MB，最多 100 条）。桌面版 `store-turso/src/lib.rs:1523-1537` 在持有唯一连接的锁时反序列化全部，保存和读树都排在后面；bridge `sql.rs:341`（`RESPONSES_OF`）整份以 base64 JSON 发出，页面在 UI 线程上解析；`recent` 读 50 份完整文档再丢掉响应体（`scoped.rs:1611-1625`）。
 - 修复方向：列表只取摘要（或截到显示上限的响应体），选中某条时再取它的响应体。
 
-### PERF-10 请求编辑器每帧克隆请求、每次按键解析请求体（中）
+### PERF-10 请求编辑器每帧克隆请求、每次按键解析请求体（中）——已修复
 
 - 位置：`render_bar`、`render_tabs`、`render_body` 各自 `self.api.read(cx).request().clone()`（`request_editor.rs:1276、1541、1867`），连同请求体、示例（每个最多 256 KB）、gRPC 描述符；`render_grpc`（`:669`）每帧 `GrpcBody::read`（含 base64 描述符的整个 JSON），`own_grpc_definitions`（`api.rs:1607-1618`）再解析一次；每次按键（`watch_body`，`:536-539`）`value().to_string()` → `set_body`（trim + 拷贝）→ `check_json` → `send::json_problem`（`core/send.rs:432-454`：拆行再拼接，整份 `serde_json::Value` 解析）。
 - 修复方向：借用而不克隆；按请求体缓存解析后的 `GrpcBody`；`json_problem` 防抖或放到后台（只做语法检查即可）。
+- 修复：照上面做。
+  - `render_tabs`、`render_body`、`render_message` 直接借用请求；`render_bar` 只取出地址、变量、方法、类型。操作里（切换类型、重载等）的克隆没动，它们不是每帧发生。
+  - `ApiState::grpc_body()` 按请求体缓存读好的 `GrpcBody`（`Rc`），`render_grpc`、地址栏和 `own_grpc_definitions` 共用。
+  - JSON 检查在停止输入 300ms 后到后台做（`RequestEditor.json_check`，新的修改丢掉旧的），`send::json_problem` 改用 `IgnoredAny` 只检查语法、不建 `Value`。
+  - 测试 `a_grpc_body_is_read_once_for_each_body`（去掉缓存时失败）；`json_problem` 的原有测试照旧通过。渲染部分和防抖没有视图测试。
 
 ### PERF-11 命令面板读最多 50 个项目的全部内容（中）
 

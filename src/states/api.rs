@@ -367,6 +367,9 @@ pub struct ApiState {
     /// The gRPC definitions the body keeps, read once for the descriptors
     /// it keeps: what the view draws asks for them every frame.
     own_grpc: RefCell<Option<(String, Option<Arc<GrpcDefinitions>>)>>,
+    /// PERF-10: a gRPC call's body read, by the body it was read from: the
+    /// view draws it every frame, and it holds the definitions in base64.
+    grpc_body: RefCell<Option<(String, Rc<GrpcBody>)>>,
     /// A1: the shown response's body read as JSON, once for each response:
     /// every keystroke in an assertion checks it again.
     checked_json: RefCell<Option<(String, Option<Arc<serde_json::Value>>)>>,
@@ -472,6 +475,7 @@ impl ApiState {
             asking_schema: None,
             loading_grpc: None,
             own_grpc: RefCell::new(None),
+            grpc_body: RefCell::new(None),
             checked_json: RefCell::new(None),
             checks: RefCell::new(None),
             graphql_errors: RefCell::new(None),
@@ -1727,8 +1731,21 @@ impl ApiState {
         known.or_else(|| self.own_grpc_definitions())
     }
 
+    /// A gRPC call's body, read once for each body it has.
+    pub fn grpc_body(&self) -> Rc<GrpcBody> {
+        let mut memo = self.grpc_body.borrow_mut();
+        if let Some((read_from, body)) = memo.as_ref()
+            && *read_from == self.request.body
+        {
+            return body.clone();
+        }
+        let body = Rc::new(GrpcBody::read(&self.request.body));
+        *memo = Some((self.request.body.clone(), body.clone()));
+        body
+    }
+
     fn own_grpc_definitions(&self) -> Option<Arc<GrpcDefinitions>> {
-        let body = GrpcBody::read(&self.request.body);
+        let body = self.grpc_body();
         let mut memo = self.own_grpc.borrow_mut();
         if let Some((descriptors, read)) = memo.as_ref()
             && *descriptors == body.descriptors
@@ -1741,7 +1758,7 @@ impl ApiState {
                 source: body.source.clone(),
             })
         });
-        *memo = Some((body.descriptors, read.clone()));
+        *memo = Some((body.descriptors.clone(), read.clone()));
         read
     }
 

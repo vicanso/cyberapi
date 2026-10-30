@@ -5141,6 +5141,39 @@ mod tests {
         });
     }
 
+    /// PERF-10: a gRPC call's body is read once for each body it has: the
+    /// editor asks for it in every frame.
+    #[gpui_kit::test]
+    async fn a_grpc_body_is_read_once_for_each_body(cx: &mut TestAppContext) {
+        use cyberapi_core::grpc::GrpcBody;
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection, cx);
+        state.update(cx, |state, cx| state.create_api(None, "call".into(), cx));
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        let body = |method: &str| {
+            GrpcBody {
+                service: "shop.Store".into(),
+                method: method.into(),
+                ..Default::default()
+            }
+            .to_body()
+        };
+        api.update(cx, |api, cx| {
+            api.set_method(HttpMethod::Grpc, cx);
+            api.set_body(body("Get"), cx);
+        });
+        api.update(cx, |api, cx| {
+            let first = api.grpc_body();
+            assert_eq!(first.method, "Get");
+            assert!(Rc::ptr_eq(&first, &api.grpc_body()), "read once");
+            api.set_body(body("List"), cx);
+            let changed = api.grpc_body();
+            assert_eq!(changed.method, "List", "read again once it changed");
+        });
+    }
+
     #[gpui_kit::test]
     async fn choosing_a_response_puts_its_request_back(cx: &mut TestAppContext) {
         let storage = MemoryStore::new().storage();
