@@ -34,8 +34,10 @@ use cyberapi_store::{
     StoreFuture, TreeStore, VariableEdit, VariableStore,
 };
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::Duration;
 
 /// Where a copy stands against the server.
 #[derive(Clone, Copy, Debug)]
@@ -52,6 +54,28 @@ struct Marks {
     /// Whether the last change was kept (a page's draft can run out of
     /// room).
     kept: bool,
+    /// A page's draft is to be written: once the changes pause, the
+    /// project closes or the page is hidden (PERF-13).
+    due: bool,
+}
+
+/// PERF-13: how long after the last change a page writes the draft: each
+/// write is the whole project, and the reader's typing saves every pause.
+pub const KEEP_DRAFT_AFTER: Duration = Duration::from_secs(1);
+
+thread_local! {
+    /// PERF-13: the copies whose draft is due, for [`keep_due_drafts`]. A
+    /// page has one thread.
+    static DUE: RefCell<Vec<Weak<Shared>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// PERF-13: writes every draft that is due, as the page is hidden — the
+/// last a page is told before it may be closed.
+pub fn keep_due_drafts() {
+    let due = DUE.with(|due| std::mem::take(&mut *due.borrow_mut()));
+    for shared in due.iter().filter_map(Weak::upgrade) {
+        shared.keep_draft();
+    }
 }
 
 /// Where the copy lives.
@@ -114,6 +138,36 @@ impl Shared {
         }
     }
 
+    /// PERF-13: writes a page's draft, when one is due.
+    fn keep_draft(&self) {
+        let Keeper::Page { working, scope } = &self.keeper else {
+            return;
+        };
+        let marks = {
+            let mut marks = self.marks();
+            if !marks.due {
+                return;
+            }
+            marks.due = false;
+            *marks
+        };
+        let kept = match working.project(&self.collection) {
+            Ok(config) => drafts_local::set(
+                scope,
+                &self.collection,
+                &Draft {
+                    base: marks.base,
+                    config,
+                },
+            ),
+            Err(error) => {
+                tracing::warn!(%error, "the working copy could not be read");
+                false
+            }
+        };
+        self.marks().kept = kept;
+    }
+
     /// After a change: the reader's own items as the copy has them now, and
     /// whether what syncs of the copy differs from the server's. `None`
     /// when the reader has none, or that is not known: every change counts
@@ -150,31 +204,25 @@ impl Shared {
     }
 
     /// Keeps where the copy stands: a page's draft (none once level), the
-    /// desktop's binding.
-    fn persist(&self) -> StoreFuture<()> {
+    /// desktop's binding. A page's draft with changes is only marked due:
+    /// it is written by [`Self::keep_draft`] (PERF-13).
+    fn persist(self: &Arc<Self>) -> StoreFuture<()> {
         let marks = *self.marks();
         match &self.keeper {
-            Keeper::Page { working, scope } => {
-                let kept = if !marks.unsynced {
+            Keeper::Page { scope, .. } => {
+                let mut marks = self.marks();
+                if !marks.unsynced {
                     drafts_local::remove(scope, &self.collection);
-                    true
-                } else {
-                    match working.project(&self.collection) {
-                        Ok(config) => drafts_local::set(
-                            scope,
-                            &self.collection,
-                            &Draft {
-                                base: marks.base,
-                                config,
-                            },
-                        ),
-                        Err(error) => {
-                            tracing::warn!(%error, "the working copy could not be read");
-                            false
-                        }
-                    }
-                };
-                self.marks().kept = kept;
+                    marks.kept = true;
+                    marks.due = false;
+                } else if !marks.due {
+                    marks.due = true;
+                    DUE.with(|due| {
+                        let mut due = due.borrow_mut();
+                        due.retain(|shared| shared.strong_count() > 0 && !Weak::ptr_eq(shared, &Arc::downgrade(self)));
+                        due.push(Arc::downgrade(self));
+                    });
+                }
                 Box::pin(async { Ok(()) })
             }
             Keeper::Desktop { copies, account, .. } => copies.bind(CopyBinding {
@@ -233,6 +281,7 @@ impl ServerCopy {
                 pending: 0,
                 landed: 0,
                 kept: true,
+                due: false,
             }),
             news,
         });
@@ -448,6 +497,11 @@ impl ServerCopy {
     /// Whether the last change was kept.
     pub fn kept_here(&self) -> bool {
         self.shared.marks().kept
+    }
+
+    /// PERF-13: a page's draft written now, when one is due.
+    pub fn keep_draft(&self) {
+        self.shared.keep_draft();
     }
 
     /// What to do about the server at `revision` (server-sync §3.1).

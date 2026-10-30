@@ -55,7 +55,7 @@
 | PERF-10 | 编辑器 | 中 | 请求编辑器每帧克隆整个请求三次；每次按键整份解析请求体 | 读代码确认；已修复 |
 | PERF-11 | 命令面板 | 中 | 打开命令面板读最多 50 个项目的全部内容，每帧对全部接口做拼音匹配 | 读代码确认；部分修复 |
 | PERF-12 | A7 | 中 | 压测每 300ms 在 UI 线程上排序全部样本（最多 100 万） | 已核实；暂不处理 |
-| PERF-13 | 网页 | 中 | 服务器项目每次修改都把整个项目序列化进 localStorage | 读代码确认 |
+| PERF-13 | 网页 | 中 | 服务器项目每次修改都把整个项目序列化进 localStorage | 读代码确认；已修复 |
 | PERF-14 | bridge | 中 | PostgreSQL 的 `responses` 没有以 `api` 开头的索引，删接口时级联删除逐条全表扫描 | 已核实；已修复 |
 | PERF-15 | bridge | 低中 | `/v1/send` 只按账号限并发，没有全局内存上限 | 读代码确认 |
 | PERF-16 | G8 | 低 | 版本对比展开接口时 `diff::compare` 在 UI 线程上同步执行（响应对比是放到后台的） | 读代码确认 |
@@ -364,11 +364,12 @@
 - 位置：`states/load.rs:176-181` → `core/load.rs:139-177`：每次收集并排序全部耗时、克隆每个错误字符串。按时长的测试最多留 100 万个样本（70 MB 以上），接近上限时每 300ms 在主线程上花几十毫秒以上。
 - 修复方向：百分位用增量直方图（如按对数分桶），或在后台汇总；错误按种类计数，不留每次的字符串。
 
-### PERF-13 网页版每次修改都把整个项目写进 localStorage（中）
+### PERF-13 网页版每次修改都把整个项目写进 localStorage（中）——已修复
 
 - 位置：`states/copy.rs:154-176`（`persist`：`working.project()` → `serde_json::to_string` → `localStorage.setItem`），每次树的写入后调用（`:552-558`）；有仅本地条目时 `recount`（`:121-136`）还要克隆配置算指纹。都在页面线程上。
 - 情况：大项目里每次停顿输入（300ms 保存）就整份序列化一次；还可能撞上约 5 MB 的 localStorage 上限。
 - 修复方向：合并到空闲时再写（防抖），或按条目存增量；指纹增量计算。
+- 修复：防抖。`persist` 对网页的副本只把草稿标为待写（`Marks.due`，没有修改时仍立即删掉草稿），真正写入在 `Shared::keep_draft`：最后一次修改后 1 秒（`copy::KEEP_DRAFT_AFTER`，工作区的计时器）、项目关闭时（`WorkspaceState` 的 `on_release`）、页面隐藏时（`cyberapi_gui::set_page_visible(false)` 调 `keep_due_drafts`，关标签页前浏览器最后可靠地通知的就是它）。“没能存下”的提示在真正写入后再判断。没做：按条目存增量、指纹增量计算（`recount` 仍在有仅本地条目时读整份配置）；localStorage 约 5 MB 的上限也还在。测试 `changes_wait_in_the_draft_until_synced` 加了：修改后立即没有草稿、停 1 秒后有；页面隐藏时立即写；关闭项目时写。三处各自去掉时它都失败。`CLAUDE.md` 里草稿的说明一并改了。
 
 ### PERF-14 PostgreSQL 的 `responses` 缺 `api` 索引（中，bridge）——已修复
 

@@ -173,6 +173,8 @@ struct CopyState {
     /// A push waiting for the writes on their way: over the server's
     /// whatever it has, or only at the copy's base.
     push: Option<bool>,
+    /// PERF-13: writes a page's draft once the changes pause.
+    draft: Task<()>,
     _news: Task<()>,
 }
 
@@ -302,6 +304,13 @@ impl WorkspaceState {
         cx: &mut Context<Self>,
     ) -> Self {
         let is_copy = copy.is_some();
+        // PERF-13: a draft still waiting is written as the project closes.
+        cx.on_release(|this, _| {
+            if let Some(copy) = &this.copy {
+                copy.copy.keep_draft();
+            }
+        })
+        .detach();
         let copy = copy.map(|(server, (copy, mut news))| {
             sender.storage = copy.storage(&server);
             let news = cx.spawn(async move |this, cx| {
@@ -321,6 +330,7 @@ impl WorkspaceState {
                 unreachable: None,
                 failures: 0,
                 push: None,
+                draft: Task::ready(()),
                 _news: news,
             }
         });
@@ -663,12 +673,30 @@ impl WorkspaceState {
             copy.told = true;
             cx.emit(WorkspaceEvent::FirstChange);
         }
+        self.tell_not_kept(cx);
+        // PERF-13: a page's draft is written once the changes pause.
+        if let Some(copy) = self.copy.as_mut() {
+            copy.draft = cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(copy::KEEP_DRAFT_AFTER).await;
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(copy) = &this.copy {
+                        copy.copy.keep_draft();
+                    }
+                    this.tell_not_kept(cx);
+                });
+            });
+        }
+        self.push_when_settled(cx);
+        cx.notify();
+    }
+
+    /// Tells, once an opening, that a change could not be kept here.
+    fn tell_not_kept(&mut self, cx: &mut Context<Self>) {
+        let Some(copy) = self.copy.as_mut() else { return };
         if !copy.copy.kept_here() && !copy.told_not_kept {
             copy.told_not_kept = true;
             cx.emit(WorkspaceEvent::NotKept);
         }
-        self.push_when_settled(cx);
-        cx.notify();
     }
 
     /// Whether the reader syncs this project: a server project they may
@@ -5604,17 +5632,34 @@ mod tests {
             assert!(server_rows(&server, &collection).is_empty(), "not on the server");
             assert!(unsynced(&state, cx));
             assert_eq!(told.borrow().as_slice(), ["FirstChange"], "told once");
+            // PERF-13: written once the changes pause.
+            assert_eq!(drafts_local::get(READER, &collection.id), None, "not at each change");
+            cx.executor().advance_clock(copy::KEEP_DRAFT_AFTER);
+            cx.run_until_parked();
             let draft = drafts_local::get(READER, &collection.id).expect("a draft");
             assert_eq!(draft.base, Some(collection.revision));
             assert_eq!(draft.config.apis.len(), 1);
+            // The page hidden, what waits is written at once.
+            state.update(cx, |state, cx| state.create_api(None, "hidden".into(), cx));
+            cx.run_until_parked();
+            crate::set_page_visible(false);
+            crate::set_page_visible(true);
+            let draft = drafts_local::get(READER, &collection.id).expect("a draft");
+            assert_eq!(draft.config.apis.len(), 2);
             // A beat keeps it: the server has not moved.
             beat(cx);
-            assert_eq!(row_names(&state, cx), ["users", "mine"]);
+            assert_eq!(row_names(&state, cx), ["hidden", "users", "mine"]);
 
-            // A refresh finds it.
+            // A refresh finds it, and what waited as the project closed.
+            state.update(cx, |state, cx| state.create_api(None, "closing".into(), cx));
+            cx.run_until_parked();
             drop(state);
+            // Released as the app next flushes what happened.
+            cx.update(|_| {});
+            let draft = drafts_local::get(READER, &collection.id).expect("a draft");
+            assert_eq!(draft.config.apis.len(), 3);
             let (again, told) = open_copy(&server, collection.clone(), cx);
-            assert_eq!(row_names(&again, cx), ["users", "mine"]);
+            assert_eq!(row_names(&again, cx), ["closing", "hidden", "users", "mine"]);
             assert_eq!(told.borrow().as_slice(), ["KeptUnsynced { behind: false }"]);
 
             // The editor's typing goes too, without its pause.
@@ -5624,7 +5669,7 @@ mod tests {
             editor(&again, cx).update(cx, |api, cx| api.set_headers(vec![header("X-A", "1")], cx));
             again.update(cx, |state, cx| state.sync(false, cx));
             cx.run_until_parked();
-            assert_eq!(server_rows(&server, &collection), ["mine"]);
+            assert_eq!(server_rows(&server, &collection), ["closing", "hidden", "mine"]);
             assert_eq!(stored(&server, &collection, &mine).headers, [header("X-A", "1")]);
             assert!(!unsynced(&again, cx));
             assert_eq!(drafts_local::get(READER, &collection.id), None, "the draft goes");
@@ -5788,6 +5833,8 @@ mod tests {
             editor(&state, cx).update(cx, |api, cx| api.set_method(HttpMethod::Post, cx));
             cx.run_until_parked();
             assert!(unsynced(&state, cx));
+            cx.executor().advance_clock(copy::KEEP_DRAFT_AFTER);
+            cx.run_until_parked();
             let draft = drafts_local::get(READER, &collection.id).expect("a draft");
             assert_eq!(draft.config.apis[0].request.method, HttpMethod::Post);
             let copy = state.read_with(cx, |state, _| state.data.apis[0].request.method);

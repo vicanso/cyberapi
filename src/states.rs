@@ -22,7 +22,7 @@ mod workspace;
 pub use api::{ApiEvent, ApiState, GrpcDefinitions, typed_prompts};
 pub use app::{AppEvent, AppState, AppStore, Route};
 pub use cookies::{CookieKey, CookiesEvent, CookiesState, cookie_key};
-pub use copy::ServerCopy;
+pub use copy::{ServerCopy, keep_due_drafts};
 pub use dashboard::{DashboardEvent, DashboardState};
 pub use directory::{DirectoryDone, DirectoryEvent, DirectoryState};
 pub use load::LoadState;

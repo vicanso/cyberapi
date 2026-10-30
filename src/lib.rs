@@ -31,7 +31,16 @@ mod this_build;
 mod update_install;
 mod views;
 
-pub use crate::pacing::set_page_visible;
+/// The browser page's `visibilitychange`, handed in by `cyberapi-web`. A
+/// page that is hidden may be closed next: its drafts are written now
+/// (PERF-13).
+pub fn set_page_visible(visible: bool) {
+    pacing::set_page_visible(visible);
+    if !visible {
+        states::keep_due_drafts();
+    }
+}
+
 use crate::root::CyberApi;
 use crate::states::AppStore;
 use crate::views::StartupError;
