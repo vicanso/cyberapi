@@ -31,6 +31,10 @@ pub struct LoadState {
     running: Option<Task<()>>,
     started: Option<Instant>,
     took: Option<Duration>,
+    /// When the last send so far ended, from the first's start: how long
+    /// the sends took, the wait for the screen and the preparing left out
+    /// (BUG-7).
+    sent_for: Duration,
     /// Why nothing was sent.
     failure: Option<String>,
 }
@@ -48,6 +52,7 @@ impl LoadState {
             running: None,
             started: None,
             took: None,
+            sent_for: Duration::ZERO,
             failure: None,
         }
     }
@@ -122,6 +127,7 @@ impl LoadState {
         self.summary = Summary::default();
         self.failure = None;
         self.took = None;
+        self.sent_for = Duration::ZERO;
         let started = Instant::now();
         self.started = Some(started);
         let (told, mut telling) = mpsc::unbounded::<Sample>();
@@ -153,9 +159,15 @@ impl LoadState {
             let (failure, ()) = futures::join!(work, frames);
             let _ = this.update(cx, |this, cx| {
                 this.running = None;
-                this.took = Some(started.elapsed());
+                // Over when the last send ended: the frames' waits after it
+                // are not the test's.
+                this.took = Some(if this.samples.is_empty() {
+                    started.elapsed()
+                } else {
+                    this.sent_for
+                });
                 this.failure = failure.err();
-                this.summary = summary(&this.samples, started.elapsed());
+                this.summary = summary(&this.samples, this.sent_for);
                 cx.notify();
             });
         }));
@@ -174,9 +186,97 @@ impl LoadState {
     }
 
     fn told(&mut self, told: Vec<Sample>, cx: &mut Context<Self>) {
+        if let Some(last) = told.iter().map(|sample| sample.at).max() {
+            self.sent_for = self.sent_for.max(last);
+        }
         self.samples.extend(told);
-        let elapsed = self.elapsed().unwrap_or_default();
-        self.summary = summary(&self.samples, elapsed);
+        self.summary = summary(&self.samples, self.sent_for);
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Extras;
+    use crate::states::AppStore;
+    use cyberapi_core::load::Limit;
+    use cyberapi_core::prefs::AppPrefs;
+    use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, SendFuture};
+    use cyberapi_store::{MemoryStore, NewCollection};
+    use gpui_kit::TestAppContext;
+
+    /// Every request answered `200 ok`, at once.
+    struct Answers;
+
+    impl HttpEngine for Answers {
+        fn send(&self, _: PreparedRequest) -> SendFuture {
+            Box::pin(async {
+                Ok(Exchange {
+                    status: 200,
+                    body: b"ok".to_vec(),
+                    ..Default::default()
+                })
+            })
+        }
+    }
+
+    /// BUG-7: the test took until its last send ended — not until the
+    /// screen was next told, nor from before the request was prepared —
+    /// and so many a second.
+    #[gpui_kit::test]
+    async fn a_test_takes_as_long_as_its_sends(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            AppStore::init(
+                storage.clone(),
+                Arc::new(Answers),
+                AppPrefs::default(),
+                Extras::default(),
+                cx,
+            );
+        });
+        let collection = storage
+            .collections()
+            .create(NewCollection {
+                name: "p".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("create");
+        let workspace = cx.new(|cx| {
+            let sender = AppStore::global(cx).sender(cx);
+            WorkspaceState::new(sender, collection, cx)
+        });
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, cx| workspace.create_api(None, "a".into(), cx));
+        cx.run_until_parked();
+        let id = workspace.read_with(cx, |workspace, _| workspace.tabs()[0].id.clone());
+        let api = workspace.read_with(cx, |workspace, _| workspace.kept_api(&id).cloned().expect("kept"));
+        api.update(cx, |api, cx| api.set_uri("http://a.test/".into(), cx));
+        cx.run_until_parked();
+
+        let load = cx.new(|cx| LoadState::new(workspace.clone(), id, cx));
+        let plan = Plan {
+            senders: 2,
+            limit: Limit::Count(20),
+        };
+        load.update(cx, |load, cx| load.start(plan, HashMap::new(), cx));
+        for _ in 0..50 {
+            cx.run_until_parked();
+            if !load.read_with(cx, |load, _| load.running()) {
+                break;
+            }
+            cx.executor().advance_clock(FRAME);
+        }
+        load.read_with(cx, |load, _| {
+            assert!(!load.running());
+            assert_eq!(load.summary().sent, 20);
+            let last = load.samples.iter().map(|sample| sample.at).max().expect("sent");
+            assert_eq!(load.elapsed(), Some(last));
+            let per_second = 20.0 / last.as_secs_f64();
+            assert!((load.summary().per_second - per_second).abs() < 1e-6 * per_second);
+        });
     }
 }
