@@ -3,6 +3,10 @@
 //! — the APIs added, updated and left as they are, and the project's that
 //! the source no longer has, which stay — then it is merged as importing
 //! again does when it updates what the project has.
+//!
+//! Q-1: the address is project data, which any editor sets; it is fetched
+//! when the reader asks, not as the dialog opens, and one on this machine
+//! or a private network is pointed out first.
 
 use super::import_dialog::address;
 use crate::i18n;
@@ -97,7 +101,7 @@ impl SourceView {
                 }
             }),
         ];
-        let mut view = Self {
+        Self {
             workspace,
             url,
             kept: kept.is_some(),
@@ -105,13 +109,7 @@ impl SourceView {
             fetched: None,
             error: None,
             _subscriptions: subscriptions,
-        };
-        // The source the project keeps is fetched at once: syncing is what
-        // the reader opened this for.
-        if view.kept {
-            view.fetch(window, cx);
         }
-        view
     }
 
     fn typed(&self, cx: &App) -> String {
@@ -248,7 +246,10 @@ fn told(fetched: &Fetched) -> Vec<String> {
 impl Render for SourceView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let danger = cx.theme().danger;
+        let (danger, warning) = (cx.theme().danger, cx.theme().warning);
+        let typed = self.typed(cx);
+        let local = address(&typed).is_some_and(import::local_address);
+        let idle = self.fetching.is_none() && self.fetched.is_none() && self.error.is_none();
         v_flex()
             .gap_3()
             .child(div().text_sm().text_color(muted).child(t!("source.about").to_string()))
@@ -266,6 +267,22 @@ impl Render for SourceView {
                             .on_click(cx.listener(|this, _, window, cx| this.fetch(window, cx))),
                     ),
             )
+            .when(local, |this| {
+                this.child(
+                    div()
+                        .text_sm()
+                        .text_color(warning)
+                        .child(t!("source.local").to_string()),
+                )
+            })
+            .when(idle && address(&typed).is_some(), |this| {
+                this.child(
+                    div()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(t!("source.fetch_first").to_string()),
+                )
+            })
             .when_some(self.error.clone(), |this, why| {
                 this.child(div().text_sm().text_color(danger).child(why))
             })
@@ -288,5 +305,112 @@ impl Render for SourceView {
                     ),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Extras, SignOut};
+    use cyberapi_core::model::{ImportSource, ProjectSettings};
+    use cyberapi_core::prefs::AppPrefs;
+    use cyberapi_http::{HttpEngine, PreparedRequest, SendFuture};
+    use cyberapi_store::{MemoryStore, NewCollection};
+    use gpui_kit::component::Root;
+    use gpui_kit::{AnyWindowHandle, TestAppContext, size};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Counts what it is asked to send, and answers nothing it can read.
+    struct Counting(Arc<AtomicUsize>);
+
+    impl HttpEngine for Counting {
+        fn send(&self, _: PreparedRequest) -> SendFuture {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async {
+                Ok(cyberapi_core::response::Exchange {
+                    status: 200,
+                    body: b"{}".to_vec(),
+                    ..Default::default()
+                })
+            })
+        }
+    }
+
+    /// What the dialog shows.
+    struct Showing(Entity<SourceView>);
+
+    impl Render for Showing {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    /// Q-1: the source a project keeps is not fetched as the dialog opens,
+    /// only once the reader asks; one on a private network is pointed out.
+    #[gpui_kit::test]
+    async fn the_source_is_fetched_when_asked(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let storage = store.storage();
+        let collection = pollster::block_on(storage.collections().create(NewCollection {
+            name: "p".into(),
+            ..Default::default()
+        }))
+        .expect("create");
+        let source = ImportSource {
+            url: "http://10.0.0.5/openapi.json".into(),
+            folder: None,
+        };
+        pollster::block_on(storage.tree().set_project_settings(
+            collection.id.clone(),
+            ProjectSettings {
+                source: Some(source),
+                ..Default::default()
+            },
+        ))
+        .expect("a source");
+        let sent = Arc::new(AtomicUsize::new(0));
+        let sign_out: SignOut = Arc::new(|| Box::pin(async {}));
+        let engine = Arc::new(Counting(sent.clone()));
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            AppStore::init(
+                storage,
+                engine,
+                AppPrefs::default(),
+                Extras {
+                    sign_out: Some(sign_out),
+                    ..Extras::default()
+                },
+                cx,
+            );
+        });
+        let workspace = cx.new(|cx| {
+            let sender = AppStore::global(cx).sender(cx);
+            WorkspaceState::new(sender, collection, cx)
+        });
+        cx.run_until_parked();
+        let mut view = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(800.), px(600.)), |window, cx| {
+                let source = cx.new(|cx| SourceView::new(workspace.downgrade(), window, cx));
+                view = Some(source.clone());
+                let showing = cx.new(|_| Showing(source));
+                Root::new(showing, window, cx)
+            })
+            .into();
+        let view = view.expect("built");
+        cx.run_until_parked();
+        assert_eq!(sent.load(Ordering::Relaxed), 0, "not fetched as it opens");
+        let typed = cx.read(|cx| view.read(cx).typed(cx));
+        assert_eq!(typed, "http://10.0.0.5/openapi.json", "its address, shown");
+        assert!(import::local_address(&typed), "pointed out");
+
+        cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| view.fetch(window, cx))
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        assert_eq!(sent.load(Ordering::Relaxed), 1, "fetched once asked");
     }
 }

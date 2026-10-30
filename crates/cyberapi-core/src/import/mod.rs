@@ -250,6 +250,57 @@ fn document(text: &str) -> Result<serde_json::Value, ImportError> {
     }
 }
 
+/// Q-1: whether `url` points at this machine or a private network, as far
+/// as it says: a loopback, private, link-local or unique-local address, or
+/// a name such as `localhost`, `*.local`, `*.internal` or one without a
+/// dot. A project's source is project data any editor sets; fetching one
+/// of these reads what only the reader's machine reaches. A public name may
+/// still resolve to such an address — this does not ask.
+pub fn local_address(url: &str) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use url::Host;
+    let private_v4 = |address: Ipv4Addr| {
+        let [a, b, ..] = address.octets();
+        address.is_loopback()
+            || address.is_private()
+            || address.is_link_local()
+            || address.is_unspecified()
+            // Shared address space (RFC 6598).
+            || a == 100 && (64..128).contains(&b)
+    };
+    let private_v6 = |address: Ipv6Addr| {
+        let first = address.segments()[0];
+        address.is_loopback()
+            || address.is_unspecified()
+            || first & 0xfe00 == 0xfc00
+            || first & 0xffc0 == 0xfe80
+            || address.to_ipv4_mapped().is_some_and(private_v4)
+    };
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    match parsed.host() {
+        Some(Host::Ipv4(address)) => private_v4(address),
+        Some(Host::Ipv6(address)) => private_v6(address),
+        Some(Host::Domain(name)) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            !name.contains('.')
+                || [
+                    ".localhost",
+                    ".local",
+                    ".internal",
+                    ".lan",
+                    ".home.arpa",
+                    ".intranet",
+                    ".corp",
+                ]
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+        }
+        None => false,
+    }
+}
+
 /// BUG-26: `text` without the byte-order mark an editor on Windows may
 /// start a file with: no format reads it, and `trim` keeps it.
 fn without_bom(text: &str) -> &str {
@@ -412,6 +463,43 @@ fn kv(key: &str, value: &str, enabled: bool) -> KvParam {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    /// Q-1.
+    #[test]
+    fn local_addresses_are_told() {
+        for local in [
+            "http://localhost:8080/openapi.json",
+            "http://api.localhost/spec",
+            "http://127.0.0.1/a",
+            "http://10.1.2.3/a",
+            "http://172.16.0.9/a",
+            "http://192.168.1.1/a",
+            "http://169.254.169.254/latest/meta-data",
+            "http://100.64.0.1/a",
+            "http://0.0.0.0/a",
+            "http://[::1]/a",
+            "http://[fd00::1]/a",
+            "http://[fe80::1]/a",
+            "http://[::ffff:10.0.0.1]/a",
+            "http://intranet/spec",
+            "https://wiki.corp/spec",
+            "http://printer.local/a",
+            "http://api.internal/a",
+            "http://nas.home.arpa/a",
+            "http://LOCALHOST./a",
+        ] {
+            assert!(local_address(local), "{local}");
+        }
+        for public in [
+            "https://api.example.com/openapi.json",
+            "https://8.8.8.8/a",
+            "http://172.32.0.1/a",
+            "http://[2001:db8::1]/a",
+            "not an address",
+        ] {
+            assert!(!local_address(public), "{public}");
+        }
+    }
 
     /// BUG-26: a file that starts with a byte-order mark reads as without.
     #[test]
