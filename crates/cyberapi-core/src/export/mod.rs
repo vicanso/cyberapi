@@ -6,6 +6,7 @@
 
 mod openapi;
 mod postman;
+mod schema_30;
 
 pub use openapi::openapi;
 pub use postman::postman;

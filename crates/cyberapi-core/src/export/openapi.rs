@@ -276,7 +276,8 @@ fn responses(request: &crate::model::HttpRequest) -> Value {
                     .unwrap_or_else(|| "application/json".into());
                 let body = content.entry(media).or_insert_with(|| json!({}));
                 if let Some(body) = body.as_object_mut() {
-                    body.insert("schema".into(), schema);
+                    // BUG-22: as 3.0 writes it.
+                    body.insert("schema".into(), super::schema_30::openapi_30(&schema));
                 }
             }
         }
@@ -456,7 +457,7 @@ mod tests {
                         headers: vec![kv("X-Trace", "t"), kv("Accept", "application/json")],
                         // A6.
                         assertions: vec![crate::assertions::Assertion::imported_schema(
-                            &json!({"type": "object", "required": ["id"]}),
+                            &json!({"type": "object", "required": ["id"], "properties": {"note": {"type": ["string", "null"]}}}),
                         )],
                         ..Default::default()
                     },
@@ -522,10 +523,11 @@ mod tests {
         );
         let get = &doc["paths"]["/users/{id}"]["get"];
         assert_eq!(get["summary"], "get user");
-        // A6: what the answer is checked against is its schema.
+        // A6: what the answer is checked against is its schema, as 3.0
+        // writes it (BUG-22).
         assert_eq!(
             get["responses"]["200"]["content"]["application/json"]["schema"],
-            json!({"type": "object", "required": ["id"]})
+            json!({"type": "object", "required": ["id"], "properties": {"note": {"type": "string", "nullable": true}}})
         );
         assert_eq!(get["tags"], json!(["users"]));
         let parameters = get["parameters"].as_array().expect("parameters");
