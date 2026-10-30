@@ -118,14 +118,15 @@ pub fn open_folder_settings(workspace: &Entity<WorkspaceState>, id: ItemId, wind
             example: HEADER_EXAMPLE,
             ..Default::default()
         };
-        KvEditor::new(&folder.settings.headers, options, window, cx).hints(hints.clone())
+        KvEditor::new(&folder.settings.headers, options, window, cx).hints(hints)
     });
     let variables = cx.new(|cx| {
         let options = KvOptions {
             example: VARIABLE_EXAMPLE,
             ..Default::default()
         };
-        KvEditor::new(&folder.settings.variables, options, window, cx).hints(hints)
+        // Used as they are, not evaluated (D5): no template hints (Q-4).
+        KvEditor::new(&folder.settings.variables, options, window, cx)
     });
     let description = cx.new(|cx| {
         let mut editor = EditorState::new(window, cx)

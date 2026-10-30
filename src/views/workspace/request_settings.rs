@@ -10,7 +10,6 @@
 use crate::states::{ApiState, AppStore};
 use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::settings::{Choice, setting_row};
-use crate::views::template_hints::HintSource;
 use cyberapi_core::model::HttpMethod;
 use cyberapi_core::prefs::{HttpVersion, RequestSettings, SendPrefs, Timeouts};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -65,7 +64,7 @@ fn theirs(what: String) -> String {
 }
 
 impl RequestSettingsView {
-    pub fn new(api: Entity<ApiState>, hints: HintSource, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(api: Entity<ApiState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let own = api.read(cx).request().settings;
         let variables = {
             let list = api.read(cx).request().variables.clone();
@@ -73,7 +72,9 @@ impl RequestSettingsView {
                 example: super::settings_dialogs::VARIABLE_EXAMPLE,
                 ..Default::default()
             };
-            cx.new(|cx| KvEditor::new(&list, options, window, cx).hints(hints))
+            // Used as they are, not evaluated (D5): no template hints
+            // (Q-4).
+            cx.new(|cx| KvEditor::new(&list, options, window, cx))
         };
         let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
         let (sending, timeouts): (SendPrefs, Timeouts) = (prefs.sending, prefs.timeouts.effective());

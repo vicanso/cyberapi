@@ -320,8 +320,8 @@ impl RequestEditor {
             cx.new(|cx| AuthEditor::new(AuthFor::Api(api), workspace, window, cx))
         };
         let settings = {
-            let (api, hints) = (api.clone(), hints.clone());
-            cx.new(|cx| super::request_settings::RequestSettingsView::new(api, hints, window, cx))
+            let api = api.clone();
+            cx.new(|cx| super::request_settings::RequestSettingsView::new(api, window, cx))
         };
         let assertions = {
             let api = api.clone();
@@ -981,8 +981,8 @@ impl RequestEditor {
             .extend(template_hints::watch(&self.body, window, cx));
         self.rebuild_graphql(window, cx);
         self.settings = {
-            let (api, hints) = (self.api.clone(), self.hints.clone());
-            cx.new(|cx| super::request_settings::RequestSettingsView::new(api, hints, window, cx))
+            let api = self.api.clone();
+            cx.new(|cx| super::request_settings::RequestSettingsView::new(api, window, cx))
         };
         self.assertions = {
             let api = self.api.clone();
