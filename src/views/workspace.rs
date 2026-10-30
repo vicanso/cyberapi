@@ -455,6 +455,9 @@ pub struct WorkspaceView {
     focus: FocusHandle,
     /// The window title last set.
     title: String,
+    /// F6: the delete whose undo notice is up; it goes with this view
+    /// (BUG-24).
+    undo_notice: Option<u64>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -584,7 +587,8 @@ impl WorkspaceView {
                     } else {
                         t!("undo.deleted", name = name)
                     };
-                    let state = this_state.clone();
+                    // BUG-24: not of a project left since.
+                    let state = this_state.downgrade();
                     let note = Notification::info(text.to_string())
                         .id1::<UndoDelete>(ElementId::Integer(count))
                         .action(move |_, _, _| {
@@ -593,10 +597,11 @@ impl WorkspaceView {
                                 .small()
                                 .label(t!("undo.undo").to_string())
                                 .on_click(move |_, window, cx| {
-                                    state.update(cx, |state, cx| state.undo_delete(count, cx));
+                                    let _ = state.update(cx, |state, cx| state.undo_delete(count, cx));
                                     window.remove_notification1::<UndoDelete>(ElementId::Integer(count), cx);
                                 })
                         });
+                    this.undo_notice = Some(count);
                     // Only the last delete is undone: the one before's notice
                     // goes, so its button does not seem to (BUG-9).
                     window.remove_notification1::<UndoDelete>(ElementId::Integer(count.saturating_sub(1)), cx);
@@ -624,6 +629,20 @@ impl WorkspaceView {
                     );
                 }
             }),
+            // BUG-24: leaving the project takes its undo notice away. The
+            // view goes as a frame is drawn, the window taken: later.
+            cx.on_release({
+                let handle = window.window_handle();
+                move |this, cx| {
+                    if let Some(count) = this.undo_notice {
+                        cx.defer(move |cx| {
+                            let _ = handle.update(cx, |_, window, cx| {
+                                window.remove_notification1::<UndoDelete>(ElementId::Integer(count), cx)
+                            });
+                        });
+                    }
+                }
+            }),
         ];
         // The shortcuts reach the workspace from wherever focus is inside it.
         let focus = cx.focus_handle();
@@ -642,6 +661,7 @@ impl WorkspaceView {
             editor_columns,
             focus,
             title: String::new(),
+            undo_notice: None,
             _subscriptions: subscriptions,
         };
         view.follow_selection(window, cx);
@@ -1273,6 +1293,88 @@ mod tests {
             );
         })
         .expect("the window is open");
+    }
+
+    /// What a window shows: a workspace, until the project is left.
+    struct Holder(Option<Entity<WorkspaceView>>);
+
+    impl Render for Holder {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().children(self.0.clone())
+        }
+    }
+
+    /// BUG-24: a delete's undo notice goes when the project is left, and
+    /// holds the project's state no longer.
+    #[gpui_kit::test]
+    async fn an_undo_notice_goes_with_its_project(cx: &mut TestAppContext) {
+        let store = MemoryStore::new();
+        let collection = pollster::block_on(store.storage().collections().create(NewCollection {
+            name: "p".into(),
+            ..Default::default()
+        }))
+        .expect("create");
+        let sign_out: SignOut = Arc::new(|| Box::pin(async {}));
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+            AppStore::init(
+                store.storage(),
+                Arc::new(NoEngine),
+                AppPrefs::default(),
+                Extras {
+                    sign_out: Some(sign_out),
+                    ..Extras::default()
+                },
+                cx,
+            );
+        });
+        let mut holder = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(1100.), px(700.)), |window, cx| {
+                let collection = collection.clone();
+                let state = cx.new(|cx| {
+                    let sender = AppStore::global(cx).sender(cx);
+                    WorkspaceState::new(sender, collection, cx)
+                });
+                let workspace = cx.new(|cx| WorkspaceView::with_state(state, window, cx));
+                let held = cx.new(|_| Holder(Some(workspace)));
+                holder = Some(held.clone());
+                Root::new(held, window, cx)
+            })
+            .into();
+        let holder = holder.expect("built");
+        cx.run_until_parked();
+        let state = cx.read(|cx| holder.read(cx).0.as_ref().expect("open").read(cx).state.clone());
+        state.update(cx, |state, cx| state.create_api(None, "ping".into(), cx));
+        cx.run_until_parked();
+        let ping = state.read_with(cx, |state, _| state.tree().roots().next().expect("ping").id().clone());
+        state.update(cx, |state, cx| state.delete(ping, cx));
+        cx.run_until_parked();
+        let notice = |cx: &mut TestAppContext| {
+            use gpui_kit::test::TestWindowExt as _;
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find("notification").is_some()
+            })
+            .expect("the window is open")
+        };
+        assert!(notice(cx), "undo it");
+
+        let weak = state.downgrade();
+        drop(state);
+        holder.update(cx, |holder, cx| {
+            holder.0 = None;
+            cx.notify();
+        });
+        // The frame drawn last holds the view till the next is.
+        notice(cx);
+        cx.run_until_parked();
+        assert!(weak.upgrade().is_none(), "the project's state is let go");
+        // Past its closing, well before its time is up.
+        cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(!notice(cx), "gone with the project");
     }
 
     /// Answers every request with `200 ok`.

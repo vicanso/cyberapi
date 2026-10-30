@@ -2895,7 +2895,11 @@ impl WorkspaceState {
             loop {
                 let at = tree.config(collection.clone()).await?;
                 let mut config = at.config;
-                undo::put_back(&mut config, &deleted);
+                // All there again — the server's taken, say: nothing to
+                // write, and nothing to sync (BUG-24).
+                if !undo::put_back(&mut config, &deleted) {
+                    break;
+                }
                 match tree.replace(collection.clone(), config, Some(at.revision)).await {
                     Ok(_) => break,
                     Err(StoreError::Stale { .. }) if tries > 1 => tries -= 1,
@@ -3713,6 +3717,22 @@ mod tests {
         cx.run_until_parked();
         let last = storage.tree().load(collection.id.clone()).await.expect("the tree");
         assert!(last.folders.iter().any(|folder| folder.id == users.id), "back");
+
+        // BUG-24: one back already, as the server's was taken, is not
+        // written again.
+        let whole = storage.tree().config(collection.id.clone()).await.expect("config");
+        state.update(cx, |state, cx| state.delete(users.id.clone(), cx));
+        cx.run_until_parked();
+        let deleted = storage.tree().config(collection.id.clone()).await.expect("config");
+        let revision = storage
+            .tree()
+            .replace(collection.id.clone(), whole.config.clone(), Some(deleted.revision))
+            .await
+            .expect("back as it was");
+        state.update(cx, |state, cx| state.undo_delete(4, cx));
+        cx.run_until_parked();
+        let now = storage.tree().config(collection.id.clone()).await.expect("config");
+        assert_eq!((now.revision, now.config), (revision, whole.config), "not written");
     }
 
     use cyberapi_core::CollectionId;

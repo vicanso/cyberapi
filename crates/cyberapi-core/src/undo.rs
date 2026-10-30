@@ -77,16 +77,20 @@ pub fn deleted(tree: &TreeData, item: &ItemId) -> Option<Deleted> {
 
 /// `deleted` put back into `config`, where it stood: in its folder at its
 /// place, or at the end of the top level when its folder is gone too. What
-/// `config` has of it already stays as it is.
-pub fn put_back(config: &mut ProjectConfig, deleted: &Deleted) {
+/// `config` has of it already stays as it is. Whether anything was put
+/// back: nothing, when it is all there again (BUG-24).
+pub fn put_back(config: &mut ProjectConfig, deleted: &Deleted) -> bool {
+    let mut changed = false;
     for folder in &deleted.folders {
         if !config.folders.iter().any(|found| found.id == folder.id) {
             config.folders.push(folder.clone());
+            changed = true;
         }
     }
     for api in &deleted.apis {
         if !config.apis.iter().any(|found| found.id == api.id) {
             config.apis.push(api.clone());
+            changed = true;
         }
     }
     let placed = config.top_order.contains(&deleted.item)
@@ -95,7 +99,7 @@ pub fn put_back(config: &mut ProjectConfig, deleted: &Deleted) {
             .iter()
             .any(|folder| folder.id != deleted.item && folder.children.contains(&deleted.item));
     if placed {
-        return;
+        return changed;
     }
     let parent = deleted
         .parent
@@ -107,11 +111,12 @@ pub fn put_back(config: &mut ProjectConfig, deleted: &Deleted) {
         // Its folder is gone: the end of the top level.
         None => {
             config.top_order.push(deleted.item.clone());
-            return;
+            return true;
         }
     };
     let at = deleted.index.min(order.len());
     order.insert(at, deleted.item.clone());
+    true
 }
 
 #[cfg(test)]
@@ -153,7 +158,7 @@ mod tests {
         after.apis.retain(|api| !users.holds(&api.id));
         after.top_order.retain(|id| id != &users.item);
         after.apis.iter_mut().for_each(|api| api.name.push('!'));
-        put_back(&mut after, &users);
+        assert!(put_back(&mut after, &users));
         assert_eq!(after.top_order, tree.top_order, "at its place");
         let before = config(&tree);
         for folder in &before.folders {
@@ -167,7 +172,7 @@ mod tests {
 
         // Twice is once.
         let once = after.clone();
-        put_back(&mut after, &users);
+        assert!(!put_back(&mut after, &users), "nothing put back");
         assert_eq!(after, once);
     }
 
@@ -182,7 +187,7 @@ mod tests {
             folder.children.retain(|child| child != &me.item);
         }
         let mut back = after.clone();
-        put_back(&mut back, &me);
+        assert!(put_back(&mut back, &me));
         assert_eq!(back.folders, config(&tree).folders);
 
         // Its folder deleted since: the end of the top level.
@@ -190,7 +195,7 @@ mod tests {
         for folder in &mut after.folders {
             folder.children.retain(|child| child.as_str() != "profile");
         }
-        put_back(&mut after, &me);
+        assert!(put_back(&mut after, &me));
         assert_eq!(after.top_order.last(), Some(&me.item));
         assert!(deleted(&tree, &"nothing".into()).is_none());
     }
