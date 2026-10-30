@@ -136,12 +136,34 @@ pub struct Preview {
     /// The project's APIs the source has as they are.
     pub same: usize,
     /// The project's APIs the source does not have, as the project keeps
-    /// them: left as they are. A gRPC call is never among them.
+    /// them: left as they are. A gRPC call is never among them, nor one
+    /// outside the folder the source went into (Q-2).
     pub missing: Vec<ItemId>,
 }
 
+/// The APIs in `folder`, at any depth.
+fn apis_in(tree: &TreeData, folder: &ItemId) -> std::collections::HashSet<ItemId> {
+    let mut found = std::collections::HashSet::new();
+    let mut stack = vec![folder];
+    while let Some(id) = stack.pop() {
+        let Some(folder) = tree.folders.iter().find(|found| &found.id == id) else {
+            continue;
+        };
+        for child in &folder.children {
+            if tree.folders.iter().any(|folder| &folder.id == child) {
+                stack.push(child);
+            } else {
+                found.insert(child.clone());
+            }
+        }
+    }
+    found
+}
+
 /// B7: what importing `items` into `parent` of `tree` again, updating what
-/// it has, would do.
+/// it has, would do. What the source lacks is looked for where it went: in
+/// `parent`, or the whole project when that is the top level (Q-2) — a
+/// project's own APIs beside a spec's folder are not the spec's.
 pub fn preview(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem]) -> Preview {
     let merge = merge(tree, parent, items, true);
     let mut keys = std::collections::HashSet::new();
@@ -152,12 +174,13 @@ pub fn preview(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem]) -
             ImportItem::Folder { children, .. } => stack.extend(children),
         }
     }
+    let within = parent.map(|folder| apis_in(tree, folder));
     let (mut had, mut missing) = (0, Vec::new());
     for api in &tree.apis {
         match key(&api.request) {
             Some(key) if keys.contains(&key) => had += 1,
-            Some(_) => missing.push(api.id.clone()),
-            None => {}
+            Some(_) if within.as_ref().is_none_or(|within| within.contains(&api.id)) => missing.push(api.id.clone()),
+            _ => {}
         }
     }
     Preview {
@@ -542,5 +565,24 @@ mod tests {
                 missing: vec!["a-mine".into()],
             }
         );
+    }
+
+    /// Q-2: a source that went into a folder lacks only what is in it.
+    #[test]
+    fn a_source_in_a_folder_lacks_only_what_is_in_it() {
+        let mut tree = project();
+        // Written here by hand, beside the spec's folder.
+        tree.apis.push(api("a-mine", HttpMethod::Delete, "{{HOST}}/cache"));
+        tree.top_order.push("a-mine".into());
+        // And one deeper in the spec's folder.
+        tree.folders.push(folder("f-admin", "admin", &["a-ban"]));
+        tree.folders[0].children.push("f-admin".into());
+        tree.apis
+            .push(api("a-ban", HttpMethod::Post, "{{HOST}}/users/{id}/ban"));
+        let items = vec![imported_api("list", HttpMethod::Get, "{{API}}/users")];
+        let missing = preview(&tree, Some(&"f-users".into()), &items).missing;
+        assert_eq!(missing, ["a-one".into(), "a-ban".into()] as [ItemId; 2]);
+        let missing = preview(&tree, None, &items).missing;
+        assert_eq!(missing.len(), 4, "at the top level, the whole project: {missing:?}");
     }
 }
