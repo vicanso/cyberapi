@@ -2531,8 +2531,18 @@ impl WorkspaceState {
         if auth.signs() && !settings.auth.signs() {
             settings.auth = auth;
         }
-        if source.is_some() {
-            settings.source = source;
+        if let Some(mut source) = source {
+            // Q-3: the same address imported again from elsewhere — the
+            // project menu's import is into the top level — keeps the
+            // folder it went into, while there is one.
+            if let Some(kept) = &settings.source
+                && kept.url == source.url
+                && let Some(folder) = &kept.folder
+                && self.data.folders.iter().any(|found| &found.id == folder)
+            {
+                source.folder = Some(folder.clone());
+            }
+            settings.source = Some(source);
         }
         if settings != self.data.settings {
             self.set_project_settings(settings, cx);
@@ -3600,6 +3610,35 @@ mod tests {
         );
         let in_spec = kept.folders.iter().find(|folder| folder.id == spec).expect("spec");
         assert_eq!(in_spec.children.len(), 3, "what is new goes where the source's went");
+
+        // Q-3: the same address imported again, into the top level: the
+        // source keeps its folder.
+        let mut again = parse(
+            r#"{"info": {"name": "Shop"}, "item": [{"name": "list", "request": {"method": "GET", "url": "{{host}}/orders"}}]}"#,
+        );
+        again.source = Some(url.clone());
+        state.update(cx, |state, cx| state.import(None, again, cx));
+        cx.run_until_parked();
+        let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        assert_eq!(
+            kept.settings.source.and_then(|source| source.folder),
+            Some(spec.clone())
+        );
+        // Another address goes where it was imported.
+        let mut other = parse(
+            r#"{"info": {"name": "Shop"}, "item": [{"name": "list", "request": {"method": "GET", "url": "{{host}}/orders"}}]}"#,
+        );
+        other.source = Some("https://api.test/v2.json".into());
+        state.update(cx, |state, cx| state.import(None, other, cx));
+        cx.run_until_parked();
+        let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        assert_eq!(
+            kept.settings.source,
+            Some(ImportSource {
+                url: "https://api.test/v2.json".into(),
+                folder: None,
+            })
+        );
 
         state.update(cx, |state, cx| state.forget_source(cx));
         cx.run_until_parked();
