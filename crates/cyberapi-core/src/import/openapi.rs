@@ -401,6 +401,9 @@ fn operation(
                 if let Some(schema) = parameter.get("schema") {
                     request.content_type = ContentType::Json;
                     request.body = crate::format::json(&example(json, schema, 0));
+                    // F11: keep its JSON Schema standalone for Docs.
+                    request.request_schema =
+                        standalone(json, schema, 0, &mut 0).map(|schema| crate::format::json(&schema));
                 }
             }
             _ => {}
@@ -440,6 +443,11 @@ fn operation(
                 .unwrap_or_else(|| json!({}));
             request.content_type = ContentType::Json;
             request.body = crate::format::json(&value);
+            // F11: keep its JSON Schema standalone for Docs.
+            request.request_schema = media
+                .get("schema")
+                .and_then(|schema| standalone(json, schema, 0, &mut 0))
+                .map(|schema| crate::format::json(&schema));
         } else if let Some((kind, media)) = content
             .iter()
             .find(|(kind, _)| kind.contains("form-urlencoded") || kind.contains("multipart"))
@@ -796,5 +804,31 @@ mod tests {
         assert_eq!(oas_req.content_type, ContentType::Multipart);
         let oas_fields: Vec<KvParam> = serde_json::from_str(&oas_req.body).expect("fields");
         assert_eq!(oas_fields, [kv("doc", "file://", true), kv("title", "report", true)]);
+    }
+
+    #[test]
+    fn a_request_bodys_schema_is_kept_standalone() {
+        let oas3: Value = serde_json::from_str(
+            r##"{"openapi": "3.0.3",
+                "components": {"schemas": {"NewUser": {
+                    "type": "object",
+                    "required": ["email"],
+                    "properties": {"email": {"type": "string", "description": "Sign-in email"}}
+                }}},
+                "paths": {"/users": {"post": {
+                    "requestBody": {"content": {"application/json": {
+                        "schema": {"$ref": "#/components/schemas/NewUser"}
+                    }}}
+                }}}}"##,
+        )
+        .expect("JSON");
+        let bundle = parse(&oas3);
+        let req = first_api(&bundle.items);
+        let schema = req.request_schema.as_deref().expect("request schema");
+        let fields = crate::schema_docs::fields_of_schema(schema).expect("fields");
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "email");
+        assert!(fields[0].required);
+        assert_eq!(fields[0].description, "Sign-in email");
     }
 }

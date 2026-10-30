@@ -143,6 +143,10 @@ pub fn updated(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
         query: keep_descriptions(&existing.query, &imported.query, false),
         headers: keep_descriptions(&existing.headers, &imported.headers, true),
         assertions,
+        request_schema: imported
+            .request_schema
+            .clone()
+            .or_else(|| existing.request_schema.clone()),
         ..existing.clone()
     }
 }

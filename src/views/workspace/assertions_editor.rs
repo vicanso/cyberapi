@@ -143,8 +143,18 @@ impl AssertionsEditor {
     pub fn new(api: Entity<ApiState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let assertions = api.read(cx).request().assertions.clone();
         let extractions = api.read(cx).request().extractions.clone();
-        // A new response, or new assertions: the marks change.
-        let subscriptions = vec![cx.observe(&api, |_, _, cx| cx.notify())];
+        // A new response, or assertions changed outside (F11: Docs response
+        // schema): keep rows in step and redraw marks.
+        let subscriptions = vec![cx.observe_in(&api, window, |this, api, window, cx| {
+            let latest = api.read(cx).request().assertions.clone();
+            if this.assertions(cx) != latest {
+                this.rows.clear();
+                for assertion in &latest {
+                    this.push_row(assertion, window, cx);
+                }
+            }
+            cx.notify();
+        })];
         let mut editor = Self {
             api,
             rows: Vec::new(),

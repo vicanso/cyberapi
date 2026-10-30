@@ -771,6 +771,72 @@ impl ApiState {
         }
     }
 
+    /// F11: the request body's JSON Schema, as edited in Docs; blank clears it.
+    pub fn set_request_schema(&mut self, schema: Option<String>, cx: &mut Context<Self>) {
+        let schema = schema.filter(|text| !text.trim().is_empty());
+        if self.request.request_schema != schema {
+            self.request.request_schema = schema;
+            self.save_later(cx);
+        }
+    }
+
+    /// F11: the API's response JSON Schema assertion (`Subject::Schema`), and
+    /// whether it came from an OpenAPI import.
+    pub fn response_schema(&self) -> Option<(&str, bool)> {
+        self.request
+            .assertions
+            .iter()
+            .filter(|assertion| assertion.subject == Subject::Schema)
+            .max_by_key(|assertion| assertion.enabled)
+            .map(|assertion| (assertion.expected.as_str(), assertion.imported))
+    }
+
+    /// F11: sets or clears the API's response JSON Schema assertion from Docs.
+    /// Once edited by the reader, it is marked as their own (`imported = false`).
+    pub fn set_response_schema(&mut self, schema: Option<String>, cx: &mut Context<Self>) {
+        let schema = schema.filter(|text| !text.trim().is_empty());
+        match schema {
+            Some(text) => {
+                let found = self
+                    .request
+                    .assertions
+                    .iter_mut()
+                    .filter(|assertion| assertion.subject == Subject::Schema)
+                    .max_by_key(|assertion| assertion.enabled);
+                match found {
+                    Some(existing) => {
+                        if existing.expected == text {
+                            return;
+                        }
+                        existing.expected = text;
+                        existing.imported = false;
+                    }
+                    None => {
+                        self.request.assertions.push(Assertion {
+                            enabled: true,
+                            subject: Subject::Schema,
+                            target: String::new(),
+                            op: cyberapi_core::assertions::Op::Conforms,
+                            expected: text,
+                            imported: false,
+                        });
+                    }
+                }
+            }
+            None => {
+                let before = self.request.assertions.len();
+                self.request
+                    .assertions
+                    .retain(|assertion| assertion.subject != Subject::Schema);
+                if self.request.assertions.len() == before {
+                    return;
+                }
+            }
+        }
+        *self.checks.borrow_mut() = None;
+        self.save_later(cx);
+    }
+
     /// F3: the response shown kept as an example named `name`; `false` when
     /// it cannot be one — no status, no text, or too long.
     pub fn keep_example(&mut self, name: &str, cx: &mut Context<Self>) -> bool {

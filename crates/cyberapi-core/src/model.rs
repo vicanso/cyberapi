@@ -186,6 +186,10 @@ pub struct HttpRequest {
     /// folders' and the environment's of the same names (`crate::inherit`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub variables: Vec<KvParam>,
+    /// F11: a JSON Schema for its request body, as text (OpenAPI's, or
+    /// written in Docs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_schema: Option<String>,
     /// What a newer version keeps in a request that this one does not
     /// read, written back as it came (`docs/batch4-design.md` §2.1): a
     /// request saved here keeps it.
@@ -215,6 +219,7 @@ struct StoredRequest {
     description: String,
     examples: Vec<Example>,
     variables: Vec<KvParam>,
+    request_schema: Option<String>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -239,6 +244,7 @@ impl From<StoredRequest> for HttpRequest {
             description: stored.description,
             examples: stored.examples,
             variables: stored.variables,
+            request_schema: stored.request_schema.filter(|schema| !schema.trim().is_empty()),
             extra: stored.extra,
         }
     }

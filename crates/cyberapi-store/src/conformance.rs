@@ -531,6 +531,10 @@ async fn requests_are_saved(storage: &Storage) {
             enabled: false,
             description: "Tenant code".into(),
         }],
+        // F11: its request body's JSON Schema.
+        request_schema: Some(
+            r#"{"type":"object","properties":{"user":{"type":"string","description":"Account name"}}}"#.into(),
+        ),
         // What it is for, and an example (F3).
         description: "Signs in.\n\n- user\n- password".into(),
         examples: vec![cyberapi_core::model::Example {

@@ -314,17 +314,32 @@ fn request_body(request: &HttpRequest) -> Option<Value> {
     if !request.has_body_tab() {
         return None;
     }
+    let written_schema = (request.content_type == ContentType::Json)
+        .then_some(request.request_schema.as_deref())
+        .flatten()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .map(|schema| super::schema_30::openapi_30(&schema));
     let content = match request.content_type {
         _ if request.content_type != ContentType::GraphQl
             && !request.content_type.is_key_value()
-            && request.body.trim().is_empty() =>
+            && request.body.trim().is_empty()
+            && written_schema.is_none() =>
         {
             return None;
         }
+        ContentType::Json if request.body.trim().is_empty() => {
+            json!({"application/json": {"schema": written_schema.unwrap_or_else(|| json!({"type": "object"}))}})
+        }
         ContentType::Json => match serde_json::from_str::<Value>(&request.body) {
-            Ok(example) => json!({"application/json": {"schema": schema_of(&example), "example": example}}),
+            Ok(example) => {
+                let schema = written_schema.unwrap_or_else(|| schema_of(&example));
+                json!({"application/json": {"schema": schema, "example": example}})
+            }
             // Templates in it: as written.
-            Err(_) => json!({"application/json": {"schema": {"type": "object"}, "example": request.body}}),
+            Err(_) => {
+                let schema = written_schema.unwrap_or_else(|| json!({"type": "object"}));
+                json!({"application/json": {"schema": schema, "example": request.body}})
+            }
         },
         ContentType::Xml => json!({"application/xml": {"schema": {"type": "string"}, "example": request.body}}),
         ContentType::Plain => json!({"text/plain": {"schema": {"type": "string"}, "example": request.body}}),
@@ -684,5 +699,40 @@ mod tests {
         let fields = form_fields(&request.body);
         assert_eq!(fields[0].description, "Avatar PNG");
         assert_eq!(fields[1].description, "Short bio");
+    }
+
+    /// F11: an API's written request_schema goes out in requestBody and imports back.
+    #[test]
+    fn request_schema_exports_and_imports_back() {
+        let data = TreeData {
+            folders: Vec::new(),
+            apis: vec![api(
+                "a1",
+                "createUser",
+                HttpRequest {
+                    method: HttpMethod::Post,
+                    uri: "{{HOST}}/users".into(),
+                    content_type: ContentType::Json,
+                    body: r#"{"email": "ann@acme.test"}"#.into(),
+                    request_schema: Some(
+                        r#"{"type":"object","required":["email"],"properties":{"email":{"type":"string","description":"Primary email"}}}"#.into(),
+                    ),
+                    ..Default::default()
+                },
+            )],
+            top_order: vec![ItemId::new("a1")],
+            settings: ProjectSettings::default(),
+        };
+        let yaml = openapi(&data, None, "Users", &[("HOST".into(), "https://users.test".into())]);
+        let bundle = crate::import::parse(&yaml).expect("a document");
+        let crate::import::ImportItem::Api { request, .. } = &bundle.items[0] else {
+            panic!("expected an API");
+        };
+        let fields = crate::schema_docs::fields_of_schema(request.request_schema.as_deref().expect("request schema"))
+            .expect("fields");
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "email");
+        assert!(fields[0].required);
+        assert_eq!(fields[0].description, "Primary email");
     }
 }

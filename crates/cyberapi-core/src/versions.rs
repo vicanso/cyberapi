@@ -80,6 +80,7 @@ pub fn request_text(request: &HttpRequest) -> String {
         body: String::new(),
         description: String::new(),
         examples: Vec::new(),
+        request_schema: None,
         ..request.clone()
     };
     let mut text = serde_json::to_value(&rest)
@@ -112,6 +113,9 @@ pub fn request_text(request: &HttpRequest) -> String {
         _ => part("body", &indented(&request.body)),
     }
     part("description", &request.description);
+    if let Some(schema) = &request.request_schema {
+        part("request schema", &indented(schema));
+    }
     for example in &request.examples {
         let headers: String = example
             .headers

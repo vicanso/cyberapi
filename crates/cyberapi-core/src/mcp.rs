@@ -333,6 +333,14 @@ pub fn written(request: &HttpRequest, arguments: &Value) -> Result<HttpRequest, 
     if let Some(description) = given("description") {
         out.description = description.as_str().ok_or("description is text")?.to_string();
     }
+    if let Some(schema) = given("requestSchema") {
+        out.request_schema = match schema {
+            Value::String(text) if text.trim().is_empty() => None,
+            Value::String(text) => Some(text.clone()),
+            json @ Value::Object(_) => Some(crate::format::json(json)),
+            _ => return Err("requestSchema is a JSON Schema object or its text".into()),
+        };
+    }
     Ok(out)
 }
 
@@ -490,6 +498,19 @@ mod tests {
         assert_eq!(crate::send::form_fields(&form.body).len(), 2);
         let json_body = written(&kept, &json!({"body": {"a": 1}})).expect("a JSON body");
         assert_eq!(json_body.body, "{\n    \"a\": 1\n}");
+        let with_schema = written(
+            &kept,
+            &json!({"requestSchema": {"type": "object", "properties": {"a": {"type": "integer"}}}}),
+        )
+        .expect("a request schema");
+        assert!(
+            with_schema
+                .request_schema
+                .as_deref()
+                .is_some_and(|s| s.contains("\"integer\""))
+        );
+        let cleared_schema = written(&with_schema, &json!({"requestSchema": ""})).expect("cleared");
+        assert_eq!(cleared_schema.request_schema, None);
         assert!(written(&kept, &json!({"method": "FETCH"})).is_err());
         assert!(written(&kept, &json!({"contentType": "yaml"})).is_err_and(|why| why.contains("json")));
         assert!(written(&kept, &json!({"headers": [{"value": "x"}]})).is_err());

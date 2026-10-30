@@ -294,6 +294,7 @@ fn tool_list(token: &McpToken) -> Vec<Json> {
             "headers": { "description": "The headers, replacing the list, as query is given." },
             "contentType": { "type": "string", "enum": ["json", "form", "multipart", "xml", "text", "graphql"] },
             "body": { "description": "The body as text; a form's may be an object of fields, a JSON one any JSON." },
+            "requestSchema": { "description": "A JSON Schema object (or its JSON text) describing the request body's fields; an empty string clears it." },
             "description": { "type": "string", "description": "What the API is for, as plain text." },
         });
         let mut create = written.clone();
@@ -651,6 +652,8 @@ async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
         "authFrom": auth_from,
         "contentType": request.content_type.as_str(),
         "body": body,
+        // F11: the request body's JSON Schema, when kept.
+        "requestSchema": request.request_schema.as_deref().map(|schema| cut(schema, MAX_TEXT_CHARS)),
         // A1: what its answers are checked against.
         "assertions": request.assertions,
         // F3: what it is for, and what it returned when kept as examples.

@@ -434,6 +434,7 @@ mod tests {
                 request: HttpRequest {
                     method: HttpMethod::Post,
                     uri: "/login".into(),
+                    request_schema: Some(r#"{"type":"object"}"#.into()),
                     ..Default::default()
                 },
                 created_at: at(),
