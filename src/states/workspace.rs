@@ -2216,12 +2216,19 @@ impl WorkspaceState {
             .storage
             .tree()
             .set_project_settings(self.collection.id.clone(), settings.clone());
-        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
-            Ok(()) => {
-                this.data.settings = settings;
-                cx.notify();
+        // Held at once: a change made before this one is written starts
+        // from it, not from what it replaces (BUG-19).
+        let before = std::mem::replace(&mut self.data.settings, settings.clone());
+        cx.notify();
+        run_serial(cx, &self.gate, call, move |this, result, cx| {
+            if let Err(error) = result {
+                // Not written: as it was, unless another change came since.
+                if this.data.settings == settings {
+                    this.data.settings = before;
+                    cx.notify();
+                }
+                cx.emit(WorkspaceEvent::Failed(error));
             }
-            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
         });
     }
 
@@ -3878,6 +3885,35 @@ mod tests {
         state.update(cx, |state, cx| state.set_production(prod.id.clone(), true, cx));
         cx.run_until_parked();
         assert!(!asks(&post, cx), "not while in no environment");
+
+        // BUG-19: a change made before the last is written keeps it.
+        let token = storage
+            .variables()
+            .create(NewVariable {
+                collection: collection.id.clone(),
+                category: VariableCategory::Environment,
+                name: "TOKEN".into(),
+                value: "t".into(),
+                enabled: true,
+                environment: None,
+            })
+            .await
+            .expect("a variable");
+        let qa = storage
+            .variables()
+            .create_environment(collection.id.clone(), "qa".into())
+            .await
+            .expect("an environment");
+        state.update(cx, |state, cx| {
+            state.set_production(qa.id.clone(), true, cx);
+            state.set_secret(&token, true, cx);
+        });
+        cx.run_until_parked();
+        let kept = storage.tree().load(collection.id.clone()).await.expect("load").settings;
+        assert_eq!(kept.protected_environments, [prod.id.clone(), qa.id.clone()]);
+        assert_eq!(kept.secret_variables, std::slice::from_ref(&token.id));
+        state.update(cx, |state, cx| state.set_production(qa.id.clone(), false, cx));
+        cx.run_until_parked();
         state.update(cx, |state, cx| state.set_environment(Some(prod.id.clone()), cx));
         cx.run_until_parked();
         assert!(state.read_with(cx, |state, _| state.in_production()));
