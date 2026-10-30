@@ -17,7 +17,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, IconName, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, KeyDownEvent,
@@ -99,6 +99,13 @@ impl KvEditor {
     pub fn hints(mut self, source: HintSource) -> Self {
         self.hints = Some(source);
         self
+    }
+
+    /// F9: whether rows offer a file picker (multipart), updated when a
+    /// request is reloaded in place.
+    pub fn set_files(&mut self, files: bool, cx: &mut Context<Self>) {
+        self.options.files = files;
+        cx.notify();
     }
 
     /// Shows `list` in place of what the rows hold, without reporting it.
@@ -409,6 +416,9 @@ impl KvEditor {
             };
             let _ = this.update_in(cx, |this, window, cx| {
                 if let Some(row) = this.rows.get(index) {
+                    if row.key.read(cx).value().trim().is_empty() {
+                        row.key.update(cx, |input, cx| input.set_value("file", window, cx));
+                    }
                     let value = format!("file://{}", path.display());
                     row.value.update(cx, |input, cx| input.set_value(value, window, cx));
                     this.edited(window, cx);
@@ -512,6 +522,9 @@ impl Render for KvEditor {
             .child(actions().children(presets).child(toggle));
         let rows = self.rows.iter().enumerate().map(|(index, row)| {
             let blank = index == last;
+            let file_value = files
+                .then(|| row.value.read(cx).value().to_string())
+                .and_then(|value| value.strip_prefix("file://").map(str::to_string));
             let remove = if removing == Some(index) {
                 Button::new(("kv-remove", index))
                     .danger()
@@ -575,13 +588,18 @@ impl Render for KvEditor {
                 )
                 .child(
                     actions()
-                        .when(files && !blank, |this| {
+                        .when(files, |this| {
+                            let tip = match file_value.as_deref() {
+                                Some(path) if !path.trim().is_empty() => path.to_string(),
+                                _ => t!("editor.choose_file").to_string(),
+                            };
                             this.child(
                                 Button::new(("kv-file", index))
                                     .ghost()
                                     .xsmall()
                                     .icon(gpui_kit::assets::IconName::Paperclip)
-                                    .tooltip(t!("editor.choose_file").to_string())
+                                    .selected(file_value.is_some())
+                                    .tooltip(tip)
                                     .on_click(
                                         cx.listener(move |this, _, window, cx| this.pick_file(index, window, cx)),
                                     ),

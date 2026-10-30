@@ -313,6 +313,17 @@ pub fn needs(request: &HttpRequest, variables: &[Variable], inherited: &Inherite
     for text in templated_texts(request, variables, inherited) {
         needs.add(template::needs(&text));
     }
+    // F9: an imported `file://` multipart field with no path yet asks for one
+    // as `{{openFile()}}` does.
+    if request.method != HttpMethod::Grpc
+        && request.method.has_body()
+        && request.content_type == ContentType::Multipart
+        && form_fields(&request.body)
+            .iter()
+            .any(|kv| kv.enabled && !kv.key.is_empty() && kv.value.trim() == "file://")
+    {
+        needs.picks_file = true;
+    }
     needs
 }
 
@@ -722,6 +733,11 @@ fn multipart(
         out.extend_from_slice(format!("--{}\r\n", cx.boundary).as_bytes());
         match kv.value.strip_prefix("file://") {
             Some(path) => {
+                let rendered = render(path)?;
+                let path = match rendered.trim() {
+                    "" => cx.template.answers.file.as_deref().unwrap_or_default(),
+                    other => other,
+                };
                 let bytes = cx.files.read(path, None).map_err(|message| PrepareError::Template {
                     source: TemplateError::ReadFile {
                         file: path.to_string(),
@@ -1370,6 +1386,40 @@ mod tests {
             prepared.header("content-type"),
             Some("multipart/form-data; boundary=XYZ")
         );
+
+        // F9: a bare `file://` asks for a file before sending and takes the
+        // picked path; templates in `file://…` paths also resolve.
+        let unpicked = HttpRequest {
+            body: serde_json::to_string(&[kv("avatar", "file://")]).expect("json"),
+            ..request.clone()
+        };
+        assert!(needs(&unpicked, &[], &Inherited::default()).picks_file);
+        let picked = prepare(
+            &unpicked,
+            &Context {
+                variables: &[],
+                template: &Inputs {
+                    answers: template::Answers {
+                        file: Some("/home/me/a.png".into()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                files: &OneFile,
+                user_agent: "CyberAPI/test",
+                timeouts: Timeouts::default(),
+                accept_invalid_certs: false,
+                http_version: HttpVersion::Auto,
+                proxy: &ProxyPrefs::default(),
+                boundary: "XYZ",
+                inherited: &Inherited::default(),
+                environment: None,
+            },
+        )
+        .expect("picked file");
+        assert!(String::from_utf8_lossy(&picked.body).contains(
+            "Content-Disposition: form-data; name=\"avatar\"; filename=\"a.png\"\r\nContent-Type: image/png"
+        ));
 
         let missing = HttpRequest {
             body: serde_json::to_string(&[kv("f", "file:///nope")]).expect("json"),

@@ -999,8 +999,10 @@ impl RequestEditor {
         self.grpc_message = grpc_message_state(&request, &self.hints, window, cx);
         let watching = Self::watch_grpc(&self.grpc_message, window, cx);
         self._subscriptions.extend(watching);
-        self.form
-            .update(cx, |form, cx| form.set_list(&form_fields(&request.body), window, cx));
+        self.form.update(cx, |form, cx| {
+            form.set_files(request.content_type == ContentType::Multipart, cx);
+            form.set_list(&form_fields(&request.body), window, cx);
+        });
         self.query.update(cx, |kv, cx| kv.set_list(&request.query, window, cx));
         self.headers
             .update(cx, |kv, cx| kv.set_list(&request.headers, window, cx));

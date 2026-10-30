@@ -216,7 +216,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | 编号 | 内容 | 状态 |
 |---|---|---|
 | F8 | 命令面板（⌘/Ctrl+K）按路径搜索接口：`FoundApi` 带上去掉 `{{ENV}}` 前缀的 `path`，支持按路径、多词（如 `POST /v1/orders`、项目名 + 路径）搜索，并在候选行接口名旁以次要颜色显示路径；不改数据模型 | 已完成 |
-| F9 | 表单文件（Form File）补齐：修 `RequestEditor::reload` 漏同步 `form.options.files` 的 bug；`KvEditor` 在 `Multipart` 空白行也直接展示选文件按钮（空 key 默认填 `file`）并对 `file://` 值给出高亮标识；OpenAPI 导入 `type: "file"` / `format: "binary"` 的 multipart 字段时预填 `{{openFile()}}`；网页版选文件上传先记为待定（见下） | 待做 |
+| F9 | 表单文件（Form File）补齐：修 `RequestEditor::reload` 漏同步 `form.options.files` 的 bug；`KvEditor` 在 `Multipart` 空白行也直接展示选文件按钮（空 key 默认填 `file`）并对 `file://` 值给出高亮标识与路径提示；OpenAPI / Swagger 导入 `type: "file"` / `format: "binary"` 的 multipart 字段为 `file://`，未选路径的 `file://` 发送时像 `{{openFile()}}` 一样弹框选文件，且 `file://` 路径支持模板；网页版选文件上传先记为待定（见下） | 已完成 |
 | F10 | 键值入参说明（`KvParam.description`）：Query、请求头（含目录请求头）、Form / Multipart 请求体每行可填说明；OpenAPI / Swagger、Postman、Insomnia 导入，Postman / OpenAPI 导出，MCP `get_api` 带上说明；同步合并时不冲掉读者手写且上游为空的说明；数据模型编号 19 | 待做 |
 | B9 | 目录级 OpenAPI / 来源地址绑定（`FolderSettings.source`）：目录右键菜单“从来源同步…”，弹窗复用并支持目录级查看、设置、清除来源与预览合并（范围限定在该目录子树）；数据模型编号 20 | 待做 |
 | F11 | 接口出入参字段说明（Schema 驱动 + 可直接在 CyberAPI 编辑）：保存请求体 JSON Schema（`HttpRequest.request_schema`，OpenAPI 导入/同步填入、导出优先使用、MCP 带出，数据模型编号 21）；从 `KvParam.description`、`request_schema` 和 A6 的响应 Schema 提取嵌套字段树，在接口“说明”标签页展示入参 / 出参字段说明，并允许编辑者直接在标签页里编辑请求与响应 Schema | 待做 |

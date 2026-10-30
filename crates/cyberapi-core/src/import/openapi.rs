@@ -340,6 +340,18 @@ fn oauth(scheme: &Value, scopes: &Value) -> Option<Auth> {
     }))
 }
 
+/// F9: whether a multipart schema property is a binary file upload (OpenAPI
+/// 3.0's `format: binary`, 3.1's `contentMediaType`, or an array of files).
+fn is_binary_property(root: &Value, property: &Value) -> bool {
+    let property = resolve(root, property);
+    text(property, "format") == "binary"
+        || property.get("contentMediaType").is_some()
+        || (text(property, "type") == "array"
+            && property
+                .get("items")
+                .is_some_and(|items| is_binary_property(root, items)))
+}
+
 fn operation(
     json: &Value,
     prefix: &str,
@@ -371,7 +383,14 @@ fn operation(
         match text(parameter, "in") {
             "query" => request.query.push(kv(name, &parameter_value(json, parameter), true)),
             "header" => request.headers.push(kv(name, &parameter_value(json, parameter), true)),
-            "formData" => form.push(kv(name, &parameter_value(json, parameter), true)),
+            "formData" => {
+                let value = if text(parameter, "type") == "file" {
+                    "file://".to_string()
+                } else {
+                    parameter_value(json, parameter)
+                };
+                form.push(kv(name, &value, true));
+            }
             // Swagger 2's body.
             "body" => {
                 if let Some(schema) = parameter.get("schema") {
@@ -383,10 +402,13 @@ fn operation(
         }
     }
     if !form.is_empty() {
-        let multipart = op
-            .get("consumes")
-            .and_then(Value::as_array)
-            .is_some_and(|types| types.iter().any(|kind| kind.as_str() == Some("multipart/form-data")));
+        let has_file = form.iter().any(|field| field.value.starts_with("file://"));
+        let multipart = has_file
+            || op
+                .get("consumes")
+                .or_else(|| json.get("consumes"))
+                .and_then(Value::as_array)
+                .is_some_and(|types| types.iter().any(|kind| kind.as_str() == Some("multipart/form-data")));
         request.content_type = if multipart {
             ContentType::Multipart
         } else {
@@ -426,9 +448,13 @@ fn operation(
                     properties
                         .iter()
                         .map(|(name, property)| {
-                            let value = match example(json, property, 1) {
-                                Value::String(text) => text,
-                                other => other.to_string(),
+                            let value = if kind.contains("multipart") && is_binary_property(json, property) {
+                                "file://".to_string()
+                            } else {
+                                match example(json, property, 1) {
+                                    Value::String(text) => text,
+                                    other => other.to_string(),
+                                }
                             };
                             kv(name, &value, true)
                         })
@@ -732,5 +758,36 @@ mod tests {
                 password: String::new()
             }
         );
+    }
+
+    #[test]
+    fn multipart_file_fields_import_as_file_placeholders() {
+        let swagger: Value = serde_json::from_str(
+            r#"{"swagger": "2.0", "paths": {"/upload": {"post": {
+                "parameters": [
+                    {"in": "formData", "name": "avatar", "type": "file"},
+                    {"in": "formData", "name": "note", "type": "string", "default": "hi"}
+                ]
+            }}}}"#,
+        )
+        .expect("JSON");
+        let sw_req = first_api(&parse(&swagger).items).clone();
+        assert_eq!(sw_req.content_type, ContentType::Multipart);
+        let sw_fields: Vec<KvParam> = serde_json::from_str(&sw_req.body).expect("fields");
+        assert_eq!(sw_fields, [kv("avatar", "file://", true), kv("note", "hi", true)]);
+
+        let oas3: Value = serde_json::from_str(
+            r#"{"openapi": "3.0.3", "paths": {"/upload": {"post": {
+                "requestBody": {"content": {"multipart/form-data": {"schema": {"type": "object", "properties": {
+                    "doc": {"type": "string", "format": "binary"},
+                    "title": {"type": "string", "example": "report"}
+                }}}}}
+            }}}}"#,
+        )
+        .expect("JSON");
+        let oas_req = first_api(&parse(&oas3).items).clone();
+        assert_eq!(oas_req.content_type, ContentType::Multipart);
+        let oas_fields: Vec<KvParam> = serde_json::from_str(&oas_req.body).expect("fields");
+        assert_eq!(oas_fields, [kv("doc", "file://", true), kv("title", "report", true)]);
     }
 }
