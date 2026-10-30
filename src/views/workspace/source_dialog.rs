@@ -59,7 +59,8 @@ struct SourceView {
     url: Entity<InputState>,
     /// Whether the project keeps a source already.
     kept: bool,
-    fetching: Option<Task<()>>,
+    /// The address being fetched, and the fetch: dropped, it stops.
+    fetching: Option<(String, Task<()>)>,
     fetched: Option<Fetched>,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -79,11 +80,16 @@ impl SourceView {
             cx.subscribe_in(&url, window, |this, _, event: &InputEvent, window, cx| {
                 match event {
                     InputEvent::PressEnter { .. } => this.fetch(window, cx),
-                    // What was fetched is told for its own address only.
+                    // What was fetched is told for its own address only, and
+                    // a fetch of another stops (BUG-13).
                     InputEvent::Change => {
                         let typed = this.typed(cx);
                         if this.fetched.as_ref().is_some_and(|fetched| fetched.url != typed) {
                             this.fetched = None;
+                            cx.notify();
+                        }
+                        if this.fetching.as_ref().is_some_and(|(url, _)| *url != typed) {
+                            this.fetching = None;
                             cx.notify();
                         }
                     }
@@ -132,7 +138,8 @@ impl SourceView {
         let fetched = AppStore::global(cx).fetch_text(url.clone(), cx);
         self.error = None;
         self.fetched = None;
-        self.fetching = Some(cx.spawn_in(window, async move |this, cx| {
+        let (fetching, typed_url) = (url.clone(), url.clone());
+        let task = cx.spawn_in(window, async move |this, cx| {
             let worked = match fetched.await {
                 Ok(text) => {
                     cx.background_spawn(async move {
@@ -160,13 +167,18 @@ impl SourceView {
             };
             let _ = this.update(cx, |this, cx| {
                 this.fetching = None;
+                // Another address typed meanwhile: this one's is not its.
+                if address(&this.typed(cx)) != Some(fetching.as_str()) {
+                    return cx.notify();
+                }
                 match worked {
                     Ok(fetched) => this.fetched = Some(fetched),
                     Err(why) => this.error = Some(why),
                 }
                 cx.notify();
             });
-        }));
+        });
+        self.fetching = Some((typed_url, task));
         cx.notify();
     }
 
