@@ -525,6 +525,13 @@ pub struct WorkspacePrefs {
     /// variables every environment shares, alone.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<crate::EnvironmentId>,
+    /// B10: exact `http(s)` source URLs this reader opted in to poll
+    /// periodically (read-only) for live field-description matching and
+    /// upstream update notices. Kept per reader (not synced in the project)
+    /// and matched by exact URL so an address changed by another editor is
+    /// never fetched without opting in again (Q-1).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub auto_fetch_sources: Vec<String>,
 }
 
 /// The request editor's tabs (F4.12).

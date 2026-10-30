@@ -652,6 +652,9 @@ folder_about = "取回这个目录的来源地址：目录内已有的接口会�
 remember_folder = "记住这个地址作为这个目录的来源，以后可以“从来源同步”"
 replace_folder = "把这个目录的来源换成这个地址"
 save_only = "仅保存地址"
+auto_fetch = "在本机定时拉取字段说明（只读，不自动改库）"
+open_updates = "从来源同步…（有更新）"
+cached_updates = "后台拉取发现来源有更新（新增 %{added}、更新 %{updated}），点“获取”可预览并同步。"
 
 [export]
 project = "导出项目"
@@ -1063,6 +1066,7 @@ infer_from_body = "从请求体推断"
 infer_from_response = "从响应体推断"
 clear_schema = "清除"
 required = "必填"
+from_source = "来自来源"
 bad_schema = "Schema 无法解析：%{why}"
 examples = "示例"
 no_examples = "还没有示例：在响应旁的历史菜单（时钟）里把一次响应存为示例。"

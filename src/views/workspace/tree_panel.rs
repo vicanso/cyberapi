@@ -960,6 +960,14 @@ fn project_menu(
     let (for_api, for_folder) = (state.clone(), state.clone());
     let (for_import, for_export) = (state.clone(), state.clone());
     let (for_paste, for_source) = (state.clone(), state.clone());
+    let has_source_updates = state
+        .upgrade()
+        .is_some_and(|ws| ws.read(cx).source_updates(None).is_some());
+    let source_label = if has_source_updates {
+        t!("source.open_updates").to_string()
+    } else {
+        t!("source.open").to_string()
+    };
     let menu = if editable {
         menu.item(
             PopupMenuItem::new(t!("workspace.new_api").to_string())
@@ -989,9 +997,9 @@ fn project_menu(
                 .icon(Icons::Import)
                 .on_click(move |_, window, cx| open_import_dialog(for_import.clone(), None, window, cx)),
         )
-        // B7.
+        // B7 / B10.
         .item(
-            PopupMenuItem::new(t!("source.open").to_string())
+            PopupMenuItem::new(source_label)
                 .icon(Icons::RefreshCw)
                 .on_click(move |_, window, cx| {
                     if let Some(state) = for_source.upgrade() {
@@ -1090,6 +1098,14 @@ fn item_menu(
             let folder = parent.clone();
             let (for_import, into) = (state.clone(), id.clone());
             let (for_source, source_folder) = (state.clone(), id.clone());
+            let folder_has_updates = state
+                .upgrade()
+                .is_some_and(|ws| ws.read(cx).source_updates(Some(id)).is_some());
+            let folder_source_label = if folder_has_updates {
+                t!("source.open_updates").to_string()
+            } else {
+                t!("source.open").to_string()
+            };
             let (for_paste, paste_into) = (state.clone(), id.clone());
             let (for_export, exported) = (state.clone(), id.clone());
             let (for_run, run) = (state.clone(), id.clone());
@@ -1130,9 +1146,9 @@ fn item_menu(
                             open_import_dialog(for_import.clone(), Some(into.clone()), window, cx)
                         }),
                 )
-                // B9.
+                // B9 / B10.
                 .item(
-                    PopupMenuItem::new(t!("source.open").to_string())
+                    PopupMenuItem::new(folder_source_label)
                         .icon(Icons::RefreshCw)
                         .on_click(move |_, window, cx| {
                             if let Some(state) = for_source.upgrade() {

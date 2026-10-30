@@ -652,6 +652,9 @@ folder_about = "Fetches this folder's source address: the APIs inside this folde
 remember_folder = "Keep this address as this folder's source, to sync from later"
 replace_folder = "Make this address this folder's source instead"
 save_only = "Save address only"
+auto_fetch = "Periodically fetch field descriptions on this device (read-only)"
+open_updates = "Sync from source… (updates)"
+cached_updates = "Background check found upstream changes (%{added} new, %{updated} updated). Fetch to review and sync."
 
 [export]
 project = "Export the project"
@@ -1063,6 +1066,7 @@ infer_from_body = "Infer from body"
 infer_from_response = "Infer from response"
 clear_schema = "Clear"
 required = "required"
+from_source = "from source"
 bad_schema = "The schema does not parse: %{why}"
 examples = "Examples"
 no_examples = "None yet: keep a response as one from the history menu (the clock) beside the response."

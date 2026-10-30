@@ -57,6 +57,14 @@ pub const COPY_OPEN_WAIT: Option<Duration> = Some(Duration::from_secs(2));
 #[cfg(target_family = "wasm")]
 pub const COPY_OPEN_WAIT: Option<Duration> = None;
 
+/// B10: how often an open project re-fetches bound OpenAPI / import source
+/// URLs that this reader explicitly opted in to poll (read-only, into memory
+/// for field-description matching and upstream update notices).
+#[cfg(not(target_family = "wasm"))]
+pub const SOURCE_POLL: Duration = Duration::from_secs(15 * 60);
+#[cfg(target_family = "wasm")]
+pub const SOURCE_POLL: Duration = Duration::from_secs(15 * 60);
+
 /// While the page is in a background tab, only one beat in this many asks:
 /// a minute apart, and back to every beat as soon as the tab shows.
 pub const HIDDEN_EVERY: u32 = 6;

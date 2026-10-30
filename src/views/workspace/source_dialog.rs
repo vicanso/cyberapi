@@ -16,6 +16,7 @@ use cyberapi_core::ItemId;
 use cyberapi_core::import::merge::{self, Preview};
 use cyberapi_core::import::{self, ImportBundle};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
@@ -86,6 +87,8 @@ struct SourceView {
     url: Entity<InputState>,
     /// The source address currently stored on the project or folder.
     kept_url: Option<String>,
+    /// B10: pending auto-fetch choice for a newly typed address before Save / Sync.
+    want_auto_fetch: Option<bool>,
     /// The address being fetched, and the fetch: dropped, it stops.
     fetching: Option<(String, Task<()>)>,
     fetched: Option<Fetched>,
@@ -112,7 +115,7 @@ impl SourceView {
                 .placeholder("https://api.example.com/openapi.json")
                 .default_value(kept.clone().unwrap_or_default())
         });
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&url, window, |this, _, event: &InputEvent, window, cx| {
                 match event {
                     InputEvent::PressEnter { .. } => this.fetch(window, cx),
@@ -133,11 +136,15 @@ impl SourceView {
                 }
             }),
         ];
+        if let Some(ws) = workspace.upgrade() {
+            subscriptions.push(cx.observe(&ws, |_, _, cx| cx.notify()));
+        }
         Self {
             workspace,
             folder,
             url,
             kept_url: kept,
+            want_auto_fetch: None,
             fetching: None,
             fetched: None,
             error: None,
@@ -210,7 +217,13 @@ impl SourceView {
                     return cx.notify();
                 }
                 match worked {
-                    Ok(fetched) => this.fetched = Some(fetched),
+                    Ok(fetched) => {
+                        if let Some(workspace) = this.workspace.upgrade() {
+                            let (url, bundle) = (fetched.url.clone(), fetched.bundle.clone());
+                            workspace.update(cx, |workspace, cx| workspace.cache_source(url, bundle, cx));
+                        }
+                        this.fetched = Some(fetched);
+                    }
                     Err(why) => this.error = Some(why),
                 }
                 cx.notify();
@@ -231,9 +244,16 @@ impl SourceView {
         };
         if let Some(workspace) = self.workspace.upgrade() {
             let folder = self.folder.clone();
-            workspace.update(cx, |workspace, cx| match folder {
-                Some(folder) => workspace.sync_folder_source(folder, fetched.url, fetched.bundle, cx),
-                None => workspace.sync_from_source(fetched.url, fetched.bundle, cx),
+            let auto_fetch = self.want_auto_fetch;
+            let synced_url = fetched.url.clone();
+            workspace.update(cx, |workspace, cx| {
+                match folder {
+                    Some(folder) => workspace.sync_folder_source(folder, fetched.url, fetched.bundle, cx),
+                    None => workspace.sync_from_source(fetched.url, fetched.bundle, cx),
+                }
+                if let Some(enabled) = auto_fetch {
+                    workspace.set_auto_fetch_source(synced_url, enabled, cx);
+                }
             });
         }
         true
@@ -248,9 +268,15 @@ impl SourceView {
         };
         if let Some(workspace) = self.workspace.upgrade() {
             let folder = self.folder.clone();
-            workspace.update(cx, |workspace, cx| match folder {
-                Some(folder) => workspace.set_folder_source(folder, Some(url), cx),
-                None => workspace.set_source_url(url, cx),
+            let auto_fetch = self.want_auto_fetch;
+            workspace.update(cx, |workspace, cx| {
+                match folder {
+                    Some(folder) => workspace.set_folder_source(folder, Some(url.clone()), cx),
+                    None => workspace.set_source_url(url.clone(), cx),
+                }
+                if let Some(enabled) = auto_fetch {
+                    workspace.set_auto_fetch_source(url, enabled, cx);
+                }
             });
         }
         window.close_dialog(cx);
@@ -315,6 +341,24 @@ impl Render for SourceView {
         let local = valid_url.is_some_and(import::local_address);
         let idle = self.fetching.is_none() && self.fetched.is_none() && self.error.is_none();
         let can_save_only = valid_url.is_some_and(|url| Some(url) != self.kept_url.as_deref());
+        let (auto_fetch_on, cached_updates) = self
+            .workspace
+            .upgrade()
+            .map(|workspace| {
+                let workspace = workspace.read(cx);
+                let checked = match valid_url {
+                    Some(url) if Some(url) == self.kept_url.as_deref() => workspace.auto_fetches_source(url),
+                    Some(url) => self
+                        .want_auto_fetch
+                        .unwrap_or_else(|| workspace.auto_fetches_source(url)),
+                    None => false,
+                };
+                let updates = (Some(typed.as_str()) == self.kept_url.as_deref())
+                    .then(|| workspace.source_updates(self.folder.as_ref()))
+                    .flatten();
+                (checked, updates)
+            })
+            .unwrap_or((false, None));
         let about = if self.folder.is_some() {
             t!("source.folder_about").to_string()
         } else {
@@ -337,6 +381,26 @@ impl Render for SourceView {
                             .on_click(cx.listener(|this, _, window, cx| this.fetch(window, cx))),
                     ),
             )
+            .when_some(valid_url.map(str::to_string), |this, url| {
+                this.child(
+                    Checkbox::new("source-auto-fetch")
+                        .checked(auto_fetch_on)
+                        .label(t!("source.auto_fetch").to_string())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let next = !auto_fetch_on;
+                            if Some(url.as_str()) == this.kept_url.as_deref() {
+                                if let Some(workspace) = this.workspace.upgrade() {
+                                    workspace.update(cx, |workspace, cx| {
+                                        workspace.set_auto_fetch_source(url.clone(), next, cx);
+                                    });
+                                }
+                            } else {
+                                this.want_auto_fetch = Some(next);
+                                cx.notify();
+                            }
+                        })),
+                )
+            })
             .when(local, |this| {
                 this.child(
                     div()
@@ -345,7 +409,15 @@ impl Render for SourceView {
                         .child(t!("source.local").to_string()),
                 )
             })
-            .when(idle && address(&typed).is_some(), |this| {
+            .when_some(cached_updates.filter(|_| idle), |this, (added, updated)| {
+                this.child(
+                    div()
+                        .text_sm()
+                        .text_color(warning)
+                        .child(t!("source.cached_updates", added = added, updated = updated).to_string()),
+                )
+            })
+            .when(idle && address(&typed).is_some() && cached_updates.is_none(), |this| {
                 this.child(
                     div()
                         .text_sm()

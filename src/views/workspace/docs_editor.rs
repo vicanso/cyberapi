@@ -5,7 +5,8 @@
 
 use crate::states::ApiState;
 use crate::views::name_dialog::ok_button;
-use cyberapi_core::model::{ContentType, KvParam};
+use cyberapi_core::assertions::Subject;
+use cyberapi_core::model::{ContentType, HttpRequest, KvParam};
 use cyberapi_core::response::{StatusLevel, format_size, status_level};
 use cyberapi_core::schema_docs::{self, SchemaField};
 use cyberapi_core::send::{self, form_fields};
@@ -47,7 +48,7 @@ impl DocsEditor {
             editor.set_value(text, window, cx);
             editor
         });
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.observe(&api, |_, _, cx| cx.notify()),
             cx.subscribe(&description, |this, editor, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -56,6 +57,9 @@ impl DocsEditor {
                 }
             }),
         ];
+        if let Some(workspace) = api.read(cx).workspace().upgrade() {
+            subscriptions.push(cx.observe(&workspace, |_, _, cx| cx.notify()));
+        }
         Self {
             api,
             description,
@@ -245,7 +249,14 @@ impl DocsEditor {
         });
     }
 
-    fn render_flat_param(index: usize, place: &'static str, param: &KvParam, cx: &App) -> AnyElement {
+    fn render_flat_param(
+        index: usize,
+        place: &'static str,
+        param: &KvParam,
+        fallback_desc: Option<&str>,
+        from_source_row: bool,
+        cx: &App,
+    ) -> AnyElement {
         let theme = cx.theme();
         let (border, fg, muted, mono) = (
             theme.border,
@@ -253,12 +264,15 @@ impl DocsEditor {
             theme.muted_foreground,
             theme.mono_font_family.clone(),
         );
-        let desc = if !param.description.trim().is_empty() {
-            param.description.trim().to_string()
+        let own = param.description.trim();
+        let (desc, from_source) = if !own.is_empty() {
+            (own.to_string(), from_source_row)
+        } else if let Some(matched) = fallback_desc.map(str::trim).filter(|text| !text.is_empty()) {
+            (matched.to_string(), true)
         } else if place == "file" {
-            param.value.clone()
+            (param.value.clone(), from_source_row)
         } else {
-            String::new()
+            (String::new(), from_source_row)
         };
         h_flex()
             .id(("docs-param", index))
@@ -289,12 +303,28 @@ impl DocsEditor {
                     .child(place),
             )
             .child(
-                div()
+                h_flex()
                     .flex_1()
                     .min_w_0()
-                    .text_xs()
-                    .text_color(if desc.is_empty() { muted } else { fg })
-                    .child(desc),
+                    .gap_1p5()
+                    .items_center()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(if desc.is_empty() { muted } else { fg })
+                            .child(desc),
+                    )
+                    .when(from_source, |this| {
+                        this.child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(format!("({})", t!("docs.from_source"))),
+                        )
+                    }),
             )
             .into_any_element()
     }
@@ -363,38 +393,116 @@ impl DocsEditor {
             .into_any_element()
     }
 
-    fn render_inputs(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn matched_source(&self, cx: &App) -> Option<HttpRequest> {
+        let api = self.api.read(cx);
+        let workspace = api.workspace().upgrade()?;
+        workspace
+            .read(cx)
+            .matched_source_request(api.api(), api.request())
+            .cloned()
+    }
+
+    fn render_inputs(&self, matched: Option<&HttpRequest>, cx: &mut Context<Self>) -> AnyElement {
+        fn find_source_desc<'a>(list: &'a [KvParam], key: &str, ignore_case: bool) -> Option<&'a str> {
+            list.iter()
+                .find(|kv| {
+                    !kv.description.trim().is_empty()
+                        && if ignore_case {
+                            kv.key.trim().eq_ignore_ascii_case(key.trim())
+                        } else {
+                            kv.key.trim() == key.trim()
+                        }
+                })
+                .map(|kv| kv.description.as_str())
+        }
+
         let theme = cx.theme();
         let (border, muted, warning) = (theme.border, theme.muted_foreground, theme.warning);
         let request = self.api.read(cx).request().clone();
 
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut flat_idx = 0usize;
-        for (place, list) in [
-            ("var", request.variables.as_slice()),
-            ("query", request.query.as_slice()),
-            ("header", request.headers.as_slice()),
-        ] {
-            for kv in list.iter().filter(|kv| !kv.key.trim().is_empty()) {
-                rows.push(Self::render_flat_param(flat_idx, place, kv, cx));
-                flat_idx += 1;
+        for kv in request.variables.iter().filter(|kv| !kv.key.trim().is_empty()) {
+            rows.push(Self::render_flat_param(flat_idx, "var", kv, None, false, cx));
+            flat_idx += 1;
+        }
+        for kv in request.query.iter().filter(|kv| !kv.key.trim().is_empty()) {
+            let fallback = matched.and_then(|m| find_source_desc(&m.query, &kv.key, false));
+            rows.push(Self::render_flat_param(flat_idx, "query", kv, fallback, false, cx));
+            flat_idx += 1;
+        }
+        if let Some(m) = matched {
+            for kv in m
+                .query
+                .iter()
+                .filter(|kv| !kv.key.trim().is_empty() && !kv.description.trim().is_empty())
+            {
+                if !request.query.iter().any(|own| own.key.trim() == kv.key.trim()) {
+                    rows.push(Self::render_flat_param(flat_idx, "query", kv, None, true, cx));
+                    flat_idx += 1;
+                }
             }
         }
+        for kv in request.headers.iter().filter(|kv| !kv.key.trim().is_empty()) {
+            let fallback = matched.and_then(|m| find_source_desc(&m.headers, &kv.key, true));
+            rows.push(Self::render_flat_param(flat_idx, "header", kv, fallback, false, cx));
+            flat_idx += 1;
+        }
+        if let Some(m) = matched {
+            for kv in m
+                .headers
+                .iter()
+                .filter(|kv| !kv.key.trim().is_empty() && !kv.description.trim().is_empty())
+            {
+                if !request
+                    .headers
+                    .iter()
+                    .any(|own| own.key.trim().eq_ignore_ascii_case(kv.key.trim()))
+                {
+                    rows.push(Self::render_flat_param(flat_idx, "header", kv, None, true, cx));
+                    flat_idx += 1;
+                }
+            }
+        }
+        let matched_form = matched
+            .filter(|m| m.content_type.is_key_value())
+            .map(|m| form_fields(&m.body))
+            .unwrap_or_default();
         if request.content_type.is_key_value() {
             let multipart = request.content_type == ContentType::Multipart;
-            for kv in form_fields(&request.body).iter().filter(|kv| !kv.key.trim().is_empty()) {
+            let own_form = form_fields(&request.body);
+            for kv in own_form.iter().filter(|kv| !kv.key.trim().is_empty()) {
                 let place = if multipart && kv.value.starts_with("file://") {
                     "file"
                 } else {
                     "form"
                 };
-                rows.push(Self::render_flat_param(flat_idx, place, kv, cx));
+                let fallback = find_source_desc(&matched_form, &kv.key, false);
+                rows.push(Self::render_flat_param(flat_idx, place, kv, fallback, false, cx));
                 flat_idx += 1;
+            }
+            for kv in matched_form
+                .iter()
+                .filter(|kv| !kv.key.trim().is_empty() && !kv.description.trim().is_empty())
+            {
+                if !own_form.iter().any(|own| own.key.trim() == kv.key.trim()) {
+                    let place = if multipart && kv.value.starts_with("file://") {
+                        "file"
+                    } else {
+                        "form"
+                    };
+                    rows.push(Self::render_flat_param(flat_idx, place, kv, None, true, cx));
+                    flat_idx += 1;
+                }
             }
         }
 
+        let (active_schema, schema_from_source) = match &request.request_schema {
+            Some(schema) => (Some(schema.as_str()), false),
+            None => (matched.and_then(|m| m.request_schema.as_deref()), true),
+        };
         let mut schema_problem: Option<String> = None;
-        if let Some(schema) = &request.request_schema {
+        if let Some(schema) = active_schema {
             match schema_docs::fields_of_schema(schema) {
                 Ok(fields) => {
                     for (index, field) in fields.iter().enumerate() {
@@ -415,7 +523,20 @@ impl DocsEditor {
                 h_flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_sm().font_semibold().child(t!("docs.inputs").to_string()))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().text_sm().font_semibold().child(t!("docs.inputs").to_string()))
+                            .when(schema_from_source && active_schema.is_some(), |this| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(format!("({})", t!("docs.from_source"))),
+                                )
+                            }),
+                    )
                     .child(
                         Button::new("docs-edit-request-schema")
                             .ghost()
@@ -443,14 +564,27 @@ impl DocsEditor {
             .into_any_element()
     }
 
-    fn render_outputs(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_outputs(&self, matched: Option<&HttpRequest>, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (border, muted, warning) = (theme.border, theme.muted_foreground, theme.warning);
-        let response_schema = self
+        let own_schema = self
             .api
             .read(cx)
             .response_schema()
             .map(|(schema, _)| schema.to_string());
+        let (response_schema, from_source) = match own_schema {
+            Some(schema) => (Some(schema), false),
+            None => (
+                matched.and_then(|m| {
+                    m.assertions
+                        .iter()
+                        .filter(|assertion| assertion.subject == Subject::Schema)
+                        .max_by_key(|assertion| assertion.enabled)
+                        .map(|assertion| assertion.expected.clone())
+                }),
+                true,
+            ),
+        };
 
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut schema_problem: Option<String> = None;
@@ -475,7 +609,20 @@ impl DocsEditor {
                 h_flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_sm().font_semibold().child(t!("docs.outputs").to_string()))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().text_sm().font_semibold().child(t!("docs.outputs").to_string()))
+                            .when(from_source && response_schema.is_some(), |this| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(format!("({})", t!("docs.from_source"))),
+                                )
+                            }),
+                    )
                     .child(
                         Button::new("docs-edit-response-schema")
                             .ghost()
@@ -508,8 +655,9 @@ impl Render for DocsEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (border, muted, mono) = (theme.border, theme.muted_foreground, theme.mono_font_family.clone());
-        let inputs = self.render_inputs(cx);
-        let outputs = self.render_outputs(cx);
+        let matched = self.matched_source(cx);
+        let inputs = self.render_inputs(matched.as_ref(), cx);
+        let outputs = self.render_outputs(matched.as_ref(), cx);
         let examples = self.api.read(cx).request().examples.clone();
         let rows: Vec<AnyElement> = examples
             .iter()

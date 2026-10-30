@@ -229,6 +229,72 @@ fn apis_in(tree: &TreeData, folder: &ItemId) -> std::collections::HashSet<ItemId
     found
 }
 
+/// B10: indexes every HTTP operation in `items` by `(method, path_key(uri))`
+/// (first occurrence wins, depth-first), for live read-only field matching.
+pub fn index_requests(items: &[ImportItem]) -> HashMap<(HttpMethod, String), HttpRequest> {
+    let mut map = HashMap::new();
+    let mut stack: Vec<&ImportItem> = items.iter().rev().collect();
+    while let Some(item) = stack.pop() {
+        match item {
+            ImportItem::Api { request, .. } => {
+                if let Some(k) = key(request) {
+                    map.entry(k).or_insert_with(|| (**request).clone());
+                }
+            }
+            ImportItem::Folder { children, .. } => {
+                stack.extend(children.iter().rev());
+            }
+        }
+    }
+    map
+}
+
+/// B10: finds the matching source `HttpRequest` for `api_id` (whose current
+/// editor state is `request`) across `cached` source indexes (`url -> index`),
+/// walking enclosing folders from innermost to outermost and finally falling
+/// back to the project's bound source when its target folder is `None` or
+/// encloses `api_id`.
+pub fn matched_request<'a>(
+    tree: &TreeData,
+    api_id: &ItemId,
+    request: &HttpRequest,
+    cached: &'a HashMap<String, HashMap<(HttpMethod, String), HttpRequest>>,
+) -> Option<&'a HttpRequest> {
+    if cached.is_empty() {
+        return None;
+    }
+    let k = key(request)?;
+    let mut enclosing: Vec<&crate::model::Folder> = Vec::new();
+    let mut child = api_id;
+    while let Some(parent) = tree.folders.iter().find(|folder| folder.children.contains(child)) {
+        if enclosing.iter().any(|seen| seen.id == parent.id) {
+            break;
+        }
+        enclosing.push(parent);
+        child = &parent.id;
+    }
+    for folder in &enclosing {
+        if let Some(url) = folder.settings.source.as_deref()
+            && let Some(found) = cached.get(url).and_then(|index| index.get(&k))
+        {
+            return Some(found);
+        }
+    }
+    if let Some(project_source) = &tree.settings.source {
+        let within_scope = match &project_source.folder {
+            None => true,
+            Some(target) => {
+                !tree.folders.iter().any(|folder| &folder.id == target)
+                    || enclosing.iter().any(|folder| &folder.id == target)
+            }
+        };
+        if within_scope && let Some(found) = cached.get(&project_source.url).and_then(|index| index.get(&k)) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// B7: what importing `items` into `parent` of `tree` again, updating what
 /// it has, would do. What the source lacks is looked for where it went: in
 /// `parent`, or the whole project when that is the top level (Q-2) — a
@@ -743,6 +809,75 @@ mod tests {
             merged.additions,
             vec![(Some(folder_id), vec![orders_spec[0].clone()])],
             "orders gets its own /health without touching users'"
+        );
+    }
+
+    /// B10: live source matching walks enclosing folders innermost-first and
+    /// falls back to the project's source within its target folder scope.
+    #[test]
+    fn matched_request_prefers_the_innermost_bound_folder_then_the_project() {
+        let mut users = folder("f-users", "users", &["f-admin", "a-user"]);
+        users.settings.source = Some("https://users.test/openapi.json".into());
+        let mut admin = folder("f-admin", "admin", &["a-admin-user"]);
+        admin.settings.source = Some("https://admin.test/openapi.json".into());
+        let orders = folder("f-orders", "orders", &["a-order"]);
+
+        let tree = TreeData {
+            folders: vec![users, admin, orders],
+            apis: vec![
+                api("a-user", HttpMethod::Get, "{{HOST}}/users/{id}"),
+                api("a-admin-user", HttpMethod::Get, "{{HOST}}/users/{id}"),
+                api("a-order", HttpMethod::Get, "{{HOST}}/orders/{id}"),
+            ],
+            top_order: vec!["f-users".into(), "f-orders".into()],
+            settings: crate::model::ProjectSettings {
+                source: Some(crate::model::ImportSource {
+                    url: "https://project.test/openapi.json".into(),
+                    folder: None,
+                }),
+                ..Default::default()
+            },
+        };
+
+        let spec_with_desc = |uri: &str, desc: &str| {
+            let mut req = request(HttpMethod::Get, uri);
+            req.description = desc.into();
+            index_requests(&[ImportItem::Api {
+                name: "op".into(),
+                request: Box::new(req),
+            }])
+        };
+
+        let mut cached = HashMap::new();
+        cached.insert(
+            "https://users.test/openapi.json".to_string(),
+            spec_with_desc("/users/:userId", "users-spec"),
+        );
+        cached.insert(
+            "https://admin.test/openapi.json".to_string(),
+            spec_with_desc("/users/{uid}", "admin-spec"),
+        );
+        cached.insert(
+            "https://project.test/openapi.json".to_string(),
+            spec_with_desc("/orders/{orderId}", "project-spec"),
+        );
+
+        let admin_api = &tree.apis[1];
+        assert_eq!(
+            matched_request(&tree, &admin_api.id, &admin_api.request, &cached).map(|r| r.description.as_str()),
+            Some("admin-spec"),
+            "innermost folder source wins over outer folder source"
+        );
+        let user_api = &tree.apis[0];
+        assert_eq!(
+            matched_request(&tree, &user_api.id, &user_api.request, &cached).map(|r| r.description.as_str()),
+            Some("users-spec")
+        );
+        let order_api = &tree.apis[2];
+        assert_eq!(
+            matched_request(&tree, &order_api.id, &order_api.request, &cached).map(|r| r.description.as_str()),
+            Some("project-spec"),
+            "falls back to project source when folder has none"
         );
     }
 }
