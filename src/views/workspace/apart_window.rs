@@ -5,7 +5,7 @@
 //! while it is open. Closing the window puts the tab back; closing the tab,
 //! or leaving the project, closes the window.
 
-use super::request_editor::RequestEditor;
+use super::request_editor::{RequestEditor, RequestEditorEvent};
 use super::response_panel::ResponsePanel;
 use super::{FocusUrl, KEY_CONTEXT, Send};
 use crate::states::{ApiState, AppStore, Route, WorkspaceState};
@@ -112,6 +112,10 @@ impl ApartView {
         let app = AppStore::global(cx).state().clone();
         let subscriptions = vec![
             cx.observe_in(&workspace, window, |this, _, window, cx| this.follow(window, cx)),
+            // The editor's width presets are of this window's columns.
+            cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
+                RequestEditorEvent::EditorShare(share) => this.set_editor_share(*share, window, cx),
+            }),
             // Leaving the project ends it.
             cx.observe_in(&app, window, move |_, app, window, cx| {
                 let here = matches!(app.read(cx).route(), Route::Workspace(open) if open.id == collection);
@@ -145,6 +149,18 @@ impl ApartView {
         };
         view.follow(window, cx);
         view
+    }
+
+    /// The editor's column at `share` of the window; for this window only,
+    /// so not kept.
+    fn set_editor_share(&mut self, share: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let sizes = self.columns.read(cx).sizes().clone();
+        let [editor, response] = sizes[..] else {
+            return;
+        };
+        let width = (f32::from(editor) + f32::from(response)) * share;
+        self.columns
+            .update(cx, |columns, cx| columns.resize_panel(0, px(width), window, cx));
     }
 
     /// Closes the window once its tab is closed, or edited from scratch;

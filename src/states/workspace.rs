@@ -1388,13 +1388,14 @@ impl WorkspaceState {
     }
 
     /// F4.12: the tab the selected API's editor shows.
-    pub fn tab(&self, cx: &gpui_kit::App) -> Option<RequestTab> {
-        let api = self.api.as_ref()?.read(cx);
-        Some(self.prefs.tab(api.api(), api.request()))
+    /// The tab `api`'s editor shows — `api`'s own, not the opened one's:
+    /// an editor in a window of its own shows another (F7, BUG-4).
+    pub fn tab(&self, api: &Entity<ApiState>, cx: &gpui_kit::App) -> RequestTab {
+        let api = api.read(cx);
+        self.prefs.tab(api.api(), api.request())
     }
 
-    pub fn set_tab(&mut self, tab: RequestTab, cx: &mut Context<Self>) {
-        let Some(api) = self.api.as_ref() else { return };
+    pub fn set_tab(&mut self, api: &Entity<ApiState>, tab: RequestTab, cx: &mut Context<Self>) {
         let (id, request) = {
             let api = api.read(cx);
             (api.api().clone(), api.request().clone())
@@ -4927,19 +4928,34 @@ mod tests {
         let state = open(&storage, collection.clone(), cx);
         state.update(cx, |state, cx| state.create_api(None, "a".into(), cx));
         cx.run_until_parked();
-        assert_eq!(state.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Query));
-        state.update(cx, |state, cx| state.set_tab(RequestTab::Auth, cx));
+        let tab = |state: &Entity<WorkspaceState>, cx: &mut TestAppContext| {
+            let api = editor(state, cx);
+            state.read_with(cx, |state, cx| state.tab(&api, cx))
+        };
+        assert_eq!(tab(&state, cx), RequestTab::Query);
+        let a = editor(&state, cx);
+        state.update(cx, |state, cx| state.set_tab(&a, RequestTab::Auth, cx));
         cx.run_until_parked();
         let again = open(&storage, collection.clone(), cx);
-        assert_eq!(again.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Auth));
+        assert_eq!(tab(&again, cx), RequestTab::Auth);
 
         // F4.12: another method opens on its default tab.
-        let api = editor(&state, cx);
-        api.update(cx, |api, cx| api.set_method(HttpMethod::Post, cx));
+        a.update(cx, |api, cx| api.set_method(HttpMethod::Post, cx));
         cx.run_until_parked();
-        assert_eq!(state.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Body));
+        assert_eq!(tab(&state, cx), RequestTab::Body);
         let again = open(&storage, collection, cx);
-        assert_eq!(again.read_with(cx, |state, cx| state.tab(cx)), Some(RequestTab::Body));
+        assert_eq!(tab(&again, cx), RequestTab::Body);
+
+        // BUG-4: with `b` opened, `a`'s own tab is still `a`'s — as its
+        // editor in a window of its own shows it — and picking one for `a`
+        // leaves `b`'s alone.
+        state.update(cx, |state, cx| state.create_api(None, "b".into(), cx));
+        cx.run_until_parked();
+        let b = editor(&state, cx);
+        assert_ne!(a.entity_id(), b.entity_id());
+        state.update(cx, |state, cx| state.set_tab(&a, RequestTab::Headers, cx));
+        assert_eq!(state.read_with(cx, |state, cx| state.tab(&a, cx)), RequestTab::Headers);
+        assert_eq!(state.read_with(cx, |state, cx| state.tab(&b, cx)), RequestTab::Query);
     }
 
     #[gpui_kit::test]

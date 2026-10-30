@@ -704,13 +704,13 @@ impl ResponsePanel {
                     } else {
                         cx.theme().danger
                     };
-                    let workspace = self.workspace.downgrade();
+                    let (workspace, api) = (self.workspace.downgrade(), self.api.clone());
                     div()
                         .id("response-assertions")
                         .cursor_pointer()
                         .on_click(move |_, _, cx| {
                             let _ = workspace.update(cx, |workspace, cx| {
-                                workspace.set_tab(cyberapi_core::prefs::RequestTab::Assertions, cx)
+                                workspace.set_tab(&api, cyberapi_core::prefs::RequestTab::Assertions, cx)
                             });
                         })
                         .child(pill(
@@ -1030,7 +1030,7 @@ impl ResponsePanel {
                 .on_click(move |_, window, cx| copy(to.clone(), window, cx));
             let mut buttons = vec![copy_to];
             if !follows {
-                let workspace = self.workspace.downgrade();
+                let (workspace, api) = (self.workspace.downgrade(), self.api.clone());
                 buttons.push(
                     Button::new("response-open-settings")
                         .ghost()
@@ -1038,7 +1038,7 @@ impl ResponsePanel {
                         .label(t!("response.open_api_settings").to_string())
                         .on_click(move |_, _, cx| {
                             let _ = workspace.update(cx, |workspace, cx| {
-                                workspace.set_tab(cyberapi_core::prefs::RequestTab::Settings, cx)
+                                workspace.set_tab(&api, cyberapi_core::prefs::RequestTab::Settings, cx)
                             });
                         }),
                 );

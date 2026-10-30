@@ -1577,7 +1577,7 @@ impl RequestEditor {
                 name.to_string()
             }
         };
-        let workspace = self.workspace.downgrade();
+        let (workspace, api) = (self.workspace.downgrade(), self.api.clone());
         let owned: Vec<RequestTab> = tabs.to_vec();
         // F4.14: the column at 30%, 50% or 70% of what the tree leaves. One
         // button saying the share it is at, the presets in its menu: the
@@ -1623,7 +1623,7 @@ impl RequestEditor {
             .suffix(presets)
             .on_click(move |index, _, cx| {
                 if let Some(tab) = owned.get(*index) {
-                    let _ = workspace.update(cx, |workspace, cx| workspace.set_tab(*tab, cx));
+                    let _ = workspace.update(cx, |workspace, cx| workspace.set_tab(&api, *tab, cx));
                 }
             })
     }
@@ -2088,7 +2088,7 @@ impl RequestEditor {
 
 impl Render for RequestEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tab = self.workspace.read(cx).tab(cx).unwrap_or(RequestTab::Query);
+        let tab = self.workspace.read(cx).tab(&self.api, cx);
         let content: AnyElement = match tab {
             RequestTab::Body => self.render_body(cx),
             // A long list scrolls rather than running off the column.
