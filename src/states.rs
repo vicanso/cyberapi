@@ -27,7 +27,7 @@ pub use dashboard::{DashboardEvent, DashboardState};
 pub use directory::{DirectoryDone, DirectoryEvent, DirectoryState};
 pub use load::LoadState;
 pub use mock::{DEFAULT_PORT as MOCK_PORT, MockHandle, MockState};
-pub use palette::{FoundApi, PaletteState};
+pub use palette::{FoundApi, PaletteState, found_in};
 pub use run::{Planned, RunState};
 pub use server::{ServerEvent, ServerState, ServerStatus, SignInFailure};
 pub use update::{Delivery, Installer, UpdateEvent, UpdateInfo, UpdatePhase, UpdateState};

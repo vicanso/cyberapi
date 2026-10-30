@@ -5,7 +5,7 @@
 use super::recent_dialog::open_recent_dialog;
 use super::run_dialog::open_run_dialog;
 use super::{method_color, method_label, new_item, open_import_dialog};
-use crate::states::{AppStore, FoundApi, PaletteState, WorkspaceState};
+use crate::states::{AppStore, FoundApi, PaletteState, WorkspaceState, found_in};
 use crate::views::{open_cookies_dialog, open_settings, open_shortcuts_dialog, open_variables_dialog};
 use cyberapi_core::EnvironmentId;
 use cyberapi_core::model::{Collection, VariableCategory};
@@ -21,6 +21,7 @@ use gpui_kit::{
     WeakEntity, Window, div, px,
 };
 use rust_i18n::t;
+use std::rc::Rc;
 
 /// The most a search shows.
 const SHOWN: usize = 60;
@@ -128,6 +129,9 @@ struct PaletteView {
     open: Option<Collection>,
     index: Entity<PaletteState>,
     input: Entity<InputState>,
+    /// What the search finds, in the order shown: worked out when the
+    /// search or what it searches changes, not in every frame (PERF-11).
+    items: Rc<[Item]>,
     chosen: usize,
     scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
@@ -135,17 +139,28 @@ struct PaletteView {
 
 impl PaletteView {
     fn new(workspace: Option<Entity<WorkspaceState>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Read where the tree is, not copied.
         let open = workspace.as_ref().map(|workspace| {
             let workspace = workspace.read(cx);
-            (workspace.collection().clone(), workspace.tree_data().clone())
+            let collection = workspace.collection().clone();
+            let apis = found_in(&collection, workspace.tree_data());
+            (collection, apis)
         });
         let collection = open.as_ref().map(|(collection, _)| collection.clone());
         let index = cx.new(|cx| PaletteState::new(open, cx));
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("palette.placeholder").to_string()));
         let subscriptions = vec![
-            cx.observe(&index, |_, _, cx| cx.notify()),
+            cx.observe(&index, |this, _, cx| {
+                this.find(cx);
+                cx.notify();
+            }),
             cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => {
+                    // The other projects' APIs show only for a search.
+                    if !this.input.read(cx).value().trim().is_empty() {
+                        this.index.update(cx, |index, cx| index.read_others(cx));
+                    }
+                    this.find(cx);
                     this.chosen = 0;
                     this.scroll.scroll_to_item(0);
                     cx.notify();
@@ -154,15 +169,22 @@ impl PaletteView {
                 _ => {}
             }),
         ];
-        Self {
+        let mut view = Self {
             workspace: workspace.map(|workspace| workspace.downgrade()),
             open: collection,
             index,
             input,
+            items: Rc::from([]),
             chosen: 0,
             scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
-        }
+        };
+        view.find(cx);
+        view
+    }
+
+    fn find(&mut self, cx: &App) {
+        self.items = self.items(cx).into();
     }
 
     fn commands(&self, cx: &App) -> Vec<Command> {
@@ -249,7 +271,7 @@ impl PaletteView {
     }
 
     fn step(&mut self, by: isize, cx: &mut Context<Self>) {
-        let count = self.items(cx).len();
+        let count = self.items.len();
         if count == 0 {
             return;
         }
@@ -259,7 +281,7 @@ impl PaletteView {
     }
 
     fn pick(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = self.items(cx).into_iter().nth(at) else {
+        let Some(item) = self.items.get(at).cloned() else {
             return;
         };
         window.close_dialog(cx);
@@ -374,7 +396,7 @@ impl PaletteView {
 impl Render for PaletteView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let items = self.items(cx);
+        let items = self.items.clone();
         if self.chosen >= items.len() {
             self.chosen = 0;
         }
