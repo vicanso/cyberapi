@@ -23,6 +23,7 @@ use cyberapi_core::{AccountId, CollectionId, TeamId};
 use cyberapi_store::{CollectionEdit, NewCollection, ServerCopyStore, Storage, StoreError, StoreFuture, rules};
 use gpui_kit::{Context, Entity, EventEmitter, Subscription, Task};
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -80,7 +81,7 @@ pub struct DashboardState {
     load: Load,
     /// Whose drafts (`crate::pins_local::scope`); a page's.
     scope: Option<String>,
-    drafts: BTreeMap<CollectionId, Draft>,
+    drafts: BTreeMap<CollectionId, Rc<Draft>>,
     /// The desktop's server.
     server_state: Option<Entity<ServerState>>,
     /// Signed in there.
@@ -298,7 +299,7 @@ impl DashboardState {
         if !collection.role.can_edit() {
             return None;
         }
-        self.drafts.get(&collection.id)
+        self.drafts.get(&collection.id).map(|draft| &**draft)
     }
 
     /// Whether `id` has changes the server has not had, and then whether
@@ -571,7 +572,7 @@ impl DashboardState {
             Err(error) => return cx.emit(DashboardEvent::Failed(error)),
         };
         let description = edit.description;
-        if let Some(mut draft) = self.drafts.get(&id).cloned() {
+        if let Some(mut draft) = self.drafts.get(&id).map(|draft| Draft::clone(draft)) {
             draft.config.name = name;
             draft.config.description = description;
             return self.keep_draft(id, draft, cx);
@@ -598,7 +599,7 @@ impl DashboardState {
     fn keep_draft(&mut self, id: CollectionId, draft: Draft, cx: &mut Context<Self>) {
         let Some(scope) = self.scope.as_deref() else { return };
         let kept = drafts_local::set(scope, &id, &draft);
-        self.drafts.insert(id, draft);
+        self.drafts.insert(id, Rc::new(draft));
         self.show();
         cx.emit(if kept {
             DashboardEvent::Unsynced

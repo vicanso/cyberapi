@@ -154,6 +154,12 @@ async fn rules(variable: &str) {
         .expect("grant");
     assert_eq!(role(&carol, &id).await, Some(CollectionRole::Viewer));
     assert_eq!(carol.tree().load(id.clone()).await.expect("load").apis.len(), 1);
+    let count = |counts: std::collections::BTreeMap<CollectionId, usize>| counts.get(&id).copied();
+    assert_eq!(
+        count(carol.collections().api_counts().await.expect("counts")),
+        Some(1),
+        "granted to her, she is told its size"
+    );
     carol
         .prefs()
         .set_workspace(
@@ -329,6 +335,10 @@ async fn rules(variable: &str) {
         .await
         .expect("grant");
     assert_eq!(role(&dave, &id).await, Some(CollectionRole::Editor));
+    assert!(
+        dave.collections().api_counts().await.expect("counts").contains_key(&id),
+        "granted to his team, so is he"
+    );
     dave.tree()
         .create_folder(id.clone(), None, "from qa".into())
         .await

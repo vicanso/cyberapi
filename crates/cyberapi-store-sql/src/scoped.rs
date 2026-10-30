@@ -586,7 +586,11 @@ impl CollectionStore for Scoped {
     fn api_counts(&self) -> StoreFuture<BTreeMap<CollectionId, usize>> {
         self.run(|this| async move {
             let visible: HashSet<CollectionId> = this.visible().await?.into_iter().map(|c| c.id).collect();
+            let account = this.account();
             let found = sqlx::query(this.dialect.sql(sql::API_COUNTS))
+                .bind(account.clone())
+                .bind(account.clone())
+                .bind(account)
                 .fetch_all(&this.pool)
                 .await
                 .map_err(db)?;

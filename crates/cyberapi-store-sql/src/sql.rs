@@ -247,7 +247,18 @@ pub const API_RENAME: &str = "UPDATE apis SET name = $1, updated_at = $2 WHERE i
 pub const API_SAVE: &str = "UPDATE apis SET request = $1, updated_at = $2 WHERE id = $3 AND collection = $4";
 pub const FOLDER_DELETE: &str = "DELETE FROM folders WHERE id = $1 AND collection = $2";
 pub const API_DELETE: &str = "DELETE FROM apis WHERE id = $1 AND collection = $2";
-pub const API_COUNTS: &str = "SELECT collection, COUNT(*) FROM apis GROUP BY collection";
+/// How many APIs each project an account reaches has — the ways of
+/// [`COLLECTIONS_VISIBLE`], not every project there is (PERF-4). The
+/// account is bound three times.
+pub const API_COUNTS: &str = "\
+    SELECT a.collection, COUNT(*) FROM apis a WHERE a.collection IN ( \
+    SELECT c.id FROM collections c JOIN team_members tm ON tm.team = c.owner_team WHERE tm.account = $1 \
+    UNION \
+    SELECT g.collection FROM collection_grants g WHERE g.grantee_kind = 'account' AND g.grantee = $2 \
+    UNION \
+    SELECT g.collection FROM collection_grants g JOIN team_members tm ON tm.team = g.grantee \
+    WHERE g.grantee_kind = 'team' AND tm.account = $3) \
+    GROUP BY a.collection";
 
 // What folders and projects set (#66): a row only while they set something;
 // a folder's goes with it (ON DELETE CASCADE).

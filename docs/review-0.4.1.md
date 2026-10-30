@@ -44,7 +44,7 @@
 | PERF-1 | 树 | 高 | 树面板每帧重建所有行（含关键字搜索、拼音匹配），不用 `uniform_list` | 已核实；已修复 |
 | PERF-2 | GraphQL | 高 | GraphQL 响应在每帧和每次编辑时整份解析 `errors` | 已核实；已修复 |
 | PERF-3 | 响应 | 高 | 大响应先整份格式化再截断，都在 UI 线程上，每次切回标签再做一遍 | 已核实；部分修复 |
-| PERF-4 | bridge | 高 | 首页每 10 秒统计全库所有项目的接口数再过滤；页面同时重读全部草稿 | 已核实 |
+| PERF-4 | bridge | 高 | 首页每 10 秒统计全库所有项目的接口数再过滤；页面同时重读全部草稿 | 已核实；已修复 |
 | PERF-5 | 运行器 | 中高 | 运行弹窗每帧克隆并渲染全部结果 | 读代码确认 |
 | PERF-6 | 流 | 中高 | 打开着的流每 100ms 重绘整个窗口直到关闭；WebSocket / gRPC 流的收发记录没有上限且存三份 | 读代码确认 |
 | PERF-7 | bridge | 中高 | 同步 / 上传逐行写入，约 3 ×（接口 + 目录）次往返，全程持锁 | 读代码确认 |
@@ -279,11 +279,12 @@
 - 已修复的部分：Pretty / 原始视图和 Wire 视图只读显示得下的那一段。`HttpResponse::shown_body_text(pretty, limit)`：不超过上限的 JSON 照旧整份格式化；超过上限的由 `format::json_prefix` 逐字节重新缩进，到上限就停（数字和字符串保持原样，其余与整份格式化的开头一致，JSON lines 一行一个）；原始视图和文本用 `format::text_prefix` 只取前缀（在字符边界截断）。`exchange_within` 同理只取响应体放得下的部分。于是 64 MB 的响应每次显示、每次切回标签，工作量都是上限（1–2 MB）而不是整个响应体，不再需要缓存。测试 `a_json_bodys_start_is_indented_as_the_whole`、`a_texts_start_is_cut_at_a_character`、`a_bodys_start_is_shown_as_the_whole_would_be`（前缀与整份结果的开头一致）；去掉空容器的规则时第一条失败。
 - 还没做的：树视图在主线程上解析最多 16 MB（`json_tree.rs`）、断言第一次在 `render` 里解析响应体、`EventStream::show` 解析全部事件；编辑器自己排版上限以内的文本（1–2 MB）仍在主线程上，这是显示上限的设置。
 
-### PERF-4 首页轮询统计全库接口数（高，bridge）
+### PERF-4 首页轮询统计全库接口数（高，bridge）——已修复
 
 - 位置：`crates/cyberapi-store-sql/src/scoped.rs:586-602` 执行 `API_COUNTS`（`sql.rs:250`：`SELECT collection, COUNT(*) FROM apis GROUP BY collection`，所有账号的所有项目），再在 Rust 里只留看得到的；由 `states/dashboard.rs:380` 的 `reload_listed` 调用，`poll`（`:148-160`）在网页上每 10 秒一次。页面这边 `read_drafts()`（`dashboard.rs:245-247`，`drafts_local.rs:70-83`）每次轮询都重读并解析全部 localStorage 草稿（每份是整个项目）。
 - 情况：数据库负载随（全部接口行数 × 打开着的首页数）增长。
 - 修复方向：SQL 加 `WHERE collection IN (看得到的)` 或和可见性查询 join；接口数比列表刷新得慢一些；草稿只在写入后重读。
+- 修复：`API_COUNTS` 只统计账号经团队、账号授权、团队授权能到达的项目（和 `COLLECTIONS_VISIBLE` 同样的三条路，子查询 `IN (… UNION …)`，PostgreSQL 和 MySQL 都能用，走 `apis_collection` 索引），角色的精确判断仍在 Rust 里按 `visible()` 过滤。页面的草稿按文本的哈希记下读过的结果（`drafts_local::all` 返回 `Rc<Draft>`），文本没变就不再解析；仍然每次轮询读 localStorage，所以别的标签页写的草稿照样能看到。接口数的刷新频率没改。测试：`access.rs` 加了账号授权和团队授权两种情况（`make test-sql`，PostgreSQL 和 MySQL 都跑了；去掉账号授权那一路时两个库都失败），`a_draft_as_it_was_is_not_read_again`（让缓存不命中时失败）。
 
 ### PERF-5 运行弹窗每帧克隆并渲染全部结果（中高）
 

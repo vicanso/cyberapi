@@ -13,7 +13,10 @@
 use cyberapi_core::CollectionId;
 use cyberapi_core::sync::ProjectConfig;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+use std::rc::Rc;
 use tracing::warn;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,18 +69,47 @@ pub fn remove(scope: &str, collection: &CollectionId) {
     storage::delete(&key(scope, collection));
 }
 
+thread_local! {
+    /// PERF-4: the drafts as last read, by key, with what their text hashed
+    /// to. The home page reads them all at every poll, and each is a whole
+    /// project: one whose text is as it was is not read again.
+    static READ: RefCell<HashMap<String, (u64, Rc<Draft>)>> = RefCell::new(HashMap::new());
+}
+
+/// The draft `text` under `key` reads as: as it did last time, when it is
+/// the same text.
+fn decode_kept(key: &str, text: &str) -> Option<Rc<Draft>> {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    let hash = hasher.finish();
+    let kept = READ.with(|read| {
+        read.borrow()
+            .get(key)
+            .filter(|(read_as, _)| *read_as == hash)
+            .map(|(_, draft)| draft.clone())
+    });
+    if kept.is_some() {
+        return kept;
+    }
+    let draft = Rc::new(decode(text)?);
+    READ.with(|read| read.borrow_mut().insert(key.to_string(), (hash, draft.clone())));
+    Some(draft)
+}
+
 /// Every draft of the reader's, by project.
-pub fn all(scope: &str) -> BTreeMap<CollectionId, Draft> {
+pub fn all(scope: &str) -> BTreeMap<CollectionId, Rc<Draft>> {
     let prefix = prefix(scope);
-    storage::keys()
-        .into_iter()
+    let keys = storage::keys();
+    // What is gone is not kept read.
+    READ.with(|read| read.borrow_mut().retain(|key, _| keys.contains(key)));
+    keys.into_iter()
         .filter_map(|key| {
             let id = key.strip_prefix(&prefix)?;
             // Another reader whose id starts as this one's does.
             if id.contains('.') {
                 return None;
             }
-            Some((CollectionId::new(id), decode(&storage::read(&key)?)?))
+            Some((CollectionId::new(id), decode_kept(&key, &storage::read(&key)?)?))
         })
         .collect()
 }
@@ -193,5 +225,25 @@ mod tests {
         assert_eq!(get("alice", &shop), None);
         assert_eq!(get("alice.b", &shop), Some(draft("not alice's", 9)));
         assert_eq!(super::all("alice").len(), 1);
+    }
+
+    /// PERF-4: a draft whose text is as it was is not read again; one saved
+    /// since is.
+    #[test]
+    fn a_draft_as_it_was_is_not_read_again() {
+        let shop = CollectionId::new("shop");
+        assert!(set("bob", &shop, &draft("shop", 1)));
+        let first = all("bob").remove(&shop).expect("there");
+        let again = all("bob").remove(&shop).expect("there");
+        assert!(Rc::ptr_eq(&first, &again), "kept as read");
+        assert!(set("bob", &shop, &draft("shop 2", 2)));
+        let saved = all("bob").remove(&shop).expect("there");
+        assert_eq!(*saved, draft("shop 2", 2), "read again once changed");
+        remove("bob", &shop);
+        assert!(all("bob").is_empty());
+        assert!(
+            READ.with(|read| read.borrow().is_empty()),
+            "nothing kept of what is gone"
+        );
     }
 }
