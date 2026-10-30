@@ -46,12 +46,12 @@ use cyberapi_service::graphql_ws::{self, Heard};
 use cyberapi_service::grpc_stream;
 use cyberapi_service::socket::{self, Connected, LiveSocket};
 use cyberapi_service::{SendFailure, Sender};
-use cyberapi_store::StoreError;
+use cyberapi_store::{StoreError, StoreFuture};
 use futures::StreamExt as _;
 use futures::channel::{mpsc, oneshot};
 use gpui_kit::{App, AppContext as _, Context, EventEmitter, Global, Task, WeakEntity};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -360,6 +360,12 @@ pub struct ApiState {
     /// D4: one asked for from the project's recent list before the history
     /// was read: chosen once it is.
     wanted: Option<String>,
+    /// PERF-9: the responses held as a list shows them, without their
+    /// bodies: each is read whole before it is shown. The newest, and the
+    /// one shown, are held whole.
+    partial: HashSet<String>,
+    /// PERF-9: the response being read whole, chosen once it is.
+    reading: Option<String>,
     /// A GraphQL endpoint's schema being asked for.
     asking_schema: Option<Task<()>>,
     /// gRPC definitions being loaded.
@@ -472,6 +478,8 @@ impl ApiState {
             history: Load::Loading,
             shown: None,
             wanted: None,
+            partial: HashSet::new(),
+            reading: None,
             asking_schema: None,
             loading_grpc: None,
             own_grpc: RefCell::new(None),
@@ -555,15 +563,36 @@ impl ApiState {
             .is_some_and(|workspace| workspace.read(cx).local_members().contains(&self.api))
     }
 
+    /// PERF-9: the history as a list shows it, and its newest, the one
+    /// shown, whole: an API opened read every response with its body.
     fn load_history(&mut self, cx: &mut Context<Self>) {
-        let call = self
-            .sender
-            .storage
-            .history()
-            .list(self.collection.clone(), self.api.clone());
+        let (storage, collection, api) = (self.sender.storage.clone(), self.collection.clone(), self.api.clone());
+        let call: StoreFuture<(Vec<HttpResponse>, bool)> = Box::pin(async move {
+            let history = storage.history();
+            let mut responses = history.summaries(collection.clone(), api.clone()).await?;
+            let mut newest_whole = false;
+            if let Some(newest) = responses.first_mut() {
+                match history.get(collection, api, newest.id.clone()).await {
+                    Ok(whole) => {
+                        *newest = whole;
+                        newest_whole = true;
+                    }
+                    // Gone meanwhile: it is read again as it is chosen.
+                    Err(StoreError::NotFound { .. }) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok((responses, newest_whole))
+        });
         run_store(cx, call, |this, result, cx| {
             match result {
-                Ok(responses) => {
+                Ok((responses, newest_whole)) => {
+                    let skip = usize::from(newest_whole);
+                    this.partial = responses
+                        .iter()
+                        .skip(skip)
+                        .map(|response| response.id.clone())
+                        .collect();
                     this.responses = responses.into_iter().map(Arc::new).collect();
                     this.history = Load::Loaded;
                     if let Some(id) = this.wanted.take() {
@@ -1558,11 +1587,15 @@ impl ApiState {
                 self.responses.insert(0, Arc::new(response));
                 self.responses.truncate(self.sender.sending.history_size());
                 // PERF-8: only the newest keeps its whole body; the one it
-                // follows is now as the history keeps it.
-                if let Some(before) = self.responses.get_mut(1)
-                    && before.body.len() > HISTORY_BODY_LIMIT
-                {
-                    *before = Arc::new(before.for_history());
+                // follows is now as the history keeps it — or, kept there,
+                // as a list shows it, read whole again when chosen (PERF-9).
+                if let Some(before) = self.responses.get_mut(1) {
+                    if before.kept() {
+                        self.partial.insert(before.id.clone());
+                        *before = Arc::new(HttpResponse::clone(before).summary());
+                    } else if before.body.len() > HISTORY_BODY_LIMIT {
+                        *before = Arc::new(before.for_history());
+                    }
                 }
                 self.shown = None;
                 // What a `get` path's fields were read from is not the last.
@@ -1626,9 +1659,58 @@ impl ApiState {
         self.responses.iter().find(|response| response.id == id).cloned()
     }
 
+    /// PERF-9: one of the history read whole — at once, when it is held
+    /// so.
+    pub fn whole_response(&self, id: &str) -> StoreFuture<HttpResponse> {
+        if !self.partial.contains(id)
+            && let Some(response) = self.response(id)
+        {
+            let response = HttpResponse::clone(&response);
+            return Box::pin(async move { Ok(response) });
+        }
+        self.sender
+            .storage
+            .history()
+            .get(self.collection.clone(), self.api.clone(), id.to_string())
+    }
+
+    /// PERF-9: reads `id` whole, then chooses it; what is shown stays till
+    /// then. Of the rest, only the newest stays whole.
+    fn read_whole(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.reading.as_deref() == Some(id) {
+            return;
+        }
+        self.reading = Some(id.to_string());
+        let call = self.whole_response(id);
+        run_store(cx, call, |this, result, cx| {
+            let Some(id) = this.reading.take() else { return };
+            match result {
+                Ok(whole) if whole.id == id => {
+                    for (at, response) in this.responses.iter_mut().enumerate() {
+                        if response.id == id {
+                            *response = Arc::new(whole.clone());
+                        } else if at > 0 && !this.partial.contains(&response.id) && response.kept() {
+                            *response = Arc::new(HttpResponse::clone(response).summary());
+                            this.partial.insert(response.id.clone());
+                        }
+                    }
+                    this.partial.remove(&id);
+                    this.choose_response(&id, cx);
+                }
+                Ok(_) => {}
+                Err(error) => cx.emit(ApiEvent::Failed(error)),
+            }
+            cx.notify();
+        });
+    }
+
     /// F7.10: shows a response of the history and puts its request back in
     /// the editor, saved with the next change.
     pub fn choose_response(&mut self, id: &str, cx: &mut Context<Self>) {
+        // PERF-9: what is shown is held whole.
+        if self.partial.contains(id) {
+            return self.read_whole(id, cx);
+        }
         let Some(response) = self.responses.iter().find(|response| response.id == id) else {
             return;
         };
@@ -1899,6 +1981,7 @@ impl ApiState {
             match result {
                 Ok(()) => {
                     this.responses.clear();
+                    this.partial.clear();
                     this.shown = None;
                 }
                 Err(error) => cx.emit(ApiEvent::Failed(error)),

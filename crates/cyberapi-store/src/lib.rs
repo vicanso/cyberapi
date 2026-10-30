@@ -220,6 +220,28 @@ pub trait HistoryStore: Send + Sync {
     /// an id and the time; the API's oldest beyond the newest `keep` go.
     fn add(&self, response: HttpResponse, keep: usize) -> StoreFuture<HttpResponse>;
     fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>>;
+    /// PERF-9: [`Self::list`] as a list shows it (`HttpResponse::summary`:
+    /// no bodies), newest first — what an opened API reads; the one shown
+    /// is read whole with [`Self::get`]. A backend that answers from afar
+    /// sends no bodies.
+    fn summaries(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
+        let list = self.list(collection, api);
+        Box::pin(async move { Ok(list.await?.into_iter().map(HttpResponse::summary).collect()) })
+    }
+    /// PERF-9: one of the API's responses, whole. Not one of its:
+    /// [`Entity::Response`] not found.
+    fn get(&self, collection: CollectionId, api: ItemId, id: String) -> StoreFuture<HttpResponse> {
+        let list = self.list(collection, api);
+        Box::pin(async move {
+            list.await?
+                .into_iter()
+                .find(|response| response.id == id)
+                .ok_or(StoreError::NotFound {
+                    what: Entity::Response,
+                    id,
+                })
+        })
+    }
     /// D4: the newest `limit` responses of any of the project's APIs, newest
     /// first, as a list shows them (`HttpResponse::summary`: no bodies).
     fn recent(&self, collection: CollectionId, limit: usize) -> StoreFuture<Vec<HttpResponse>>;

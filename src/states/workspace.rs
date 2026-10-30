@@ -5202,6 +5202,73 @@ mod tests {
         });
     }
 
+    /// PERF-9: an opened API holds its history as a list shows it, its
+    /// newest whole; one chosen is read whole before it is shown, and the
+    /// one shown before goes back to its summary.
+    #[gpui_kit::test]
+    async fn the_history_is_read_whole_only_where_shown(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let api = storage
+            .tree()
+            .create_api(collection.id.clone(), None, "a".into())
+            .await
+            .expect("create")
+            .item;
+        let mut ids = Vec::new();
+        for n in 0..3 {
+            let kept = storage
+                .history()
+                .add(
+                    HttpResponse {
+                        collection: collection.id.clone(),
+                        api: api.id.clone(),
+                        status: Some(200),
+                        body: format!("body {n}").into_bytes(),
+                        ..Default::default()
+                    },
+                    10,
+                )
+                .await
+                .expect("add");
+            ids.push(kept.id);
+        }
+        let state = open(&storage, collection, cx);
+        state.update(cx, |state, cx| state.select(&api.id, cx));
+        cx.run_until_parked();
+        let editor = editor(&state, cx);
+        let bodies = |cx: &mut TestAppContext| -> (Vec<String>, String) {
+            editor.read_with(cx, |api, _| {
+                let held = api
+                    .responses()
+                    .iter()
+                    .map(|response| String::from_utf8_lossy(&response.body).into_owned())
+                    .collect();
+                let shown = api.shown_response().expect("shown");
+                (held, String::from_utf8_lossy(&shown.body).into_owned())
+            })
+        };
+        assert_eq!(
+            bodies(cx),
+            (vec!["body 2".into(), String::new(), String::new()], "body 2".into())
+        );
+        editor.update(cx, |api, cx| api.choose_response(&ids[0], cx));
+        cx.run_until_parked();
+        assert_eq!(
+            bodies(cx),
+            (vec!["body 2".into(), String::new(), "body 0".into()], "body 0".into())
+        );
+        editor.update(cx, |api, cx| api.choose_response(&ids[1], cx));
+        cx.run_until_parked();
+        assert_eq!(
+            bodies(cx),
+            (vec!["body 2".into(), "body 1".into(), String::new()], "body 1".into()),
+            "the one shown before is a summary again"
+        );
+        let whole = editor.read_with(cx, |api, _| api.whole_response(&ids[0]));
+        assert_eq!(whole.await.expect("whole").body, b"body 0");
+    }
+
     #[gpui_kit::test]
     async fn choosing_a_response_puts_its_request_back(cx: &mut TestAppContext) {
         let storage = MemoryStore::new().storage();

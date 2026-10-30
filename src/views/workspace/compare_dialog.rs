@@ -67,12 +67,18 @@ impl SelectItem for Entry {
 type Entries = Entity<SelectState<Vec<Entry>>>;
 
 struct CompareView {
-    /// The history as it was when the dialog opened, newest first.
+    api: Entity<ApiState>,
+    /// The history as it was when the dialog opened, newest first, as a
+    /// list shows it: the two compared are read whole (PERF-9).
     responses: Vec<Arc<HttpResponse>>,
     older: Entries,
     newer: Entries,
     /// `None` while it is worked out.
     compared: Option<Arc<Compared>>,
+    /// A body the history did not keep, of the two compared.
+    omitted: bool,
+    /// Why the two could not be read.
+    failed: Option<String>,
     working: Option<Task<()>>,
     list: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
@@ -80,6 +86,7 @@ struct CompareView {
 
 impl CompareView {
     fn new(api: Entity<ApiState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let state = api.clone();
         let api = api.read(cx);
         let responses: Vec<Arc<HttpResponse>> = api.responses().to_vec();
         let shown = api
@@ -111,10 +118,13 @@ impl CompareView {
         };
         let subscriptions = vec![cx.subscribe(&older, changed), cx.subscribe(&newer, changed)];
         let mut view = Self {
+            api: state,
             responses,
             older,
             newer,
             compared: None,
+            omitted: false,
+            failed: None,
             working: None,
             list: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
@@ -128,19 +138,36 @@ impl CompareView {
         self.responses.get(index).cloned()
     }
 
-    /// The two bodies compared, away from the window: a long one takes a
-    /// while.
+    /// The two read whole, and their bodies compared, away from the
+    /// window: a long one takes a while.
     fn compare(&mut self, cx: &mut Context<Self>) {
         let (Some(older), Some(newer)) = (self.picked(&self.older, cx), self.picked(&self.newer, cx)) else {
             return;
         };
+        let (older, newer) = {
+            let api = self.api.read(cx);
+            (api.whole_response(&older.id), api.whole_response(&newer.id))
+        };
         self.compared = None;
-        let work =
-            cx.background_spawn(async move { diff::compare(&diff::body_text(&older), &diff::body_text(&newer)) });
+        self.failed = None;
+        let work = cx.background_spawn(async move {
+            let (older, newer) = (older.await?, newer.await?);
+            let omitted = older.body_omitted.is_some() || newer.body_omitted.is_some();
+            Ok::<_, cyberapi_store::StoreError>((
+                omitted,
+                diff::compare(&diff::body_text(&older), &diff::body_text(&newer)),
+            ))
+        });
         self.working = Some(cx.spawn(async move |this, cx| {
             let compared = work.await;
             let _ = this.update(cx, |this, cx| {
-                this.compared = Some(Arc::new(compared));
+                match compared {
+                    Ok((omitted, compared)) => {
+                        this.omitted = omitted;
+                        this.compared = Some(Arc::new(compared));
+                    }
+                    Err(error) => this.failed = Some(crate::i18n::store_error(&error)),
+                }
                 this.working = None;
                 cx.notify();
             });
@@ -216,11 +243,9 @@ impl Render for CompareView {
         let (muted, border) = (theme.muted_foreground, theme.border);
         let mono = theme.mono_font_family.clone();
         // A body the history did not keep has nothing to compare.
-        let omitted = [&self.older, &self.newer]
-            .into_iter()
-            .filter_map(|list| self.picked(list, cx))
-            .any(|response| response.body_omitted.is_some());
+        let omitted = self.omitted;
         let summary = match &self.compared {
+            None if self.failed.is_some() => self.failed.clone().unwrap_or_default(),
             None => t!("compare.working").to_string(),
             Some(compared) if compared.same() => t!("compare.same").to_string(),
             Some(compared) => t!("compare.counts", added = compared.added, removed = compared.removed).to_string(),

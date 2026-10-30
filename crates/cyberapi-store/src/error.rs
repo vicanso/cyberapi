@@ -84,6 +84,8 @@ pub enum Entity {
     Account,
     Invite,
     McpToken,
+    /// One of an API's responses (PERF-9).
+    Response,
 }
 
 /// Why a change to accounts or teams was refused.

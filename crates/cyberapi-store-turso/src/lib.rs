@@ -1520,19 +1520,48 @@ impl HistoryStore for TursoStore {
         })
     }
 
+    /// PERF-9: the documents are read while the connection is held, and
+    /// read into responses after: every other call waits for it.
     fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
         self.run(move |inner, _| async move {
-            let conn = inner.conn.lock().await;
-            require_api(&conn, &collection, &api).await?;
-            query_all(
-                &conn,
-                "SELECT doc FROM responses WHERE collection = ?1 AND api = ?2 ORDER BY rowid DESC",
-                (collection.as_str(), api.as_str()),
-                response,
-            )
-            .await?
-            .into_iter()
-            .collect()
+            let docs = {
+                let conn = inner.conn.lock().await;
+                require_api(&conn, &collection, &api).await?;
+                query_all(
+                    &conn,
+                    "SELECT doc FROM responses WHERE collection = ?1 AND api = ?2 ORDER BY rowid DESC",
+                    (collection.as_str(), api.as_str()),
+                    |row| rows::text(row, 0),
+                )
+                .await?
+            };
+            docs.iter()
+                .map(|doc| serde_json::from_str(doc).map_err(backend))
+                .collect()
+        })
+    }
+
+    /// PERF-9: read by its id, not found in the whole list.
+    fn get(&self, collection: CollectionId, api: ItemId, id: String) -> StoreFuture<HttpResponse> {
+        self.run(move |inner, _| async move {
+            let doc = {
+                let conn = inner.conn.lock().await;
+                require_api(&conn, &collection, &api).await?;
+                query_one(
+                    &conn,
+                    "SELECT doc FROM responses WHERE collection = ?1 AND api = ?2 AND id = ?3",
+                    (collection.as_str(), api.as_str(), id.as_str()),
+                    |row| rows::text(row, 0),
+                )
+                .await?
+            };
+            match doc {
+                Some(doc) => serde_json::from_str(&doc).map_err(backend),
+                None => Err(StoreError::NotFound {
+                    what: Entity::Response,
+                    id,
+                }),
+            }
         })
     }
 

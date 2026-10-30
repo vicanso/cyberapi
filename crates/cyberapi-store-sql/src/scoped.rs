@@ -1646,6 +1646,29 @@ impl HistoryStore for Scoped {
         })
     }
 
+    /// PERF-9: read by its id, not found in the whole list.
+    fn get(&self, collection: CollectionId, api: ItemId, id: String) -> StoreFuture<HttpResponse> {
+        self.run(move |this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require_api(&mut conn, &collection, &api).await?;
+            let row = sqlx::query(this.dialect.sql(sql::RESPONSE_GET))
+                .bind(this.account())
+                .bind(collection.as_str().to_string())
+                .bind(api.as_str().to_string())
+                .bind(id.clone())
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(db)?;
+            match row {
+                Some(row) => response(&row),
+                None => Err(StoreError::NotFound {
+                    what: Entity::Response,
+                    id,
+                }),
+            }
+        })
+    }
+
     fn recent(&self, collection: CollectionId, limit: usize) -> StoreFuture<Vec<HttpResponse>> {
         self.run(move |this| async move {
             let mut conn = this.pool.acquire().await.map_err(db)?;

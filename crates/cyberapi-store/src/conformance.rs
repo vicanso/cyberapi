@@ -64,6 +64,7 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     history_is_only_of_the_projects_apis(storage).await;
     history_keeps_as_many_as_asked(storage).await;
     recent_history_is_the_projects_newest(storage).await;
+    history_lists_without_bodies(storage).await;
     cookies_are_kept_by_key(storage).await;
     imports_get_new_ids_at_the_end(storage).await;
     the_readers_state_clears(storage).await;
@@ -1678,6 +1679,70 @@ async fn recent_history_is_the_projects_newest(storage: &Storage) {
         "all there are"
     );
     not_found(history.recent(CollectionId::new(MISSING), 4).await, Entity::Collection);
+}
+
+/// PERF-9: an API's history as a list shows it, and one of its responses
+/// whole — only one of its own.
+async fn history_lists_without_bodies(storage: &Storage) {
+    let collection = new_collection(storage, "history summaries").await;
+    let elsewhere = new_collection(storage, "history summaries elsewhere").await;
+    let login = api(storage, &collection, None, "login").await;
+    let users = api(storage, &collection, None, "users").await;
+    let theirs = api(storage, &elsewhere, None, "theirs").await;
+    let history = storage.history();
+    let mut kept = Vec::new();
+    for n in 0..3 {
+        kept.push(
+            history
+                .add(response(&collection, &login.item.id, n), HISTORY_LIMIT)
+                .await
+                .expect("add"),
+        );
+    }
+    let of_users = history
+        .add(response(&collection, &users.item.id, 9), HISTORY_LIMIT)
+        .await
+        .expect("add");
+    let of_theirs = history
+        .add(response(&elsewhere, &theirs.item.id, 9), HISTORY_LIMIT)
+        .await
+        .expect("add");
+    let listed = history
+        .summaries(collection.id.clone(), login.item.id.clone())
+        .await
+        .expect("summaries");
+    let expected: Vec<HttpResponse> = kept.iter().rev().cloned().map(HttpResponse::summary).collect();
+    assert_eq!(listed, expected, "newest first, without their bodies");
+    assert!(listed.iter().all(|response| response.body.is_empty()));
+    assert_eq!(
+        history
+            .get(collection.id.clone(), login.item.id.clone(), kept[1].id.clone())
+            .await
+            .expect("get"),
+        kept[1],
+        "one whole"
+    );
+    // Another API's, another project's, none at all.
+    for (api, id) in [
+        (&login.item.id, of_users.id.clone()),
+        (&login.item.id, of_theirs.id.clone()),
+        (&login.item.id, MISSING.to_string()),
+    ] {
+        not_found(
+            history.get(collection.id.clone(), api.clone(), id).await,
+            Entity::Response,
+        );
+    }
+    not_found(
+        history.summaries(collection.id.clone(), theirs.item.id.clone()).await,
+        Entity::Api,
+    );
+    not_found(
+        history
+            .get(collection.id.clone(), theirs.item.id.clone(), of_theirs.id.clone())
+            .await,
+        Entity::Api,
+    );
 }
 
 /// A response belongs to one of the project's APIs: not another project's,

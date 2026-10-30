@@ -52,6 +52,7 @@ pub fn store_error(error: &StoreError) -> String {
             Entity::Account => t!("errors.account_not_found").into(),
             Entity::Invite => t!("errors.invite_not_found").into(),
             Entity::McpToken => t!("errors.mcp_token_not_found").into(),
+            Entity::Response => t!("errors.response_not_found").into(),
         },
         StoreError::Refused { reason } => match reason {
             Refusal::AdminOnly => t!("errors.refused_admin_only").into(),

@@ -269,6 +269,16 @@ pub enum Call {
         collection: CollectionId,
         api: ItemId,
     },
+    /// PERF-9: the list without bodies, and one response whole.
+    HistorySummaries {
+        collection: CollectionId,
+        api: ItemId,
+    },
+    HistoryGet {
+        collection: CollectionId,
+        api: ItemId,
+        id: String,
+    },
     HistoryLatest {
         collection: CollectionId,
         apis: Vec<ItemId>,
@@ -405,6 +415,8 @@ impl Call {
             | Self::PrefsSetSecretValues { .. }
             | Self::HistoryAdd { .. }
             | Self::HistoryList { .. }
+            | Self::HistorySummaries { .. }
+            | Self::HistoryGet { .. }
             | Self::HistoryLatest { .. }
             | Self::HistoryRecent { .. }
             | Self::HistoryClear { .. }
@@ -544,6 +556,8 @@ pub async fn dispatch(
             reply(history.add(*response, keep).await)
         }
         Call::HistoryList { collection, api } => reply(history.list(collection, api).await),
+        Call::HistorySummaries { collection, api } => reply(history.summaries(collection, api).await),
+        Call::HistoryGet { collection, api, id } => reply(history.get(collection, api, id).await),
         Call::HistoryLatest { collection, apis } => reply(history.latest(collection, apis).await),
         Call::HistoryRecent { collection, limit } => reply(history.recent(collection, limit.min(RECENT_LIMIT)).await),
         Call::HistoryClear { collection, api } => reply(history.clear(collection, api).await),
@@ -941,6 +955,12 @@ impl HistoryStore for BridgeStore {
     }
     fn list(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
         self.call(Call::HistoryList { collection, api })
+    }
+    fn summaries(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
+        self.call(Call::HistorySummaries { collection, api })
+    }
+    fn get(&self, collection: CollectionId, api: ItemId, id: String) -> StoreFuture<HttpResponse> {
+        self.call(Call::HistoryGet { collection, api, id })
     }
     fn latest(&self, collection: CollectionId, apis: Vec<ItemId>) -> StoreFuture<Vec<HttpResponse>> {
         self.call(Call::HistoryLatest { collection, apis })

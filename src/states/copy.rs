@@ -843,6 +843,41 @@ impl HistoryStore for CopyHistory {
         })
     }
 
+    /// PERF-9: as [`Self::list`], the server's sent without their bodies.
+    fn summaries(&self, collection: CollectionId, api: ItemId) -> StoreFuture<Vec<HttpResponse>> {
+        let call = self.server.history().summaries(collection.clone(), api.clone());
+        let shared = self.shared.clone();
+        Box::pin(async move {
+            let kept = match call.await {
+                Err(error) if unknown_api(&error) => Vec::new(),
+                answer => answer?,
+            };
+            let waiting = waiting_of(&shared.waiting(), &collection, &api);
+            if waiting.is_empty() {
+                return Ok(kept);
+            }
+            let waiting = waiting.into_iter().map(HttpResponse::summary);
+            let mut all: Vec<HttpResponse> = waiting.chain(kept).collect();
+            all.sort_by_key(|response| std::cmp::Reverse(response.created_at));
+            all.truncate(shared.keep.load(Ordering::Relaxed));
+            Ok(all)
+        })
+    }
+
+    /// PERF-9: one the page keeps, or the server's.
+    fn get(&self, collection: CollectionId, api: ItemId, id: String) -> StoreFuture<HttpResponse> {
+        let waiting = self
+            .shared
+            .waiting()
+            .iter()
+            .find(|response| response.id == id && response.collection == collection && response.api == api)
+            .cloned();
+        if let Some(waiting) = waiting {
+            return Box::pin(async move { Ok(waiting) });
+        }
+        self.server.history().get(collection, api, id)
+    }
+
     /// D4: the server's and the page's, newest first.
     fn recent(&self, collection: CollectionId, limit: usize) -> StoreFuture<Vec<HttpResponse>> {
         let call = self.server.history().recent(collection.clone(), limit);

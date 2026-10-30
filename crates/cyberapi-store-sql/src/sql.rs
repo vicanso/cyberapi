@@ -350,6 +350,9 @@ pub const RESPONSE_INSERT: &str = "INSERT INTO responses \
     (id, account, collection, api, doc, created_at) VALUES ($1, $2, $3, $4, $5, $6)";
 pub const RESPONSES_OF: &str =
     "SELECT doc FROM responses WHERE account = $1 AND collection = $2 AND api = $3 ORDER BY seq DESC";
+/// PERF-9: one of them, by its id.
+pub const RESPONSE_GET: &str =
+    "SELECT doc FROM responses WHERE account = $1 AND collection = $2 AND api = $3 AND id = $4";
 pub const RESPONSE_NEWEST: &str =
     "SELECT doc FROM responses WHERE account = $1 AND collection = $2 AND api = $3 ORDER BY seq DESC LIMIT 1";
 /// The oldest response kept: `$4` is how many newer ones there are, one
@@ -511,6 +514,7 @@ mod tests {
         PREFS_CLEAR_WORKSPACES,
         RESPONSE_INSERT,
         RESPONSES_OF,
+        RESPONSE_GET,
         RESPONSE_NEWEST,
         RESPONSE_OLDEST_KEPT,
         RESPONSES_RECENT,

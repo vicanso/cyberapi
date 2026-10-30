@@ -614,6 +614,10 @@ impl HttpResponse {
     /// and the times its stream came at left out, its size kept.
     pub fn summary(self) -> HttpResponse {
         HttpResponse {
+            // Its size told as a body the history left out tells it.
+            body_omitted: self
+                .body_omitted
+                .or((!self.body.is_empty()).then_some(self.body.len() as u64)),
             body: Vec::new(),
             sent: None,
             stream: None,
