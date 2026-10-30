@@ -43,7 +43,7 @@
 | BUG-27 | D7 | 低 | `md5` / `sha*` / `hmac*` / `urlEncode` 都按文本取输入，链在 `base64Decode` 或 `readFile` 后面时非 UTF-8 字节被换成 U+FFFD，结果是错的 | 读代码确认 |
 | PERF-1 | 树 | 高 | 树面板每帧重建所有行（含关键字搜索、拼音匹配），不用 `uniform_list` | 已核实；已修复 |
 | PERF-2 | GraphQL | 高 | GraphQL 响应在每帧和每次编辑时整份解析 `errors` | 已核实；已修复 |
-| PERF-3 | 响应 | 高 | 大响应先整份格式化再截断，都在 UI 线程上，每次切回标签再做一遍 | 已核实 |
+| PERF-3 | 响应 | 高 | 大响应先整份格式化再截断，都在 UI 线程上，每次切回标签再做一遍 | 已核实；部分修复 |
 | PERF-4 | bridge | 高 | 首页每 10 秒统计全库所有项目的接口数再过滤；页面同时重读全部草稿 | 已核实 |
 | PERF-5 | 运行器 | 中高 | 运行弹窗每帧克隆并渲染全部结果 | 读代码确认 |
 | PERF-6 | 流 | 中高 | 打开着的流每 100ms 重绘整个窗口直到关闭；WebSocket / gRPC 流的收发记录没有上限且存三份 | 读代码确认 |
@@ -271,11 +271,13 @@
 - 修复方向：每个响应 id 只算一次（放在 `ApiState` 里，和 `checked_json` 一起）；`mark_graphql_errors` 先算 key 再解析。
 - 修复：`ApiState::graphql_errors(response)` 按响应 id 缓存错误文字和位置，用断言共用的那份已解析的 JSON（`json_of`），core 多了不再解析的 `graphql::errors_in` / `error_places_in`。响应区的错误条和查询编辑器的标记都用它；`mark_graphql_errors` 先比较（响应 id，查询）再取位置。测试 `a_graphql_answers_errors_are_read_once`；让缓存永不命中时它失败。
 
-### PERF-3 大响应先整份处理再截断，且在 UI 线程上（高）
+### PERF-3 大响应先整份处理再截断，且在 UI 线程上（高）——部分修复
 
 - 位置：`response_panel.rs:503-572`（`sync`）→ `editor_text`（`:1924-1940`）→ `body_text()`（`core/response.rs:424-428`：`pretty_json` 解析并重排整个响应体，然后才 `clip_text` 截到显示的 1–2 MB）；原始视图 `raw_body_text` 拷贝整个响应体；`sync_wire`（`:1609`）用完整响应体拼 `exchange()` 再截；树视图（`:496-497`，`json_tree.rs:154-161`）在主线程上解析最多 16 MB；`ApiState::checks()` / `json_of`（`states/api.rs:696、756-765`）第一次在 `render` 里解析；`EventStream::show`（`event_stream.rs:68`）解析全部事件；`views/workspace.rs:658-679` 每次切换选中都新建 `ResponsePanel`，以上全部重来。
 - 情况：几 MB 到 64 MB 的响应，每次发送、每次切回这个标签，窗口卡几百毫秒到几秒。
 - 修复方向：显示用的文本在后台生成，只处理截断后的前缀（超过上限时显示原文）；按响应 id 缓存在 `ApiState` 里，切标签时复用。
+- 已修复的部分：Pretty / 原始视图和 Wire 视图只读显示得下的那一段。`HttpResponse::shown_body_text(pretty, limit)`：不超过上限的 JSON 照旧整份格式化；超过上限的由 `format::json_prefix` 逐字节重新缩进，到上限就停（数字和字符串保持原样，其余与整份格式化的开头一致，JSON lines 一行一个）；原始视图和文本用 `format::text_prefix` 只取前缀（在字符边界截断）。`exchange_within` 同理只取响应体放得下的部分。于是 64 MB 的响应每次显示、每次切回标签，工作量都是上限（1–2 MB）而不是整个响应体，不再需要缓存。测试 `a_json_bodys_start_is_indented_as_the_whole`、`a_texts_start_is_cut_at_a_character`、`a_bodys_start_is_shown_as_the_whole_would_be`（前缀与整份结果的开头一致）；去掉空容器的规则时第一条失败。
+- 还没做的：树视图在主线程上解析最多 16 MB（`json_tree.rs`）、断言第一次在 `render` 里解析响应体、`EventStream::show` 解析全部事件；编辑器自己排版上限以内的文本（1–2 MB）仍在主线程上，这是显示上限的设置。
 
 ### PERF-4 首页轮询统计全库接口数（高，bridge）
 

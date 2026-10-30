@@ -1605,7 +1605,7 @@ impl ResponsePanel {
         }
         self.wire_of = Some(key);
         // As the body: its start, and no wrapping a line too long to.
-        let (text, clipped) = clip_text(response.exchange(self.reveal), self.display_limit);
+        let (text, clipped) = response.exchange_within(self.reveal, self.display_limit);
         self.wire_clipped = clipped;
         let wraps = self.wrap && unwrappable_line(&text).is_none();
         self.wire.update(cx, |editor, cx| {
@@ -1921,11 +1921,12 @@ fn image_format(kind: ImageType) -> Option<ImageFormat> {
 /// the view wants them (#51), an SVG's text, any other body's bytes.
 /// `limit` is how much text to show. Hex keeps its own `HEX_LIMIT`.
 fn editor_text(response: &HttpResponse, pretty: bool, limit: usize) -> (&'static str, String, Option<usize>, bool) {
-    let text = match response.body_kind() {
-        BodyKind::Json | BodyKind::Text if pretty => response.body_text(),
-        BodyKind::Json | BodyKind::Text => response.raw_body_text(),
+    // A body that would make the editor crawl shows its start (#17), and
+    // only that start is read (PERF-3).
+    let (text, clipped) = match response.body_kind() {
+        BodyKind::Json | BodyKind::Text => response.shown_body_text(pretty, limit).unwrap_or_default(),
         BodyKind::Image if response.image_type() == Some(ImageType::Svg) => {
-            Some(String::from_utf8_lossy(&response.body).into_owned())
+            cyberapi_core::format::text_prefix(&response.body, limit)
         }
         BodyKind::Image | BodyKind::Pdf | BodyKind::Binary => {
             let shown = &response.body[..response.body.len().min(HEX_LIMIT)];
@@ -1933,8 +1934,6 @@ fn editor_text(response: &HttpResponse, pretty: bool, limit: usize) -> (&'static
             return ("text", media::hex_dump(shown), clipped, true);
         }
     };
-    // A body that would make the editor crawl shows its start (#17).
-    let (text, clipped) = clip_text(text.unwrap_or_default(), limit);
     (language_of(response), text, clipped.then_some(limit), false)
 }
 

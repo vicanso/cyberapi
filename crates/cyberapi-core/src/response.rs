@@ -431,6 +431,20 @@ impl HttpResponse {
         }
     }
 
+    /// PERF-3: what an editor shows of the body — indented for `pretty`, as
+    /// it came otherwise — at most `limit` bytes, and whether there was
+    /// more; `None` for what is not text. No more of the body is read than
+    /// that takes: a 64 MB answer is not indented, or copied, whole to show
+    /// its start. One within `limit` reads as [`Self::body_text`] does.
+    pub fn shown_body_text(&self, pretty: bool, limit: usize) -> Option<(String, bool)> {
+        match self.body_kind() {
+            BodyKind::Json if pretty && self.body.len() > limit => Some(crate::format::json_prefix(&self.body, limit)),
+            BodyKind::Json if pretty => self.body_text().map(|text| clip_text(text, limit)),
+            BodyKind::Json | BodyKind::Text => Some(crate::format::text_prefix(&self.body, limit)),
+            BodyKind::Image | BodyKind::Pdf | BodyKind::Binary => None,
+        }
+    }
+
     /// The raw view (#51): JSON and text exactly as the server sent them,
     /// nothing reindented; anything else as the kind says.
     pub fn raw_body_text(&self) -> Option<String> {
@@ -446,6 +460,12 @@ impl HttpResponse {
     /// reads like a secret is masked unless `reveal` (as #58 shows them);
     /// an entry kept before the sent request was has only the answer.
     pub fn exchange(&self, reveal: bool) -> String {
+        self.exchange_within(reveal, usize::MAX).0
+    }
+
+    /// PERF-3: [`Self::exchange`], at most `limit` bytes of it, and whether
+    /// there was more: of the body, no more is read than fits.
+    pub fn exchange_within(&self, reveal: bool, limit: usize) -> (String, bool) {
         let mut out = String::new();
         let version = match self.stats.version.as_str() {
             "" => "HTTP/1.1",
@@ -495,7 +515,7 @@ impl HttpResponse {
         }
         let Some(status) = self.status else {
             out += &format!("* {}\n", self.error.as_deref().unwrap_or_default());
-            return out;
+            return clip_text(out, limit);
         };
         // A code the table does not name ends the line after the number.
         let line = format!("< {version} {status} {}", status_text(status));
@@ -507,15 +527,20 @@ impl HttpResponse {
         out += "<\n";
         if let Some(size) = self.body_omitted {
             out += &format!("[{} not kept in the history]\n", format_size(size));
-        } else if let Some(body) = self.raw_body_text() {
+        } else if matches!(self.body_kind(), BodyKind::Json | BodyKind::Text) {
+            let (body, cut) = crate::format::text_prefix(&self.body, limit.saturating_sub(out.len()));
             out += &body;
+            if cut {
+                // The head alone may be past the limit.
+                return (clip_text(out, limit).0, true);
+            }
         } else if !self.body.is_empty() {
             out += &format!("[{} of data, not text]\n", format_size(self.body.len() as u64));
         }
         if self.truncated {
             out += &format!("\n[cut at {}]\n", format_size(RESPONSE_LIMIT as u64));
         }
-        out
+        clip_text(out, limit)
     }
 
     /// The body as JSON, for the `get` template function.
@@ -929,6 +954,31 @@ mod tests {
         sent.url = String::new();
         sent.request.uri = "{{HOST}}/v1/users".into();
         assert_eq!(sent.sent_path(), "{{HOST}}/v1/users");
+    }
+
+    /// PERF-3: what an editor shows of a body, and of the exchange, is
+    /// their start — the same start as of the whole.
+    #[test]
+    fn a_bodys_start_is_shown_as_the_whole_would_be() {
+        let body = br#"{"items": [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}], "next": null}"#;
+        let answer = response(&[("content-type", "application/json")], body);
+        let whole = answer.body_text().expect("text");
+        assert_eq!(answer.shown_body_text(true, 10_000), Some((whole.clone(), false)));
+        for limit in [10, 30, 60] {
+            let (start, more) = answer.shown_body_text(true, limit).expect("text");
+            assert!(
+                more && start.len() <= limit && whole.starts_with(&start),
+                "{limit}: {start:?}"
+            );
+            let (raw, more) = answer.shown_body_text(false, limit).expect("text");
+            assert!(more && raw.as_bytes() == &body[..limit], "{limit}: {raw:?}");
+        }
+        let all = answer.exchange(false);
+        assert_eq!(answer.exchange_within(false, usize::MAX), (all.clone(), false));
+        let (start, more) = answer.exchange_within(false, 40);
+        assert!(more && start.len() <= 40 && all.starts_with(&start), "{start:?}");
+        let picture = response(&[("content-type", "image/png")], &[0x89, b'P', b'N', b'G']);
+        assert_eq!(picture.shown_body_text(true, 10), None);
     }
 
     /// #51: the request as it went out and the answer as it came, laid out

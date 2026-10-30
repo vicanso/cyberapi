@@ -22,6 +22,134 @@ pub fn json(value: &impl Serialize) -> String {
     }
 }
 
+/// PERF-3: at most `limit` bytes of `bytes` as text, and whether there
+/// was more: cut at a character, what is not UTF-8 replaced. Only the
+/// bytes kept are read.
+pub fn text_prefix(bytes: &[u8], limit: usize) -> (String, bool) {
+    let (kept, cut) = if bytes.len() <= limit {
+        (bytes, false)
+    } else {
+        let kept = &bytes[..limit];
+        match std::str::from_utf8(kept) {
+            // Only the last character was cut through.
+            Err(error) if error.error_len().is_none() => (&kept[..error.valid_up_to()], true),
+            _ => (kept, true),
+        }
+    };
+    let text = String::from_utf8_lossy(kept).into_owned();
+    // A replaced byte is three: still no more than asked.
+    let (text, clipped) = clip(text, limit);
+    (text, cut || clipped)
+}
+
+/// At most `limit` bytes of `text`, cut at a character.
+fn clip(mut text: String, limit: usize) -> (String, bool) {
+    if text.len() <= limit {
+        return (text, false);
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    (text, true)
+}
+
+/// PERF-3: the start of `bytes`, JSON, indented as [`json`] indents it — at
+/// most `limit` bytes, and whether there was more. Only as much of `bytes`
+/// is read as that takes, so a 64 MB answer is not read whole to show its
+/// first megabytes; what follows is not checked, and numbers and strings
+/// stay as they came. Values one after another (JSON lines) are a line
+/// apart.
+pub fn json_prefix(bytes: &[u8], limit: usize) -> (String, bool) {
+    let mut out: Vec<u8> = Vec::with_capacity(limit.min(bytes.len().saturating_mul(2)) + 64);
+    let newline = |out: &mut Vec<u8>, depth: usize| {
+        out.push(b'\n');
+        out.extend(std::iter::repeat_n(b' ', depth * JSON_INDENT));
+    };
+    let (mut depth, mut at) = (0, 0);
+    let (mut in_string, mut escaped, mut scalar) = (false, false, false);
+    // A value on the top level ended: the next starts a line.
+    let mut between = false;
+    while at < bytes.len() && out.len() < limit {
+        let byte = bytes[at];
+        at += 1;
+        if in_string {
+            out.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+                between = depth == 0;
+            }
+            continue;
+        }
+        let starts = |out: &mut Vec<u8>, between: &mut bool| {
+            if std::mem::take(between) {
+                out.push(b'\n');
+            }
+        };
+        match byte {
+            b' ' | b'\t' | b'\n' | b'\r' => {
+                between |= scalar && depth == 0;
+                scalar = false;
+            }
+            b'"' => {
+                starts(&mut out, &mut between);
+                (in_string, scalar) = (true, false);
+                out.push(byte);
+            }
+            b'{' | b'[' => {
+                starts(&mut out, &mut between);
+                scalar = false;
+                let close = if byte == b'{' { b'}' } else { b']' };
+                let next = bytes[at..]
+                    .iter()
+                    .position(|next| !next.is_ascii_whitespace())
+                    .map(|skip| at + skip);
+                // An empty one stays on its line.
+                if let Some(next) = next.filter(|next| bytes[*next] == close) {
+                    out.extend_from_slice(&[byte, close]);
+                    at = next + 1;
+                    between = depth == 0;
+                    continue;
+                }
+                out.push(byte);
+                depth += 1;
+                newline(&mut out, depth);
+            }
+            b'}' | b']' => {
+                scalar = false;
+                depth = depth.saturating_sub(1);
+                newline(&mut out, depth);
+                out.push(byte);
+                between = depth == 0;
+            }
+            b',' => {
+                scalar = false;
+                out.push(byte);
+                newline(&mut out, depth);
+            }
+            b':' => {
+                scalar = false;
+                out.extend_from_slice(b": ");
+            }
+            _ => {
+                if !scalar {
+                    starts(&mut out, &mut between);
+                }
+                scalar = true;
+                out.push(byte);
+            }
+        }
+    }
+    let more = bytes[at..].iter().any(|byte| !byte.is_ascii_whitespace());
+    let (text, clipped) = text_prefix(&out, limit);
+    (text, more || clipped)
+}
+
 /// A time, short: `MM-DD HH:mm` within the reader's current year,
 /// `YYYY-MM-DD` before it. Shown in `now`'s offset — the reader's — whatever
 /// offset it was stored with. An unknown time (the epoch) is empty.
@@ -86,6 +214,42 @@ pub fn days_until(at: Timestamp, now: Timestamp) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PERF-3: the start of a JSON body, indented as the whole of it would
+    /// be, without reading the rest.
+    #[test]
+    fn a_json_bodys_start_is_indented_as_the_whole() {
+        let body = br#" {"a": [1, 2, {"b": null, "c": {}, "d": []}], "e": "x, y: {z}", "f": "q\"]" , "g": true} "#;
+        let whole = json(&serde_json::from_slice::<serde_json::Value>(body).expect("JSON"));
+        assert_eq!(json_prefix(body, usize::MAX), (whole.clone(), false));
+        for limit in [1, 7, 20, 41, 80] {
+            let (start, more) = json_prefix(body, limit);
+            assert!(more && start.len() <= limit, "{limit}: {start:?}");
+            assert!(whole.starts_with(&start), "{limit}: {start:?}");
+        }
+        // JSON lines: a line apart, as each would be.
+        let lines = b"{\"a\": 1}\n{\"b\": [2]}\n";
+        assert_eq!(
+            json_prefix(lines, usize::MAX).0,
+            "{\n    \"a\": 1\n}\n{\n    \"b\": [\n        2\n    ]\n}"
+        );
+        assert_eq!(json_prefix(b"1 2", usize::MAX).0, "1\n2");
+    }
+
+    /// A text's start is cut at a character, and is never longer than asked.
+    #[test]
+    fn a_texts_start_is_cut_at_a_character() {
+        let text = "aé€".as_bytes();
+        assert_eq!(text_prefix(text, 100), ("aé€".to_string(), false));
+        assert_eq!(
+            text_prefix(text, 4),
+            ("aé".to_string(), true),
+            "€ cut through is left out"
+        );
+        assert_eq!(text_prefix(text, 2), ("a".to_string(), true));
+        let (bad, cut) = text_prefix(&[0xff, 0xff, b'a'], 2);
+        assert!(cut && bad.len() <= 2, "{bad:?}");
+    }
 
     #[test]
     fn json_is_indented_by_four_spaces_wherever_it_is_shown() {
