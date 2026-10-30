@@ -5,7 +5,7 @@
 //! the project's name, description, settings or order changed. An edited
 //! API's request is compared line by line as [`request_text`] writes it.
 
-use crate::model::{HttpRequest, VariableCategory};
+use crate::model::{HttpMethod, HttpRequest, VariableCategory};
 use crate::sync::ProjectConfig;
 use crate::{EnvironmentId, ItemId};
 use std::collections::HashMap;
@@ -71,11 +71,73 @@ impl ProjectChanges {
     }
 }
 
-/// An API's request as two of them are compared: its JSON, indented.
+/// An API's request as two of them are compared: its JSON, indented —
+/// but for its body, its description and its examples, each written out
+/// below it a line at a time, so a change inside one is a line of its own
+/// (BUG-20). A gRPC call's definitions are told by their size and hash.
 pub fn request_text(request: &HttpRequest) -> String {
-    serde_json::to_value(request)
+    let rest = HttpRequest {
+        body: String::new(),
+        description: String::new(),
+        examples: Vec::new(),
+        ..request.clone()
+    };
+    let mut text = serde_json::to_value(&rest)
         .map(|json| crate::format::json(&json))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let mut part = |title: &str, body: &str| {
+        if !body.trim().is_empty() {
+            text += &format!("\n--- {title} ---\n{}", body.trim_end());
+        }
+    };
+    match request.method {
+        HttpMethod::Grpc => {
+            let call = crate::grpc::GrpcBody::read(&request.body);
+            let told = format!(
+                "service: {}\nmethod: {}\nsource: {}\ndefinitions: {}",
+                call.service,
+                call.method,
+                call.source,
+                summed(&call.descriptors)
+            );
+            part("call", &told);
+            part("message", &indented(&call.message));
+        }
+        _ if request.content_type == crate::model::ContentType::GraphQl => {
+            let body = crate::graphql::GraphQlBody::read(&request.body);
+            part("query", &body.query);
+            part("variables", &indented(&body.variables));
+            part("operation", &body.operation_name);
+        }
+        _ => part("body", &indented(&request.body)),
+    }
+    part("description", &request.description);
+    for example in &request.examples {
+        let headers: String = example
+            .headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\n"))
+            .collect();
+        let told = format!("{}\n{headers}\n{}", example.status, indented(&example.body));
+        part(&format!("example: {}", example.name), &told);
+    }
+    text
+}
+
+/// `text` indented as JSON, when it is; as it is otherwise.
+fn indented(text: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(text)
+        .map(|json| crate::format::json(&json))
+        .unwrap_or_else(|_| text.to_string())
+}
+
+/// What base64 `text` holds, told by its size and hash: a gRPC call's
+/// definitions, too long a line to compare.
+fn summed(text: &str) -> String {
+    use sha2::Digest as _;
+    let hash = sha2::Sha256::digest(text.as_bytes());
+    let short: String = hash.iter().take(6).map(|byte| format!("{byte:02x}")).collect();
+    format!("{} characters, sha256 {short}…", text.len())
 }
 
 /// Each item's folder (`None` the top level).
@@ -438,5 +500,52 @@ mod tests {
     fn a_request_is_compared_as_indented_json() {
         let text = request_text(&api("a", "a", "/users").request);
         assert!(text.contains("\n    \"uri\": \"/users\""), "{text}");
+    }
+
+    /// BUG-20: a change inside a body, a description or an example is a
+    /// line of its own; a gRPC call's definitions are not a line at all.
+    #[test]
+    fn a_requests_long_parts_are_compared_a_line_at_a_time() {
+        use crate::model::Example;
+        let request = |id: u32, note: &str| HttpRequest {
+            body: format!(r#"{{"user": "ann", "id": {id}, "tags": ["a", "b"]}}"#),
+            description: format!("Signs in.\n{note}"),
+            examples: vec![Example {
+                name: "ok".into(),
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: format!(r#"{{"id": {id}}}"#),
+            }],
+            ..Default::default()
+        };
+        let (old, new) = (request_text(&request(1, "Old.")), request_text(&request(2, "New.")));
+        let changed: Vec<(&str, &str)> = old.lines().zip(new.lines()).filter(|(a, b)| a != b).collect();
+        assert_eq!(
+            changed,
+            [
+                (r#"    "id": 1,"#, r#"    "id": 2,"#),
+                ("Old.", "New."),
+                (r#"    "id": 1"#, r#"    "id": 2"#)
+            ],
+            "{new}"
+        );
+        assert!(new.contains("--- description ---\nSigns in.\nNew."), "{new}");
+
+        let call = HttpRequest {
+            method: HttpMethod::Grpc,
+            body: crate::grpc::GrpcBody {
+                service: "shop.Store".into(),
+                method: "Get".into(),
+                message: r#"{"id": "7"}"#.into(),
+                descriptors: "A".repeat(100_000),
+                source: "shop.proto".into(),
+            }
+            .to_body(),
+            ..Default::default()
+        };
+        let text = request_text(&call);
+        assert!(text.lines().all(|line| line.len() < 200), "no long line");
+        assert!(text.contains("definitions: 100000 characters, sha256 "), "{text}");
+        assert!(text.contains("--- message ---\n{\n    \"id\": \"7\"\n}"), "{text}");
     }
 }
