@@ -581,6 +581,9 @@ impl WorkspaceView {
                                     window.remove_notification1::<UndoDelete>(ElementId::Integer(count), cx);
                                 })
                         });
+                    // Only the last delete is undone: the one before's notice
+                    // goes, so its button does not seem to (BUG-9).
+                    window.remove_notification1::<UndoDelete>(ElementId::Integer(count.saturating_sub(1)), cx);
                     window.push_notification(note, cx);
                     let state = this_state.downgrade();
                     cx.spawn_in(window, async move |_, cx| {

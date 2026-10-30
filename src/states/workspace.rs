@@ -234,6 +234,9 @@ pub struct WorkspaceState {
     versions: Option<Result<Vec<ProjectVersion>, StoreError>>,
     /// F6: the last delete, while it can be undone.
     undo: Option<Undo>,
+    /// F6: how many deletes the reader was told of: each one's number,
+    /// never another's (BUG-9).
+    deletes: u64,
     /// A server project's working copy; `None` for a project of this
     /// machine's, whose changes are written at once.
     copy: Option<CopyState>,
@@ -336,6 +339,7 @@ impl WorkspaceState {
             recent: None,
             versions: None,
             undo: None,
+            deletes: 0,
             copy,
             _poll: poll.filter(|_| !is_copy).map(|every| Self::poll(every, cx)),
             _filter_save: None,
@@ -2668,7 +2672,8 @@ impl WorkspaceState {
             Ok(removal) => {
                 let gone = |id: &ItemId| removal.folders.contains(id) || removal.apis.contains(id);
                 if let Some(deleted) = deleted {
-                    let count = this.undo.as_ref().map_or(0, |undo| undo.count) + 1;
+                    this.deletes += 1;
+                    let count = this.deletes;
                     let (name, apis) = (deleted.name.clone(), deleted.apis.len());
                     this.undo = Some(Undo {
                         count,
@@ -3584,6 +3589,25 @@ mod tests {
         cx.run_until_parked();
         let last = storage.tree().load(collection.id.clone()).await.expect("the tree");
         assert!(!last.apis.iter().any(|api| api.id == health.id));
+        assert_eq!(
+            counts.lock().expect("seen").last(),
+            Some(&(2, 1)),
+            "a number of its own"
+        );
+
+        // BUG-9: an earlier delete's time running out leaves the last one
+        // to undo.
+        state.update(cx, |state, cx| state.delete(users.id.clone(), cx));
+        cx.run_until_parked();
+        assert_eq!(counts.lock().expect("seen").last(), Some(&(3, 1)));
+        state.update(cx, |state, _| {
+            state.forget_undo(1);
+            state.forget_undo(2);
+        });
+        state.update(cx, |state, cx| state.undo_delete(3, cx));
+        cx.run_until_parked();
+        let last = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        assert!(last.folders.iter().any(|folder| folder.id == users.id), "back");
     }
 
     /// D6: an environment marked as production is the project's to keep;
