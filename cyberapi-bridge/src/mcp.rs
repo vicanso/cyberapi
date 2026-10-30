@@ -831,11 +831,9 @@ async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, argumen
             api.request.method.as_str()
         ));
     }
-    let Some(_sending) = bridge.inner.in_flight.start(&account.id) else {
-        return Err(format!(
-            "this account has {} requests on their way already: wait for them",
-            crate::in_flight::PER_ACCOUNT
-        ));
+    let _sending = match bridge.inner.in_flight.start(&account.id) {
+        Ok(sending) => sending,
+        Err(busy) => return Err(busy.to_string()),
     };
     let prefs = storage.prefs().app().await.unwrap_or_default();
     let sender = Sender {

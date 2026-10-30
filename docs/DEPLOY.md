@@ -138,8 +138,8 @@ helm install cyberapi deploy/helm/cyberapi \
 
 - **The database**: `store.existingSecret` (and `store.existingSecretKey`, `store-url` by default) names a Secret of yours; or `store.url` puts the URL in a Secret the chart writes. Without either it refuses to install.
 - **The first administrator**: `setupToken.value` or `setupToken.existingSecret`; without one the token is in the log (`kubectl logs deploy/cyberapi | grep -i "setup token"`).
-- **The options** above, as values: `bridge.basePath` (the ingress path should match it), `bridge.allowTargets` (a list), `bridge.publicOnly` (on by default; requests go to public addresses only), `bridge.insecureCookie`, and `bridge.extraArgs` / `bridge.extraEnv` for the rest.
-- **One replica** (`replicaCount: 1`): the login throttle, the MCP limit and the requests an account has out at once are counted in each process. The pod runs as non-root with a read-only root filesystem; it is ready once it reaches its database.
+- **The options** above, as values: `bridge.basePath` (the ingress path should match it), `bridge.allowTargets` (a list), `bridge.publicOnly` (on by default; requests go to public addresses only), `bridge.maxSends` (*0.4.1*; empty: the bridge's default), `bridge.insecureCookie`, and `bridge.extraArgs` / `bridge.extraEnv` for the rest.
+- **One replica** (`replicaCount: 1`): the login throttle, the MCP limit and the requests under way at once are counted in each process. The pod runs as non-root with a read-only root filesystem; it is ready once it reaches its database.
 - **TLS** is the Ingress's (`ingress.tls`): behind it the login cookie stays `Secure`. A version other than the chart's is `image.tag` (`nightly` follows `main`).
 
 ## Options
@@ -154,6 +154,7 @@ Each is a flag and, where given, an environment variable.
 | `--allow-target <ranges>` | `CYBERAPI_BRIDGE_ALLOW_TARGETS` | Address ranges requests may also go to, comma-separated, e.g. `127.0.0.1/32` ([Where requests may go](#where-requests-may-go)). |
 | `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | *0.2.2*, and what the bridge does without it since *0.3.1*. Requests go to public addresses only either way; a private range is `--allow-target`. |
 | `--base-path <path>` | `CYBERAPI_BRIDGE_BASE_PATH` | *0.2.2.* Serve the page and the API under this path, e.g. `/cyberapi`, and keep the login cookie to it ([under a sub-path](#https-behind-a-reverse-proxy)). Empty by default: the root. |
+| `--max-sends <n>` | `CYBERAPI_BRIDGE_MAX_SENDS` | *0.4.1.* How many requests of all accounts may be under way at once, `64` by default; one more is answered "busy" at once. Each may hold up to 64 MB of response and its answer to the page, so this bounds the bridge's memory. |
 | `--insecure-cookie` | | Leave `Secure` off the login cookie, for plain HTTP on your own machine. |
 | `--www <dir>` | | Serve this directory as the page instead of the built-in one (development). |
 | | `RUST_LOG` | How much to log: `info` by default, `debug` for more. Logs go to standard output. |
@@ -218,7 +219,7 @@ Whoever can sign in can therefore reach public addresses from the bridge's machi
 - A private range, or a service on the bridge's own host, is named with `--allow-target`: `CYBERAPI_BRIDGE_ALLOW_TARGETS=10.1.0.0/16,192.168.10.0/24` or `127.0.0.1/32`. In a container, `127.0.0.1` is the container itself; an API on the host is reached at the host's address.
 - `--public-only` (`CYBERAPI_BRIDGE_PUBLIC_ONLY`) has been accepted since *0.2.2*. Since *0.3.1* the bridge sends this way without it, and setting the variable to false does not open private networks.
 
-Ranges are written as addresses (CIDR), not names: the check is on what a name resolves to, so a name allowed by itself could lead anywhere. Each account has at most 16 requests under way at once; more are answered "busy" at once rather than queued.
+Ranges are written as addresses (CIDR), not names: the check is on what a name resolves to, so a name allowed by itself could lead anywhere. Each account has at most 16 requests under way at once, and all accounts together at most `--max-sends` (64 by default, *0.4.1*); more are answered "busy" at once rather than queued.
 
 The bridge connects to every server itself: it does not go through a proxy, neither one in its environment (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) nor the desktop app's proxy setting, which a page's requests do not carry. A proxy would see past the checks above, which are on the address the bridge connects to.
 

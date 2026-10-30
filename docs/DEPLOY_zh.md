@@ -138,8 +138,8 @@ helm install cyberapi deploy/helm/cyberapi \
 
 - **数据库**：`store.existingSecret`（及 `store.existingSecretKey`，默认 `store-url`）指向你自己的 Secret；或者用 `store.url`，由 chart 写进它生成的 Secret。两者都没有时拒绝安装。
 - **第一个管理员**：`setupToken.value` 或 `setupToken.existingSecret`；都没有时初始化 token 在日志里（`kubectl logs deploy/cyberapi | grep -i "setup token"`）。
-- **上面的选项**都有对应的 value：`bridge.basePath`（Ingress 的路径要和它一致）、`bridge.allowTargets`（列表）、`bridge.publicOnly`（默认开启；请求只发往公网地址）、`bridge.insecureCookie`，其余用 `bridge.extraArgs` / `bridge.extraEnv`。
-- **一个副本**（`replicaCount: 1`）：登录限流、MCP 调用限制和每个账号同时发送的请求数都是在各自进程里计数的。Pod 以非 root 用户、只读根文件系统运行，连上数据库后才算就绪。
+- **上面的选项**都有对应的 value：`bridge.basePath`（Ingress 的路径要和它一致）、`bridge.allowTargets`（列表）、`bridge.publicOnly`（默认开启；请求只发往公网地址）、`bridge.maxSends`（*0.4.1*；留空即 bridge 的默认值）、`bridge.insecureCookie`，其余用 `bridge.extraArgs` / `bridge.extraEnv`。
+- **一个副本**（`replicaCount: 1`）：登录限流、MCP 调用限制和同时发送的请求数都是在各自进程里计数的。Pod 以非 root 用户、只读根文件系统运行，连上数据库后才算就绪。
 - **TLS** 交给 Ingress（`ingress.tls`），这样登录 Cookie 保持 `Secure`。要用 chart 之外的版本就设 `image.tag`（`nightly` 跟随 `main`）。
 
 ## 选项
@@ -154,6 +154,7 @@ helm install cyberapi deploy/helm/cyberapi \
 | `--allow-target <网段>` | `CYBERAPI_BRIDGE_ALLOW_TARGETS` | 请求还可以发往的网段，逗号分隔，如 `127.0.0.1/32`（见[请求能发往哪里](#请求能发往哪里)）。 |
 | `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | *0.2.2* 起就有；*0.3.1* 起不写它也一样。请求只发往公网地址。要访问内网，用 `--allow-target`。 |
 | `--base-path <路径>` | `CYBERAPI_BRIDGE_BASE_PATH` | *0.2.2*。把页面和接口放在这个路径下，如 `/cyberapi`，登录 Cookie 也只在这个路径下有效（见[子路径](#反向代理和-https)）。默认为空，即根路径。 |
+| `--max-sends <n>` | `CYBERAPI_BRIDGE_MAX_SENDS` | *0.4.1*。所有账号合起来同时最多有多少个请求在发送，默认 `64`；再多的会立即回复“忙”。每个请求可能占着最多 64 MB 的响应和发给页面的应答，这个数限制了 bridge 的内存。 |
 | `--insecure-cookie` | | 登录 Cookie 不带 `Secure`，用于在自己机器上走纯 HTTP。 |
 | `--www <dir>` | | 用这个目录作为页面，代替内置的页面（开发用）。 |
 | | `RUST_LOG` | 日志详细程度：默认 `info`，`debug` 更详细。日志写到标准输出。 |
@@ -218,7 +219,7 @@ server {
 - 要访问内网，或 bridge 本机上的服务，就放行那个网段：`CYBERAPI_BRIDGE_ALLOW_TARGETS=10.1.0.0/16,192.168.10.0/24`，或 `127.0.0.1/32`。在容器里，`127.0.0.1` 是容器自己；宿主机上的接口要用宿主机的地址访问。
 - `--public-only`（`CYBERAPI_BRIDGE_PUBLIC_ONLY`）从 *0.2.2* 起就接受。*0.3.1* 起不写它也只发往公网；把这个变量设成 false 也不会开放内网。
 
-放行写的是地址（CIDR），不是域名：检查的是域名解析后的地址，只放行一个域名的话，它可以解析到任何地方。每个账号同时最多有 16 个请求在发送，再多的会立即回复“忙”，不会排队。
+放行写的是地址（CIDR），不是域名：检查的是域名解析后的地址，只放行一个域名的话，它可以解析到任何地方。每个账号同时最多有 16 个请求在发送，所有账号合起来最多 `--max-sends` 个（默认 64，*0.4.1*），再多的会立即回复“忙”，不会排队。
 
 bridge 总是自己连接每台服务器，不经过代理：既不读它所在环境的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，也不用桌面版的代理设置（页面的请求不带这项设置）。经过代理的话，上面的地址检查就只查到代理本身。
 

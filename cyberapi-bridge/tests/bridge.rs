@@ -55,6 +55,7 @@ async fn fresh_bridge_at(allowed: Vec<ipnet::IpNet>, base_path: String) -> Optio
         SETUP_TOKEN.into(),
         false,
         base_path,
+        cyberapi_bridge::MAX_SENDS,
     ))
 }
 

@@ -44,7 +44,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use cyberapi_core::directory::{valid_account_name, valid_password};
 use cyberapi_core::version::MODEL;
-use cyberapi_http::{HttpEngine, PreparedRequest, SendError, Watch, stop_signal};
+use cyberapi_http::{HttpEngine, PreparedRequest, Watch, stop_signal};
 use cyberapi_store::{Refusal, StoreError};
 use cyberapi_store_bridge::{
     BearerSession, Call, LoginForm, MODEL_HEADER, Reply, SEND_PATH, SEND_STREAM_PATH, STORE_PATH, SendReply,
@@ -53,6 +53,7 @@ use cyberapi_store_bridge::{
 use cyberapi_store_sql::{Acceptance, Account, NewAccount, SqlStore};
 use futures::StreamExt as _;
 use in_flight::InFlight;
+pub use in_flight::MAX_SENDS;
 use serde::{Deserialize, Serialize};
 use static_files::Mounted;
 pub use static_files::normalize_base_path;
@@ -93,7 +94,8 @@ struct Inner {
     /// the root, else `/prefix`.
     base_path: String,
     throttle: Throttle,
-    /// Each account's requests on their way through `/v1/send`.
+    /// The requests on their way through `/v1/send`, each account's and
+    /// all of them.
     in_flight: Arc<InFlight>,
     /// Each account's MCP calls in the last minute.
     mcp_calls: mcp::Limiter,
@@ -101,13 +103,16 @@ struct Inner {
 
 impl Bridge {
     /// The store's directory sets and checks passwords as sign-in does.
-    /// `base_path` as [`normalize_base_path`] leaves it.
+    /// `base_path` as [`normalize_base_path`] leaves it. At most
+    /// `max_sends` requests of all accounts on their way at once
+    /// ([`MAX_SENDS`] unless the administrator says otherwise).
     pub fn new(
         store: SqlStore,
         engine: Arc<dyn HttpEngine>,
         setup_token: String,
         secure_cookie: bool,
         base_path: String,
+        max_sends: usize,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -117,7 +122,7 @@ impl Bridge {
                 secure_cookie,
                 base_path,
                 throttle: Throttle::default(),
-                in_flight: Arc::default(),
+                in_flight: Arc::new(InFlight::new(max_sends)),
                 mcp_calls: mcp::Limiter::default(),
             }),
         }
@@ -531,11 +536,9 @@ async fn send_watched(
         Ok(account) => account,
         Err(status) => return status.into_response(),
     };
-    let Some(sending) = bridge.inner.in_flight.start(&account.id) else {
-        let busy = SendError::Busy {
-            limit: in_flight::PER_ACCOUNT,
-        };
-        return ndjson(axum::body::Body::from(StreamReply::Done(SendReply::Err(busy)).line()));
+    let sending = match bridge.inner.in_flight.start(&account.id) {
+        Ok(sending) => sending,
+        Err(busy) => return ndjson(axum::body::Body::from(StreamReply::Done(SendReply::Err(busy)).line())),
     };
     let (lines, answer) = futures::channel::mpsc::unbounded::<Vec<u8>>();
     let told = lines.clone();
@@ -606,11 +609,9 @@ async fn send_request(
         Ok(account) => account,
         Err(status) => return status.into_response(),
     };
-    let Some(_sending) = bridge.inner.in_flight.start(&account.id) else {
-        let busy = SendError::Busy {
-            limit: in_flight::PER_ACCOUNT,
-        };
-        return Json(SendReply::Err(busy)).into_response();
+    let _sending = match bridge.inner.in_flight.start(&account.id) {
+        Ok(sending) => sending,
+        Err(busy) => return Json(SendReply::Err(busy)).into_response(),
     };
     let reply = match bridge.inner.engine.send(request).await {
         Ok(exchange) => SendReply::Ok(Box::new(exchange)),

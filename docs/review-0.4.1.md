@@ -57,7 +57,7 @@
 | PERF-12 | A7 | 中 | 压测每 300ms 在 UI 线程上排序全部样本（最多 100 万） | 已核实；暂不处理 |
 | PERF-13 | 网页 | 中 | 服务器项目每次修改都把整个项目序列化进 localStorage | 读代码确认；已修复 |
 | PERF-14 | bridge | 中 | PostgreSQL 的 `responses` 没有以 `api` 开头的索引，删接口时级联删除逐条全表扫描 | 已核实；已修复 |
-| PERF-15 | bridge | 低中 | `/v1/send` 只按账号限并发，没有全局内存上限 | 读代码确认 |
+| PERF-15 | bridge | 低中 | `/v1/send` 只按账号限并发，没有全局内存上限 | 读代码确认；已修复 |
 | PERF-16 | G8 | 低 | 版本对比展开接口时 `diff::compare` 在 UI 线程上同步执行（响应对比是放到后台的） | 读代码确认 |
 | Q-1 | B7 | 低 | 来源地址是项目数据，谁都能改；别人打开“从来源同步”时桌面版立即去取，可指向本机或内网 | 读代码确认 |
 | Q-2 | B7 | 低 | 预览里“来源里已经没有”的列表覆盖整个项目，包括手写的接口 | 读代码确认 |
@@ -383,11 +383,14 @@
 - 修复方向：PostgreSQL 新增一个迁移 `CREATE INDEX responses_api_only ON responses (api)`；MySQL 那边对应一个空步骤（两套迁移逐列对应）。
 - 修复：迁移 10（`0010_cascade_indexes.sql`）。PostgreSQL 加 `responses (api)`，顺带加 `variable_environments (environment)`：删环境时的级联同样没有以它开头的索引（其余外键都有）。MySQL 的第 10 步只有 `SELECT 1`。另外发现新加的迁移文件不会触发重新编译（`sqlx::migrate!` 在编译时读目录），已有的构建会一直用旧的一套，所以加了 `crates/cyberapi-store-sql/build.rs`（`rerun-if-changed=migrations`，sqlx 推荐的做法）。`make test-sql` 通过，两边 `_sqlx_migrations` 都到了第 10 步，PostgreSQL 里能看到两个新索引。
 
-### PERF-15 bridge `/v1/send` 没有全局内存上限（低中）
+### PERF-15 bridge `/v1/send` 没有全局内存上限（低中）——已修复
 
 - 位置：`cyberapi-bridge/src/lib.rs:600-619`，`in_flight.rs:12`（`PER_ACCOUNT = 16`）。
 - 情况：每个请求可能拿着 64 MB 响应体加它的 base64 JSON 应答（峰值约 150 MB），只有按账号的并发数限制，多个账号同时用时总内存没有上限。页面再在 UI 线程上解析这份应答。
 - 修复方向：在按账号的计数旁边加一个全局信号量（或按字节的预算）。
+- 修复：照维护者的决定，`in_flight.rs` 在按账号的计数旁边再数所有账号的，上限是新选项 `--max-sends` / `CYBERAPI_BRIDGE_MAX_SENDS`（默认 `MAX_SENDS` = 64，至少 1），`/v1/send`、`/v1/send/stream` 和 MCP 的 `send_api` 都经过它。超出时立即回 `SendError::ServerBusy`（说明是整个服务器忙，和按账号的 `Busy` 分开），不排队。`DEPLOY.md` / `DEPLOY_zh.md` 的选项表、“请求能发往哪里”和 Helm 一节都写了（标 *0.4.1*），chart 加了 `bridge.maxSends`（留空时不设环境变量）。
+  - 没做：按字节的预算——上限按个数，最坏仍是 64 × 约 150 MB。
+  - 测试：`all_accounts_have_so_many_on_their_way_and_no_more`（去掉全局检查时它失败）；chart 用 `alpine/helm:3.16.2` 镜像 lint 通过，`bridge.maxSends=32` 渲染出环境变量、不设时没有。
 
 ### PERF-16 版本对比在 UI 线程上算差异（G8，低）
 

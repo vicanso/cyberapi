@@ -68,6 +68,10 @@ spec:
             - name: CYBERAPI_BRIDGE_ALLOW_TARGETS
               value: {{ join "," . | quote }}
             {{- end }}
+            {{- with .Values.bridge.maxSends }}
+            - name: CYBERAPI_BRIDGE_MAX_SENDS
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.bridge.publicOnly }}
             - name: CYBERAPI_BRIDGE_PUBLIC_ONLY
               value: "true"

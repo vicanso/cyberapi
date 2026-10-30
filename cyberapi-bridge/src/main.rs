@@ -10,6 +10,7 @@ use cyberapi_http::{NativeEngine, TargetPolicy};
 use cyberapi_store_sql::SqlStore;
 use ipnet::IpNet;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -58,6 +59,10 @@ struct Args {
     /// public addresses only either way; a private range is `--allow-target`.
     #[arg(long, env = "CYBERAPI_BRIDGE_PUBLIC_ONLY")]
     public_only: bool,
+    /// How many requests of all accounts may be on their way at once; one
+    /// more is answered "busy". Each account has 16 at most either way.
+    #[arg(long, env = "CYBERAPI_BRIDGE_MAX_SENDS", default_value_t = NonZeroUsize::new(cyberapi_bridge::MAX_SENDS).expect("not zero"))]
+    max_sends: NonZeroUsize,
 }
 
 #[tokio::main]
@@ -93,6 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         setup_token,
         !args.insecure_cookie,
         base_path.clone(),
+        args.max_sends.get(),
     );
     bridge.spawn_housekeeping();
     let listener = tokio::net::TcpListener::bind(args.listen).await?;

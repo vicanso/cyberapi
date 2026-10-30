@@ -109,6 +109,10 @@ pub enum SendError {
     /// way as it takes from one.
     #[snafu(display("{limit} requests are already on their way; send this one when one of them is back"))]
     Busy { limit: usize },
+    /// The bridge already has as many requests of all its readers on their
+    /// way as it takes (PERF-15).
+    #[snafu(display("the server has {limit} requests on their way, from all its readers; send this one in a moment"))]
+    ServerBusy { limit: usize },
 }
 
 impl SendError {

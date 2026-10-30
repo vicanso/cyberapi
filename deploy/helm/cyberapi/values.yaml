@@ -35,6 +35,9 @@ bridge:
   # addresses only; a private range is named here, e.g. 10.0.0.0/8
   # ("Where requests may go").
   allowTargets: []
+  # How many requests of all accounts may be under way at once; one more
+  # is answered "busy". Empty: the bridge's own default (64).
+  maxSends: ""
   # Kept so an existing install still sets CYBERAPI_BRIDGE_PUBLIC_ONLY.
   # The bridge sends to public addresses only either way.
   publicOnly: true
