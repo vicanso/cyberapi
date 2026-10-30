@@ -562,10 +562,14 @@ fn now(value: &Value, inputs: &Inputs) -> Result<String, TemplateError> {
         params.pop();
     }
     // D7: shifted, as `now(%Y-%m-%d, -1d)`.
-    let shifted = params.last().and_then(|last| shift(last));
-    if shifted.is_some() {
-        params.pop();
-    }
+    let shifted = match params.last().and_then(|last| shift(last)) {
+        Some(Some(shifted)) => {
+            params.pop();
+            Some(shifted)
+        }
+        Some(None) => return Err(params_error("now", value, FAR_SHIFT)),
+        None => None,
+    };
     let format = match params.as_slice() {
         [] => "",
         [format] => format.as_str(),
@@ -578,7 +582,13 @@ fn now(value: &Value, inputs: &Inputs) -> Result<String, TemplateError> {
         }
     };
     let offset = if utc { 0 } else { inputs.utc_offset };
-    let at = chrono::DateTime::from_timestamp(inputs.now, 0).unwrap_or_default() + shifted.unwrap_or_default();
+    // Past what the calendar holds, an error: `+` would panic, and a
+    // release build aborts on a panic — the bridge too, for an assistant's
+    // send.
+    let at = chrono::DateTime::from_timestamp(inputs.now, 0)
+        .unwrap_or_default()
+        .checked_add_signed(shifted.unwrap_or_default())
+        .ok_or_else(|| params_error("now", value, FAR_SHIFT))?;
     let at = at.with_timezone(
         &chrono::FixedOffset::east_opt(offset).unwrap_or(chrono::FixedOffset::east_opt(0).expect("UTC")),
     );
@@ -619,22 +629,26 @@ fn base64_decode(value: &Value) -> Result<Vec<u8>, TemplateError> {
         .ok_or_else(|| params_error("base64Decode", value, "Base64 text"))
 }
 
-/// D7: a shift of `now`'s time — `-1d`, `+2h`, `30m`, `10s`, `1w`.
-fn shift(text: &str) -> Option<chrono::TimeDelta> {
+/// What `now` says of a shift past what the calendar holds.
+const FAR_SHIFT: &str = "a shift the calendar reaches, such as -1d";
+
+/// D7: a shift of `now`'s time — `-1d`, `+2h`, `30m`, `10s`, `1w`: `None`
+/// when `text` is no shift, `Some(None)` when it is one too far to hold.
+fn shift(text: &str) -> Option<Option<chrono::TimeDelta>> {
     let text = text.trim();
     let unit = text.chars().last()?;
     let count: i64 = text[..text.len() - unit.len_utf8()]
         .trim_start_matches('+')
         .parse()
         .ok()?;
-    match unit {
+    Some(match unit {
         's' => chrono::TimeDelta::try_seconds(count),
         'm' => chrono::TimeDelta::try_minutes(count),
         'h' => chrono::TimeDelta::try_hours(count),
         'd' => chrono::TimeDelta::try_days(count),
         'w' => chrono::TimeDelta::try_weeks(count),
-        _ => None,
-    }
+        _ => return None,
+    })
 }
 
 /// The environment variable `env(NAME)` names: one gathered beforehand, by
@@ -854,6 +868,21 @@ mod tests {
         assert_eq!(run("{{now(%H:%M, +2h, utc)}}").as_deref(), Ok("00:13"));
         assert_eq!(run("{{now(-1w, utc)}}").as_deref(), Ok("2023-11-07T22:13:20Z"));
         assert_eq!(run("{{now(%M, 30m, utc)}}").as_deref(), Ok("43"));
+        // BUG-1: past what the calendar holds, an error and not a panic —
+        // a release build aborts on one, the bridge with it.
+        for far in [
+            "{{now(%Y, 100000000d)}}",
+            "{{now(%Y, -100000000d, utc)}}",
+            "{{now(9223372036854775807s)}}",
+            "{{now(iso, -9223372036854775807w)}}",
+        ] {
+            assert!(
+                matches!(run(far), Err(TemplateError::Params { .. })),
+                "{far}: {:?}",
+                run(far)
+            );
+        }
+        assert_eq!(run("{{now(%Y, 36500d, utc)}}").as_deref(), Ok("2123"), "a century on");
     }
 
     /// D7: digests, HMACs and decoding beside the ones there were.
