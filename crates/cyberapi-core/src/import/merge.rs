@@ -71,8 +71,10 @@ fn key(request: &HttpRequest) -> Option<(HttpMethod, String)> {
 /// headers and body; how it signs in, its assertions and its settings stay.
 /// A6: but for the assertions an import wrote, which are the import's
 /// again — unless the reader checks the body against a schema of their
-/// own, which stands for it.
+/// own, which stands for it. One marked imported that checks something
+/// else now was made the reader's (BUG-11).
 pub fn updated(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
+    let the_imports = |assertion: &Assertion| assertion.imported && assertion.subject == Subject::Schema;
     let own_schema = existing
         .assertions
         .iter()
@@ -80,7 +82,7 @@ pub fn updated(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
     let mut assertions: Vec<Assertion> = existing
         .assertions
         .iter()
-        .filter(|assertion| !assertion.imported)
+        .filter(|assertion| !the_imports(assertion))
         .cloned()
         .collect();
     if !own_schema {
@@ -453,6 +455,20 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(updated(&theirs, &incoming).assertions, [edited]);
+
+        // BUG-11: one an import wrote that checks the status now is the
+        // reader's, and stays.
+        let made_theirs = Assertion {
+            subject: Subject::Status,
+            op: crate::assertions::Op::Equals,
+            expected: "200".into(),
+            ..schema("array")
+        };
+        let changed = HttpRequest {
+            assertions: vec![made_theirs.clone()],
+            ..Default::default()
+        };
+        assert_eq!(updated(&changed, &incoming).assertions, [made_theirs, schema("object")]);
     }
 
     #[test]

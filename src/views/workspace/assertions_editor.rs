@@ -564,6 +564,9 @@ impl AssertionsEditor {
         row.op = op;
         row.ops = ops;
         row._ops = subscription;
+        // Changed, it is the reader's: an update from the import's source
+        // does not take it away (BUG-11).
+        row.imported = false;
         row.target.update(cx, |input, cx| {
             input.set_placeholder(target_placeholder(subject), window, cx)
         });
@@ -580,6 +583,9 @@ impl AssertionsEditor {
         let Some(op) = row.subject.ops().get(index).copied() else {
             return;
         };
+        if row.op != op {
+            row.imported = false;
+        }
         row.op = op;
         let subject = row.subject;
         row.expected.update(cx, |input, cx| {
@@ -601,6 +607,8 @@ impl AssertionsEditor {
     fn toggle(&mut self, id: usize, cx: &mut Context<Self>) {
         if let Some(row) = self.rows.iter_mut().find(|row| row.id == id) {
             row.enabled = !row.enabled;
+            // Turned off or on by the reader, theirs to keep so (BUG-11).
+            row.imported = false;
         }
         self.write(cx);
     }
