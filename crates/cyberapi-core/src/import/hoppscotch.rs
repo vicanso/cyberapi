@@ -312,6 +312,7 @@ fn settings(value: &Value) -> FolderSettings {
         // F3.
         description: text(value, "description").trim().to_string(),
         variables: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -377,8 +378,7 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
                     settings: FolderSettings {
                         auth: Auth::Inherit,
                         headers: own.headers,
-                        description: String::new(),
-                        variables: Vec::new(),
+                        ..Default::default()
                     },
                 }];
             }

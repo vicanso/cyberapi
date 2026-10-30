@@ -86,6 +86,10 @@ pub struct ImportBundle {
     /// as its source. The reader's choice, not the document's.
     #[serde(skip)]
     pub source: Option<String>,
+    /// B9: the address it was fetched from, when the folder imported into is
+    /// to keep it as its own source.
+    #[serde(skip)]
+    pub folder_source: Option<String>,
 }
 
 /// A named environment an import brings (B4), with its variables, name and

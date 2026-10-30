@@ -647,6 +647,11 @@ fetch_first = "Fetch the address to see first what syncing would do."
 local = "This address is on this machine or a private network. The source is project data that any editor of the project can change: fetch it only if you trust it."
 remember = "Keep this address as the project's source, to sync from later"
 replace = "Make this address the project's source instead"
+folder_title = "Sync folder from source: %{name}"
+folder_about = "Fetches this folder's source address: the APIs inside this folder are updated (address, query, headers and body — how they sign in, their assertions and settings stay), new ones are added into this folder, and none are removed."
+remember_folder = "Keep this address as this folder's source, to sync from later"
+replace_folder = "Make this address this folder's source instead"
+save_only = "Save address only"
 
 [export]
 project = "Export the project"
@@ -923,6 +928,8 @@ title = "Folder settings: %{name}"
 auth_hint = "How the APIs in this folder and the folders in it sign in when they inherit."
 headers_hint = "Every API in this folder, and in the folders in it, sends these; a folder inside's of the same name, and an API's own, win."
 description_hint = "What the folder is for, for whoever opens it. Plain text; Markdown shows as written."
+source_title = "OpenAPI / source URL"
+source_hint = "An http(s) address this folder syncs its APIs and field descriptions from (“Sync from source…” in its menu)."
 
 [project_auth]
 menu = "Project auth…"

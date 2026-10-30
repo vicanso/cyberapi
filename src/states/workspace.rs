@@ -2344,6 +2344,9 @@ impl WorkspaceState {
     }
 
     pub fn import(&mut self, parent: Option<ItemId>, bundle: ImportBundle, cx: &mut Context<Self>) {
+        if let (Some(folder), Some(url)) = (&parent, bundle.folder_source.clone()) {
+            self.set_folder_source(folder.clone(), Some(url), cx);
+        }
         let source = source_of(bundle.source, &parent);
         self.import_settings(bundle.auth, bundle.environments, source, cx);
         let call = self
@@ -2390,6 +2393,17 @@ impl WorkspaceState {
     /// name (`import::merge`); an environment variable it has is not added
     /// twice.
     pub fn import_again(&mut self, parent: Option<ItemId>, bundle: ImportBundle, update: bool, cx: &mut Context<Self>) {
+        self.import_again_scoped(parent, bundle, update, false, cx);
+    }
+
+    fn import_again_scoped(
+        &mut self,
+        parent: Option<ItemId>,
+        bundle: ImportBundle,
+        update: bool,
+        within_folder: bool,
+        cx: &mut Context<Self>,
+    ) {
         // The open tabs as their editors hold them: an edit not saved yet is
         // what updating starts from.
         let open: Vec<(ItemId, HttpRequest)> = self
@@ -2408,7 +2422,13 @@ impl WorkspaceState {
                 api.request = request.clone();
             }
         }
-        let merge = cyberapi_core::import::merge::merge(&data, parent.as_ref(), &bundle.items, update);
+        let merge = match (within_folder, parent.as_ref()) {
+            (true, Some(folder)) => cyberapi_core::import::merge::merge_folder(&data, folder, &bundle.items, update),
+            _ => cyberapi_core::import::merge::merge(&data, parent.as_ref(), &bundle.items, update),
+        };
+        if let (Some(folder), Some(url)) = (&parent, bundle.folder_source.clone()) {
+            self.set_folder_source(folder.clone(), Some(url), cx);
+        }
         let source = source_of(bundle.source, &parent);
         self.import_settings(bundle.auth, bundle.environments, source, cx);
         let (apis, folders) = merge.added();
@@ -2513,6 +2533,56 @@ impl WorkspaceState {
             };
             self.set_project_settings(settings, cx);
         }
+    }
+
+    /// B7 / B9: keeps `url` as the project's source address without importing
+    /// yet, preserving the target folder when one is still in the project.
+    pub fn set_source_url(&mut self, url: String, cx: &mut Context<Self>) {
+        let folder = self.source_folder();
+        let next = Some(ImportSource { url, folder });
+        if self.data.settings.source != next {
+            let settings = ProjectSettings {
+                source: next,
+                ..self.data.settings.clone()
+            };
+            self.set_project_settings(settings, cx);
+        }
+    }
+
+    /// B9: where `folder` syncs its own APIs from, when it has a source.
+    pub fn folder_source(&self, folder: &ItemId) -> Option<&str> {
+        self.folder(folder).and_then(|found| found.settings.source.as_deref())
+    }
+
+    /// B9: sets or clears `folder`'s own import source address.
+    pub fn set_folder_source(&mut self, folder: ItemId, source: Option<String>, cx: &mut Context<Self>) {
+        let Some(found) = self.folder(&folder) else { return };
+        if found.settings.source == source {
+            return;
+        }
+        let settings = FolderSettings {
+            source,
+            ..found.settings.clone()
+        };
+        self.set_folder_settings(folder, settings, cx);
+    }
+
+    /// B9: syncs `bundle` from `url` into `folder`, matching and updating APIs
+    /// within `folder`'s subtree alone and keeping `url` as `folder`'s source.
+    pub fn sync_folder_source(
+        &mut self,
+        folder: ItemId,
+        url: String,
+        mut bundle: ImportBundle,
+        cx: &mut Context<Self>,
+    ) {
+        bundle.folder_source = Some(url);
+        self.import_again_scoped(Some(folder), bundle, true, true, cx);
+    }
+
+    /// B9: `folder` keeps no source of its own.
+    pub fn forget_folder_source(&mut self, folder: ItemId, cx: &mut Context<Self>) {
+        self.set_folder_source(folder, None, cx);
     }
 
     /// B4: what an import brings besides its items: how the project signs
@@ -3644,6 +3714,63 @@ mod tests {
         cx.run_until_parked();
         let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
         assert_eq!(kept.settings.source, None);
+    }
+
+    /// B9: each folder can bind and sync its own source URL independently,
+    /// without colliding with sibling folders at the same path.
+    #[gpui_kit::test]
+    async fn a_folder_syncs_from_its_own_source(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        for name in ["users", "orders"] {
+            state.update(cx, |state, cx| state.create_folder(None, name.into(), cx));
+            cx.run_until_parked();
+        }
+        let users = find(&state, "users", cx);
+        let orders = find(&state, "orders", cx);
+        let parse = |text: &str| cyberapi_core::import::parse(text).expect("a collection");
+
+        let mut users_v1 = parse(
+            r#"{"info": {"name": "Users"}, "item": [
+                {"name": "health", "request": {"method": "GET", "url": "{{users}}/health"}}
+            ]}"#,
+        );
+        users_v1.folder_source = Some("https://users.test/openapi.json".into());
+        state.update(cx, |state, cx| state.import(Some(users.clone()), users_v1, cx));
+        cx.run_until_parked();
+
+        let orders_v1 = parse(
+            r#"{"info": {"name": "Orders"}, "item": [
+                {"name": "health", "request": {"method": "GET", "url": "{{orders}}/health"}},
+                {"name": "list", "request": {"method": "GET", "url": "{{orders}}/orders"}}
+            ]}"#,
+        );
+        state.update(cx, |state, cx| {
+            state.sync_folder_source(orders.clone(), "https://orders.test/openapi.json".into(), orders_v1, cx);
+        });
+        cx.run_until_parked();
+
+        let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        assert_eq!(kept.settings.source, None, "project source stays untouched");
+        let users_folder = kept.folders.iter().find(|f| f.id == users).expect("users");
+        let orders_folder = kept.folders.iter().find(|f| f.id == orders).expect("orders");
+        assert_eq!(
+            users_folder.settings.source.as_deref(),
+            Some("https://users.test/openapi.json")
+        );
+        assert_eq!(
+            orders_folder.settings.source.as_deref(),
+            Some("https://orders.test/openapi.json")
+        );
+        assert_eq!(users_folder.children.len(), 1);
+        assert_eq!(orders_folder.children.len(), 2, "orders gets its own /health");
+
+        state.update(cx, |state, cx| state.forget_folder_source(orders.clone(), cx));
+        cx.run_until_parked();
+        let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
+        let orders_folder = kept.folders.iter().find(|f| f.id == orders).expect("orders");
+        assert_eq!(orders_folder.settings.source, None);
     }
 
     /// F6: a deleted folder comes back with its ids, its place, what its

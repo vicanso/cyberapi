@@ -162,6 +162,7 @@ fn item(value: &Value) -> Option<ImportItem> {
                 description: description(value.get("description")),
                 // D5.
                 variables: pairs(value.get("variable"), "key"),
+                ..Default::default()
             },
         });
     };

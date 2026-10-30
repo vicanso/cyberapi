@@ -160,6 +160,7 @@ mod tests {
                 headers: vec![kv("X-Team", "users", true), kv("X-Off", "1", false)],
                 description: String::new(),
                 variables: vec![kv("team", "users", true), kv("page", "1", true), kv("off", "1", false)],
+                ..Default::default()
             },
         );
         set(
@@ -170,6 +171,7 @@ mod tests {
                 headers: vec![kv("X-Team", "profile", true)],
                 description: String::new(),
                 variables: vec![kv("team", "profile", true)],
+                ..Default::default()
             },
         );
         set(
@@ -177,9 +179,7 @@ mod tests {
             "orders",
             FolderSettings {
                 auth: Auth::None,
-                headers: vec![],
-                description: String::new(),
-                variables: vec![],
+                ..Default::default()
             },
         );
         tree.settings = ProjectSettings {

@@ -588,6 +588,8 @@ async fn settings_are_kept(storage: &Storage) {
             enabled: true,
             ..Default::default()
         }],
+        // B9: where it syncs its APIs from.
+        source: Some("https://api.test/users/openapi.json".into()),
     };
     let set = tree
         .set_folder_settings(collection.id.clone(), users.item.id.clone(), settings.clone())

@@ -205,6 +205,7 @@ fn children(resources: &[Value], parent: &str) -> Vec<ImportItem> {
                     headers: Vec::new(),
                     description: text(resource, "description").trim().to_string(),
                     variables: Vec::new(),
+                    ..Default::default()
                 },
             }),
             _ => None,

@@ -4,6 +4,7 @@
 //! Save is clicked; a viewer reads them and closes.
 
 use super::auth_editor::{AuthEditor, AuthFor};
+use super::import_dialog::address;
 use super::request_editor::{COMMON_HEADERS, HEADER_EXAMPLE};
 use crate::states::WorkspaceState;
 use crate::views::kv_editor::{KvEditor, KvOptions};
@@ -13,8 +14,9 @@ use cyberapi_core::ItemId;
 use cyberapi_core::model::{FolderSettings, ProjectSettings};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
-use gpui_kit::component::input::{Editor, EditorState};
-use gpui_kit::component::{ActiveTheme as _, StyledExt as _, v_flex};
+use gpui_kit::component::input::{Editor, EditorState, Input, InputState};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, IntoElement, ParentElement as _, Render,
     Styled as _, Window, div, px,
@@ -60,6 +62,10 @@ fn footer(
 
 struct FolderSettingsView {
     description: Entity<EditorState>,
+    /// B9: the folder's OpenAPI / import source URL.
+    source: Entity<InputState>,
+    source_error: Option<String>,
+    editable: bool,
     auth: Entity<AuthEditor>,
     headers: Entity<KvEditor>,
     /// D5.
@@ -68,7 +74,7 @@ struct FolderSettingsView {
 
 impl Render for FolderSettingsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let border = cx.theme().border;
+        let (border, danger) = (cx.theme().border, cx.theme().danger);
         v_flex()
             .gap_5()
             .child(section(
@@ -80,6 +86,17 @@ impl Render for FolderSettingsView {
                     .border_color(border)
                     .rounded_md()
                     .child(Editor::new(&self.description).w_full().h_full().bordered(false)),
+                cx,
+            ))
+            .child(section(
+                t!("folder_settings.source_title").to_string(),
+                t!("folder_settings.source_hint").to_string(),
+                v_flex()
+                    .gap_1()
+                    .child(Input::new(&self.source).small().disabled(!self.editable))
+                    .when_some(self.source_error.clone(), |this, why| {
+                        this.child(div().text_xs().text_color(danger).child(why))
+                    }),
                 cx,
             ))
             .child(section(
@@ -136,8 +153,16 @@ pub fn open_folder_settings(workspace: &Entity<WorkspaceState>, id: ItemId, wind
         editor.set_value(folder.settings.description.clone(), window, cx);
         editor
     });
+    let source = cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder("https://api.example.com/openapi.json")
+            .default_value(folder.settings.source.clone().unwrap_or_default())
+    });
     let view = cx.new(|_| FolderSettingsView {
         description: description.clone(),
+        source: source.clone(),
+        source_error: None,
+        editable,
         auth: auth.clone(),
         headers: headers.clone(),
         variables: variables.clone(),
@@ -147,13 +172,30 @@ pub fn open_folder_settings(workspace: &Entity<WorkspaceState>, id: ItemId, wind
     window.open_dialog(cx, move |dialog, _, _| {
         let save = {
             let (auth, headers, workspace, id) = (auth.clone(), headers.clone(), workspace.clone(), id.clone());
-            let (description, variables) = (description.clone(), variables.clone());
+            let (description, source, variables, view_for_save) =
+                (description.clone(), source.clone(), variables.clone(), view.clone());
             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                let typed = source.read(cx).value().trim().to_string();
+                let source = if typed.is_empty() {
+                    None
+                } else {
+                    match address(&typed) {
+                        Some(url) => Some(url.to_string()),
+                        None => {
+                            view_for_save.update(cx, |view, cx| {
+                                view.source_error = Some(t!("source.not_address").to_string());
+                                cx.notify();
+                            });
+                            return false;
+                        }
+                    }
+                };
                 let settings = FolderSettings {
                     auth: auth.read(cx).auth(cx),
                     headers: headers.read(cx).list(cx),
                     description: description.read(cx).value().trim_end().to_string(),
                     variables: variables.read(cx).list(cx),
+                    source,
                 };
                 if let Some(workspace) = workspace.upgrade() {
                     workspace.update(cx, |state, cx| state.set_folder_settings(id.clone(), settings, cx));

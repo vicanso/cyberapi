@@ -312,6 +312,7 @@ mod tests {
                     headers: Vec::new(),
                     description: "Orders, made and listed.".into(),
                     variables: vec![kv("status", "paid", true)],
+                    ..Default::default()
                 },
                 created_at: Default::default(),
                 updated_at: Default::default(),

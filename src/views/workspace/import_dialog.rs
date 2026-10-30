@@ -406,19 +406,28 @@ impl ImportView {
         cx.notify();
     }
 
-    /// B7: what keeping the address fetched from as the project's source is
-    /// called; nothing when nothing was fetched, or the project keeps it.
+    /// B7 / B9: what keeping the address fetched from as the project's or
+    /// folder's source is called; nothing when nothing was fetched, or it
+    /// keeps that address already.
     fn source_choice(&self) -> Option<String> {
         let fetched = self.fetched_from.as_ref()?;
-        let kept = self
-            .into
-            .as_ref()
-            .and_then(|into| into.tree.settings.source.as_ref())
-            .map(|source| &source.url);
-        match kept {
-            Some(kept) if kept == fetched => None,
-            Some(_) => Some(t!("source.replace").to_string()),
-            None => Some(t!("source.remember").to_string()),
+        let for_folder = self.into.as_ref().and_then(|into| into.parent.as_ref());
+        let kept = match (self.into.as_ref(), for_folder) {
+            (Some(into), Some(folder)) => into
+                .tree
+                .folders
+                .iter()
+                .find(|found| &found.id == folder)
+                .and_then(|found| found.settings.source.as_ref()),
+            (Some(into), None) => into.tree.settings.source.as_ref().map(|source| &source.url),
+            (None, _) => None,
+        };
+        match (kept, for_folder.is_some()) {
+            (Some(kept), _) if kept == fetched => None,
+            (Some(_), true) => Some(t!("source.replace_folder").to_string()),
+            (None, true) => Some(t!("source.remember_folder").to_string()),
+            (Some(_), false) => Some(t!("source.replace").to_string()),
+            (None, false) => Some(t!("source.remember").to_string()),
         }
     }
 
@@ -625,13 +634,22 @@ fn open(title: String, import: OnImport, into: Option<Arc<MergeInto>>, window: &
         let submit = {
             let (view, import) = (view.clone(), import.clone());
             move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                let (text, again, source) = {
+                let (text, again, source, into_folder) = {
                     let view = view.read(cx);
-                    (view.text(cx), (view.known > 0).then_some(view.update), view.source())
+                    (
+                        view.text(cx),
+                        (view.known > 0).then_some(view.update),
+                        view.source(),
+                        view.into.as_ref().is_some_and(|into| into.parent.is_some()),
+                    )
                 };
                 match import::parse(&text) {
                     Ok(mut bundle) => {
-                        bundle.source = source;
+                        if into_folder {
+                            bundle.folder_source = source;
+                        } else {
+                            bundle.source = source;
+                        }
                         import(bundle, again, window, cx);
                         true
                     }

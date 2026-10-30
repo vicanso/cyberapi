@@ -150,8 +150,32 @@ pub fn updated(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
 /// What importing `items` into `parent` of `tree` again does; `update`
 /// says whether the APIs it has already are updated.
 pub fn merge(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem], update: bool) -> Merge {
+    merge_scoped(tree, parent, items, update, false)
+}
+
+/// B9: what syncing `items` into `folder` from that folder's own source does:
+/// only APIs inside `folder` (at any depth) are matched, so another folder's
+/// APIs at the same path stay untouched.
+pub fn merge_folder(tree: &TreeData, folder: &ItemId, items: &[ImportItem], update: bool) -> Merge {
+    merge_scoped(tree, Some(folder), items, update, true)
+}
+
+fn merge_scoped(
+    tree: &TreeData,
+    parent: Option<&ItemId>,
+    items: &[ImportItem],
+    update: bool,
+    within_parent: bool,
+) -> Merge {
+    let within = within_parent
+        .then_some(parent)
+        .flatten()
+        .map(|folder| apis_in(tree, folder));
     let mut known: HashMap<(HttpMethod, String), &crate::model::ApiSetting> = HashMap::new();
     for api in &tree.apis {
+        if within.as_ref().is_some_and(|within| !within.contains(&api.id)) {
+            continue;
+        }
         if let Some(key) = key(&api.request) {
             known.entry(key).or_insert(api);
         }
@@ -206,7 +230,17 @@ fn apis_in(tree: &TreeData, folder: &ItemId) -> std::collections::HashSet<ItemId
 /// `parent`, or the whole project when that is the top level (Q-2) — a
 /// project's own APIs beside a spec's folder are not the spec's.
 pub fn preview(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem]) -> Preview {
-    let merge = merge(tree, parent, items, true);
+    preview_scoped(tree, parent, items, false)
+}
+
+/// B9: what syncing a folder from its own source would do, matching and
+/// counting within that folder's subtree alone.
+pub fn preview_folder(tree: &TreeData, folder: &ItemId, items: &[ImportItem]) -> Preview {
+    preview_scoped(tree, Some(folder), items, true)
+}
+
+fn preview_scoped(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem], within_parent: bool) -> Preview {
+    let merge = merge_scoped(tree, parent, items, true, within_parent);
     let mut keys = std::collections::HashSet::new();
     let mut stack: Vec<&ImportItem> = items.iter().collect();
     while let Some(item) = stack.pop() {
@@ -216,8 +250,11 @@ pub fn preview(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem]) -
         }
     }
     let within = parent.map(|folder| apis_in(tree, folder));
-    let (mut had, mut missing) = (0, Vec::new());
+    let (mut had, mut missing) = (0usize, Vec::new());
     for api in &tree.apis {
+        if within_parent && within.as_ref().is_some_and(|within| !within.contains(&api.id)) {
+            continue;
+        }
         match key(&api.request) {
             Some(key) if keys.contains(&key) => had += 1,
             Some(_) if within.as_ref().is_none_or(|within| within.contains(&api.id)) => missing.push(api.id.clone()),
@@ -227,7 +264,7 @@ pub fn preview(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem]) -
     Preview {
         added: merge.added(),
         updated: merge.updates.len(),
-        same: had - merge.updates.len(),
+        same: had.saturating_sub(merge.updates.len()),
         missing,
     }
 }
@@ -662,5 +699,46 @@ mod tests {
         let fields = crate::send::form_fields(&merged.body);
         assert_eq!(fields[0].description, "Account handle");
         assert_eq!(fields[1].description, "Own note");
+    }
+
+    /// B9: syncing a folder's own source matches and updates only APIs in
+    /// that folder, leaving a sibling service's `/health` untouched.
+    #[test]
+    fn a_folder_syncs_its_own_source_apart_from_sibling_folders() {
+        let tree = TreeData {
+            folders: vec![
+                folder("f-users", "users", &["a-users-health", "a-users-list"]),
+                folder("f-orders", "orders", &["a-orders-list"]),
+            ],
+            apis: vec![
+                api("a-users-health", HttpMethod::Get, "{{USERS}}/health"),
+                api("a-users-list", HttpMethod::Get, "{{USERS}}/users"),
+                api("a-orders-list", HttpMethod::Get, "{{ORDERS}}/orders"),
+            ],
+            top_order: vec!["f-users".into(), "f-orders".into()],
+            ..Default::default()
+        };
+        let orders_spec = vec![
+            imported_api("health", HttpMethod::Get, "{{ORDERS}}/health"),
+            imported_api("orders", HttpMethod::Get, "{{ORDERS}}/orders?limit=20"),
+        ];
+        let folder_id = ItemId::from("f-orders");
+        assert_eq!(
+            preview_folder(&tree, &folder_id, &orders_spec),
+            Preview {
+                added: (1, 0),
+                updated: 1,
+                same: 0,
+                missing: Vec::new(),
+            }
+        );
+        let merged = merge_folder(&tree, &folder_id, &orders_spec, true);
+        assert_eq!(merged.updates.len(), 1);
+        assert_eq!(merged.updates[0].0, ItemId::from("a-orders-list"));
+        assert_eq!(
+            merged.additions,
+            vec![(Some(folder_id), vec![orders_spec[0].clone()])],
+            "orders gets its own /health without touching users'"
+        );
     }
 }

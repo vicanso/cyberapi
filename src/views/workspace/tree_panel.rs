@@ -1089,6 +1089,7 @@ fn item_menu(
             let (for_api, for_folder, parent) = (state.clone(), state.clone(), id.clone());
             let folder = parent.clone();
             let (for_import, into) = (state.clone(), id.clone());
+            let (for_source, source_folder) = (state.clone(), id.clone());
             let (for_paste, paste_into) = (state.clone(), id.clone());
             let (for_export, exported) = (state.clone(), id.clone());
             let (for_run, run) = (state.clone(), id.clone());
@@ -1127,6 +1128,21 @@ fn item_menu(
                         .icon(Icons::Import)
                         .on_click(move |_, window, cx| {
                             open_import_dialog(for_import.clone(), Some(into.clone()), window, cx)
+                        }),
+                )
+                // B9.
+                .item(
+                    PopupMenuItem::new(t!("source.open").to_string())
+                        .icon(Icons::RefreshCw)
+                        .on_click(move |_, window, cx| {
+                            if let Some(state) = for_source.upgrade() {
+                                super::source_dialog::open_folder_source_dialog(
+                                    state,
+                                    source_folder.clone(),
+                                    window,
+                                    cx,
+                                );
+                            }
                         }),
                 )
             } else {

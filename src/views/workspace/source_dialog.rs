@@ -12,6 +12,7 @@ use super::import_dialog::address;
 use crate::i18n;
 use crate::states::{AppStore, WorkspaceState};
 use crate::views::name_dialog::ok_button;
+use cyberapi_core::ItemId;
 use cyberapi_core::import::merge::{self, Preview};
 use cyberapi_core::import::{self, ImportBundle};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -29,14 +30,34 @@ use rust_i18n::t;
 const NAMED: usize = 8;
 
 pub fn open_source_dialog(workspace: Entity<WorkspaceState>, window: &mut Window, cx: &mut App) {
-    let view = cx.new(|cx| SourceView::new(workspace.downgrade(), window, cx));
+    open_for(workspace, None, window, cx);
+}
+
+/// B9: syncing a single folder from its own bound source address.
+pub fn open_folder_source_dialog(workspace: Entity<WorkspaceState>, folder: ItemId, window: &mut Window, cx: &mut App) {
+    open_for(workspace, Some(folder), window, cx);
+}
+
+fn open_for(workspace: Entity<WorkspaceState>, folder: Option<ItemId>, window: &mut Window, cx: &mut App) {
+    let title = match &folder {
+        Some(id) => {
+            let name = workspace
+                .read(cx)
+                .folder(id)
+                .map(|found| found.name.clone())
+                .unwrap_or_default();
+            t!("source.folder_title", name = name).to_string()
+        }
+        None => t!("source.title").to_string(),
+    };
+    let view = cx.new(|cx| SourceView::new(workspace.downgrade(), folder, window, cx));
     window.open_dialog(cx, move |dialog, _, _| {
         let sync = {
             let view = view.clone();
             move |_: &ClickEvent, window: &mut Window, cx: &mut App| view.update(cx, |view, cx| view.sync(window, cx))
         };
         dialog
-            .title(t!("source.title").to_string())
+            .title(title.clone())
             .w(px(600.))
             .child(crate::views::dialog_body(view.clone()))
             .footer(
@@ -60,9 +81,11 @@ struct Fetched {
 
 struct SourceView {
     workspace: WeakEntity<WorkspaceState>,
+    /// B9: `Some` when syncing a folder's own source; `None` for the project's.
+    folder: Option<ItemId>,
     url: Entity<InputState>,
-    /// Whether the project keeps a source already.
-    kept: bool,
+    /// The source address currently stored on the project or folder.
+    kept_url: Option<String>,
     /// The address being fetched, and the fetch: dropped, it stops.
     fetching: Option<(String, Task<()>)>,
     fetched: Option<Fetched>,
@@ -71,10 +94,19 @@ struct SourceView {
 }
 
 impl SourceView {
-    fn new(workspace: WeakEntity<WorkspaceState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let kept = workspace
-            .upgrade()
-            .and_then(|workspace| workspace.read(cx).source().map(|source| source.url.clone()));
+    fn new(
+        workspace: WeakEntity<WorkspaceState>,
+        folder: Option<ItemId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let kept = workspace.upgrade().and_then(|workspace| {
+            let workspace = workspace.read(cx);
+            match &folder {
+                Some(id) => workspace.folder_source(id).map(str::to_string),
+                None => workspace.source().map(|source| source.url.clone()),
+            }
+        });
         let url = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("https://api.example.com/openapi.json")
@@ -103,8 +135,9 @@ impl SourceView {
         ];
         Self {
             workspace,
+            folder,
             url,
-            kept: kept.is_some(),
+            kept_url: kept,
             fetching: None,
             fetched: None,
             error: None,
@@ -129,9 +162,13 @@ impl SourceView {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
-        let (tree, folder) = {
+        let (tree, own_folder, project_folder) = {
             let workspace = workspace.read(cx);
-            (workspace.tree_data().clone(), workspace.source_folder())
+            (
+                workspace.tree_data().clone(),
+                self.folder.clone(),
+                workspace.source_folder(),
+            )
         };
         let fetched = AppStore::global(cx).fetch_text(url.clone(), cx);
         self.error = None;
@@ -144,7 +181,10 @@ impl SourceView {
                         let bundle = import::parse(&text).map_err(|failure| {
                             t!("import.unreadable", why = i18n::import_error(&failure)).to_string()
                         })?;
-                        let preview = merge::preview(&tree, folder.as_ref(), &bundle.items);
+                        let preview = match &own_folder {
+                            Some(folder) => merge::preview_folder(&tree, folder, &bundle.items),
+                            None => merge::preview(&tree, project_folder.as_ref(), &bundle.items),
+                        };
                         let missing = preview
                             .missing
                             .iter()
@@ -190,16 +230,39 @@ impl SourceView {
             return false;
         };
         if let Some(workspace) = self.workspace.upgrade() {
-            workspace.update(cx, |workspace, cx| {
-                workspace.sync_from_source(fetched.url, fetched.bundle, cx);
+            let folder = self.folder.clone();
+            workspace.update(cx, |workspace, cx| match folder {
+                Some(folder) => workspace.sync_folder_source(folder, fetched.url, fetched.bundle, cx),
+                None => workspace.sync_from_source(fetched.url, fetched.bundle, cx),
             });
         }
         true
     }
 
+    fn save_only(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let typed = self.typed(cx);
+        let Some(url) = address(&typed).map(str::to_string) else {
+            self.error = Some(t!("source.not_address").to_string());
+            cx.notify();
+            return;
+        };
+        if let Some(workspace) = self.workspace.upgrade() {
+            let folder = self.folder.clone();
+            workspace.update(cx, |workspace, cx| match folder {
+                Some(folder) => workspace.set_folder_source(folder, Some(url), cx),
+                None => workspace.set_source_url(url, cx),
+            });
+        }
+        window.close_dialog(cx);
+    }
+
     fn forget(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspace.upgrade() {
-            workspace.update(cx, |workspace, cx| workspace.forget_source(cx));
+            let folder = self.folder.clone();
+            workspace.update(cx, |workspace, cx| match folder {
+                Some(folder) => workspace.forget_folder_source(folder, cx),
+                None => workspace.forget_source(cx),
+            });
         }
         window.close_dialog(cx);
     }
@@ -248,11 +311,18 @@ impl Render for SourceView {
         let muted = cx.theme().muted_foreground;
         let (danger, warning) = (cx.theme().danger, cx.theme().warning);
         let typed = self.typed(cx);
-        let local = address(&typed).is_some_and(import::local_address);
+        let valid_url = address(&typed);
+        let local = valid_url.is_some_and(import::local_address);
         let idle = self.fetching.is_none() && self.fetched.is_none() && self.error.is_none();
+        let can_save_only = valid_url.is_some_and(|url| Some(url) != self.kept_url.as_deref());
+        let about = if self.folder.is_some() {
+            t!("source.folder_about").to_string()
+        } else {
+            t!("source.about").to_string()
+        };
         v_flex()
             .gap_3()
-            .child(div().text_sm().text_color(muted).child(t!("source.about").to_string()))
+            .child(div().text_sm().text_color(muted).child(about))
             .child(
                 h_flex()
                     .gap_2()
@@ -294,15 +364,28 @@ impl Render for SourceView {
                         .children(told(fetched).into_iter().map(|line| div().child(line))),
                 )
             })
-            .when(self.kept, |this| {
+            .when(self.kept_url.is_some() || can_save_only, |this| {
                 this.child(
-                    h_flex().child(
-                        Button::new("source-forget")
-                            .ghost()
-                            .xsmall()
-                            .label(t!("source.forget").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| this.forget(window, cx))),
-                    ),
+                    h_flex()
+                        .gap_2()
+                        .when(can_save_only, |this| {
+                            this.child(
+                                Button::new("source-save-only")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(t!("source.save_only").to_string())
+                                    .on_click(cx.listener(|this, _, window, cx| this.save_only(window, cx))),
+                            )
+                        })
+                        .when(self.kept_url.is_some(), |this| {
+                            this.child(
+                                Button::new("source-forget")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(t!("source.forget").to_string())
+                                    .on_click(cx.listener(|this, _, window, cx| this.forget(window, cx))),
+                            )
+                        }),
                 )
             })
     }
@@ -393,7 +476,7 @@ mod tests {
         let mut view = None;
         let window: AnyWindowHandle = cx
             .open_window(size(px(800.), px(600.)), |window, cx| {
-                let source = cx.new(|cx| SourceView::new(workspace.downgrade(), window, cx));
+                let source = cx.new(|cx| SourceView::new(workspace.downgrade(), None, window, cx));
                 view = Some(source.clone());
                 let showing = cx.new(|_| Showing(source));
                 Root::new(showing, window, cx)

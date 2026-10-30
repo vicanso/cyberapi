@@ -421,6 +421,7 @@ mod tests {
                         enabled: true,
                         ..Default::default()
                     }],
+                    source: Some("https://api.test/users.yaml".into()),
                 },
                 created_at: at(),
                 updated_at: at(),

@@ -73,6 +73,9 @@ pub struct FolderSettings {
     /// inner folder's before an outer one's (`crate::inherit`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub variables: Vec<KvParam>,
+    /// B9: the http(s) address this folder syncs its APIs from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl FolderSettings {
