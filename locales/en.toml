@@ -1098,6 +1098,8 @@ keep_example_title = "Keep the response as an example"
 example_name = "What it shows: found, not found…"
 example_kept = "Kept as an example, in the Docs tab."
 example_refused = "Only an answer with a status and a text body under 256 KB can be an example."
+online_open = "Online documentation"
+online_copied = "Documentation URL copied to clipboard"
 
 [versions]
 open = "Versions…"

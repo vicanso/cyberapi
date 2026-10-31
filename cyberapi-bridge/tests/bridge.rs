@@ -1178,6 +1178,19 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     assert_eq!(mock_status, StatusCode::OK);
     assert_eq!(mock_body, r#"{"pong":true}"#);
 
+    // G3: read-only HTML project documentation renders with secrets masked.
+    let (docs_status, _, docs_body) = send(
+        &router,
+        "GET",
+        &format!("/v1/docs/{}?token={}", project.id, reader.secret),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(docs_status, StatusCode::OK);
+    assert!(docs_body.contains("<!DOCTYPE html>") && docs_body.contains("shop"));
+    assert!(!docs_body.contains("hunter2") && !docs_body.contains("s3cret"));
+
     // Revoked, it signs in no more.
     store
         .directory(ann)

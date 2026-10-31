@@ -1353,6 +1353,20 @@ impl WorkspaceState {
         ))
     }
 
+    /// G3: where the project's read-only HTML documentation lives on the
+    /// bridge (`/v1/docs/{project}`), when this is a server project.
+    pub fn server_docs_url(&self, cx: &App) -> Option<String> {
+        self.copy.as_ref()?;
+        let store = cx.try_global::<AppStore>()?;
+        if !store.signs_in() && store.server_address(cx).is_none() {
+            return None;
+        }
+        Some(crate::this_build::bridge_endpoint(
+            store.server_address(cx).as_deref(),
+            &format!("v1/docs/{}", self.collection.id),
+        ))
+    }
+
     /// D3: reads the reader's secret values again — unless some typed are
     /// still to be saved, which are newer.
     fn refresh_secrets(&mut self, cx: &mut Context<Self>) {

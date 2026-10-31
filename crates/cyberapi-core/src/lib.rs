@@ -23,6 +23,7 @@ pub mod graphql_format;
 pub mod graphql_schema;
 pub mod graphql_ws;
 pub mod grpc;
+pub mod html_docs;
 mod id;
 pub mod import;
 pub mod inherit;

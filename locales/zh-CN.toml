@@ -1098,6 +1098,8 @@ keep_example_title = "把响应存为示例"
 example_name = "说明它是什么情况：找到、找不到……"
 example_kept = "已存为示例，见“说明”标签页。"
 example_refused = "只有带状态码、响应体是 256 KB 以内文本的响应才能存为示例。"
+online_open = "在线接口文档"
+online_copied = "在线文档地址已复制到剪贴板"
 
 [versions]
 open = "历史版本…"

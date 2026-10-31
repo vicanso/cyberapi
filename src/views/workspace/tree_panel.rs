@@ -1087,6 +1087,19 @@ fn project_menu(
                 }
             }),
     );
+    // G3: read-only HTML documentation hosted on the bridge for a server project.
+    let docs_url = state.upgrade().and_then(|state| state.read(cx).server_docs_url(cx));
+    let menu = menu.when_some(docs_url, |menu, url| {
+        menu.item(
+            PopupMenuItem::new(t!("docs.online_open").to_string())
+                .icon(Icons::BookOpen)
+                .on_click(move |_, window, cx| {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(url.clone()));
+                    window.push_notification(Notification::info(t!("docs.online_copied").to_string()), cx);
+                    cx.open_url(&url);
+                }),
+        )
+    });
     // F11.1: a viewer may export too.
     export_menu(menu, t!("export.project").to_string(), &for_export, None, window, cx)
 }
