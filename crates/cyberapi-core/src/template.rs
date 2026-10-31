@@ -684,9 +684,11 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// lodash `get`: `data.0.name`, and `data[0].name`.
+/// lodash `get`: `data.0.name`, `data[0].name`, and `$.data.0.name`.
 pub(crate) fn json_path<'a>(json: &'a Json, path: &str) -> Option<&'a Json> {
-    path.replace('[', ".")
+    path.strip_prefix('$')
+        .unwrap_or(path)
+        .replace('[', ".")
         .replace(']', "")
         .split('.')
         .filter(|key| !key.is_empty())

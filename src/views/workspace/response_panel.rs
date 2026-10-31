@@ -340,7 +340,10 @@ impl ResponsePanel {
                 cx.notify();
             }),
         ];
-        let json_tree = cx.new(|cx| JsonTree::new(cx).for_response());
+        let json_tree = {
+            let api = api.clone();
+            cx.new(|cx| JsonTree::new(cx).for_response(api))
+        };
         let events = {
             let api = api.clone();
             cx.new(|cx| EventStream::new(api, cx))

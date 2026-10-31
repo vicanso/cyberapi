@@ -4,7 +4,10 @@
 //! setting ([`crate::json_view_local`]).
 
 use crate::json_view_local::JsonView;
+use crate::states::ApiState;
+use cyberapi_core::assertions::{Assertion, Extraction, Op, Subject};
 use cyberapi_core::json_view::{self, JsonNodeKind, JsonTreeNode};
+use cyberapi_core::prefs::RequestTab;
 use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
@@ -98,6 +101,9 @@ struct Row {
 
 pub(crate) struct JsonTree {
     tree_state: Entity<TreeState>,
+    /// The API whose response this tree displays (`None` for a request's
+    /// body tree).
+    api: Option<Entity<ApiState>>,
     /// The text last drawn, so an unchanged body does not rebuild the rows.
     text: String,
     doc: Option<Value>,
@@ -124,6 +130,7 @@ impl JsonTree {
         });
         Self {
             tree_state,
+            api: None,
             text: String::new(),
             doc: None,
             rows: Rc::new(HashMap::new()),
@@ -134,9 +141,12 @@ impl JsonTree {
         }
     }
 
-    /// A tree of a response, which the reader cannot fix: its note says
-    /// only that the body is not JSON.
-    pub(crate) fn for_response(mut self) -> Self {
+    /// A tree of `api`'s response, which the reader cannot fix: its note
+    /// says only that the body is not JSON, and its row menu offers
+    /// copying a `{{g(…)}}` reference or adding an assertion / extraction
+    /// (A8).
+    pub(crate) fn for_response(mut self, api: Entity<ApiState>) -> Self {
+        self.api = Some(api);
         self.invalid = t!("response.json_tree_invalid").to_string().into();
         self
     }
@@ -226,6 +236,98 @@ impl JsonTree {
             window.push_notification(Notification::success(t!("common.copied").to_string()), cx);
         }
     }
+
+    /// A8: copies `{{g(<api>, <path>)}}` for `path` into the clipboard.
+    fn copy_get_expr(&mut self, path: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(api) = &self.api else {
+            return;
+        };
+        let api_id = api.read(cx).api().as_str().to_string();
+        let get_path = path
+            .strip_prefix("$.")
+            .or_else(|| path.strip_prefix('$'))
+            .unwrap_or(path.as_ref());
+        let expr = format!("{{{{g({api_id}, {get_path})}}}}");
+        cx.write_to_clipboard(ClipboardItem::new_string(expr));
+        window.push_notification(Notification::success(t!("common.copied").to_string()), cx);
+    }
+
+    /// A8: adds a JSONPath assertion for `path` against its current value in
+    /// the response tree and opens the Assertions tab.
+    fn add_assertion(&mut self, path: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(api) = self.api.clone() else {
+            return;
+        };
+        let Some(value) = self
+            .doc
+            .as_ref()
+            .and_then(|doc| json_view::value_at(doc, path.as_ref()))
+        else {
+            return;
+        };
+        let (op, expected) = match value {
+            Value::String(text) => (Op::Equals, text.clone()),
+            Value::Number(num) => (Op::Equals, num.to_string()),
+            Value::Bool(flag) => (Op::Equals, flag.to_string()),
+            Value::Null => (Op::IsType, "null".into()),
+            Value::Object(_) => (Op::IsType, "object".into()),
+            Value::Array(_) => (Op::IsType, "array".into()),
+        };
+        let assertion = Assertion {
+            enabled: true,
+            subject: Subject::Json,
+            target: path.to_string(),
+            op,
+            expected,
+            imported: false,
+        };
+        let workspace = api.read(cx).workspace().upgrade();
+        api.update(cx, |api, cx| api.add_assertion(assertion, cx));
+        if let Some(workspace) = workspace {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_tab(&api, RequestTab::Assertions, cx);
+            });
+        }
+        window.push_notification(
+            Notification::success(t!("response.json_tree_assertion_added", path = path.as_ref()).to_string()),
+            cx,
+        );
+    }
+
+    /// A8: adds a JSONPath extraction for `path` (naming the variable after
+    /// the last key segment) and opens the Assertions tab.
+    fn add_extraction(&mut self, path: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(api) = self.api.clone() else {
+            return;
+        };
+        let name = suggested_extraction_name(path.as_ref());
+        let extraction = Extraction {
+            enabled: true,
+            name: name.clone(),
+            subject: Subject::Json,
+            target: path.to_string(),
+        };
+        let workspace = api.read(cx).workspace().upgrade();
+        api.update(cx, |api, cx| api.add_extraction(extraction, cx));
+        if let Some(workspace) = workspace {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_tab(&api, RequestTab::Assertions, cx);
+            });
+        }
+        window.push_notification(
+            Notification::success(t!("response.json_tree_extraction_added", name = name).to_string()),
+            cx,
+        );
+    }
+}
+
+fn suggested_extraction_name(path: &str) -> String {
+    let candidate = path
+        .trim_end_matches(']')
+        .rsplit(['.', '[', '\''])
+        .find(|part| !part.is_empty() && *part != "$" && !part.chars().all(|ch| ch.is_ascii_digit()))
+        .unwrap_or("value");
+    candidate.to_string()
 }
 
 impl Render for JsonTree {
@@ -313,11 +415,14 @@ fn row_menu(
     cx: &mut Context<TreeState>,
 ) -> PopupMenu {
     let id = entry.item().id.clone();
-    let has_value = tree
-        .read_with(cx, |tree, _| tree.rows.get(&id).and_then(|row| row.kind))
-        .ok()
-        .flatten()
-        .is_some();
+    let (has_value, is_response, is_scratch) = tree
+        .read_with(cx, |tree, cx| {
+            let has_value = tree.rows.get(&id).and_then(|row| row.kind).is_some();
+            let is_response = tree.api.is_some();
+            let is_scratch = tree.api.as_ref().is_some_and(|api| api.read(cx).is_scratch());
+            (has_value, is_response, is_scratch)
+        })
+        .unwrap_or((false, false, false));
     if !has_value {
         return menu;
     }
@@ -330,6 +435,44 @@ fn row_menu(
                 let _ = tree.update(cx, |tree, cx| tree.copy(id.clone(), value, window, cx));
             })
     };
-    menu.item(item(false, t!("editor.json_tree_copy_path").to_string()))
-        .item(item(true, t!("editor.json_tree_copy_value").to_string()))
+    let mut menu = menu
+        .item(item(false, t!("editor.json_tree_copy_path").to_string()))
+        .item(item(true, t!("editor.json_tree_copy_value").to_string()));
+    if is_response {
+        menu = menu.separator();
+        if id.as_ref() != "$" && !is_scratch {
+            let tree = tree.clone();
+            let id = id.clone();
+            menu = menu.item(
+                PopupMenuItem::new(t!("response.json_tree_copy_get").to_string())
+                    .icon(IconName::Copy)
+                    .on_click(move |_, window, cx| {
+                        let _ = tree.update(cx, |tree, cx| tree.copy_get_expr(id.clone(), window, cx));
+                    }),
+            );
+        }
+        {
+            let tree = tree.clone();
+            let id = id.clone();
+            menu = menu.item(
+                PopupMenuItem::new(t!("response.json_tree_add_assertion").to_string())
+                    .icon(IconName::CircleCheck)
+                    .on_click(move |_, window, cx| {
+                        let _ = tree.update(cx, |tree, cx| tree.add_assertion(id.clone(), window, cx));
+                    }),
+            );
+        }
+        {
+            let tree = tree.clone();
+            let id = id.clone();
+            menu = menu.item(
+                PopupMenuItem::new(t!("response.json_tree_add_extraction").to_string())
+                    .icon(IconName::Plus)
+                    .on_click(move |_, window, cx| {
+                        let _ = tree.update(cx, |tree, cx| tree.add_extraction(id.clone(), window, cx));
+                    }),
+            );
+        }
+    }
+    menu
 }

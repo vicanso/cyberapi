@@ -153,6 +153,13 @@ impl AssertionsEditor {
                     this.push_row(assertion, window, cx);
                 }
             }
+            let latest_takes = api.read(cx).request().extractions.clone();
+            if this.extractions(cx) != latest_takes {
+                this.takes.clear();
+                for extraction in &latest_takes {
+                    this.push_take(extraction, window, cx);
+                }
+            }
             cx.notify();
         })];
         let mut editor = Self {

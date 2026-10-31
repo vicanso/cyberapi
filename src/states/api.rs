@@ -735,6 +735,30 @@ impl ApiState {
         }
     }
 
+    /// A8: appends `assertion` from the response JSON tree if an identical
+    /// row is not already present.
+    pub fn add_assertion(&mut self, assertion: Assertion, cx: &mut Context<Self>) {
+        if !self.request.assertions.contains(&assertion) {
+            self.request.assertions.push(assertion);
+            *self.checks.borrow_mut() = None;
+            self.save_later(cx);
+        }
+    }
+
+    /// A8: appends `extraction` from the response JSON tree if the same
+    /// target is not already extracted.
+    pub fn add_extraction(&mut self, extraction: Extraction, cx: &mut Context<Self>) {
+        let exists = self
+            .request
+            .extractions
+            .iter()
+            .any(|each| each.subject == extraction.subject && each.target == extraction.target);
+        if !exists {
+            self.request.extractions.push(extraction);
+            self.save_later(cx);
+        }
+    }
+
     /// A1: how the shown response holds up to the API's assertions as they
     /// are now. `None` with no response, while one streams in, or with no
     /// assertion on.
