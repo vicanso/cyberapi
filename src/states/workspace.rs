@@ -2469,10 +2469,12 @@ impl WorkspaceState {
             .storage
             .tree()
             .import(self.collection.id.clone(), parent.clone(), bundle.items);
+        let known: Vec<&str> = self.environment.iter().map(|variable| variable.name.as_str()).collect();
         let environment: Vec<(String, String)> = bundle
             .environment
             .into_iter()
             .filter(|(name, value)| !name.trim().is_empty() || !value.trim().is_empty())
+            .filter(|(name, _)| !known.contains(&name.as_str()))
             .collect();
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(imported) => {
@@ -2537,9 +2539,22 @@ impl WorkspaceState {
                 api.request = request.clone();
             }
         }
+        let existing_vars: Vec<(String, String)> = self.environments().into_iter().map(|v| (v.name, v.value)).collect();
+        let imported_vars = bundle.all_environment();
         let merge = match (within_folder, parent.as_ref()) {
             (true, Some(folder)) => cyberapi_core::import::merge::merge_folder(&data, folder, &bundle.items, update),
-            _ => cyberapi_core::import::merge::merge(&data, parent.as_ref(), &bundle.items, update),
+            _ if bundle.source.is_some() => {
+                cyberapi_core::import::merge::merge(&data, parent.as_ref(), &bundle.items, update)
+            }
+            _ => cyberapi_core::import::merge::merge_with_vars(
+                &data,
+                parent.as_ref(),
+                &bundle.items,
+                update,
+                false,
+                &existing_vars,
+                &imported_vars,
+            ),
         };
         if let (Some(folder), Some(url)) = (&parent, bundle.folder_source.clone()) {
             self.set_folder_source(folder.clone(), Some(url), cx);

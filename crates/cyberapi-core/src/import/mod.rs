@@ -147,6 +147,20 @@ impl ImportBundle {
         self.items.is_empty() && self.environment.is_empty() && self.environments.is_empty() && self.auth.is_inherit()
     }
 
+    /// #84: the environment variables the import brings (shared ones first,
+    /// then any named environments' values not already listed).
+    pub fn all_environment(&self) -> Vec<(String, String)> {
+        let mut vars = self.environment.clone();
+        for env in &self.environments {
+            for (k, v) in &env.variables {
+                if !vars.iter().any(|(existing, _)| existing == k) {
+                    vars.push((k.clone(), v.clone()));
+                }
+            }
+        }
+        vars
+    }
+
     /// How many APIs and folders it holds, at every depth.
     pub fn counts(&self) -> (usize, usize) {
         fn walk(items: &[ImportItem], apis: &mut usize, folders: &mut usize) {

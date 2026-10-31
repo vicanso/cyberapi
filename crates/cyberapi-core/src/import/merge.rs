@@ -67,6 +67,62 @@ fn key(request: &HttpRequest) -> Option<(HttpMethod, String)> {
     (request.method != HttpMethod::Grpc).then(|| (request.method, path_key(&request.uri)))
 }
 
+/// #84: resolves a leading `{{NAME}}` in `uri` from `primary` (or `fallback`
+/// when `primary` lacks `NAME`).
+pub fn resolve_with_vars(uri: &str, primary: &[(String, String)], fallback: &[(String, String)]) -> String {
+    let uri = uri.trim();
+    match crate::model::split_env_prefix(uri) {
+        (Some(name), rest) => primary
+            .iter()
+            .chain(fallback.iter())
+            .find(|(key, val)| key == name && !val.trim().is_empty())
+            .map(|(_, val)| format!("{}{rest}", val.trim()))
+            .unwrap_or_else(|| uri.to_string()),
+        (None, _) => uri.to_string(),
+    }
+}
+
+/// #84: the normalized `host[:port]` of a resolved URI, or `None` when it has
+/// no literal host (a relative `/path` or an unresolved `{{VAR}}/path`).
+pub fn host_key(resolved_uri: &str) -> Option<String> {
+    let trimmed = resolved_uri.trim();
+    if trimmed.is_empty() || trimmed.starts_with('/') || trimmed.starts_with("{{") {
+        return None;
+    }
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    };
+    let parsed = url::Url::parse(&with_scheme).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    if host.contains('{') || host.contains('}') {
+        return None;
+    }
+    Some(match parsed.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
+}
+
+/// #84: whether `existing_uri` (resolved with `existing_vars`) and
+/// `imported_uri` (resolved with `imported_vars`, falling back to
+/// `existing_vars`) point to compatible hosts: `false` when both resolve to
+/// literal hosts and those hosts differ.
+pub fn hosts_compatible(
+    existing_uri: &str,
+    imported_uri: &str,
+    existing_vars: &[(String, String)],
+    imported_vars: &[(String, String)],
+) -> bool {
+    let existing_resolved = resolve_with_vars(existing_uri, existing_vars, &[]);
+    let imported_resolved = resolve_with_vars(imported_uri, imported_vars, existing_vars);
+    match (host_key(&existing_resolved), host_key(&imported_resolved)) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    }
+}
+
 /// F10: a parameter's description the reader wrote stays when the import
 /// gives none for that key; one the import gives updates it.
 fn keep_descriptions(
@@ -154,94 +210,136 @@ pub fn updated(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
 /// What importing `items` into `parent` of `tree` again does; `update`
 /// says whether the APIs it has already are updated.
 pub fn merge(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem], update: bool) -> Merge {
-    merge_scoped(tree, parent, items, update, false)
-}
-
-/// #84: up to five matched APIs' method and full URLs (`METHOD existing →
-/// imported` when the URL changes), so the import dialog shows which existing
-/// APIs would be updated before importing.
-pub fn matched_summaries(tree: &TreeData, items: &[ImportItem]) -> Vec<String> {
-    const LIMIT: usize = 5;
-    let mut known: HashMap<(HttpMethod, String), &crate::model::ApiSetting> = HashMap::new();
-    for api in &tree.apis {
-        if let Some(key) = key(&api.request) {
-            known.entry(key).or_insert(api);
-        }
-    }
-    let mut summaries = Vec::new();
-    let mut total = 0usize;
-    fn walk(
-        items: &[ImportItem],
-        known: &HashMap<(HttpMethod, String), &crate::model::ApiSetting>,
-        summaries: &mut Vec<String>,
-        total: &mut usize,
-    ) {
-        for item in items {
-            match item {
-                ImportItem::Api { request, .. } => {
-                    if let Some(found) = key(request).and_then(|k| known.get(&k)) {
-                        *total += 1;
-                        if summaries.len() < LIMIT {
-                            let existing_uri = found.request.uri.trim();
-                            let imported_uri = request.uri.trim();
-                            let line = if existing_uri == imported_uri {
-                                format!("{} {existing_uri}", found.request.method.as_str())
-                            } else {
-                                format!("{} {existing_uri} → {imported_uri}", found.request.method.as_str())
-                            };
-                            if !summaries.contains(&line) {
-                                summaries.push(line);
-                            }
-                        }
-                    }
-                }
-                ImportItem::Folder { children, .. } => walk(children, known, summaries, total),
-            }
-        }
-    }
-    walk(items, &known, &mut summaries, &mut total);
-    if total > summaries.len() && summaries.len() == LIMIT {
-        summaries.push(format!("… (+{})", total - summaries.len()));
-    }
-    summaries
+    merge_with_vars(tree, parent, items, update, false, &[], &[])
 }
 
 /// B9: what syncing `items` into `folder` from that folder's own source does:
 /// only APIs inside `folder` (at any depth) are matched, so another folder's
 /// APIs at the same path stay untouched.
 pub fn merge_folder(tree: &TreeData, folder: &ItemId, items: &[ImportItem], update: bool) -> Merge {
-    merge_scoped(tree, Some(folder), items, update, true)
+    merge_with_vars(tree, Some(folder), items, update, true, &[], &[])
 }
 
-fn merge_scoped(
+/// #84: merges `items` into `parent` of `tree`, also checking that resolved
+/// hosts do not conflict when `existing_vars` / `imported_vars` are known.
+pub fn merge_with_vars(
     tree: &TreeData,
     parent: Option<&ItemId>,
     items: &[ImportItem],
     update: bool,
     within_parent: bool,
+    existing_vars: &[(String, String)],
+    imported_vars: &[(String, String)],
 ) -> Merge {
     let within = within_parent
         .then_some(parent)
         .flatten()
         .map(|folder| apis_in(tree, folder));
-    let mut known: HashMap<(HttpMethod, String), &crate::model::ApiSetting> = HashMap::new();
+    let mut known: HashMap<(HttpMethod, String), Vec<&crate::model::ApiSetting>> = HashMap::new();
     for api in &tree.apis {
         if within.as_ref().is_some_and(|within| !within.contains(&api.id)) {
             continue;
         }
         if let Some(key) = key(&api.request) {
-            known.entry(key).or_insert(api);
+            known.entry(key).or_default().push(api);
         }
     }
     let mut merge = Merge::default();
     let mut walk = Walk {
         tree,
         known: &known,
+        existing_vars,
+        imported_vars,
         update,
         merge: &mut merge,
     };
     walk.at_place(parent, items);
     merge
+}
+
+/// #84: up to five matched APIs' method and full URLs (`METHOD existing →
+/// imported` when the URL changes, with resolved addresses shown beside
+/// `{{var}}` templates), so the import dialog shows which existing APIs would
+/// be updated before importing.
+pub fn matched_summaries(tree: &TreeData, items: &[ImportItem]) -> Vec<String> {
+    matched_summaries_with_vars(tree, None, items, &[], &[])
+}
+
+pub fn matched_summaries_with_vars(
+    tree: &TreeData,
+    parent: Option<&ItemId>,
+    items: &[ImportItem],
+    existing_vars: &[(String, String)],
+    imported_vars: &[(String, String)],
+) -> Vec<String> {
+    const LIMIT: usize = 5;
+    let _ = parent;
+    let mut known: HashMap<(HttpMethod, String), Vec<&crate::model::ApiSetting>> = HashMap::new();
+    for api in &tree.apis {
+        if let Some(key) = key(&api.request) {
+            known.entry(key).or_default().push(api);
+        }
+    }
+    fn display_uri(uri: &str, resolved: &str) -> String {
+        let uri = uri.trim();
+        let resolved = resolved.trim();
+        if resolved != uri && !resolved.is_empty() {
+            format!("{uri} ({resolved})")
+        } else {
+            uri.to_string()
+        }
+    }
+    struct Context<'a> {
+        known: &'a HashMap<(HttpMethod, String), Vec<&'a crate::model::ApiSetting>>,
+        existing_vars: &'a [(String, String)],
+        imported_vars: &'a [(String, String)],
+        summaries: Vec<String>,
+        total: usize,
+    }
+    fn walk(items: &[ImportItem], cx: &mut Context<'_>) {
+        for item in items {
+            match item {
+                ImportItem::Api { request, .. } => {
+                    let Some(candidates) = key(request).and_then(|k| cx.known.get(&k)) else {
+                        continue;
+                    };
+                    let Some(found) = candidates.iter().copied().find(|api| {
+                        hosts_compatible(&api.request.uri, &request.uri, cx.existing_vars, cx.imported_vars)
+                    }) else {
+                        continue;
+                    };
+                    cx.total += 1;
+                    if cx.summaries.len() < LIMIT {
+                        let existing_resolved = resolve_with_vars(&found.request.uri, cx.existing_vars, &[]);
+                        let imported_resolved = resolve_with_vars(&request.uri, cx.imported_vars, cx.existing_vars);
+                        let existing_shown = display_uri(&found.request.uri, &existing_resolved);
+                        let imported_shown = display_uri(&request.uri, &imported_resolved);
+                        let line = if existing_shown == imported_shown {
+                            format!("{} {existing_shown}", found.request.method.as_str())
+                        } else {
+                            format!("{} {existing_shown} → {imported_shown}", found.request.method.as_str())
+                        };
+                        if !cx.summaries.contains(&line) {
+                            cx.summaries.push(line);
+                        }
+                    }
+                }
+                ImportItem::Folder { children, .. } => walk(children, cx),
+            }
+        }
+    }
+    let mut cx = Context {
+        known: &known,
+        existing_vars,
+        imported_vars,
+        summaries: Vec::new(),
+        total: 0,
+    };
+    walk(items, &mut cx);
+    if cx.total > cx.summaries.len() && cx.summaries.len() == LIMIT {
+        cx.summaries.push(format!("… (+{})", cx.total - cx.summaries.len()));
+    }
+    cx.summaries
 }
 
 /// B7: what syncing from a source would do, told before it is done.
@@ -359,7 +457,7 @@ pub fn preview_folder(tree: &TreeData, folder: &ItemId, items: &[ImportItem]) ->
 }
 
 fn preview_scoped(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem], within_parent: bool) -> Preview {
-    let merge = merge_scoped(tree, parent, items, true, within_parent);
+    let merge = merge_with_vars(tree, parent, items, true, within_parent, &[], &[]);
     let mut keys = std::collections::HashSet::new();
     let mut stack: Vec<&ImportItem> = items.iter().collect();
     while let Some(item) = stack.pop() {
@@ -390,7 +488,9 @@ fn preview_scoped(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem]
 
 struct Walk<'a> {
     tree: &'a TreeData,
-    known: &'a HashMap<(HttpMethod, String), &'a crate::model::ApiSetting>,
+    known: &'a HashMap<(HttpMethod, String), Vec<&'a crate::model::ApiSetting>>,
+    existing_vars: &'a [(String, String)],
+    imported_vars: &'a [(String, String)],
     update: bool,
     merge: &'a mut Merge,
 }
@@ -431,7 +531,14 @@ impl Walk<'_> {
     /// Whether the project has the API already; counted, and updated when
     /// asked.
     fn known(&mut self, request: &HttpRequest) -> bool {
-        let Some(found) = key(request).and_then(|key| self.known.get(&key)) else {
+        let Some(candidates) = key(request).and_then(|key| self.known.get(&key)) else {
+            return false;
+        };
+        let Some(found) = candidates
+            .iter()
+            .copied()
+            .find(|api| hosts_compatible(&api.request.uri, &request.uri, self.existing_vars, self.imported_vars))
+        else {
             return false;
         };
         self.merge.matched += 1;
@@ -651,6 +758,34 @@ mod tests {
                 "POST {{HOST}}/login → {{API}}/login",
                 "GET {{HOST}}/users → {{API}}/users",
             ]
+        );
+
+        // #84: when both sides resolve to literal hosts, only APIs pointing to
+        // the same host match, and summaries display the resolved URLs.
+        let existing_vars = [("HOST".into(), "http://127.0.0.1:8765".into())];
+        let same_host_vars = [("API".into(), "http://127.0.0.1:8765".into())];
+        let other_host_vars = [("API".into(), "http://other.example:9999".into())];
+        assert_eq!(
+            merge_with_vars(&project(), None, &spec(), false, false, &existing_vars, &same_host_vars).matched,
+            5
+        );
+        assert_eq!(
+            matched_summaries_with_vars(&project(), None, &spec(), &existing_vars, &same_host_vars)[0],
+            "GET {{HOST}}/users (http://127.0.0.1:8765/users) → {{API}}/users?page=1 (http://127.0.0.1:8765/users?page=1)"
+        );
+        assert_eq!(
+            merge_with_vars(
+                &project(),
+                None,
+                &spec(),
+                false,
+                false,
+                &existing_vars,
+                &other_host_vars
+            )
+            .matched,
+            0,
+            "a different resolved host is not matched as the same API"
         );
     }
 

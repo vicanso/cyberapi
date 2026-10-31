@@ -105,10 +105,11 @@ fn format_name(format: Format) -> &'static str {
 type Found = Result<String, String>;
 
 /// B3: the project an import goes into, as it was when the dialog opened,
-/// and where in it.
+/// where in it, and its active environment variables (#84).
 struct MergeInto {
     tree: TreeData,
     parent: Option<ItemId>,
+    environment: Vec<(String, String)>,
 }
 
 /// F10.2 before importing: what the text is and what it holds, or why it
@@ -135,9 +136,25 @@ fn describe(text: &str, into: Option<&MergeInto>) -> (Option<Found>, usize, Vec<
     let found = match import::parse(text) {
         Ok(bundle) => {
             if let Some(into) = into {
-                known = import::merge::merge(&into.tree, into.parent.as_ref(), &bundle.items, false).matched;
+                let imported_vars = bundle.all_environment();
+                known = import::merge::merge_with_vars(
+                    &into.tree,
+                    into.parent.as_ref(),
+                    &bundle.items,
+                    false,
+                    false,
+                    &into.environment,
+                    &imported_vars,
+                )
+                .matched;
                 if known > 0 {
-                    matched_uris = import::merge::matched_summaries(&into.tree, &bundle.items);
+                    matched_uris = import::merge::matched_summaries_with_vars(
+                        &into.tree,
+                        into.parent.as_ref(),
+                        &bundle.items,
+                        &into.environment,
+                        &imported_vars,
+                    );
                 }
             }
             let (apis, folders) = bundle.counts();
@@ -175,9 +192,11 @@ pub fn open_import_dialog(
 ) {
     // B3: what the project has, to import again into.
     let into = state.upgrade().map(|state| {
+        let state = state.read(cx);
         Arc::new(MergeInto {
-            tree: state.read(cx).tree_data().clone(),
+            tree: state.tree_data().clone(),
             parent: parent.clone(),
+            environment: state.environments().into_iter().map(|v| (v.name, v.value)).collect(),
         })
     });
     let import = move |bundle, again: Option<bool>, _: &mut Window, cx: &mut App| {
@@ -772,7 +791,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        let into = Arc::new(MergeInto { tree, parent: None });
+        let into = Arc::new(MergeInto {
+            tree,
+            parent: None,
+            environment: Vec::new(),
+        });
         let mut view = None;
         cx.update_window(window, |_, window, cx| {
             view = Some(cx.new(|cx| ImportView::new(Some(into), window, cx)));
@@ -796,6 +819,54 @@ mod tests {
         cx.run_until_parked();
         let (known, update) = cx.read(|cx| (view.read(cx).known, view.read(cx).update));
         assert_eq!((known, update), (1, false), "the same path; left unless picked");
+
+        // #84: when the project's variable resolves to a different host than
+        // the imported `.http` file's `@host`, it is not counted as known.
+        let tree_with_host = TreeData {
+            apis: vec![cyberapi_core::model::ApiSetting {
+                id: "a-echo".into(),
+                name: "echo".into(),
+                request: cyberapi_core::model::HttpRequest {
+                    uri: "{{SwagTest}}/echo".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let into_with_env = Arc::new(MergeInto {
+            tree: tree_with_host,
+            parent: None,
+            environment: vec![("SwagTest".into(), "http://127.0.0.1:8765".into())],
+        });
+        let mut view2 = None;
+        cx.update_window(window, |_, window, cx| {
+            view2 = Some(cx.new(|cx| ImportView::new(Some(into_with_env), window, cx)));
+        })
+        .expect("the window is open");
+        let view2 = view2.expect("made");
+        let same_host_http = "@host = http://127.0.0.1:8765\n\n### Echo\nGET {{host}}/echo\n";
+        cx.update_window(window, |_, window, cx| {
+            view2.update(cx, |view, cx| view.fill(same_host_http.into(), window, cx))
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        let (known, uris) = cx.read(|cx| (view2.read(cx).known, view2.read(cx).matched_uris.clone()));
+        assert_eq!(known, 1);
+        assert_eq!(
+            uris,
+            ["GET {{SwagTest}}/echo (http://127.0.0.1:8765/echo) → {{host}}/echo (http://127.0.0.1:8765/echo)"]
+        );
+
+        let other_host_http = "@host = http://other.example:9999\n\n### Echo\nGET {{host}}/echo\n";
+        cx.update_window(window, |_, window, cx| {
+            view2.update(cx, |view, cx| view.fill(other_host_http.into(), window, cx))
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        let (known, uris) = cx.read(|cx| (view2.read(cx).known, view2.read(cx).matched_uris.clone()));
+        assert_eq!(known, 0, "different resolved host is not matched");
+        assert!(uris.is_empty());
     }
 
     /// B3: an address says what Fetch does, and Fetch puts what it holds in
