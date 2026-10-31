@@ -262,13 +262,24 @@ impl VariablesState {
 
     /// A blank, enabled variable at the end of the layer shown.
     pub fn add(&mut self, cx: &mut Context<Self>) {
+        self.create_at(self.layer.clone(), String::new(), String::new(), cx);
+    }
+
+    /// D8: creates an enabled variable in `environment` with `name` and `value`.
+    pub fn create_at(
+        &mut self,
+        environment: Option<EnvironmentId>,
+        name: String,
+        value: String,
+        cx: &mut Context<Self>,
+    ) {
         let call = self.storage.variables().create(NewVariable {
             collection: self.collection.clone(),
             category: self.category,
-            name: String::new(),
-            value: String::new(),
+            name,
+            value,
             enabled: true,
-            environment: self.layer.clone(),
+            environment,
         });
         run_store(cx, call, |this, result, cx| match result {
             Ok(variable) => {
@@ -277,6 +288,32 @@ impl VariablesState {
             }
             Err(error) => cx.emit(VariablesEvent::Failed(error)),
         });
+    }
+
+    /// D8: how many redundant duplicate variables exist within the same layer.
+    pub fn duplicate_count(&self) -> usize {
+        cyberapi_core::environments::duplicate_ids(&self.variables, self.category).len()
+    }
+
+    /// D8: removes redundant duplicate variables within the same layer, keeping
+    /// the primary entry for each name and layer.
+    pub fn deduplicate(&mut self, cx: &mut Context<Self>) -> usize {
+        let ids = cyberapi_core::environments::duplicate_ids(&self.variables, self.category);
+        let count = ids.len();
+        if count == 0 {
+            return 0;
+        }
+        for id in &ids {
+            self.saving.remove(id);
+        }
+        self.variables.retain(|variable| !ids.contains(&variable.id));
+        let call = self.storage.variables().delete(self.collection.clone(), ids);
+        run_store(cx, call, |this, result, cx| match result {
+            Ok(()) => this.changed(cx),
+            Err(error) => cx.emit(VariablesEvent::Failed(error)),
+        });
+        cx.notify();
+        count
     }
 
     pub fn set_name(&mut self, id: &VariableId, name: String, cx: &mut Context<Self>) {

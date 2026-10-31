@@ -62,7 +62,7 @@ pub fn open_variables_dialog(
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
             .title(title.clone())
-            .w(px(680.))
+            .w(px(780.))
             .child(crate::views::dialog_body(editor.clone()))
             // No button to confirm: Enter is a field's — a new environment's
             // name (#61) — not the dialog's to close.
@@ -76,6 +76,16 @@ struct Row {
     /// D3: made for a secret variable: masked, the reader's own value.
     secret: bool,
     _subscriptions: [Subscription; 2],
+}
+
+/// D8: one cell in the multi-environment matrix view (`(environment, name)`).
+struct MatrixCell {
+    input: Entity<InputState>,
+    variable_id: Option<VariableId>,
+    placeholder: String,
+    secret: bool,
+    creating: bool,
+    _subscription: Subscription,
 }
 
 /// An environment's name being typed: a new one's, or `renaming`'s.
@@ -92,6 +102,9 @@ struct VariablesEditor {
     /// A viewer reads them only (§9.2).
     editable: bool,
     rows: HashMap<VariableId, Row>,
+    /// D8: side-by-side matrix mode across Shared and all named environments.
+    matrix: bool,
+    matrix_cells: HashMap<(Option<EnvironmentId>, String), MatrixCell>,
     naming: Option<Naming>,
     /// The environment asked about before it goes, with its variables.
     deleting: Option<EnvironmentId>,
@@ -121,6 +134,8 @@ impl VariablesEditor {
             workspace,
             editable,
             rows: HashMap::new(),
+            matrix: false,
+            matrix_cells: HashMap::new(),
             naming: None,
             deleting: None,
             _subscriptions: subscriptions,
@@ -174,15 +189,19 @@ impl VariablesEditor {
     fn render_layers(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let state = self.state.read(cx);
         let layer = state.layer().cloned();
+        let has_environments = !state.environments().is_empty();
+        let matrix = self.matrix && has_environments;
+        let duplicates = state.duplicate_count();
         let muted = cx.theme().muted_foreground;
         let button = |id: gpui_kit::ElementId, label: String, chosen: Option<EnvironmentId>| {
-            let selected = layer == chosen;
+            let selected = !matrix && layer == chosen;
             Button::new(id)
                 .small()
                 .when(selected, |button| button.primary())
                 .when(!selected, |button| button.ghost())
                 .label(label)
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    this.matrix = false;
                     this.naming = None;
                     this.deleting = None;
                     let chosen = chosen.clone();
@@ -205,10 +224,14 @@ impl VariablesEditor {
                 Some(environment.id.clone()),
             ));
         }
-        let shown = layer
-            .as_ref()
-            .and_then(|id| state.environments().iter().find(|environment| &environment.id == id))
-            .cloned();
+        let shown = (!matrix)
+            .then(|| {
+                layer
+                    .as_ref()
+                    .and_then(|id| state.environments().iter().find(|environment| &environment.id == id))
+                    .cloned()
+            })
+            .flatten();
         let editable = self.editable;
         let bar = h_flex()
             .gap_1()
@@ -222,6 +245,22 @@ impl VariablesEditor {
                     .child(t!("variables.layer").to_string()),
             )
             .children(buttons)
+            .when(has_environments, |bar| {
+                bar.child(
+                    Button::new("variables-matrix")
+                        .small()
+                        .when(matrix, |button| button.primary())
+                        .when(!matrix, |button| button.ghost())
+                        .icon(gpui_kit::assets::IconName::Table)
+                        .label(t!("variables.matrix").to_string())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.matrix = !this.matrix;
+                            this.naming = None;
+                            this.deleting = None;
+                            this.sync_rows(window, cx);
+                        })),
+                )
+            })
             .when(editable && self.naming.is_none(), |bar| {
                 bar.child(
                     Button::new("environment-new")
@@ -230,6 +269,25 @@ impl VariablesEditor {
                         .icon(IconName::Plus)
                         .label(t!("variables.new_environment").to_string())
                         .on_click(cx.listener(|this, _, window, cx| this.start_naming(None, window, cx))),
+                )
+            })
+            .when(editable && duplicates > 0, |bar| {
+                bar.child(
+                    Button::new("variables-deduplicate")
+                        .ghost()
+                        .small()
+                        .icon(gpui_kit::assets::IconName::WandSparkles)
+                        .label(t!("variables.deduplicate", count = duplicates).to_string())
+                        .tooltip(t!("variables.deduplicate_about").to_string())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let removed = this.state.update(cx, |state, cx| state.deduplicate(cx));
+                            if removed > 0 {
+                                window.push_notification(
+                                    Notification::success(t!("variables.deduplicated", count = removed).to_string()),
+                                    cx,
+                                );
+                            }
+                        })),
                 )
             });
         let below: Option<gpui_kit::AnyElement> = if let Some(naming) = &self.naming {
@@ -395,50 +453,306 @@ impl VariablesEditor {
                 },
             );
         }
+        self.sync_matrix_cells(window, cx);
         cx.notify();
+    }
+
+    /// D8: keeps input fields for `(layer, variable_name)` cells in the matrix
+    /// view without recreating active inputs while typing.
+    fn sync_matrix_cells(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (category, variables, environments) = {
+            let state = self.state.read(cx);
+            (
+                state.category(),
+                state.variables().to_vec(),
+                state.environments().to_vec(),
+            )
+        };
+        if environments.is_empty() {
+            self.matrix = false;
+            self.matrix_cells.clear();
+            return;
+        }
+        let names = cyberapi_core::environments::matrix_names(&variables, category);
+        let layers: Vec<Option<EnvironmentId>> = std::iter::once(None)
+            .chain(environments.iter().map(|env| Some(env.id.clone())))
+            .collect();
+        self.matrix_cells
+            .retain(|(env, key), _| names.iter().any(|name| name == key) && layers.iter().any(|layer| layer == env));
+        for name in &names {
+            let shared_var = cyberapi_core::environments::layer_variable(&variables, category, None, name);
+            let shared_shown = match shared_var.filter(|v| v.enabled) {
+                Some(v) if self.state.read(cx).is_secret(&v.id, cx) => cyberapi_core::secrets::MASK.to_string(),
+                Some(v) => v.value.clone(),
+                None => String::new(),
+            };
+            for layer in &layers {
+                let var = cyberapi_core::environments::layer_variable(&variables, category, layer.as_ref(), name);
+                let var_id = var.map(|v| v.id.clone());
+                let secret = var.is_some_and(|v| self.state.read(cx).is_secret(&v.id, cx));
+                let shown = var.map(|v| self.state.read(cx).shown_value(v, cx)).unwrap_or_default();
+                let placeholder = if secret {
+                    t!("variables.secret_value").to_string()
+                } else if layer.is_some() && !shared_shown.is_empty() {
+                    format!("← {shared_shown}")
+                } else {
+                    t!("variables.matrix_missing").to_string()
+                };
+                let cell_key = (layer.clone(), name.clone());
+                if let Some(cell) = self.matrix_cells.get_mut(&cell_key)
+                    && cell.secret == secret
+                {
+                    if cell.creating
+                        && let Some(new_id) = var_id.clone()
+                    {
+                        cell.creating = false;
+                        cell.variable_id = Some(new_id.clone());
+                        let typed = cell.input.read(cx).value().to_string();
+                        if typed != shown {
+                            self.state.update(cx, |state, cx| state.set_value(&new_id, typed, cx));
+                        }
+                    } else if cell.variable_id != var_id {
+                        cell.variable_id = var_id;
+                        cell.input
+                            .update(cx, |input, cx| input.set_value(shown.clone(), window, cx));
+                    }
+                    if cell.placeholder != placeholder {
+                        cell.placeholder = placeholder.clone();
+                        cell.input
+                            .update(cx, |input, cx| input.set_placeholder(placeholder, window, cx));
+                    }
+                    continue;
+                }
+                let input_placeholder = placeholder.clone();
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder(input_placeholder)
+                        .masked(secret)
+                        .default_value(shown)
+                });
+                let (cell_layer, cell_name) = (layer.clone(), name.clone());
+                let subscription = cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
+                    if !matches!(event, InputEvent::Change) {
+                        return;
+                    }
+                    let text = input.read(cx).value().to_string();
+                    let existing = {
+                        let state = this.state.read(cx);
+                        cyberapi_core::environments::layer_variable(
+                            state.variables(),
+                            category,
+                            cell_layer.as_ref(),
+                            &cell_name,
+                        )
+                        .map(|v| (v.id.clone(), v.enabled))
+                    };
+                    if let Some((id, enabled)) = existing {
+                        this.state.update(cx, |state, cx| {
+                            if !enabled && !text.is_empty() {
+                                state.toggle(&id, cx);
+                            }
+                            state.set_value(&id, text, cx);
+                        });
+                    } else if !text.is_empty()
+                        && let Some(cell) = this.matrix_cells.get_mut(&(cell_layer.clone(), cell_name.clone()))
+                        && !cell.creating
+                    {
+                        cell.creating = true;
+                        let (env, key) = (cell_layer.clone(), cell_name.clone());
+                        this.state.update(cx, |state, cx| state.create_at(env, key, text, cx));
+                    }
+                });
+                self.matrix_cells.insert(
+                    cell_key,
+                    MatrixCell {
+                        input,
+                        variable_id: var_id,
+                        placeholder,
+                        secret,
+                        creating: false,
+                        _subscription: subscription,
+                    },
+                );
+            }
+        }
+    }
+
+    /// D8: renders the side-by-side matrix table across Shared and all named environments.
+    fn render_matrix(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let state = self.state.read(cx);
+        let category = state.category();
+        let variables = state.variables();
+        let environments = state.environments();
+        let names = cyberapi_core::environments::matrix_names(variables, category);
+        let theme = cx.theme();
+        let (border, muted, warning) = (theme.border, theme.muted_foreground, theme.warning);
+        if names.is_empty() {
+            return div()
+                .py_4()
+                .text_sm()
+                .text_color(muted)
+                .child(t!("variables.empty").to_string())
+                .into_any_element();
+        }
+        let editable = self.editable;
+        let cell = move || {
+            div()
+                .h_full()
+                .flex_1()
+                .min_w(px(140.))
+                .flex()
+                .items_center()
+                .border_l_1()
+                .border_color(border)
+        };
+        let mut header = h_flex()
+            .h(px(28.))
+            .bg(theme.muted)
+            .text_xs()
+            .text_color(muted)
+            .child(
+                div()
+                    .w(px(160.))
+                    .flex_none()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .px_2()
+                    .child(t!("variables.name").to_string()),
+            )
+            .child(cell().px_2().child(t!("variables.shared").to_string()));
+        for environment in environments {
+            let mut label = environment.name.clone();
+            if self.workspace.read(cx).protects(&environment.id) {
+                label += &t!("environments.production_mark");
+            }
+            header = header.child(cell().px_2().child(div().truncate().child(label)));
+        }
+
+        let layers: Vec<Option<EnvironmentId>> = std::iter::once(None)
+            .chain(environments.iter().map(|env| Some(env.id.clone())))
+            .collect();
+        let rows: Vec<gpui_kit::AnyElement> = names
+            .iter()
+            .enumerate()
+            .map(|(row_idx, name)| {
+                let shared_var = cyberapi_core::environments::layer_variable(variables, category, None, name);
+                let shared_has_value =
+                    shared_var.is_some_and(|v| v.enabled && (!v.value.is_empty() || state.is_secret(&v.id, cx)));
+                let mut row = h_flex()
+                    .id(("matrix-row", row_idx))
+                    .h(px(30.))
+                    .items_center()
+                    .border_t_1()
+                    .border_color(border)
+                    .child(
+                        div()
+                            .w(px(160.))
+                            .flex_none()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .px_2()
+                            .text_xs()
+                            .font_family(theme.mono_font_family.clone())
+                            .child(div().truncate().child(name.clone())),
+                    );
+                for layer in &layers {
+                    let var = cyberapi_core::environments::layer_variable(variables, category, layer.as_ref(), name);
+                    let own_has_value =
+                        var.is_some_and(|v| v.enabled && (!v.value.is_empty() || state.is_secret(&v.id, cx)));
+                    let missing = !own_has_value && (layer.is_none() || !shared_has_value);
+                    let cell_elem = if let Some(matrix_cell) = self.matrix_cells.get(&(layer.clone(), name.clone())) {
+                        let secret = matrix_cell.secret;
+                        cell().when(missing, |this| this.bg(warning.opacity(0.08))).child(
+                            Input::new(&matrix_cell.input)
+                                .small()
+                                .appearance(false)
+                                .disabled(!editable && !secret)
+                                .when(secret, |input| input.mask_toggle()),
+                        )
+                    } else {
+                        cell()
+                    };
+                    row = row.child(cell_elem);
+                }
+                row.into_any_element()
+            })
+            .collect();
+
+        div()
+            .id("variables-matrix-scroll")
+            .w_full()
+            .overflow_x_scrollbar()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(border)
+            .child(v_flex().min_w_full().child(header).children(rows))
+            .into_any_element()
     }
 }
 
 impl Render for VariablesEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let layers = self.render_layers(cx);
-        let state = self.state.read(cx);
-        let (_, hint) = describe(state.category());
-        // #61: what the layer shown is for.
-        let layer_hint = state
-            .layer()
-            .and_then(|id| state.environments().iter().find(|environment| &environment.id == id))
-            .map(|environment| t!("variables.environment_hint", name = environment.name).to_string())
-            .unwrap_or_else(|| t!("variables.shared_hint").to_string());
-        let stood_in_for: Vec<(String, String)> = state
-            .stood_in_for()
-            .into_iter()
-            .map(|variable| {
-                let value = match state.is_secret(&variable.id, cx) {
-                    true => cyberapi_core::secrets::MASK.to_string(),
-                    false => variable.value.clone(),
-                };
-                (variable.name.clone(), value)
-            })
-            .collect();
-        let any_secret = state.shown().any(|variable| state.is_secret(&variable.id, cx));
+        let matrix = self.matrix && !self.state.read(cx).environments().is_empty();
+        let (hint, layer_hint, stood_in_for, any_secret) = {
+            let state = self.state.read(cx);
+            let (_, hint) = describe(state.category());
+            // #61: what the layer shown is for.
+            let layer_hint = if matrix {
+                t!("variables.matrix_hint").to_string()
+            } else {
+                state
+                    .layer()
+                    .and_then(|id| state.environments().iter().find(|environment| &environment.id == id))
+                    .map(|environment| t!("variables.environment_hint", name = environment.name).to_string())
+                    .unwrap_or_else(|| t!("variables.shared_hint").to_string())
+            };
+            let stood_in_for: Vec<(String, String)> = if matrix {
+                Vec::new()
+            } else {
+                state
+                    .stood_in_for()
+                    .into_iter()
+                    .map(|variable| {
+                        let value = match state.is_secret(&variable.id, cx) {
+                            true => cyberapi_core::secrets::MASK.to_string(),
+                            false => variable.value.clone(),
+                        };
+                        (variable.name.clone(), value)
+                    })
+                    .collect()
+            };
+            let any_secret = if matrix {
+                state
+                    .variables()
+                    .iter()
+                    .any(|variable| state.is_secret(&variable.id, cx))
+            } else {
+                state.shown().any(|variable| state.is_secret(&variable.id, cx))
+            };
+            (hint, layer_hint, stood_in_for, any_secret)
+        };
         let editable = self.editable;
         let muted = cx.theme().muted_foreground;
         let body: gpui_kit::AnyElement =
-            match state.load() {
+            match self.state.read(cx).load() {
                 Load::Loading => h_flex()
                     .gap_2()
                     .text_sm()
                     .text_color(muted)
                     .child(Spinner::new().small())
                     .into_any_element(),
-                _ if state.shown().next().is_none() => div()
+                _ if matrix => self.render_matrix(cx),
+                _ if self.state.read(cx).shown().next().is_none() => div()
                     .py_4()
                     .text_sm()
                     .text_color(muted)
                     .child(t!("variables.empty").to_string())
                     .into_any_element(),
                 _ => {
+                    let state = self.state.read(cx);
                     let theme = cx.theme();
                     let border = theme.border;
                     // The request's key / value table (`KvEditor`): fields in
@@ -599,7 +913,17 @@ impl Render for VariablesEditor {
                             .small()
                             .icon(IconName::Plus)
                             .label(t!("variables.add").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| this.state.update(cx, |state, cx| state.add(cx)))),
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.matrix {
+                                    this.matrix = false;
+                                    this.state.update(cx, |state, cx| {
+                                        state.set_layer(None, cx);
+                                        state.add(cx);
+                                    });
+                                } else {
+                                    this.state.update(cx, |state, cx| state.add(cx));
+                                }
+                            })),
                     )
                     .into_any_element()
             } else {

@@ -476,6 +476,12 @@ delete_environment = "删除环境"
 delete_environment_title = "删除环境“%{name}”？"
 delete_environment_hint = "环境里的各类变量（环境变量、自定义变量、全局请求头）会一起删除，共用的变量不受影响。"
 stood_in_for = "在这个环境里不再使用的同名共用变量："
+matrix = "矩阵对比"
+matrix_hint = "横向对比并编辑“共用”与各环境的值。留空的环境单元格继承共用值（← …），高亮单元格表示共用与该环境均未设置。"
+matrix_missing = "未设置"
+deduplicate = "归并重复 (%{count})"
+deduplicate_about = "移除同一环境内同名的多余重复变量行"
+deduplicated = "已移除 %{count} 条重复变量。"
 
 [cookies]
 search = "搜索名称、域名或值"

@@ -5,9 +5,9 @@
 //! it has one, and the shared ones otherwise; in none, the shared ones
 //! alone, as before there were environments.
 
-use crate::EnvironmentId;
 use crate::graphql::GraphQlBody;
 use crate::model::{ContentType, Environment, HttpMethod, HttpRequest, Variable, VariableCategory};
+use crate::{EnvironmentId, VariableId};
 
 /// D6: whether sending `request` in an environment marked as production is
 /// asked about first: whatever may change something there — an HTTP method
@@ -83,6 +83,72 @@ pub fn reordered(environments: &[Environment], order: &[EnvironmentId]) -> Vec<E
         .collect();
     placed.extend(rest);
     placed
+}
+
+fn same_variable_name(category: VariableCategory, a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    if category == VariableCategory::GlobalRequestHeader {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+/// D8: distinct non-empty variable names across all layers of `category`,
+/// in order of first appearance (shared layer first, then named environments).
+pub fn matrix_names(variables: &[Variable], category: VariableCategory) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let shared = variables.iter().filter(|v| v.environment.is_none());
+    let named = variables.iter().filter(|v| v.environment.is_some());
+    for variable in shared.chain(named).filter(|v| v.category == category) {
+        let name = variable.name.trim();
+        if !name.is_empty() && !names.iter().any(|seen| same_variable_name(category, seen, name)) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// D8: the variable representing `name` in `environment` (`None` for the
+/// shared layer), preferring an enabled entry over a disabled one.
+pub fn layer_variable<'a>(
+    variables: &'a [Variable],
+    category: VariableCategory,
+    environment: Option<&EnvironmentId>,
+    name: &str,
+) -> Option<&'a Variable> {
+    let mut matches = variables.iter().filter(|variable| {
+        variable.category == category
+            && variable.environment.as_ref() == environment
+            && same_variable_name(category, &variable.name, name)
+    });
+    let first = matches.next()?;
+    if first.enabled {
+        return Some(first);
+    }
+    matches.find(|variable| variable.enabled).or(Some(first))
+}
+
+/// D8: redundant duplicate variable IDs within the same layer of `category`
+/// (keeping the primary entry chosen by [`layer_variable`] for each name and
+/// layer).
+pub fn duplicate_ids(variables: &[Variable], category: VariableCategory) -> Vec<VariableId> {
+    let mut kept: Vec<VariableId> = Vec::new();
+    let mut duplicates: Vec<VariableId> = Vec::new();
+    for variable in variables.iter().filter(|v| v.category == category) {
+        let name = variable.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(primary) = layer_variable(variables, category, variable.environment.as_ref(), name) {
+            if primary.id == variable.id && !kept.contains(&variable.id) {
+                kept.push(variable.id.clone());
+            } else {
+                duplicates.push(variable.id.clone());
+            }
+        }
+    }
+    duplicates
 }
 
 #[cfg(test)]
@@ -217,5 +283,19 @@ mod tests {
             ["c", "a", "b"]
         );
         assert_eq!(ids(reordered(&list, &[])), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn matrix_names_and_duplicates_group_by_layer_and_category_case_rules() {
+        use VariableCategory::*;
+        let mut vars = sample();
+        vars.push(variable(Environment, "ONLY_PROD", "1", Some("prod")));
+        vars.push(variable(Environment, "HOST", "dup-dev", Some("dev")));
+        assert_eq!(matrix_names(&vars, Environment), ["HOST", "ONLY_PROD"]);
+        assert_eq!(matrix_names(&vars, GlobalRequestHeader), ["X-Team", "X-Trace"]);
+        assert_eq!(
+            duplicate_ids(&vars, Environment),
+            vec![VariableId::from("HOST-dup-dev")]
+        );
     }
 }
