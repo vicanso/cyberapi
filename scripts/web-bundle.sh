@@ -72,7 +72,8 @@ if [ "$mode" = release ]; then
   # removes the module's own `target_features` section, so wasm-opt would see
   # an MVP module and refuse what it then meets. `threads` is there because
   # gpui-pre-web compiles atomic instructions into the module even though the
-  # app runs single-threaded.
+  # app runs single-threaded; `simd` because nightly's standard library /
+  # dependencies emit 128-bit SIMD instructions on wasm32.
   features=(
     --enable-bulk-memory
     --enable-mutable-globals
@@ -80,6 +81,7 @@ if [ "$mode" = release ]; then
     --enable-nontrapping-float-to-int
     --enable-multivalue
     --enable-reference-types
+    --enable-simd
     --enable-threads
   )
   wasm-opt -Oz --strip-debug --strip-producers "${features[@]}" -o "$wasm.opt" "$wasm"
