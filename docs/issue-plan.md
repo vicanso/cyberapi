@@ -235,7 +235,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 | F12 | 路径参数（`:id` / `{id}`）可视化编辑与自动识别 | S–M | 可选 | 自动识别 URL 中的 `:param` / `{param}` 占位符，在 `Query` 标签页（或紧邻的 Path 分区）以键值行展示（含 `description` 说明，与 OpenAPI 的 `in: path` 参数双向导入导出），发送与生成代码时自动替换进 URL |
 | A8 | 从响应体 JSON Tree 一键生成断言 / 提取 / `{{g(...)}}` 引用（已完成） | S | 不变 | 在 [`views/json_tree.rs`](../src/views/json_tree.rs) 节点操作中增加：① 复制为 `{{g(当前接口, 路径)}}`（跨接口引用 token 等）；② 添加为当前接口的 JSONPath 断言（`Assert`）；③ 添加为运行器提取变量（`Extract`） |
 | F13 | 根据请求 Schema 一键生成 JSON 请求体骨架（已完成） | S | 不变 | 当接口存在 `request_schema`（来自 F11 手写/导入，或 B10 定时拉取匹配到的入参 Schema）时，在 JSON `Body` 工具栏 `Format` 旁提供“生成示例”按钮，通过 `schema_docs::sample_of_schema` 一键生成并填入 JSON 骨架 |
-| F14 | 响应头与请求详情（Details）快速复制 / 过滤 | S | 不变 | 在响应 `Headers` / `Cookies` 及 `Details` 标签页支持单行或整表一键复制，并在条目较多时提供轻量关键字过滤 |
+| F14 | 响应头与请求详情（Details）快速复制 / 过滤（已完成） | S | 不变 | 在响应 `Headers` / `Cookies` 及 `Details` 标签页支持单行或整表一键复制，并在条目较多时提供轻量关键字过滤 |
 
 ### 二、环境变量与文档协同（中小投入 S–M，团队提效）
 

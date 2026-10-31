@@ -210,6 +210,8 @@ pub struct ResponsePanel {
     searching: bool,
     /// Whether the find bar matches without regard to case.
     search_case_insensitive: bool,
+    /// F14: narrows headers, cookies, and sent headers by name or value.
+    header_filter: Entity<InputState>,
     /// #58: the sent request's secrets show unmasked.
     reveal: bool,
     found: Option<Found>,
@@ -286,6 +288,11 @@ impl ResponsePanel {
         });
         let search =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("response.search_placeholder").to_string()));
+        let header_filter = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("response.filter_headers").to_string())
+                .clean_on_escape()
+        });
         let wrap = app.read(cx).prefs().text.wrap;
         let display_limit = app.read(cx).prefs().sending.display_limit();
         let body = cx.new(|cx| {
@@ -325,6 +332,11 @@ impl ResponsePanel {
                 }
                 _ => {}
             }),
+            cx.subscribe_in(&header_filter, window, |_, _, event, _, cx| {
+                if let InputEvent::Change = event {
+                    cx.notify();
+                }
+            }),
             cx.observe_in(&app, window, |this, app, window, cx| {
                 let wrap = app.read(cx).prefs().text.wrap;
                 if wrap != this.wrap {
@@ -357,6 +369,7 @@ impl ResponsePanel {
             search,
             searching: false,
             search_case_insensitive: true,
+            header_filter,
             reveal: false,
             found: None,
             _finding: None,
@@ -1732,6 +1745,7 @@ impl ResponsePanel {
 
     /// The rows, or `empty` said when there are none.
     fn render_headers(
+        &self,
         id: &'static str,
         rows: Vec<(String, String)>,
         empty: String,
@@ -1740,12 +1754,62 @@ impl ResponsePanel {
         if rows.is_empty() {
             return note(empty, Vec::new(), cx);
         }
+        let query = self.header_filter.read(cx).value().trim().to_ascii_lowercase();
+        let filtered: Vec<(String, String)> = if query.is_empty() {
+            rows
+        } else {
+            rows.into_iter()
+                .filter(|(name, value)| {
+                    name.to_ascii_lowercase().contains(&query) || value.to_ascii_lowercase().contains(&query)
+                })
+                .collect()
+        };
+        let all_copied = filtered
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let muted = cx.theme().muted_foreground;
         v_flex()
             .id(id)
             .size_full()
             .overflow_y_scrollbar()
             .p_2()
-            .child(field_rows(id, rows, cx))
+            .gap_1p5()
+            .child(
+                h_flex()
+                    .px_2()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div().flex_1().max_w(px(260.)).child(
+                            Input::new(&self.header_filter)
+                                .xsmall()
+                                .prefix(Icon::new(IconName::Search).xsmall().text_color(muted))
+                                .cleanable(true),
+                        ),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("{id}-copy-all")))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Copy)
+                            .label(t!("response.copy_all").to_string())
+                            .disabled(filtered.is_empty())
+                            .on_click(move |_, window, cx| copy(all_copied.clone(), window, cx)),
+                    ),
+            )
+            .child(if filtered.is_empty() {
+                div()
+                    .px_2()
+                    .py_2()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(t!("response.filter_headers_empty").to_string())
+                    .into_any_element()
+            } else {
+                field_rows(id, filtered, cx).into_any_element()
+            })
             .into_any_element()
     }
 
@@ -1906,6 +1970,7 @@ impl ResponsePanel {
         let reveal = self.reveal;
         let secret = SentHeader::secret;
         let secrets = sent.headers.iter().any(secret);
+        let query = self.header_filter.read(cx).value().trim().to_ascii_lowercase();
         let rows: Vec<(String, String, String)> = sent
             .headers
             .iter()
@@ -1917,7 +1982,19 @@ impl ResponsePanel {
                 };
                 (header.name.clone(), value, header_source(header.from))
             })
+            .filter(|(name, value, from)| {
+                query.is_empty()
+                    || name.to_ascii_lowercase().contains(&query)
+                    || value.to_ascii_lowercase().contains(&query)
+                    || from.to_ascii_lowercase().contains(&query)
+            })
             .collect();
+        let all_headers_copied = rows
+            .iter()
+            .map(|(name, value, _)| format!("{name}: {value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let has_headers = !sent.headers.is_empty();
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let shown = sent.body.as_ref().map_or(0, String::len) as u64;
@@ -1930,7 +2007,8 @@ impl ResponsePanel {
             None if sent.body_size > 0 => Some(t!("response.sent_binary", size = format_size(sent.body_size))),
             _ => None,
         };
-        let body = sent.body.clone().filter(|body| !body.is_empty()).map(|body| {
+        let body_text = sent.body.clone().filter(|body| !body.is_empty());
+        let body = body_text.clone().map(|body| {
             div()
                 .px_2()
                 .py_1p5()
@@ -1948,6 +2026,7 @@ impl ResponsePanel {
             .child(
                 h_flex()
                     .px_2()
+                    .gap_2()
                     .items_center()
                     .justify_between()
                     .child(
@@ -1956,21 +2035,70 @@ impl ResponsePanel {
                             .font_semibold()
                             .child(t!("response.sent_title").to_string()),
                     )
-                    .when(secrets, |this| {
-                        this.child(self.reveal_button("response-sent-reveal", cx))
-                    }),
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .when(has_headers, |this| {
+                                this.child(
+                                    div().w(px(180.)).child(
+                                        Input::new(&self.header_filter)
+                                            .xsmall()
+                                            .prefix(Icon::new(IconName::Search).xsmall().text_color(muted))
+                                            .cleanable(true),
+                                    ),
+                                )
+                                .child(
+                                    Button::new("response-sent-copy-all")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Copy)
+                                        .label(t!("response.copy_all").to_string())
+                                        .disabled(rows.is_empty())
+                                        .on_click(move |_, window, cx| copy(all_headers_copied.clone(), window, cx)),
+                                )
+                            })
+                            .when(secrets, |this| {
+                                this.child(self.reveal_button("response-sent-reveal", cx))
+                            }),
+                    ),
             )
-            .child(sent_rows(rows, cx))
+            .child(if has_headers && rows.is_empty() {
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(t!("response.filter_headers_empty").to_string())
+                    .into_any_element()
+            } else {
+                sent_rows(rows, cx).into_any_element()
+            })
             .when(body.is_some() || body_note.is_some(), |this| {
                 this.child(
                     v_flex()
                         .px_2()
                         .gap_1()
                         .child(
-                            div()
-                                .text_sm()
-                                .text_color(muted)
-                                .child(t!("response.sent_body").to_string()),
+                            h_flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(muted)
+                                        .child(t!("response.sent_body").to_string()),
+                                )
+                                .when_some(body_text, |this, copied_body| {
+                                    this.child(
+                                        Button::new("response-sent-body-copy")
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::Copy)
+                                            .tooltip(t!("common.copy").to_string())
+                                            .on_click(move |_, window, cx| copy(copied_body.clone(), window, cx)),
+                                    )
+                                }),
                         )
                         .when_some(body_note, |this, note| {
                             this.child(div().text_xs().text_color(muted).child(note.to_string()))
@@ -2339,7 +2467,7 @@ impl Render for ResponsePanel {
             Some(response) => {
                 let content = match self.tab_for(response) {
                     ResponseTab::Body => self.render_cut_body(response, cx),
-                    ResponseTab::Headers => Self::render_headers(
+                    ResponseTab::Headers => self.render_headers(
                         "response-headers",
                         response
                             .display_headers()
@@ -2349,7 +2477,7 @@ impl Render for ResponsePanel {
                         t!("response.no_headers").to_string(),
                         cx,
                     ),
-                    ResponseTab::Cookies => Self::render_headers(
+                    ResponseTab::Cookies => self.render_headers(
                         "response-cookies",
                         response.cookies(),
                         t!("response.no_cookies").to_string(),
