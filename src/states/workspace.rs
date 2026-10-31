@@ -122,6 +122,13 @@ pub enum WorkspaceEvent {
     NotIntoLocal,
     /// F6: `name` was deleted; delete `count` can be undone a while.
     Deleted { name: String, apis: usize, count: u64 },
+    /// F15: `apis` APIs (`occurrences` places) were replaced; `count` can be
+    /// undone a while.
+    Replaced {
+        apis: usize,
+        occurrences: usize,
+        count: u64,
+    },
     /// F5: `name` was copied, or moved, into `project`; the variables it
     /// reads that `project` has none of.
     Transferred {
@@ -256,6 +263,9 @@ pub struct WorkspaceState {
     versions: Option<Result<Vec<ProjectVersion>, StoreError>>,
     /// F6: the last delete, while it can be undone.
     undo: Option<Undo>,
+    /// F15: the last batch find-and-replace (`(count, originals)`), while it
+    /// can be undone.
+    replace_undo: Option<(u64, Vec<(ItemId, HttpRequest)>)>,
     /// F6: how many deletes the reader was told of: each one's number,
     /// never another's (BUG-9).
     deletes: u64,
@@ -378,6 +388,7 @@ impl WorkspaceState {
             recent: None,
             versions: None,
             undo: None,
+            replace_undo: None,
             deletes: 0,
             copy,
             _poll: poll.filter(|_| !is_copy).map(|every| Self::poll(every, cx)),
@@ -2510,7 +2521,7 @@ impl WorkspaceState {
     /// name (`import::merge`); an environment variable it has is not added
     /// twice.
     pub fn import_again(&mut self, parent: Option<ItemId>, bundle: ImportBundle, update: bool, cx: &mut Context<Self>) {
-        self.import_again_scoped(parent, bundle, update, false, cx);
+        self.import_again_scoped(parent, bundle, update, false, false, cx);
     }
 
     fn import_again_scoped(
@@ -2519,6 +2530,7 @@ impl WorkspaceState {
         bundle: ImportBundle,
         update: bool,
         within_folder: bool,
+        from_source_sync: bool,
         cx: &mut Context<Self>,
     ) {
         // The open tabs as their editors hold them: an edit not saved yet is
@@ -2543,9 +2555,7 @@ impl WorkspaceState {
         let imported_vars = bundle.all_environment();
         let merge = match (within_folder, parent.as_ref()) {
             (true, Some(folder)) => cyberapi_core::import::merge::merge_folder(&data, folder, &bundle.items, update),
-            _ if bundle.source.is_some() => {
-                cyberapi_core::import::merge::merge(&data, parent.as_ref(), &bundle.items, update)
-            }
+            _ if from_source_sync => cyberapi_core::import::merge::merge(&data, parent.as_ref(), &bundle.items, update),
             _ => cyberapi_core::import::merge::merge_with_vars(
                 &data,
                 parent.as_ref(),
@@ -2652,7 +2662,7 @@ impl WorkspaceState {
         self.cache_source(url.clone(), bundle.clone(), cx);
         bundle.source = Some(url);
         let folder = self.source_folder();
-        self.import_again(folder, bundle, true, cx);
+        self.import_again_scoped(folder, bundle, true, false, true, cx);
     }
 
     /// B7: the project keeps no source.
@@ -2710,7 +2720,7 @@ impl WorkspaceState {
     ) {
         self.cache_source(url.clone(), bundle.clone(), cx);
         bundle.folder_source = Some(url);
-        self.import_again_scoped(Some(folder), bundle, true, true, cx);
+        self.import_again_scoped(Some(folder), bundle, true, true, true, cx);
     }
 
     /// B9: `folder` keeps no source of its own.
@@ -3334,6 +3344,137 @@ impl WorkspaceState {
         if self.undo.as_ref().is_some_and(|undo| undo.count == count) {
             self.undo = None;
         }
+        if self.replace_undo.as_ref().is_some_and(|(c, _)| *c == count) {
+            self.replace_undo = None;
+        }
+    }
+
+    /// F15: `TreeData` with any unsaved edits from open tabs folded in, so a
+    /// project-wide find-and-replace previews what the editors hold now.
+    pub fn tree_data_with_open(&self, cx: &gpui_kit::App) -> TreeData {
+        let mut data = self.data.clone();
+        for (id, api) in &self.kept {
+            let request = api.read(cx).request();
+            if let Some(stored) = data.apis.iter_mut().find(|stored| &stored.id == id)
+                && &stored.request != request
+            {
+                stored.request = request.clone();
+            }
+        }
+        data
+    }
+
+    /// F15: writes a previewed find-and-replace `plan` via `TreeStore::replace`
+    /// and keeps its originals so it can be undone.
+    pub fn apply_find_replace(&mut self, plan: cyberapi_core::find_replace::ReplacePlan, cx: &mut Context<Self>) {
+        if !self.editable() || plan.hits.is_empty() {
+            return;
+        }
+        for api in self.kept.values() {
+            api.update(cx, |api, cx| api.save_now(cx));
+        }
+        self.deletes += 1;
+        let count = self.deletes;
+        let apis = plan.hits.len();
+        let occurrences = plan.total_occurrences;
+        let originals = plan.originals();
+        let updates = plan.updates();
+        let touched: Vec<ItemId> = updates.iter().map(|(id, _)| id.clone()).collect();
+        self.replace_undo = Some((count, originals));
+
+        let storage = self.sender.storage.clone();
+        let collection = self.collection.id.clone();
+        let call: StoreFuture<TreeData> = Box::pin(async move {
+            let tree = storage.tree();
+            let mut tries = 2;
+            loop {
+                let at = tree.config(collection.clone()).await?;
+                let mut config = at.config;
+                if !cyberapi_core::find_replace::apply_requests(&mut config, &updates) {
+                    break;
+                }
+                match tree.replace(collection.clone(), config, Some(at.revision)).await {
+                    Ok(_) => break,
+                    Err(StoreError::Stale { .. }) if tries > 1 => tries -= 1,
+                    Err(error) => return Err(error),
+                }
+            }
+            tree.load(collection).await
+        });
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(data) => {
+                this.set_data(data, cx);
+                for id in &touched {
+                    if this.kept.contains_key(id) {
+                        this.start_again(id, cx);
+                    }
+                }
+                this.sync_api(cx);
+                cx.emit(WorkspaceEvent::Replaced {
+                    apis,
+                    occurrences,
+                    count,
+                });
+                cx.notify();
+            }
+            Err(error) => {
+                this.replace_undo = None;
+                cx.emit(WorkspaceEvent::Failed(error));
+            }
+        });
+    }
+
+    /// F15: undoes batch find-and-replace `count`, putting the original
+    /// requests back via `TreeStore::replace`.
+    pub fn undo_replace(&mut self, count: u64, cx: &mut Context<Self>) {
+        if self.replace_undo.as_ref().is_none_or(|(c, _)| *c != count) || !self.editable() {
+            return;
+        }
+        let Some((count, originals)) = self.replace_undo.take() else {
+            return;
+        };
+        for api in self.kept.values() {
+            api.update(cx, |api, cx| api.save_now(cx));
+        }
+        let touched: Vec<ItemId> = originals.iter().map(|(id, _)| id.clone()).collect();
+        let updates = originals.clone();
+        let storage = self.sender.storage.clone();
+        let collection = self.collection.id.clone();
+        let call: StoreFuture<TreeData> = Box::pin(async move {
+            let tree = storage.tree();
+            let mut tries = 2;
+            loop {
+                let at = tree.config(collection.clone()).await?;
+                let mut config = at.config;
+                if !cyberapi_core::find_replace::apply_requests(&mut config, &updates) {
+                    break;
+                }
+                match tree.replace(collection.clone(), config, Some(at.revision)).await {
+                    Ok(_) => break,
+                    Err(StoreError::Stale { .. }) if tries > 1 => tries -= 1,
+                    Err(error) => return Err(error),
+                }
+            }
+            tree.load(collection).await
+        });
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(data) => {
+                this.set_data(data, cx);
+                for id in &touched {
+                    if this.kept.contains_key(id) {
+                        this.start_again(id, cx);
+                    }
+                }
+                this.sync_api(cx);
+                cx.notify();
+            }
+            Err(error) => {
+                if this.replace_undo.is_none() {
+                    this.replace_undo = Some((count, originals));
+                }
+                cx.emit(WorkspaceEvent::Failed(error));
+            }
+        });
     }
 
     /// The reader's state is saved in the background; a failure costs them
@@ -6063,8 +6204,10 @@ mod tests {
         let run = cx.new(|cx| super::super::RunState::new(state.clone(), None, cx));
         let names: Vec<String> = run.read_with(cx, |run, _| run.planned().iter().map(|p| p.name.clone()).collect());
         assert_eq!(names, ["b", "a"], "the tree's order: a new API goes first");
-        run.update(cx, |run, cx| run.start("n\n1\n2", HashMap::new(), cx))
-            .expect("the data reads");
+        run.update(cx, |run, cx| {
+            run.start("n\n1\n2", HashMap::new(), cyberapi_core::run::RunOptions::default(), cx)
+        })
+        .expect("the data reads");
         assert!(run.read_with(cx, |run, _| run.running()));
         for _ in 0..10 {
             cx.executor().advance_clock(Duration::from_millis(60));
@@ -6081,7 +6224,9 @@ mod tests {
         let kept = storage.history().list(collection.id.clone(), a).await.expect("list");
         assert_eq!(kept.len(), 2, "each send kept");
         // Data that does not read starts nothing.
-        let started = run.update(cx, |run, cx| run.start("[1", HashMap::new(), cx));
+        let started = run.update(cx, |run, cx| {
+            run.start("[1", HashMap::new(), cyberapi_core::run::RunOptions::default(), cx)
+        });
         assert!(started.is_err());
         assert_eq!(
             run.read_with(cx, |run, _| run.results().len()),

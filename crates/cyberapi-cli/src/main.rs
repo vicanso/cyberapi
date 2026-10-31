@@ -80,6 +80,18 @@ struct RunArgs {
     /// Writes the run as JUnit XML to this file.
     #[arg(long, value_name = "FILE")]
     junit: Option<PathBuf>,
+    /// Writes the run as an HTML report to this file.
+    #[arg(long, value_name = "FILE")]
+    html: Option<PathBuf>,
+    /// Pause between sends, in milliseconds (up to 60000).
+    #[arg(long = "delay-ms", default_value_t = 0, value_name = "MS")]
+    delay_ms: u32,
+    /// Retries a failed send up to this many times (up to 10).
+    #[arg(long, default_value_t = 0, value_name = "COUNT")]
+    retries: u32,
+    /// Stops the run as soon as a send fails.
+    #[arg(long)]
+    bail: bool,
     /// Follows redirects, as the app's setting does.
     #[arg(long)]
     follow_redirects: bool,
@@ -294,7 +306,13 @@ async fn run(args: RunArgs, handle: tokio::runtime::Handle) -> Result<bool, Stri
     let told = results.clone();
     let printed = named.clone();
     let steps_kept = steps.clone();
-    cyberapi_service::run(
+    let options = rules::RunOptions {
+        delay_ms: args.delay_ms,
+        retries: args.retries,
+        bail: args.bail,
+    }
+    .bounded();
+    cyberapi_service::run_with_options(
         sender,
         collection.id,
         steps.clone(),
@@ -303,6 +321,8 @@ async fn run(args: RunArgs, handle: tokio::runtime::Handle) -> Result<bool, Stri
             file: None,
             prompts: args.prompts.into_iter().collect(),
         },
+        options,
+        Arc::new(|duration| Box::pin(tokio::time::sleep(duration))),
         Arc::new(move |result| {
             let place = &printed[result.step];
             println!("{}", report::line(&result, place, passes > 1));
@@ -323,7 +343,7 @@ async fn run(args: RunArgs, handle: tokio::runtime::Handle) -> Result<bool, Stri
         results.len() - held,
         started.elapsed().as_secs_f64()
     );
-    if let Some(file) = &args.junit {
+    if args.junit.is_some() || args.html.is_some() {
         let cases: Vec<rules::Case> = results
             .iter()
             .map(|result| {
@@ -331,8 +351,14 @@ async fn run(args: RunArgs, handle: tokio::runtime::Handle) -> Result<bool, Stri
                 report::case(result, &named[result.step], passes > 1, assertions)
             })
             .collect();
-        std::fs::write(file, rules::junit(&config.name, &cases))
-            .map_err(|error| format!("{}: {error}", file.display()))?;
+        if let Some(file) = &args.junit {
+            std::fs::write(file, rules::junit(&config.name, &cases))
+                .map_err(|error| format!("{}: {error}", file.display()))?;
+        }
+        if let Some(file) = &args.html {
+            std::fs::write(file, rules::html_report(&config.name, &cases))
+                .map_err(|error| format!("{}: {error}", file.display()))?;
+        }
     }
     Ok(held == results.len())
 }

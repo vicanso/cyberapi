@@ -6,7 +6,7 @@
 use super::WorkspaceState;
 use super::api::remember_typed;
 use cyberapi_core::model::HttpMethod;
-use cyberapi_core::run::{self as rules, DataError};
+use cyberapi_core::run::{self as rules, Case, DataError, RunOptions};
 use cyberapi_core::send;
 use cyberapi_core::template::{Answers, Prompt};
 use cyberapi_core::{CollectionId, ItemId};
@@ -131,12 +131,13 @@ impl RunState {
 
     /// Starts the run over again: the APIs as they are now, once for each
     /// row of `data` (CSV or a JSON array; blank is once), with what was
-    /// typed for its `prompt`s. A data file that does not read starts
-    /// nothing and says why.
+    /// typed for its `prompt`s and `options`. A data file that does not read
+    /// starts nothing and says why.
     pub fn start(
         &mut self,
         data: &str,
         prompts: HashMap<String, String>,
+        options: RunOptions,
         cx: &mut Context<Self>,
     ) -> Result<(), DataError> {
         let rows = rules::rows(data)?;
@@ -164,12 +165,21 @@ impl RunState {
         let started = Instant::now();
         self.started = Some(started);
         let (told, mut telling) = mpsc::unbounded::<StepResult>();
-        let call = cyberapi_service::run(
+        let executor = cx.background_executor().clone();
+        let sleep = Arc::new(move |duration: std::time::Duration| {
+            let timer = executor.timer(duration);
+            Box::pin(async move {
+                timer.await;
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        });
+        let call = cyberapi_service::run_with_options(
             sender,
             self.collection.clone(),
             steps,
             rows,
             Answers { file: None, prompts },
+            options,
+            sleep,
             Arc::new(move |result| {
                 let _ = told.unbounded_send(result);
             }),
@@ -197,6 +207,45 @@ impl RunState {
         }));
         cx.notify();
         Ok(())
+    }
+
+    /// A9: the run's suite name and cases, for JUnit XML and HTML reports.
+    pub fn report_cases(&self, cx: &App) -> (String, Vec<Case>) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return (String::new(), Vec::new());
+        };
+        let workspace = workspace.read(cx);
+        let tree = workspace.tree();
+        let data = workspace.tree_data();
+        let suite = match &self.folder {
+            Some(folder) => tree
+                .get(folder)
+                .map(|node| node.name().to_string())
+                .unwrap_or_else(|| workspace.collection().name.clone()),
+            None => workspace.collection().name.clone(),
+        };
+        let numbered = self.passes > 1;
+        let cases = self
+            .results
+            .iter()
+            .map(|result| {
+                let api_id = self.planned.get(result.step).map(|planned| &planned.api);
+                let place = api_id.map(|id| rules::place(tree, id)).unwrap_or_default();
+                let assertions = api_id
+                    .and_then(|id| data.apis.iter().find(|api| &api.id == id))
+                    .map(|api| api.request.assertions.as_slice())
+                    .unwrap_or_default();
+                rules::case_of(
+                    result.pass,
+                    &place,
+                    numbered,
+                    &result.response,
+                    &result.outcomes,
+                    assertions,
+                )
+            })
+            .collect();
+        (suite, cases)
     }
 
     fn told(&mut self, told: Vec<StepResult>, cx: &mut Context<Self>) {

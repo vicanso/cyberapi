@@ -101,6 +101,8 @@ pub struct RequestEditor {
     ticker: Option<Task<()>>,
     /// Why the JSON body would not parse, worked out once typing stops.
     json_problem: Option<String>,
+    /// A10: why the JSON body does not conform to its `request_schema`.
+    schema_problem: Option<String>,
     /// That being worked out; a newer change drops it.
     json_check: Task<()>,
     /// The body as a tree, when this API's JSON is shown that way.
@@ -496,6 +498,7 @@ impl RequestEditor {
             docs,
             ticker: None,
             json_problem: None,
+            schema_problem: None,
             json_check: Task::ready(()),
             json_tree,
             body_as_tree: None,
@@ -515,20 +518,32 @@ impl RequestEditor {
     fn check_json(&mut self, cx: &mut Context<Self>) {
         if self.api.read(cx).request().content_type != ContentType::Json {
             self.json_check = Task::ready(());
-            if self.json_problem.take().is_some() {
+            if self.json_problem.take().is_some() | self.schema_problem.take().is_some() {
                 cx.notify();
             }
             return;
         }
         self.json_check = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(JSON_CHECK_AFTER).await;
-            let Ok(body) = this.update(cx, |this, cx| this.api.read(cx).request().body.clone()) else {
+            let Ok((body, schema)) = this.update(cx, |this, cx| {
+                (this.api.read(cx).request().body.clone(), this.active_request_schema(cx))
+            }) else {
                 return;
             };
-            let problem = cx.background_spawn(async move { send::json_problem(&body) }).await;
+            let (problem, schema_problem) = cx
+                .background_spawn(async move {
+                    let problem = send::json_problem(&body);
+                    let schema_problem = match (&problem, &schema) {
+                        (None, Some(schema)) => send::request_schema_problem(&body, schema),
+                        _ => None,
+                    };
+                    (problem, schema_problem)
+                })
+                .await;
             let _ = this.update(cx, |this, cx| {
-                if problem != this.json_problem {
+                if problem != this.json_problem || schema_problem != this.schema_problem {
                     this.json_problem = problem;
+                    this.schema_problem = schema_problem;
                     cx.notify();
                 }
             });
@@ -1328,6 +1343,20 @@ impl RequestEditor {
                 .update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
             return;
         }
+        // A10: when the API has a request schema, check the JSON body before
+        // sending and warn without blocking.
+        if api.sending_since().is_none()
+            && api.request().method.has_body()
+            && api.request().content_type == ContentType::Json
+            && let Some(schema) = self.active_request_schema(cx)
+            && let Some(problem) = send::request_schema_problem(&api.request().body, &schema)
+        {
+            window.push_notification(
+                Notification::warning(t!("editor.schema_problem", why = problem).to_string()),
+                cx,
+            );
+        }
+        let api = self.api.read(cx);
         // D6: what starts — not a message on what is open — in production.
         let workspace = self.workspace.read(cx);
         let effective_env = api.effective_environment(workspace);
@@ -2125,27 +2154,32 @@ impl RequestEditor {
                     }),
                 ))
             })
-            // Before it is sent: where the JSON goes wrong.
-            .when_some(self.json_problem.clone(), |this, problem| {
-                let warning = cx.theme().warning;
-                this.child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .justify_end()
-                        .gap_1()
-                        .items_center()
-                        .text_xs()
-                        .text_color(warning)
-                        .child(Icon::new(IconName::TriangleAlert).xsmall().text_color(warning))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .child(t!("editor.json_problem", why = problem).to_string()),
-                        ),
-                )
-            });
+            // Before it is sent: where the JSON or its schema (A10) goes wrong.
+            .when_some(
+                self.json_problem
+                    .as_ref()
+                    .map(|why| t!("editor.json_problem", why = why).to_string())
+                    .or_else(|| {
+                        self.schema_problem
+                            .as_ref()
+                            .map(|why| t!("editor.schema_problem", why = why).to_string())
+                    }),
+                |this, message| {
+                    let warning = cx.theme().warning;
+                    this.child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .justify_end()
+                            .gap_1()
+                            .items_center()
+                            .text_xs()
+                            .text_color(warning)
+                            .child(Icon::new(IconName::TriangleAlert).xsmall().text_color(warning))
+                            .child(div().min_w_0().truncate().child(message)),
+                    )
+                },
+            );
         let toolbar = toolbar.when(current == ContentType::GraphQl, |this| {
             // The schema the query's fields are offered from: asked for
             // here, and asked again after the endpoint changed.

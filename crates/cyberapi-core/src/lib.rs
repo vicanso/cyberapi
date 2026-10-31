@@ -17,6 +17,7 @@ pub mod digest;
 pub mod directory;
 pub mod environments;
 pub mod export;
+pub mod find_replace;
 pub mod format;
 pub mod graphql;
 pub mod graphql_format;

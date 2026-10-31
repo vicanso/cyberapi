@@ -970,6 +970,7 @@ fn project_menu(
     let (for_api, for_folder) = (state.clone(), state.clone());
     let (for_import, for_export) = (state.clone(), state.clone());
     let (for_paste, for_source) = (state.clone(), state.clone());
+    let for_replace = state.clone();
     let has_source_updates = state
         .upgrade()
         .is_some_and(|ws| ws.read(cx).source_updates(None).is_some());
@@ -1014,6 +1015,16 @@ fn project_menu(
                 .on_click(move |_, window, cx| {
                     if let Some(state) = for_source.upgrade() {
                         super::source_dialog::open_source_dialog(state, window, cx);
+                    }
+                }),
+        )
+        // F15: project-wide find and replace.
+        .item(
+            PopupMenuItem::new(t!("find_replace.open").to_string())
+                .icon(Icons::Search)
+                .on_click(move |_, window, cx| {
+                    if let Some(state) = for_replace.upgrade() {
+                        super::find_replace_dialog::open_find_replace_dialog(state, None, window, cx);
                     }
                 }),
         )
@@ -1124,6 +1135,7 @@ fn item_menu(
             let folder = parent.clone();
             let (for_import, into) = (state.clone(), id.clone());
             let (for_source, source_folder) = (state.clone(), id.clone());
+            let (for_replace, replace_folder) = (state.clone(), id.clone());
             let folder_has_updates = state
                 .upgrade()
                 .is_some_and(|ws| ws.read(cx).source_updates(Some(id)).is_some());
@@ -1181,6 +1193,21 @@ fn item_menu(
                                 super::source_dialog::open_folder_source_dialog(
                                     state,
                                     source_folder.clone(),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }),
+                )
+                // F15: folder-scoped find and replace.
+                .item(
+                    PopupMenuItem::new(t!("find_replace.open_folder").to_string())
+                        .icon(Icons::Search)
+                        .on_click(move |_, window, cx| {
+                            if let Some(state) = for_replace.upgrade() {
+                                super::find_replace_dialog::open_find_replace_dialog(
+                                    state,
+                                    Some(replace_folder.clone()),
                                     window,
                                     cx,
                                 );

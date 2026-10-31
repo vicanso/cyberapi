@@ -531,6 +531,32 @@ pub fn json_problem(body: &str) -> Option<String> {
         .map(|error| error.to_string())
 }
 
+/// A10: why a JSON body does not conform to its `request_schema` (F11), by
+/// the first 3 JSON pointer places. `None` when the body is blank, still has
+/// `{{…}}` templates, does not parse as JSON, the schema is blank or
+/// invalid, or the body conforms.
+pub fn request_schema_problem(body: &str, schema: &str) -> Option<String> {
+    let body = body.trim();
+    let schema = schema.trim();
+    if body.is_empty() || schema.is_empty() || body.contains("{{") {
+        return None;
+    }
+    let text = strip_json_comments(body);
+    let doc: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let schema: serde_json::Value = serde_json::from_str(schema).ok()?;
+    let validator = jsonschema::validator_for(&schema).ok()?;
+    let places: Vec<String> = validator
+        .iter_errors(&doc)
+        .take(3)
+        .map(|error| {
+            let at = error.instance_path().to_string();
+            let at = if at.is_empty() { "/".to_string() } else { at };
+            format!("{at}: {error}")
+        })
+        .collect();
+    (!places.is_empty()).then(|| places.join("; "))
+}
+
 /// Where a URI without a scheme goes: plain HTTP, as a browser's address bar
 /// would. The old app refused it.
 fn with_scheme(uri: &str) -> String {
@@ -963,6 +989,23 @@ mod tests {
         let broken = "{\n  // the tenant\n  \"a\": 1\n  \"b\": 2\n}";
         let problem = json_problem(broken).expect("a problem");
         assert!(problem.contains("line 4 column 3"), "{problem}");
+    }
+
+    #[test]
+    fn a_json_body_is_checked_against_its_request_schema() {
+        let schema = r#"{
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": { "type": "string" },
+                "age": { "type": "integer" }
+            }
+        }"#;
+        assert_eq!(request_schema_problem(r#"{"name": "Ada", "age": 30}"#, schema), None);
+        assert_eq!(request_schema_problem(r#"{"name": "{{user}}"}"#, schema), None);
+        let problem = request_schema_problem(r#"{"age": "thirty"}"#, schema).expect("schema mismatch");
+        assert!(problem.contains("name"), "{problem}");
+        assert!(problem.contains("/age"), "{problem}");
     }
 
     /// E1: a WebSocket goes to its `ws://` address over HTTP/1.1, signed

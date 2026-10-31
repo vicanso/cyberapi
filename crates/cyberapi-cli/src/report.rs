@@ -1,45 +1,10 @@
 //! How a run is told in a terminal and in JUnit: a line for each send as it
 //! ends, what did not hold under it, the cases CI reads.
 
-use cyberapi_core::ItemId;
-use cyberapi_core::assertions::{Assertion, Checked, Op, Problem, Subject, TYPES};
+use cyberapi_core::assertions::Assertion;
 use cyberapi_core::response::format_duration;
-use cyberapi_core::run::Case;
-use cyberapi_core::tree::Tree;
+pub use cyberapi_core::run::{Case, Place, place};
 use cyberapi_service::StepResult;
-
-/// Where an API is: its folders' names, and its own.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Place {
-    pub folders: String,
-    pub name: String,
-}
-
-impl Place {
-    fn shown(&self) -> String {
-        if self.folders.is_empty() {
-            self.name.clone()
-        } else {
-            format!("{}/{}", self.folders, self.name)
-        }
-    }
-}
-
-pub fn place(tree: &Tree, api: &ItemId) -> Place {
-    let name = tree.get(api).map(|node| node.name().to_string()).unwrap_or_default();
-    let mut folders = Vec::new();
-    let mut parent = tree.get(api).and_then(|node| node.parent()).cloned();
-    while let Some(folder) = parent {
-        let node = tree.get(&folder);
-        folders.push(node.map(|node| node.name().to_string()).unwrap_or_default());
-        parent = node.and_then(|node| node.parent()).cloned();
-    }
-    folders.reverse();
-    Place {
-        folders: folders.join("/"),
-        name,
-    }
-}
 
 /// `a, b and c`; `none` for nothing.
 pub fn listed(names: &[&str]) -> String {
@@ -64,6 +29,11 @@ pub fn line(result: &StepResult, place: &Place, numbered: bool) -> String {
     } else {
         String::new()
     };
+    let retried = if result.attempts > 1 {
+        format!("  (attempt {})", result.attempts)
+    } else {
+        String::new()
+    };
     match &result.response {
         Ok(response) => {
             let status = match (response.grpc_status(), response.status) {
@@ -72,55 +42,14 @@ pub fn line(result: &StepResult, place: &Place, numbered: bool) -> String {
                 (None, None) => "failed".into(),
             };
             format!(
-                "{mark} {pass}{}  {} {}  {status}  {}",
+                "{mark} {pass}{}  {} {}  {status}  {}{retried}",
                 place.shown(),
                 response.request.method.as_str(),
                 response.sent_path(),
                 format_duration(response.latency)
             )
         }
-        Err(_) => format!("{mark} {pass}{}  not sent", place.shown()),
-    }
-}
-
-fn subject(assertion: &Assertion) -> String {
-    match assertion.subject {
-        Subject::Status => "status".into(),
-        Subject::Header => format!("header {}", assertion.target),
-        Subject::Json => assertion.target.clone(),
-        Subject::Body => "body".into(),
-        Subject::Latency => "time (ms)".into(),
-        Subject::Size => "size (bytes)".into(),
-        Subject::Schema => "the body".into(),
-    }
-}
-
-fn op(op: Op) -> &'static str {
-    match op {
-        Op::Equals => "equals",
-        Op::NotEquals => "is not",
-        Op::Contains => "contains",
-        Op::NotContains => "does not contain",
-        Op::Matches => "matches",
-        Op::Exists => "exists",
-        Op::NotExists => "does not exist",
-        Op::Less => "is less than",
-        Op::Greater => "is more than",
-        Op::IsType => "is of type",
-        Op::Conforms => "conforms to its schema",
-    }
-}
-
-fn problem(problem: &Problem) -> String {
-    match problem {
-        Problem::NoResponse => "no answer to check".into(),
-        Problem::NotJson => "the body is no JSON".into(),
-        Problem::Path(why) => format!("the path does not read: {why}"),
-        Problem::Pattern(why) => format!("the pattern does not read: {why}"),
-        Problem::NotANumber => "that is no number".into(),
-        Problem::UnknownType => format!("the type is one of {}", TYPES.join(", ")),
-        Problem::NoTarget => "it names no header or path".into(),
-        Problem::Schema(why) => format!("the schema does not read: {why}"),
+        Err(_) => format!("{mark} {pass}{}  not sent{retried}", place.shown()),
     }
 }
 
@@ -128,69 +57,25 @@ fn problem(problem: &Problem) -> String {
 /// the assertions that failed — with what was there — or could not be
 /// checked; with none to check, the error status.
 pub fn details(result: &StepResult, assertions: &[Assertion]) -> Vec<String> {
-    let response = match &result.response {
-        Ok(response) => response,
-        Err(why) => return vec![why.clone()],
-    };
-    let mut lines: Vec<String> = response.error.iter().cloned().collect();
-    for (index, outcome) in &result.outcomes {
-        let Some(assertion) = assertions.get(*index) else {
-            continue;
-        };
-        // A6: a schema is too long to repeat.
-        let asked = match assertion.op.takes_value() && assertion.subject != Subject::Schema {
-            true => format!(
-                "{} {} {}",
-                subject(assertion),
-                op(assertion.op),
-                assertion.expected.trim()
-            ),
-            false => format!("{} {}", subject(assertion), op(assertion.op)),
-        };
-        match outcome {
-            Ok(Checked { passed: true, .. }) => {}
-            Ok(Checked { actual, .. }) => lines.push(match actual {
-                Some(actual) => format!("✗ {asked}: was {actual}"),
-                None => format!("✗ {asked}: nothing there"),
-            }),
-            Err(why) => lines.push(format!("! {asked}: {}", problem(why))),
-        }
-    }
-    if lines.is_empty() && result.outcomes.is_empty() && !result.held() {
-        lines.push("an error status, and no assertion asks for it".into());
-    }
-    lines
+    cyberapi_core::run::details(&result.response, &result.outcomes, assertions)
 }
 
 /// The send as JUnit has it; `assertions` are its API's.
 pub fn case(result: &StepResult, place: &Place, numbered: bool, assertions: &[Assertion]) -> Case {
-    let name = if numbered {
-        format!("{} [{}]", place.name, result.pass + 1)
-    } else {
-        place.name.clone()
-    };
-    let seconds = result
-        .response
-        .as_ref()
-        .map(|response| response.latency.as_secs_f64())
-        .unwrap_or_default();
-    Case {
-        name,
-        group: place.folders.clone(),
-        seconds,
-        failure: (!result.held()).then(|| {
-            let lines = details(result, assertions);
-            match lines.is_empty() {
-                true => "did not hold".into(),
-                false => lines.join("\n"),
-            }
-        }),
-    }
+    cyberapi_core::run::case_of(
+        result.pass,
+        place,
+        numbered,
+        &result.response,
+        &result.outcomes,
+        assertions,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cyberapi_core::assertions::{Checked, Op, Subject};
     use cyberapi_core::response::HttpResponse;
     use pretty_assertions::assert_eq;
     use std::time::Duration;
@@ -199,6 +84,7 @@ mod tests {
         StepResult {
             pass: 1,
             step: 0,
+            attempts: 1,
             response: Ok(HttpResponse {
                 status,
                 url: "https://a.test/login?x=1".into(),

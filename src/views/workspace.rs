@@ -9,6 +9,7 @@ mod auth_editor;
 mod compare_dialog;
 mod docs_editor;
 mod event_stream;
+mod find_replace_dialog;
 mod import_dialog;
 mod load_dialog;
 mod mock_dialog;
@@ -605,6 +606,44 @@ impl WorkspaceView {
                     this.undo_notice = Some(count);
                     // Only the last delete is undone: the one before's notice
                     // goes, so its button does not seem to (BUG-9).
+                    window.remove_notification1::<UndoDelete>(ElementId::Integer(count.saturating_sub(1)), cx);
+                    window.push_notification(note, cx);
+                    let state = this_state.downgrade();
+                    cx.spawn_in(window, async move |_, cx| {
+                        cx.background_executor().timer(UNDO_FOR).await;
+                        let _ = state.update(cx, |state, _| state.forget_undo(count));
+                        let _ = cx.update(|window, cx| {
+                            window.remove_notification1::<UndoDelete>(ElementId::Integer(count), cx)
+                        });
+                    })
+                    .detach();
+                }
+                // F15: undone from the notice, for a while.
+                WorkspaceEvent::Replaced {
+                    apis,
+                    occurrences,
+                    count,
+                } => {
+                    let count = *count;
+                    let text = t!(
+                        "find_replace.replaced",
+                        occurrences = occurrences,
+                        apis = i18n::counted("workspace.api", *apis)
+                    );
+                    let state = this_state.downgrade();
+                    let note = Notification::info(text.to_string())
+                        .id1::<UndoDelete>(ElementId::Integer(count))
+                        .action(move |_, _, _| {
+                            let state = state.clone();
+                            Button::new("undo-replace")
+                                .small()
+                                .label(t!("undo.undo").to_string())
+                                .on_click(move |_, window, cx| {
+                                    let _ = state.update(cx, |state, cx| state.undo_replace(count, cx));
+                                    window.remove_notification1::<UndoDelete>(ElementId::Integer(count), cx);
+                                })
+                        });
+                    this.undo_notice = Some(count);
                     window.remove_notification1::<UndoDelete>(ElementId::Integer(count.saturating_sub(1)), cx);
                     window.push_notification(note, cx);
                     let state = this_state.downgrade();

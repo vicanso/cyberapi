@@ -12,11 +12,13 @@ use crate::views::inline_confirm::inline_confirm;
 use cyberapi_core::ItemId;
 use cyberapi_core::assertions::tally;
 use cyberapi_core::response::format_duration;
-use cyberapi_core::run::DataError;
+use cyberapi_core::run::{self as rules, DataError, MAX_DELAY_MS, MAX_RETRIES, RunOptions};
 use cyberapi_service::StepResult;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputState};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
 };
@@ -63,9 +65,13 @@ struct RunView {
     workspace: Entity<WorkspaceState>,
     run: Entity<RunState>,
     data: Entity<EditorState>,
+    /// A9: pause between sends (ms), retries per failed send, stop on failure.
+    delay_ms: Entity<InputState>,
+    retries: Entity<InputState>,
+    bail: bool,
     /// D1: a field for each label the run's requests ask for.
     prompts: Vec<(String, Entity<InputState>)>,
-    /// Why the data did not read, or a picked file could not be.
+    /// Why the data or options did not read, or a picked file could not be.
     error: Option<String>,
     /// D6: asking whether a run in production should start.
     confirming: bool,
@@ -97,16 +103,39 @@ impl RunView {
                 .soft_wrap(false)
                 .placeholder(t!("run.data_placeholder").to_string())
         });
+        let delay_ms = cx.new(|cx| InputState::new(window, cx).placeholder("0").default_value("0"));
+        let retries = cx.new(|cx| InputState::new(window, cx).placeholder("0").default_value("0"));
         let observe = cx.observe(&run, |_, _, cx| cx.notify());
         Self {
             workspace,
             run,
             data,
+            delay_ms,
+            retries,
+            bail: false,
             prompts,
             error: None,
             confirming: false,
             _observe: observe,
         }
+    }
+
+    fn options(&self, cx: &App) -> Result<RunOptions, String> {
+        let read = |input: &Entity<InputState>, most: u32, cx: &App| -> Result<u32, String> {
+            let text = input.read(cx).value().trim().to_string();
+            if text.is_empty() {
+                return Ok(0);
+            }
+            text.parse::<u32>()
+                .ok()
+                .filter(|value| *value <= most)
+                .ok_or_else(|| t!("run.bad_number", most = most).to_string())
+        };
+        Ok(RunOptions {
+            delay_ms: read(&self.delay_ms, MAX_DELAY_MS, cx)?,
+            retries: read(&self.retries, MAX_RETRIES, cx)?,
+            bail: self.bail,
+        })
     }
 
     /// D6: whether starting is asked about first: in production, some of
@@ -122,6 +151,11 @@ impl RunView {
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
+        if let Err(why) = self.options(cx) {
+            self.error = Some(why);
+            cx.notify();
+            return;
+        }
         if self.asks_first(cx) {
             self.confirming = true;
             cx.notify();
@@ -132,15 +166,53 @@ impl RunView {
 
     fn start_unasked(&mut self, cx: &mut Context<Self>) {
         self.confirming = false;
+        let options = match self.options(cx) {
+            Ok(options) => options,
+            Err(why) => {
+                self.error = Some(why);
+                cx.notify();
+                return;
+            }
+        };
         let data = self.data.read(cx).value().to_string();
         let prompts = self
             .prompts
             .iter()
             .map(|(label, input)| (label.clone(), input.read(cx).value().to_string()))
             .collect();
-        let started = self.run.update(cx, |run, cx| run.start(&data, prompts, cx));
+        let started = self.run.update(cx, |run, cx| run.start(&data, prompts, options, cx));
         self.error = started.err().map(|error| data_error(&error));
         cx.notify();
+    }
+
+    fn export_report(&self, html: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let (suite, cases) = self.run.read(cx).report_cases(cx);
+        if cases.is_empty() {
+            return;
+        }
+        let stem = if suite.trim().is_empty() {
+            "run-report".to_string()
+        } else {
+            suite.trim().to_string()
+        };
+        let (name, text) = if html {
+            (format!("{stem}-report.html"), rules::html_report(&suite, &cases))
+        } else {
+            (format!("{stem}-junit.xml"), rules::junit(&suite, &cases))
+        };
+        let saving = cx.background_spawn(async move { this_build::save_to_downloads(&name, text.as_bytes()) });
+        window
+            .spawn(cx, async move |cx| {
+                let saved = saving.await;
+                let _ = cx.update(|window, cx| {
+                    let note = match saved {
+                        Ok(path) => Notification::success(t!("export.saved", path = path).to_string()),
+                        Err(message) => Notification::error(message),
+                    };
+                    window.push_notification(note, cx);
+                });
+            })
+            .detach();
     }
 
     fn pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -202,6 +274,9 @@ impl RunView {
                 t!("assertions.passed", passed = passed, total = total).to_string(),
                 color,
             ));
+        }
+        if result.attempts > 1 {
+            notes.push((t!("run.attempts", count = result.attempts).to_string(), muted));
         }
         if !result.extracted.is_empty() {
             let names: Vec<&str> = result.extracted.iter().map(|(name, _)| name.as_str()).collect();
@@ -354,6 +429,28 @@ impl Render for RunView {
                         this.child(div().text_xs().text_color(danger).child(error))
                     }),
             )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .text_sm()
+                    .child(t!("run.delay_ms").to_string())
+                    .child(div().w(px(72.)).child(Input::new(&self.delay_ms).small()))
+                    .child(div().text_color(muted).child("ms"))
+                    .child(div().w(px(12.)))
+                    .child(t!("run.retries").to_string())
+                    .child(div().w(px(56.)).child(Input::new(&self.retries).small()))
+                    .child(div().w(px(12.)))
+                    .child(
+                        Checkbox::new("run-bail")
+                            .checked(self.bail)
+                            .label(t!("run.bail").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.bail = !this.bail;
+                                cx.notify();
+                            })),
+                    ),
+            )
             .when(!prompts.is_empty(), |this| {
                 this.child(
                     v_flex()
@@ -369,7 +466,27 @@ impl Render for RunView {
                             .gap_3()
                             .items_center()
                             .child(action)
-                            .child(div().text_sm().text_color(muted).child(summary)),
+                            .child(div().flex_1().text_sm().text_color(muted).child(summary))
+                            .when(!running && count > 0, |row| {
+                                row.child(
+                                    Button::new("run-export-junit")
+                                        .outline()
+                                        .xsmall()
+                                        .label(t!("run.export_junit").to_string())
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| this.export_report(false, window, cx)),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("run-export-html")
+                                        .outline()
+                                        .xsmall()
+                                        .label(t!("run.export_html").to_string())
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| this.export_report(true, window, cx)),
+                                        ),
+                                )
+                            }),
                     );
                 }
                 // D6: asked in the dialog — one over it is not drawn in a page.

@@ -8,15 +8,208 @@
 //! to the project. What a run sent is kept in the history as any send is;
 //! the run itself is only shown.
 
-use crate::assertions::{Outcomes, tally};
+use crate::assertions::{Assertion, Checked, Outcomes, Problem, Subject, TYPES, tally};
 use crate::import::{self, Format, ImportEnvironment, ImportError};
-use crate::model::{ApiSetting, Environment, Folder, Variable, VariableCategory};
-use crate::response::HttpResponse;
+use crate::model::{ApiSetting, Environment, Folder, HttpMethod, Variable, VariableCategory};
+use crate::response::{HttpResponse, format_duration};
 use crate::sync::ProjectConfig;
 use crate::tree::{ItemKind, Tree, TreeData};
 use crate::{EnvironmentId, ItemId, VariableId};
 use serde_json::Value;
 use snafu::Snafu;
+use std::fmt::Write as _;
+use std::time::Duration;
+
+/// The longest pause between sends in a run (ms).
+pub const MAX_DELAY_MS: u32 = 60_000;
+/// The most retries for a failed send in a run.
+pub const MAX_RETRIES: u32 = 10;
+
+/// A9: how a run paces and handles failures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunOptions {
+    /// Pause between sends (in milliseconds), bounded by [`MAX_DELAY_MS`].
+    pub delay_ms: u32,
+    /// How many times to retry a failed send before giving up, bounded by [`MAX_RETRIES`].
+    pub retries: u32,
+    /// Stop the whole run as soon as a send fails (after any retries).
+    pub bail: bool,
+}
+
+impl RunOptions {
+    pub fn bounded(self) -> Self {
+        Self {
+            delay_ms: self.delay_ms.min(MAX_DELAY_MS),
+            retries: self.retries.min(MAX_RETRIES),
+            bail: self.bail,
+        }
+    }
+
+    pub fn delay(&self) -> Duration {
+        Duration::from_millis(u64::from(self.delay_ms.min(MAX_DELAY_MS)))
+    }
+}
+
+/// Where an API is: its folders' names, and its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Place {
+    pub folders: String,
+    pub name: String,
+}
+
+impl Place {
+    pub fn shown(&self) -> String {
+        if self.folders.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}/{}", self.folders, self.name)
+        }
+    }
+}
+
+pub fn place(tree: &Tree, api: &ItemId) -> Place {
+    let name = tree.get(api).map(|node| node.name().to_string()).unwrap_or_default();
+    let mut folders = Vec::new();
+    let mut parent = tree.get(api).and_then(|node| node.parent()).cloned();
+    while let Some(folder) = parent {
+        let node = tree.get(&folder);
+        folders.push(node.map(|node| node.name().to_string()).unwrap_or_default());
+        parent = node.and_then(|node| node.parent()).cloned();
+    }
+    folders.reverse();
+    Place {
+        folders: folders.join("/"),
+        name,
+    }
+}
+
+fn assertion_subject(assertion: &Assertion) -> String {
+    match assertion.subject {
+        Subject::Status => "status".into(),
+        Subject::Header => format!("header {}", assertion.target),
+        Subject::Json => assertion.target.clone(),
+        Subject::Body => "body".into(),
+        Subject::Latency => "time (ms)".into(),
+        Subject::Size => "size (bytes)".into(),
+        Subject::Schema => "the body".into(),
+    }
+}
+
+fn assertion_op(op: crate::assertions::Op) -> &'static str {
+    use crate::assertions::Op;
+    match op {
+        Op::Equals => "equals",
+        Op::NotEquals => "is not",
+        Op::Contains => "contains",
+        Op::NotContains => "does not contain",
+        Op::Matches => "matches",
+        Op::Exists => "exists",
+        Op::NotExists => "does not exist",
+        Op::Less => "is less than",
+        Op::Greater => "is more than",
+        Op::IsType => "is of type",
+        Op::Conforms => "conforms to its schema",
+    }
+}
+
+fn assertion_problem(problem: &Problem) -> String {
+    match problem {
+        Problem::NoResponse => "no answer to check".into(),
+        Problem::NotJson => "the body is no JSON".into(),
+        Problem::Path(why) => format!("the path does not read: {why}"),
+        Problem::Pattern(why) => format!("the pattern does not read: {why}"),
+        Problem::NotANumber => "that is no number".into(),
+        Problem::UnknownType => format!("the type is one of {}", TYPES.join(", ")),
+        Problem::NoTarget => "it names no header or path".into(),
+        Problem::Schema(why) => format!("the schema does not read: {why}"),
+    }
+}
+
+/// What did not hold, a line each: why it was not sent, the error it got,
+/// the assertions that failed — with what was there — or could not be
+/// checked; with none to check, the error status.
+pub fn details(response: &Result<HttpResponse, String>, outcomes: &Outcomes, assertions: &[Assertion]) -> Vec<String> {
+    let response = match response {
+        Ok(response) => response,
+        Err(why) => return vec![why.clone()],
+    };
+    let mut lines: Vec<String> = response.error.iter().cloned().collect();
+    for (index, outcome) in outcomes {
+        let Some(assertion) = assertions.get(*index) else {
+            continue;
+        };
+        // A6: a schema is too long to repeat.
+        let asked = match assertion.op.takes_value() && assertion.subject != Subject::Schema {
+            true => format!(
+                "{} {} {}",
+                assertion_subject(assertion),
+                assertion_op(assertion.op),
+                assertion.expected.trim()
+            ),
+            false => format!("{} {}", assertion_subject(assertion), assertion_op(assertion.op)),
+        };
+        match outcome {
+            Ok(Checked { passed: true, .. }) => {}
+            Ok(Checked { actual, .. }) => lines.push(match actual {
+                Some(actual) => format!("✗ {asked}: was {actual}"),
+                None => format!("✗ {asked}: nothing there"),
+            }),
+            Err(why) => lines.push(format!("! {asked}: {}", assertion_problem(why))),
+        }
+    }
+    if lines.is_empty() && outcomes.is_empty() && !held(response, outcomes) {
+        lines.push("an error status, and no assertion asks for it".into());
+    }
+    lines
+}
+
+/// The send as JUnit has it; `assertions` are its API's.
+pub fn case_of(
+    pass: usize,
+    place: &Place,
+    numbered: bool,
+    response: &Result<HttpResponse, String>,
+    outcomes: &Outcomes,
+    assertions: &[Assertion],
+) -> Case {
+    let name = if numbered {
+        format!("{} [{}]", place.name, pass + 1)
+    } else {
+        place.name.clone()
+    };
+    let (seconds, is_held, method, path, status) = match response {
+        Ok(resp) => {
+            let status = match (resp.grpc_status(), resp.status) {
+                (Some(grpc), _) => format!("{} {}", grpc.code, grpc.name()),
+                (None, Some(code)) => code.to_string(),
+                (None, None) => "failed".into(),
+            };
+            (
+                resp.latency.as_secs_f64(),
+                held(resp, outcomes),
+                Some(resp.request.method),
+                resp.sent_path(),
+                status,
+            )
+        }
+        Err(_) => (0.0, false, None, String::new(), "not sent".into()),
+    };
+    Case {
+        name,
+        group: place.folders.clone(),
+        seconds,
+        failure: (!is_held).then(|| {
+            let lines = details(response, outcomes, assertions);
+            match lines.is_empty() {
+                true => "did not hold".into(),
+                false => lines.join("\n"),
+            }
+        }),
+        method,
+        path,
+        status,
+    }
+}
 
 /// A run's values, by name, in the order they were given; a later one of a
 /// name stands for an earlier.
@@ -165,7 +358,7 @@ pub fn add_environments(config: &mut ProjectConfig, shared: &[(String, String)],
     }
 }
 
-/// A4: one send of a run, as a JUnit test case.
+/// A4 / A9: one send of a run, as a JUnit test case or HTML report row.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Case {
     /// The API's name, and the data row's number when there are rows.
@@ -175,6 +368,184 @@ pub struct Case {
     pub seconds: f64,
     /// Why it did not hold; `None` when it did.
     pub failure: Option<String>,
+    /// The request method, when sent.
+    pub method: Option<HttpMethod>,
+    /// The request path, when sent.
+    pub path: String,
+    /// Status summary (`200`, `0 OK`, `failed`, `not sent`).
+    pub status: String,
+}
+
+fn html_escape(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '&' => "&amp;".to_string(),
+            '<' => "&lt;".to_string(),
+            '>' => "&gt;".to_string(),
+            '"' => "&quot;".to_string(),
+            '\'' => "&#39;".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
+}
+
+/// A9: a run as a self-contained HTML report.
+pub fn html_report(suite: &str, cases: &[Case]) -> String {
+    let total_cases = cases.len();
+    let failed_cases = cases.iter().filter(|case| case.failure.is_some()).count();
+    let passed_cases = total_cases.saturating_sub(failed_cases);
+    let total_seconds: f64 = cases.iter().map(|case| case.seconds).sum();
+    let total_time = format_duration(Duration::from_secs_f64(total_seconds));
+    let title = html_escape(suite);
+
+    let mut rows = String::new();
+    for case in cases {
+        let passed = case.failure.is_none();
+        let badge_class = if passed { "pass" } else { "fail" };
+        let mark = if passed { "PASS" } else { "FAIL" };
+        let full_name = if case.group.is_empty() {
+            case.name.clone()
+        } else {
+            format!("{}/{}", case.group, case.name)
+        };
+        let method = case.method.as_ref().map(HttpMethod::as_str).unwrap_or("—");
+        let duration = format_duration(Duration::from_secs_f64(case.seconds));
+        let _ = writeln!(
+            rows,
+            "<tr>\
+                <td><span class=\"badge {badge_class}\">{mark}</span></td>\
+                <td class=\"name\">{}</td>\
+                <td class=\"mono\">{} {}</td>\
+                <td class=\"mono\">{}</td>\
+                <td class=\"mono right\">{}</td>\
+            </tr>",
+            html_escape(&full_name),
+            html_escape(method),
+            html_escape(&case.path),
+            html_escape(&case.status),
+            html_escape(&duration),
+        );
+        if let Some(why) = &case.failure {
+            let _ = writeln!(
+                rows,
+                "<tr class=\"failure-row\"><td colspan=\"5\"><pre>{}</pre></td></tr>",
+                html_escape(why)
+            );
+        }
+    }
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} — CyberAPI Run Report</title>
+<style>
+:root {{
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --fg: #0f172a;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --pass-bg: #dcfce7;
+  --pass-fg: #15803d;
+  --fail-bg: #fee2e2;
+  --fail-fg: #b91c1c;
+}}
+@media (prefers-color-scheme: dark) {{
+  :root {{
+    --bg: #0b0f19;
+    --panel: #111827;
+    --fg: #f1f5f9;
+    --muted: #94a3b8;
+    --border: #1e293b;
+    --pass-bg: #064e3b;
+    --pass-fg: #6ee7b7;
+    --fail-bg: #7f1d1d;
+    --fail-fg: #fca5a5;
+  }}
+}}
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0;
+  padding: 32px 24px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.5;
+}}
+.container {{ max-width: 960px; margin: 0 auto; }}
+h1 {{ margin: 0 0 8px; font-size: 22px; }}
+.summary {{
+  display: flex;
+  gap: 16px;
+  margin-bottom: 20px;
+  font-size: 14px;
+  color: var(--muted);
+}}
+.summary strong {{ color: var(--fg); }}
+table {{
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 13px;
+}}
+th, td {{
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}}
+th {{
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--bg);
+}}
+.mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
+.right {{ text-align: right; }}
+.badge {{
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}}
+.badge.pass {{ background: var(--pass-bg); color: var(--pass-fg); }}
+.badge.fail {{ background: var(--fail-bg); color: var(--fail-fg); }}
+.failure-row td {{ background: var(--fail-bg); color: var(--fail-fg); padding: 8px 12px; }}
+.failure-row pre {{ margin: 0; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>{title}</h1>
+  <div class="summary">
+    <span>Total: <strong>{total_cases}</strong></span>
+    <span>Passed: <strong>{passed_cases}</strong></span>
+    <span>Failed: <strong>{failed_cases}</strong></span>
+    <span>Duration: <strong>{total_time}</strong></span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 72px">Status</th>
+        <th>API</th>
+        <th>Request</th>
+        <th style="width: 96px">Code</th>
+        <th class="right" style="width: 96px">Time</th>
+      </tr>
+    </thead>
+    <tbody>
+{rows}    </tbody>
+  </table>
+</div>
+</body>
+</html>
+"#
+    )
 }
 
 /// A4: a run as JUnit XML, which CI systems read: one suite named `suite`.
@@ -520,12 +891,18 @@ mod tests {
                     group: "users".into(),
                     seconds: 0.012,
                     failure: None,
+                    method: Some(HttpMethod::Post),
+                    path: "/login".into(),
+                    status: "200".into(),
                 },
                 Case {
                     name: "me [2]".into(),
                     group: String::new(),
                     seconds: 0.5,
                     failure: Some("status equals 200: was 401\nsecond line".into()),
+                    method: Some(HttpMethod::Get),
+                    path: "/me".into(),
+                    status: "401".into(),
                 },
             ],
         );
@@ -574,5 +951,39 @@ mod tests {
         assert!(matches!(rows("[1"), Err(DataError::Json { .. })));
         assert_eq!(rows("  \n"), Ok(Vec::new()));
         assert_eq!(rows("only,names"), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_run_reads_as_html() {
+        let html = html_report(
+            "Shop <CI>",
+            &[
+                Case {
+                    name: "login".into(),
+                    group: "users".into(),
+                    seconds: 0.012,
+                    failure: None,
+                    method: Some(HttpMethod::Post),
+                    path: "/login".into(),
+                    status: "200".into(),
+                },
+                Case {
+                    name: "me [2]".into(),
+                    group: String::new(),
+                    seconds: 0.5,
+                    failure: Some("status equals 200: was 401".into()),
+                    method: Some(HttpMethod::Get),
+                    path: "/me".into(),
+                    status: "401".into(),
+                },
+            ],
+        );
+        assert!(html.contains("Shop &lt;CI&gt; — CyberAPI Run Report"));
+        assert!(html.contains("Total: <strong>2</strong>"));
+        assert!(html.contains("Passed: <strong>1</strong>"));
+        assert!(html.contains("Failed: <strong>1</strong>"));
+        assert!(html.contains("users/login"));
+        assert!(html.contains("POST /login"));
+        assert!(html.contains("status equals 200: was 401"));
     }
 }

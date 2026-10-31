@@ -15,6 +15,7 @@ use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -32,6 +33,9 @@ const SCHEMA_EXAMPLE: &str = "{\n    \"type\": \"object\",\n    \"required\": [\
 pub struct DocsEditor {
     api: Entity<ApiState>,
     description: Entity<EditorState>,
+    /// F16: whether the description is shown as an editor (`true`) or as
+    /// rendered Markdown (`false`) when non-empty.
+    editing_description: bool,
     /// The example opened to read, by its place.
     open: Option<usize>,
     _subscriptions: Vec<Subscription>,
@@ -40,6 +44,7 @@ pub struct DocsEditor {
 impl DocsEditor {
     pub fn new(api: Entity<ApiState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let text = api.read(cx).request().description.clone();
+        let editing_description = text.trim().is_empty();
         let description = cx.new(|cx| {
             let mut editor = EditorState::new(window, cx)
                 .line_number(false)
@@ -64,6 +69,7 @@ impl DocsEditor {
         Self {
             api,
             description,
+            editing_description,
             open: None,
             _subscriptions: subscriptions,
         }
@@ -758,6 +764,9 @@ impl Render for DocsEditor {
             })
             .collect();
         let empty = rows.is_empty();
+        let desc_text = self.description.read(cx).value().to_string();
+        let has_desc = !desc_text.trim().is_empty();
+        let show_markdown = has_desc && !self.editing_description;
         v_flex()
             .id("request-docs")
             .size_full()
@@ -766,19 +775,53 @@ impl Render for DocsEditor {
             .py_2()
             .gap_2()
             .child(
-                div()
-                    .text_sm()
-                    .font_semibold()
-                    .child(t!("docs.description").to_string()),
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_semibold()
+                            .child(t!("docs.description").to_string()),
+                    )
+                    .when(has_desc, |this| {
+                        let label = if show_markdown {
+                            t!("common.edit").to_string()
+                        } else {
+                            t!("docs.preview").to_string()
+                        };
+                        this.child(
+                            Button::new("docs-toggle-markdown")
+                                .ghost()
+                                .xsmall()
+                                .label(label)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.editing_description = !this.editing_description;
+                                    cx.notify();
+                                })),
+                        )
+                    }),
             )
-            .child(
+            .child(if show_markdown {
+                div()
+                    .id("docs-markdown-scroll")
+                    .max_h(px(240.))
+                    .overflow_y_scrollbar()
+                    .p_2()
+                    .border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .child(TextView::markdown("docs-markdown", desc_text))
+                    .into_any_element()
+            } else {
                 div()
                     .h(px(140.))
                     .border_1()
                     .border_color(border)
                     .rounded_md()
-                    .child(Editor::new(&self.description).w_full().h_full().bordered(false)),
-            )
+                    .child(Editor::new(&self.description).w_full().h_full().bordered(false))
+                    .into_any_element()
+            })
             .child(inputs)
             .child(outputs)
             .child(
