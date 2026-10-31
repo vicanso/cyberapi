@@ -1335,9 +1335,10 @@ impl RequestEditor {
             && workspace.asks_before_in(api.request(), effective_env.map(|env| &env.id), cx)
         {
             let request = api.request();
+            let resolved_uri = workspace.resolved_uri_for(api.api(), request, effective_env.map(|env| &env.id));
             let what = match (request.content_type, request.method) {
-                (ContentType::GraphQl, HttpMethod::Get | HttpMethod::Post) => format!("mutation {}", request.uri),
-                (_, method) => format!("{} {}", method.as_str(), request.uri),
+                (ContentType::GraphQl, HttpMethod::Get | HttpMethod::Post) => format!("mutation {resolved_uri}"),
+                (_, method) => format!("{} {resolved_uri}", method.as_str()),
             };
             let environment = effective_env
                 .map(|environment| environment.name.clone())
@@ -1735,12 +1736,16 @@ impl RequestEditor {
                     count(&request.query) + cyberapi_core::model::path_param_names(&self.current_full_uri(cx)).len(),
                 ),
                 RequestTab::Headers => (t!("editor.headers"), count(&request.headers)),
-                // #66: one when it signs in itself.
-                RequestTab::Auth => (t!("editor.auth"), usize::from(request.auth.signs())),
-                // A1: how many are on.
+                // #66 / #85: one when it signs in itself and has credentials filled in.
+                RequestTab::Auth => (t!("editor.auth"), usize::from(request.auth.has_credentials())),
+                // A1 / #80: how many are on and have their expected value filled in.
                 RequestTab::Assertions => (
                     t!("editor.assertions"),
-                    request.assertions.iter().filter(|assertion| assertion.enabled).count(),
+                    request
+                        .assertions
+                        .iter()
+                        .filter(|assertion| assertion.is_active())
+                        .count(),
                 ),
                 // #71: how many it sets of its own.
                 RequestTab::Settings => (t!("editor.settings"), overridden(&request.settings)),

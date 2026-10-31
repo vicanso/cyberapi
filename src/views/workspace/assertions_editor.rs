@@ -613,7 +613,23 @@ impl AssertionsEditor {
     }
 
     fn add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.push_row(&Assertion::default(), window, cx);
+        // #80: pre-fill with the shown response's status code (or 200) so a
+        // newly added status assertion immediately evaluates instead of
+        // showing only a placeholder.
+        let status = self
+            .api
+            .read(cx)
+            .shown_response()
+            .and_then(|response| response.status)
+            .unwrap_or(200);
+        self.push_row(
+            &Assertion {
+                expected: status.to_string(),
+                ..Default::default()
+            },
+            window,
+            cx,
+        );
         self.write(cx);
     }
 

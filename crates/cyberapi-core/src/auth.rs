@@ -115,6 +115,20 @@ impl Auth {
         )
     }
 
+    /// #85: whether its credentials are filled in, so the editor's Auth tab
+    /// counts it.
+    pub fn has_credentials(&self) -> bool {
+        match self {
+            Self::Inherit | Self::None => false,
+            Self::Basic { username, password } | Self::Digest { username, password } => {
+                !username.trim().is_empty() || !password.trim().is_empty()
+            }
+            Self::Bearer { token } => !token.trim().is_empty(),
+            Self::ApiKey { name, value, .. } => !name.trim().is_empty() && !value.trim().is_empty(),
+            Self::OAuth2(oauth) => !oauth.token_url.trim().is_empty() || !oauth.client_id.trim().is_empty(),
+        }
+    }
+
     /// What the old list said: its first enabled entry, Basic's user and
     /// password; none, nothing of the request's own.
     pub fn from_legacy(list: &[KvParam]) -> Self {
@@ -326,6 +340,22 @@ mod tests {
         assert_eq!(nameless.header_name(true), None);
         assert_eq!(signed(&Auth::Inherit, true), None);
         assert_eq!(signed(&Auth::None, true), None);
+
+        // #85: empty credentials do not count for the Auth tab badge.
+        assert!(!Auth::Inherit.has_credentials());
+        assert!(!Auth::None.has_credentials());
+        assert!(
+            !Auth::Basic {
+                username: String::new(),
+                password: String::new()
+            }
+            .has_credentials()
+        );
+        assert!(basic.has_credentials());
+        assert!(!Auth::Bearer { token: " ".into() }.has_credentials());
+        assert!(bearer.has_credentials());
+        assert!(!nameless.has_credentials());
+        assert!(key(KeyPlace::Header).has_credentials());
     }
 
     #[test]

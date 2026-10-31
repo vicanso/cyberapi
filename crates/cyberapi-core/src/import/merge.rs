@@ -157,6 +157,55 @@ pub fn merge(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem], upd
     merge_scoped(tree, parent, items, update, false)
 }
 
+/// #84: up to five matched APIs' method and full URLs (`METHOD existing →
+/// imported` when the URL changes), so the import dialog shows which existing
+/// APIs would be updated before importing.
+pub fn matched_summaries(tree: &TreeData, items: &[ImportItem]) -> Vec<String> {
+    const LIMIT: usize = 5;
+    let mut known: HashMap<(HttpMethod, String), &crate::model::ApiSetting> = HashMap::new();
+    for api in &tree.apis {
+        if let Some(key) = key(&api.request) {
+            known.entry(key).or_insert(api);
+        }
+    }
+    let mut summaries = Vec::new();
+    let mut total = 0usize;
+    fn walk(
+        items: &[ImportItem],
+        known: &HashMap<(HttpMethod, String), &crate::model::ApiSetting>,
+        summaries: &mut Vec<String>,
+        total: &mut usize,
+    ) {
+        for item in items {
+            match item {
+                ImportItem::Api { request, .. } => {
+                    if let Some(found) = key(request).and_then(|k| known.get(&k)) {
+                        *total += 1;
+                        if summaries.len() < LIMIT {
+                            let existing_uri = found.request.uri.trim();
+                            let imported_uri = request.uri.trim();
+                            let line = if existing_uri == imported_uri {
+                                format!("{} {existing_uri}", found.request.method.as_str())
+                            } else {
+                                format!("{} {existing_uri} → {imported_uri}", found.request.method.as_str())
+                            };
+                            if !summaries.contains(&line) {
+                                summaries.push(line);
+                            }
+                        }
+                    }
+                }
+                ImportItem::Folder { children, .. } => walk(children, known, summaries, total),
+            }
+        }
+    }
+    walk(items, &known, &mut summaries, &mut total);
+    if total > summaries.len() && summaries.len() == LIMIT {
+        summaries.push(format!("… (+{})", total - summaries.len()));
+    }
+    summaries
+}
+
 /// B9: what syncing `items` into `folder` from that folder's own source does:
 /// only APIs inside `folder` (at any depth) are matched, so another folder's
 /// APIs at the same path stay untouched.
@@ -594,6 +643,15 @@ mod tests {
             "into the folder of the same name; a folder whose APIs are all known is not made"
         );
         assert_eq!(merge.added(), (2, 1));
+        assert_eq!(
+            matched_summaries(&project(), &spec()),
+            [
+                "GET {{HOST}}/users → {{API}}/users?page=1",
+                "GET {{HOST}}/users/{id} → {{API}}/users/:userId",
+                "POST {{HOST}}/login → {{API}}/login",
+                "GET {{HOST}}/users → {{API}}/users",
+            ]
+        );
     }
 
     /// A6: the import's assertions are the import's again; the reader's

@@ -687,9 +687,9 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
     let mut headers = sent_headers(request, cx)?;
 
     // F5.3: only POST, PUT, PATCH and DELETE carry a body and its type; a
-    // DELETE only one it has, so one without sends no Content-Type (#62).
+    // request with an empty body sends no automatic Content-Type (#62, #83).
     let mut body = Vec::new();
-    if request.method.has_body() && !(request.method == HttpMethod::Delete && body_is_blank(request)) {
+    if request.method.has_body() && !body_is_blank(request) {
         let content_type = match request.content_type {
             ContentType::Form => {
                 let mut pairs = Vec::new();
@@ -729,8 +729,10 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
                 request.content_type.as_str().to_string()
             }
         };
-        // A Content-Type the request names itself stays.
-        headers.set_default("Content-Type", &content_type);
+        if !body.is_empty() {
+            // A Content-Type the request names itself stays.
+            headers.set_default("Content-Type", &content_type);
+        }
     }
     // E1: a WebSocket's body is the message it sends next, not the
     // handshake's.
@@ -1204,6 +1206,27 @@ mod tests {
         request.headers = vec![kv("Content-Type", "application/vnd.api+json")];
         let prepared = prepare_with(&request, &[]).expect("prepare");
         assert_eq!(prepared.header("Content-Type"), Some("application/vnd.api+json"));
+
+        // #83: an empty POST body sends no automatic Content-Type, while an
+        // explicit Content-Type header stays.
+        let empty_post = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "http://a.test".into(),
+            content_type: ContentType::Json,
+            body: String::new(),
+            ..Default::default()
+        };
+        let prepared = prepare_with(&empty_post, &[]).expect("prepare");
+        assert!(prepared.body.is_empty());
+        assert_eq!(prepared.header("content-type"), None);
+        let explicit = HttpRequest {
+            headers: vec![kv("Content-Type", "application/json")],
+            ..empty_post
+        };
+        assert_eq!(
+            prepare_with(&explicit, &[]).expect("prepare").header("content-type"),
+            Some("application/json")
+        );
     }
 
     /// #58: what went out, each header said where it came from, with the

@@ -51,6 +51,12 @@ impl Default for Assertion {
 }
 
 impl Assertion {
+    /// #80: whether the assertion is enabled and has its expected value filled
+    /// in when its operator takes one.
+    pub fn is_active(&self) -> bool {
+        self.enabled && (!self.op.takes_value() || !self.expected.trim().is_empty())
+    }
+
     /// A6: an enabled check that the body conforms to `schema`, written by
     /// an import.
     pub fn imported_schema(schema: &Value) -> Self {
@@ -496,7 +502,7 @@ pub type Outcomes = Vec<(usize, Result<Checked, Problem>)>;
 pub fn reads_json(assertions: &[Assertion]) -> bool {
     assertions
         .iter()
-        .any(|assertion| assertion.enabled && matches!(assertion.subject, Subject::Json | Subject::Schema))
+        .any(|assertion| assertion.is_active() && matches!(assertion.subject, Subject::Json | Subject::Schema))
 }
 
 /// Every enabled assertion's outcome, `json` as for [`check`].
@@ -504,7 +510,7 @@ pub fn check_all(assertions: &[Assertion], response: &HttpResponse, json: Option
     assertions
         .iter()
         .enumerate()
-        .filter(|(_, assertion)| assertion.enabled)
+        .filter(|(_, assertion)| assertion.is_active())
         .map(|(index, assertion)| (index, check(assertion, response, json)))
         .collect()
 }
@@ -836,6 +842,9 @@ mod tests {
                 expected: "200".into(),
                 ..Default::default()
             },
+            // #80: an assertion whose expected value is not filled in yet is
+            // not evaluated as failed.
+            Assertion::default(),
         ];
         let outcomes = check_all(&assertions, &response(), None);
         assert_eq!(outcomes.iter().map(|(index, _)| *index).collect::<Vec<_>>(), [0, 2]);

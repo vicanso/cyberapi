@@ -113,10 +113,10 @@ struct MergeInto {
 
 /// F10.2 before importing: what the text is and what it holds, or why it
 /// is nothing to import (`None` for no text); and, going into a project,
-/// how many of its APIs the project has already (B3).
-fn describe(text: &str, into: Option<&MergeInto>) -> (Option<Found>, usize) {
+/// how many of its APIs the project has already (B3) and which ones (#84).
+fn describe(text: &str, into: Option<&MergeInto>) -> (Option<Found>, usize, Vec<String>) {
     if text.trim().is_empty() {
-        return (None, 0);
+        return (None, 0, Vec::new());
     }
     let format = match import::detect(text) {
         Ok((format, _)) => format_name(format),
@@ -126,14 +126,19 @@ fn describe(text: &str, into: Option<&MergeInto>) -> (Option<Found>, usize) {
                     t!("import.unreadable", why = crate::i18n::import_error(&failure)).to_string()
                 )),
                 0,
+                Vec::new(),
             );
         }
     };
     let mut known = 0;
+    let mut matched_uris = Vec::new();
     let found = match import::parse(text) {
         Ok(bundle) => {
             if let Some(into) = into {
                 known = import::merge::merge(&into.tree, into.parent.as_ref(), &bundle.items, false).matched;
+                if known > 0 {
+                    matched_uris = import::merge::matched_summaries(&into.tree, &bundle.items);
+                }
             }
             let (apis, folders) = bundle.counts();
             let mut found = t!(
@@ -159,7 +164,7 @@ fn describe(text: &str, into: Option<&MergeInto>) -> (Option<Found>, usize) {
         }
         Err(failure) => Err(t!("import.unreadable", why = crate::i18n::import_error(&failure)).to_string()),
     };
-    (Some(found), known)
+    (Some(found), known, matched_uris)
 }
 
 pub fn open_import_dialog(
@@ -220,9 +225,10 @@ struct ImportView {
     /// B3: the text is an address, to fetch what to import from.
     address: Option<String>,
     /// B3: the project imported into; how many of the text's APIs it has
-    /// already; whether those are updated.
+    /// already; which ones (#84); whether those are updated.
     into: Option<Arc<MergeInto>>,
     known: usize,
+    matched_uris: Vec<String>,
     update: bool,
     fetching: Option<Task<()>>,
     /// B7: the address the text was fetched from, and whether the project
@@ -268,6 +274,7 @@ impl ImportView {
             address: None,
             into,
             known: 0,
+            matched_uris: Vec::new(),
             update: false,
             fetching: None,
             fetched_from: None,
@@ -322,6 +329,7 @@ impl ImportView {
         if text.trim().is_empty() {
             self.found = None;
             self.known = 0;
+            self.matched_uris.clear();
             self.address = None;
             self.describing = Task::ready(());
             cx.notify();
@@ -332,6 +340,7 @@ impl ImportView {
         if self.address.is_some() {
             self.found = Some(Ok(t!("import.fetch_hint").to_string()));
             self.known = 0;
+            self.matched_uris.clear();
             self.describing = Task::ready(());
             cx.notify();
             return;
@@ -339,10 +348,11 @@ impl ImportView {
         let into = self.into.clone();
         let found = cx.background_spawn(async move { describe(&text, into.as_deref()) });
         self.describing = cx.spawn(async move |this, cx| {
-            let (found, known) = found.await;
+            let (found, known, matched_uris) = found.await;
             let _ = this.update(cx, |this, cx| {
                 this.found = found;
                 this.known = known;
+                this.matched_uris = matched_uris;
                 cx.notify();
             });
         });
@@ -579,6 +589,15 @@ impl Render for ImportView {
                                         })),
                                 ),
                         )
+                        .when(!self.matched_uris.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_color(muted)
+                                    .child(self.matched_uris.join(" · ")),
+                            )
+                        })
                         .when(update, |this| {
                             this.child(
                                 div()

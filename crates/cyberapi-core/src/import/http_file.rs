@@ -61,6 +61,22 @@ struct RequestLine<'a> {
     named: bool,
 }
 
+/// Whether `url` has whitespace outside a `{{…}}` template (#79).
+fn url_has_whitespace(url: &str) -> bool {
+    let mut rest = url;
+    while let Some(start) = rest.find("{{") {
+        if rest[..start].contains(char::is_whitespace) {
+            return true;
+        }
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            return true;
+        };
+        rest = &after[end + 2..];
+    }
+    rest.contains(char::is_whitespace)
+}
+
 /// `METHOD URL [HTTP/x]`, or a URL alone.
 fn request_line(line: &str) -> Option<RequestLine<'_>> {
     let line = line.trim();
@@ -80,7 +96,7 @@ fn request_line(line: &str) -> Option<RequestLine<'_>> {
         }
         _ => (rest, None),
     };
-    if url.is_empty() || url.contains(char::is_whitespace) {
+    if url.is_empty() || url_has_whitespace(url) {
         return None;
     }
     let address = ADDRESS_STARTS.iter().any(|start| {
@@ -812,6 +828,14 @@ Content-Disposition: form-data; name="page"
         assert!(is_http("GET https://a.test"));
         assert!(is_http("# hello\nPOST /login\n"));
         assert!(is_http("@host = https://a.test\n\n{{host}}/ping"));
+        // #79: system variables with arguments inside the URL.
+        let with_args = "@host = http://127.0.0.1:8765\n\n### Get one\nGET {{host}}/echo?id={{$randomInt 1 10}}\n";
+        assert!(is_http(with_args));
+        let bundle = parse(with_args);
+        let parsed = apis(&bundle);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].1.uri, "{{host}}/echo");
+        assert_eq!(parsed[0].1.query, [kv("id", "{{random(1, 9)}}", true)]);
         // A bare address is what to fetch an import from (B3).
         assert!(!is_http("https://a.test/openapi.json"));
         assert!(!is_http("# a comment\nopenapi: 3.0.0\npaths: {}\n"));

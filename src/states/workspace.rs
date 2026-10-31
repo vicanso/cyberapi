@@ -1175,6 +1175,26 @@ impl WorkspaceState {
                 .is_some_and(|unasked| unasked.0.contains(&self.collection.id))
     }
 
+    /// #81: `request.uri` with its leading `{{VARIABLE}}` and path parameters
+    /// resolved in `environment` (after folder and API variable overrides,
+    /// with secrets masked), so the production confirmation dialog shows where
+    /// the request will go.
+    pub fn resolved_uri_for(&self, api: &ItemId, request: &HttpRequest, environment: Option<&EnvironmentId>) -> String {
+        let mut variables = self.environments_for(environment);
+        let values = self.inherited(api).values(&request.variables, &[]);
+        if !values.is_empty() {
+            variables = cyberapi_core::run::with_values(&variables, &values);
+        }
+        let base = cyberapi_core::send::resolve_uri(&request.uri, &variables);
+        cyberapi_core::model::replace_path_params(&base, |name| {
+            values
+                .iter()
+                .rev()
+                .find(|(key, val)| key == name && !val.is_empty())
+                .map(|(_, val)| val.clone())
+        })
+    }
+
     /// D6: no more asking before sends in production in this project, until
     /// the app quits.
     pub fn stop_asking(&self, cx: &mut gpui_kit::App) {
