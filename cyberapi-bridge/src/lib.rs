@@ -15,6 +15,7 @@
 //! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5), a few of an account's at a time ([`in_flight`]) |
 //! | `POST /v1/send/stream` | the same, an event stream's answer told as it comes (NDJSON of `StreamReply`); the page leaving stops it |
 //! | `POST /v1/mcp` | an AI assistant's tools, signed in with an account's MCP token ([`mcp`]) |
+//! | `ANY /v1/mock/{project}`, `ANY /v1/mock/{project}/{*rest}` | a project's mock responses (`G2b`, [`mock`]), signed in by session or MCP token |
 //! | anything else | the page's files ([`static_files`]) |
 //!
 //! Under `--base-path /prefix` all of it is below the prefix — `/prefix/`,
@@ -32,6 +33,7 @@
 mod auth;
 mod in_flight;
 mod mcp;
+mod mock;
 pub mod static_files;
 mod throttle;
 
@@ -41,7 +43,7 @@ use axum::body::Body;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Json, Request, State};
 use axum::http::{Extensions, HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use cyberapi_core::directory::{valid_account_name, valid_password};
 use cyberapi_core::version::MODEL;
 use cyberapi_http::{HttpEngine, PreparedRequest, Watch, stop_signal};
@@ -168,6 +170,8 @@ impl Bridge {
                 &at("/v1/mcp"),
                 post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed),
             )
+            .route(&at("/v1/mock/{project}"), any(mock::handle_root))
+            .route(&at("/v1/mock/{project}/{*rest}"), any(mock::handle_path))
             .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
             .fallback(move |State(bridge): State<Bridge>, request: Request| page(bridge, request, www.clone()))
             .with_state(self.clone())

@@ -47,6 +47,10 @@ pub struct MockState {
 
 impl MockState {
     pub fn new(workspace: WeakEntity<WorkspaceState>, cx: &mut Context<Self>) -> Self {
+        let count = workspace
+            .upgrade()
+            .map(|workspace| Routes::of(workspace.read(cx).tree_data()).count())
+            .unwrap_or_default();
         let observe = workspace
             .upgrade()
             .map(|workspace| cx.observe(&workspace, |this, _, cx| this.rebuild_later(cx)));
@@ -57,12 +61,17 @@ impl MockState {
             starting: false,
             error: None,
             heard: Vec::new(),
-            count: (0, 0),
+            count,
             _listening: None,
             _rebuild: None,
             _starting: None,
             _observe: observe,
         }
+    }
+
+    /// G2b: where the project's shared mock routes live on the bridge.
+    pub fn server_url(&self, cx: &gpui_kit::App) -> Option<String> {
+        self.workspace.upgrade()?.read(cx).server_mock_url(cx)
     }
 
     fn routes(&self, cx: &Context<Self>) -> Routes {
@@ -156,9 +165,6 @@ impl MockState {
 
     /// The project changed: once it settles, what answers is made again.
     fn rebuild_later(&mut self, cx: &mut Context<Self>) {
-        if self.server.is_none() {
-            return;
-        }
         self._rebuild = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REBUILD_DELAY).await;
             let _ = this.update(cx, |this, cx| {

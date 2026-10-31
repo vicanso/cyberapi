@@ -1045,11 +1045,14 @@ fn project_menu(
                 }),
         )
     });
-    // G2: the project's mock server, the desktop's; anyone sends, so anyone
-    // mocks.
+    // G2 / G2b: the project's mock server (local on desktop, or shared on
+    // the bridge for a server project); anyone sends, so anyone mocks.
     let for_mock = state.clone();
     let mocking = state.upgrade().and_then(|state| state.read(cx).mock_address(cx));
-    let menu = menu.when(crate::this_build::serves_mocks(), |menu| {
+    let has_server_mock = state
+        .upgrade()
+        .is_some_and(|state| state.read(cx).server_mock_url(cx).is_some());
+    let menu = menu.when(crate::this_build::serves_mocks() || has_server_mock, |menu| {
         let label = match &mocking {
             Some(address) => t!("mock.open_running", address = address).to_string(),
             None => t!("mock.open").to_string(),

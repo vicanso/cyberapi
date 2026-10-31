@@ -243,7 +243,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 |---|---|---|---|---|
 | D8 | 环境变量多环境矩阵对比与整理（#61 延伸，已完成） | S–M | 不变 | 在 [`views/variables_dialog.rs`](../src/views/variables_dialog.rs) 增加“矩阵对比”视图（行为变量名，列为 `共用 \| dev \| staging \| prod`），高亮缺失项，支持在单表内横向编辑各环境值及一键归并重复同名变量 |
 | G3 | `bridge` 托管只读在线接口文档 | M | 不变 | `cyberapi-bridge` 为项目提供可选的只读文档页面，直接渲染项目树、接口说明、入参/出参字段说明表（F10 / F11）、响应示例（F3）与多语言代码片段（B6），方便前端或外部合作方免编辑器查阅 |
-| G2b | `bridge` 团队共享 Mock 路由 | M | 不变 | 在 `cyberapi-bridge` 上挂载 `/v1/mock/<project-id>/...`，直接复用 [`cyberapi_core::mock::Routes`](../crates/cyberapi-core/src/mock.rs) 匹配项目的响应示例，让网页端和前端无需在本机起桌面端也能联调团队 Mock 接口 |
+| G2b | `bridge` 团队共享 Mock 路由（已完成） | M | 不变 | 在 `cyberapi-bridge` 上挂载 `/v1/mock/<project-id>/...`，直接复用 [`cyberapi_core::mock::Routes`](../crates/cyberapi-core/src/mock.rs) 匹配项目的响应示例，让网页端和前端无需在本机起桌面端也能联调团队 Mock 接口 |
 
 ### 三、桌面端 AI 与工程化能力延伸（中投入 M，差异化亮点）
 

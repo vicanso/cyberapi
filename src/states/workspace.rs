@@ -1339,6 +1339,20 @@ impl WorkspaceState {
         self.mock.as_ref()?.read(cx).address()
     }
 
+    /// G2b: where the project's shared mock routes live on the bridge
+    /// (`/v1/mock/{project}`), when this is a server project.
+    pub fn server_mock_url(&self, cx: &App) -> Option<String> {
+        self.copy.as_ref()?;
+        let store = cx.try_global::<AppStore>()?;
+        if !store.signs_in() && store.server_address(cx).is_none() {
+            return None;
+        }
+        Some(crate::this_build::bridge_endpoint(
+            store.server_address(cx).as_deref(),
+            &format!("v1/mock/{}", self.collection.id),
+        ))
+    }
+
     /// D3: reads the reader's secret values again — unless some typed are
     /// still to be saved, which are newer.
     fn refresh_secrets(&mut self, cx: &mut Context<Self>) {

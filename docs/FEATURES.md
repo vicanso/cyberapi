@@ -60,7 +60,7 @@ Paste a cURL command to make an API, copy any request as cURL, HTTPie, JavaScrip
 
 ## Mock server
 
-On the desktop, a project answers as a mock server from its APIs' examples: **Mock server…** in the project menu starts it on this machine (port 4010 unless you choose another). A request goes to the API of its method and path — the address without its variable, scheme and host; `{{id}}`, `:id` or `{id}` match any segment, and the more fixed segments win — and gets the API's first example, or the one an `x-mock-example` header names; one with no example, or no API, answers 404 saying why. Any origin may call it (CORS preflights are answered), it follows the project as you change it, and the dialog lists the requests it answered. It runs while the project is open.
+On the desktop, a project answers as a mock server from its APIs' examples: **Mock server…** in the project menu starts it on this machine (port 4010 unless you choose another). For a server project (in the web version, or on the desktop when signed in), the bridge also serves a shared mock endpoint at `/v1/mock/<project-id>/…` (shown in **Mock server…**), reachable with a session cookie, bearer session, or an MCP token (`Authorization: Bearer cat_…`, `X-CyberAPI-Token`, or `?token=cat_…`). A request goes to the API of its method and path — the address without its variable, scheme and host; `{{id}}`, `:id` or `{id}` match any segment, and the more fixed segments win — and gets the API's first example, or the one an `x-mock-example` header names; one with no example, or no API, answers 404 saying why. Any origin may call it (CORS preflights are answered), it follows the project as you change it, and the desktop dialog lists the requests its local server answered.
 
 ## Your data
 

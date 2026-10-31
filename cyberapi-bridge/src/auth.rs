@@ -136,6 +136,52 @@ pub async fn signed_in(store: &SqlStore, headers: &HeaderMap) -> Result<Account,
     }
 }
 
+/// An MCP token carried by `Authorization: Bearer cat_…`,
+/// `X-CyberAPI-Token: cat_…`, or `?token=cat_…` in the query string.
+pub fn mcp_token(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
+    let from_auth = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer ")))
+        .map(str::trim)
+        .filter(|token| token.starts_with(cyberapi_core::directory::MCP_TOKEN_PREFIX));
+    let from_header = headers
+        .get("x-cyberapi-token")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|token| !token.is_empty());
+    let from_query = query.and_then(|q| {
+        q.split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(key, _)| *key == "token" || *key == "__token")
+            .map(|(_, value)| value.trim())
+            .filter(|token| !token.is_empty())
+    });
+    from_auth.or(from_header).or(from_query).map(str::to_string)
+}
+
+/// The account signed in by a session cookie / bearer token, or by an MCP
+/// token (`Authorization: Bearer cat_…`, `X-CyberAPI-Token`, or `?token=`).
+/// Used by read-only project routes (`G2b` `/v1/mock/…`, `G3` `/v1/docs/…`).
+pub async fn signed_in_or_token(
+    store: &SqlStore,
+    headers: &HeaderMap,
+    query: Option<&str>,
+) -> Result<Account, StatusCode> {
+    if let Ok(account) = signed_in(store, headers).await {
+        return Ok(account);
+    }
+    let token = mcp_token(headers, query).ok_or(StatusCode::UNAUTHORIZED)?;
+    match store.mcp_token_account(&hash_token(&token), unix_now()).await {
+        Ok(Some((account, _))) => Ok(account),
+        Ok(None) => Err(StatusCode::UNAUTHORIZED),
+        Err(error) => {
+            tracing::error!(%error, "an MCP token could not be checked");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,6 +231,17 @@ mod tests {
         assert_eq!(session_token(&headers), None);
         headers.insert(header::COOKIE, HeaderValue::from_static("cyberapi_session=abc"));
         assert_eq!(session_token(&headers), Some("abc".into()), "the page's cookie first");
+    }
+
+    #[test]
+    fn an_mcp_token_rides_authorization_header_or_query() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(mcp_token(&headers, None), None);
+        assert_eq!(mcp_token(&headers, Some("a=1&token=cat_abc")), Some("cat_abc".into()));
+        headers.insert("x-cyberapi-token", HeaderValue::from_static("cat_hdr"));
+        assert_eq!(mcp_token(&headers, Some("token=cat_abc")), Some("cat_hdr".into()));
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer cat_auth"));
+        assert_eq!(mcp_token(&headers, Some("token=cat_abc")), Some("cat_auth".into()));
     }
 
     #[test]

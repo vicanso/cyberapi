@@ -792,6 +792,12 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
                     expected: "200".into(),
                     ..Default::default()
                 }],
+                examples: vec![cyberapi_core::model::Example {
+                    name: "ok".into(),
+                    status: 200,
+                    headers: vec![("content-type".into(), "application/json".into())],
+                    body: r#"{"pong":true}"#.into(),
+                }],
                 ..Default::default()
             },
         )
@@ -1150,6 +1156,27 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     )
     .await;
     assert!(failed, "a viewer's token changes nothing: {refused}");
+
+    // G2b: shared mock endpoint answers CORS preflights and signed-in / token requests.
+    let preflight = Request::builder()
+        .method("OPTIONS")
+        .uri(format!("/v1/mock/{}/ping", project.id))
+        .header("access-control-request-method", "GET")
+        .header("access-control-request-headers", "authorization,x-mock-example")
+        .body(Body::empty())
+        .expect("preflight");
+    let preflight_resp = router.clone().oneshot(preflight).await.expect("preflight response");
+    assert_eq!(preflight_resp.status(), StatusCode::NO_CONTENT);
+    let (mock_status, _, mock_body) = send(
+        &router,
+        "GET",
+        &format!("/v1/mock/{}/ping?token={}", project.id, reader.secret),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(mock_status, StatusCode::OK);
+    assert_eq!(mock_body, r#"{"pong":true}"#);
 
     // Revoked, it signs in no more.
     store
