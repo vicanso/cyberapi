@@ -31,6 +31,8 @@ mod call;
 #[cfg(not(target_family = "wasm"))]
 mod client_tls;
 #[cfg(not(target_family = "wasm"))]
+mod mcp;
+#[cfg(not(target_family = "wasm"))]
 mod mock;
 #[cfg(not(target_family = "wasm"))]
 mod native;
@@ -45,6 +47,8 @@ mod socket;
 pub use cyberapi_core::response::Exchange;
 pub use cyberapi_core::send::PreparedRequest;
 pub use cyberapi_core::ws::Frame;
+#[cfg(not(target_family = "wasm"))]
+pub use mcp::{McpAccess, McpHandler, McpServer};
 #[cfg(not(target_family = "wasm"))]
 pub use mock::MockServer;
 #[cfg(not(target_family = "wasm"))]

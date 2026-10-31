@@ -6,6 +6,7 @@ pub mod backup;
 pub mod graphql_ws;
 pub mod grpc_stream;
 mod load;
+pub mod mcp;
 mod oauth;
 mod run;
 mod send;

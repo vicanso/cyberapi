@@ -1,7 +1,7 @@
 //! What the whole application shares: the stores, where the reader is, and
 //! their settings.
 
-use super::{ServerState, ServerStatus, UpdateState, run_serial, run_store};
+use super::{LocalMcpState, ServerState, ServerStatus, UpdateState, run_serial, run_store};
 use crate::json_view_local::JsonView;
 use crate::{Extras, this_build};
 use async_lock::Mutex;
@@ -42,6 +42,8 @@ pub struct AppStore {
     /// The desktop's update check; a page's bridge is updated by whoever
     /// runs it.
     updates: Option<Entity<UpdateState>>,
+    /// H2: the desktop's local loopback MCP server (`127.0.0.1`).
+    local_mcp: Option<Entity<LocalMcpState>>,
     /// C4: the OAuth tokens had while the app runs, every send's.
     tokens: Arc<Tokens>,
 }
@@ -73,6 +75,11 @@ impl AppStore {
             let engine = engine.clone();
             cx.new(|_| UpdateState::new(engine, install, kinds))
         });
+        let local_mcp = this_build::serves_mcp().then(|| {
+            let storage = storage.clone();
+            let engine = engine.clone();
+            cx.new(|cx| LocalMcpState::new(storage, engine, cx))
+        });
         cx.set_global(Self {
             storage,
             engine,
@@ -80,6 +87,7 @@ impl AppStore {
             state: state.clone(),
             server,
             updates,
+            local_mcp,
             // C4: the reader's, kept in their store.
             tokens: Arc::new(Tokens::stored()),
         });
@@ -191,6 +199,11 @@ impl AppStore {
     /// The desktop's update check.
     pub fn updates(&self) -> Option<&Entity<UpdateState>> {
         self.updates.as_ref()
+    }
+
+    /// H2: the desktop's local loopback MCP server.
+    pub fn local_mcp(&self) -> Option<&Entity<LocalMcpState>> {
+        self.local_mcp.as_ref()
     }
 }
 

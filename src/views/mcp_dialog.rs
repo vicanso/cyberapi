@@ -1,10 +1,12 @@
-//! The reader's MCP tokens (the bridge's `/v1/mcp`, after zedis): what an AI
-//! assistant signs in with as them. Issued with a name, a lifetime and
-//! whether it may send; its secret shown once, with the line that adds it
-//! to Claude Code; revoked after asking, inside the dialog.
+//! The reader's MCP access:
+//! - On the desktop (H2), a local loopback MCP HTTP server (`127.0.0.1:<port>/v1/mcp`)
+//!   with a bearer token so Claude Code / Cursor can inspect, send and edit
+//!   local projects without deploying `cyberapi-bridge`.
+//! - When signed in to a `cyberapi-bridge` server (browser or desktop),
+//!   account-scoped MCP tokens for the remote bridge's `/v1/mcp`.
 
 use crate::i18n;
-use crate::states::{AppStore, DirectoryDone, DirectoryEvent, DirectoryState};
+use crate::states::{AppStore, DirectoryDone, DirectoryEvent, DirectoryState, LocalMcpState};
 use crate::this_build;
 use crate::views::inline_confirm::inline_confirm;
 use cyberapi_core::McpTokenId;
@@ -13,7 +15,7 @@ use cyberapi_core::directory::{MCP_TOKEN_DAYS, McpToken, NewMcpToken, valid_toke
 use cyberapi_core::format::days_until;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
@@ -28,16 +30,21 @@ use gpui_kit::{
 use rust_i18n::t;
 
 pub fn open_mcp_dialog(window: &mut Window, cx: &mut App) {
-    let Some(directory) = AppStore::global(cx).directory(cx) else {
+    let directory = AppStore::global(cx).directory(cx);
+    let local_mcp = AppStore::global(cx).local_mcp().cloned();
+    if directory.is_none() && local_mcp.is_none() {
         return;
-    };
-    let state = cx.new(|_| DirectoryState::new(directory));
-    state.update(cx, |state, cx| state.reload_mcp_tokens(cx));
-    let view = cx.new(|cx| McpTokens::new(state, window, cx));
+    }
+    let state = directory.map(|directory| {
+        let state = cx.new(|_| DirectoryState::new(directory));
+        state.update(cx, |state, cx| state.reload_mcp_tokens(cx));
+        state
+    });
+    let view = cx.new(|cx| McpTokens::new(local_mcp, state, window, cx));
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
             .title(t!("mcp.title").to_string())
-            .w(px(600.))
+            .w(px(620.))
             .child(crate::views::dialog_body(view.clone()))
             .footer(
                 DialogFooter::new()
@@ -49,7 +56,9 @@ pub fn open_mcp_dialog(window: &mut Window, cx: &mut App) {
 }
 
 struct McpTokens {
-    state: Entity<DirectoryState>,
+    local_mcp: Option<Entity<LocalMcpState>>,
+    local_port: Entity<InputState>,
+    state: Option<Entity<DirectoryState>>,
     name: Entity<InputState>,
     /// The lifetime picked: one of `MCP_TOKEN_DAYS`, or `None` for none.
     days: Option<u32>,
@@ -88,24 +97,51 @@ fn copy(text: &str, window: &mut Window, cx: &mut App) {
 }
 
 impl McpTokens {
-    fn new(state: Entity<DirectoryState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        local_mcp: Option<Entity<LocalMcpState>>,
+        state: Option<Entity<DirectoryState>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let initial_port = local_mcp
+            .as_ref()
+            .map(|local| local.read(cx).port().to_string())
+            .unwrap_or_else(|| crate::mcp_local::DEFAULT_PORT.to_string());
+        let local_port = cx.new(|cx| InputState::new(window, cx).default_value(initial_port));
         let name = cx.new(|cx| InputState::new(window, cx).placeholder(t!("mcp.name_placeholder").to_string()));
-        let subscriptions = vec![
-            cx.observe(&state, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&state, window, |this, _, event, window, cx| match event {
-                DirectoryEvent::Done(DirectoryDone::McpTokenIssued) => {
-                    this.error = None;
-                    this.name.update(cx, |name, cx| name.set_value("", window, cx));
-                    cx.notify();
+        let mut subscriptions = Vec::new();
+        if let Some(local) = &local_mcp {
+            let local_clone = local.clone();
+            subscriptions.push(cx.observe(local, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.subscribe(&local_port, move |_, port_input, event, cx| {
+                if matches!(event, InputEvent::Change)
+                    && let Ok(port) = port_input.read(cx).value().trim().parse::<u16>()
+                    && port > 0
+                {
+                    local_clone.update(cx, |local, cx| local.set_port(port, cx));
                 }
-                DirectoryEvent::Done(_) => {}
-                DirectoryEvent::Failed(error) => {
-                    this.error = Some(i18n::store_error(error));
-                    cx.notify();
-                }
-            }),
-        ];
+            }));
+        }
+        if let Some(state) = &state {
+            subscriptions.push(cx.observe(state, |_, _, cx| cx.notify()));
+            subscriptions.push(
+                cx.subscribe_in(state, window, |this, _, event, window, cx| match event {
+                    DirectoryEvent::Done(DirectoryDone::McpTokenIssued) => {
+                        this.error = None;
+                        this.name.update(cx, |name, cx| name.set_value("", window, cx));
+                        cx.notify();
+                    }
+                    DirectoryEvent::Done(_) => {}
+                    DirectoryEvent::Failed(error) => {
+                        this.error = Some(i18n::store_error(error));
+                        cx.notify();
+                    }
+                }),
+            );
+        }
         Self {
+            local_mcp,
+            local_port,
             state,
             name,
             days: Some(MCP_TOKEN_DAYS[0]),
@@ -117,7 +153,179 @@ impl McpTokens {
         }
     }
 
+    /// H2: renders the desktop's local loopback MCP server controls and
+    /// connection snippet.
+    fn render_local_mcp(&self, local: &Entity<LocalMcpState>, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (muted, border, mono) = (theme.muted_foreground, theme.border, theme.mono_font_family.clone());
+        let state = local.read(cx);
+        let running = state.running();
+        let starting = state.starting();
+        let can_send = state.can_send();
+        let can_write = state.can_write();
+        let endpoint = state.endpoint();
+        let secret = state.token().to_string();
+        let error = state.error().map(str::to_string);
+        let command =
+            format!("claude mcp add --transport http cyberapi {endpoint} --header \"Authorization: Bearer {secret}\"");
+        let local_toggle = local.clone();
+        let local_send = local.clone();
+        let local_write = local.clone();
+        let local_rotate = local.clone();
+        let secret_copy = secret.clone();
+        let command_copy = command.clone();
+
+        v_flex()
+            .gap_2p5()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().text_sm().font_semibold().child(t!("mcp.local_title").to_string()))
+                            .when(running, |this| {
+                                this.child(Tag::success().small().child(t!("mcp.local_running").to_string()))
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().text_xs().text_color(muted).child(t!("mock.port").to_string()))
+                            .child(
+                                div()
+                                    .w(px(76.))
+                                    .child(Input::new(&self.local_port).small().disabled(running || starting)),
+                            )
+                            .child(if running {
+                                Button::new("mcp-local-stop")
+                                    .outline()
+                                    .small()
+                                    .label(t!("mock.stop").to_string())
+                                    .on_click(move |_, _, cx| {
+                                        local_toggle.update(cx, |local, cx| local.stop(cx));
+                                    })
+                            } else {
+                                Button::new("mcp-local-start")
+                                    .primary()
+                                    .small()
+                                    .loading(starting)
+                                    .label(t!("mock.start").to_string())
+                                    .on_click(move |_, _, cx| {
+                                        local_toggle.update(cx, |local, cx| local.start(cx));
+                                    })
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(t!("mcp.local_desc").to_string()),
+            )
+            .child(
+                h_flex()
+                    .gap_4()
+                    .items_center()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Switch::new("mcp-local-can-send").checked(can_send).on_click(
+                                move |checked: &bool, _, cx| {
+                                    let checked = *checked;
+                                    local_send.update(cx, move |local, cx| local.set_can_send(checked, cx));
+                                },
+                            ))
+                            .child(div().text_xs().child(t!("mcp.can_send").to_string())),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Switch::new("mcp-local-can-write").checked(can_write).on_click(
+                                move |checked: &bool, _, cx| {
+                                    let checked = *checked;
+                                    local_write.update(cx, move |local, cx| local.set_can_write(checked, cx));
+                                },
+                            ))
+                            .child(div().text_xs().child(t!("mcp.can_write").to_string())),
+                    ),
+            )
+            .when_some(error, |this, error| {
+                this.child(div().text_xs().text_color(theme.danger).child(error))
+            })
+            .child(
+                v_flex()
+                    .gap_1p5()
+                    .p_2p5()
+                    .rounded(theme.radius)
+                    .border_1()
+                    .border_color(border)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .font_family(mono.clone())
+                                    .child(secret),
+                            )
+                            .child(
+                                Button::new("mcp-local-copy-token")
+                                    .outline()
+                                    .xsmall()
+                                    .icon(IconName::Copy)
+                                    .label(t!("common.copy").to_string())
+                                    .on_click(move |_, window, cx| copy(&secret_copy, window, cx)),
+                            )
+                            .child(
+                                Button::new("mcp-local-rotate-token")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(t!("mcp.local_rotate").to_string())
+                                    .on_click(move |_, _, cx| {
+                                        local_rotate.update(cx, |local, cx| local.rotate_token(cx));
+                                    }),
+                            ),
+                    )
+                    .child(div().text_xs().text_color(muted).child(t!("mcp.command").to_string()))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .font_family(mono)
+                                    .child(command),
+                            )
+                            .child(
+                                Button::new("mcp-local-copy-command")
+                                    .outline()
+                                    .xsmall()
+                                    .icon(IconName::Copy)
+                                    .label(t!("common.copy").to_string())
+                                    .on_click(move |_, window, cx| copy(&command_copy, window, cx)),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn issue(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.state.clone() else { return };
         let name = self.name.read(cx).value().trim().to_string();
         if !valid_token_name(&name) {
             self.error = Some(t!("errors.refused_bad_token_name").to_string());
@@ -130,7 +338,7 @@ impl McpTokens {
             can_write: self.can_write,
             days: self.days,
         };
-        self.state.update(cx, |state, cx| state.issue_mcp_token(input, cx));
+        state.update(cx, |state, cx| state.issue_mcp_token(input, cx));
     }
 
     fn render_form(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -312,14 +520,12 @@ impl McpTokens {
             )
             .into_any_element()
     }
-}
 
-impl Render for McpTokens {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_server_tokens(&self, state: &Entity<DirectoryState>, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (muted, border) = (theme.muted_foreground, theme.border);
-        let tokens: Vec<McpToken> = self.state.read(cx).mcp_tokens().to_vec();
-        let issued = self.state.read(cx).issued().map(|(_, secret)| secret.clone());
+        let tokens: Vec<McpToken> = state.read(cx).mcp_tokens().to_vec();
+        let issued = state.read(cx).issued().map(|(_, secret)| secret.clone());
         let asking = self
             .revoking
             .as_ref()
@@ -332,7 +538,7 @@ impl Render for McpTokens {
         let form = self.render_form(cx);
         let issued = issued.map(|secret| self.render_issued(&secret, cx));
         let confirm = asking.map(|token| {
-            let (state, id) = (self.state.clone(), token.id.clone());
+            let (state, id) = (state.clone(), token.id.clone());
             let this = cx.entity().downgrade();
             let cancel = this.clone();
             inline_confirm(
@@ -359,6 +565,14 @@ impl Render for McpTokens {
         });
         v_flex()
             .gap_3()
+            .when(self.local_mcp.is_some(), |this| {
+                this.pt_3().border_t_1().border_color(border).child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .child(t!("mcp.server_title").to_string()),
+                )
+            })
             .child(
                 div()
                     .text_sm()
@@ -380,5 +594,14 @@ impl Render for McpTokens {
                     .children(rows),
             )
             .children(confirm)
+            .into_any_element()
+    }
+}
+
+impl Render for McpTokens {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let local_section = self.local_mcp.clone().map(|local| self.render_local_mcp(&local, cx));
+        let server_section = self.state.clone().map(|state| self.render_server_tokens(&state, cx));
+        v_flex().gap_3().children(local_section).children(server_section)
     }
 }

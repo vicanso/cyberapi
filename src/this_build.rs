@@ -225,6 +225,79 @@ pub fn serves_mocks() -> bool {
     false
 }
 
+/// H2: whether this build serves a local loopback MCP server.
+#[cfg(not(target_family = "wasm"))]
+pub fn serves_mcp() -> bool {
+    true
+}
+#[cfg(target_family = "wasm")]
+pub fn serves_mcp() -> bool {
+    false
+}
+
+/// H2: starts the desktop's local loopback MCP server on `127.0.0.1:port`.
+#[cfg(not(target_family = "wasm"))]
+pub fn start_local_mcp(
+    port: u16,
+    token: String,
+    can_send: bool,
+    can_write: bool,
+    storage: cyberapi_store::Storage,
+    engine: Arc<dyn cyberapi_http::HttpEngine>,
+    cx: &gpui_kit::App,
+) -> gpui_kit::Task<Result<Box<dyn crate::states::LocalMcpHandle>, String>> {
+    let Some(runtime) = cx.try_global::<crate::Runtime>().map(|runtime| runtime.0.clone()) else {
+        return gpui_kit::Task::ready(Err("no runtime to listen on".into()));
+    };
+    let access = cyberapi_http::McpAccess {
+        token,
+        can_send,
+        can_write,
+    };
+    let handler: cyberapi_http::McpHandler = Arc::new(move |can_send, can_write, body| {
+        let storage = storage.clone();
+        let engine = engine.clone();
+        Box::pin(
+            async move { cyberapi_service::mcp::handle_local(&storage, &engine, can_send, can_write, &body).await },
+        )
+    });
+    gpui_kit::AppContext::background_spawn(cx, async move {
+        cyberapi_http::McpServer::start(runtime, port, access, handler)
+            .await
+            .map(|server| Box::new(server) as Box<dyn crate::states::LocalMcpHandle>)
+    })
+}
+#[cfg(target_family = "wasm")]
+pub fn start_local_mcp(
+    _port: u16,
+    _token: String,
+    _can_send: bool,
+    _can_write: bool,
+    _storage: cyberapi_store::Storage,
+    _engine: Arc<dyn cyberapi_http::HttpEngine>,
+    _cx: &gpui_kit::App,
+) -> gpui_kit::Task<Result<Box<dyn crate::states::LocalMcpHandle>, String>> {
+    gpui_kit::Task::ready(Err("The local MCP server runs in the desktop app only".into()))
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl crate::states::LocalMcpHandle for cyberapi_http::McpServer {
+    fn endpoint(&self) -> String {
+        format!("http://{}/v1/mcp", cyberapi_http::McpServer::address(self))
+    }
+
+    fn set_access(&self, token: String, can_send: bool, can_write: bool) {
+        cyberapi_http::McpServer::set_access(
+            self,
+            cyberapi_http::McpAccess {
+                token,
+                can_send,
+                can_write,
+            },
+        );
+    }
+}
+
 #[cfg(not(target_family = "wasm"))]
 impl crate::states::MockHandle for cyberapi_http::MockServer {
     fn address(&self) -> String {

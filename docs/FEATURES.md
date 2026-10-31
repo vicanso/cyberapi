@@ -72,4 +72,4 @@ A self-hosted web version — one binary or a Docker image, at the root or under
 
 ## AI assistants
 
-The web version is also an MCP server: Claude Code, Cursor or another MCP client signs in with a token you issue and reads your projects, APIs, variables and responses, with secrets masked; a token you allow to may also send saved APIs — and when the API checks its answers, that reply lists each check and, where one failed, what was found; those results are not kept in the history (*0.3.1*) — and one you allow to change may make and change APIs (never delete them) where your account edits.
+Both the web server and the desktop app (via its local loopback server on `127.0.0.1`) act as an MCP server: Claude Code, Cursor or another MCP client signs in with a token and reads your projects, APIs, variables and responses, with secrets masked; when allowed to send, it may also send saved APIs — and when the API checks its answers, that reply lists each check and, where one failed, what was found; those results are not kept in the history (*0.3.1*) — and when allowed to change, it may make and change APIs (never delete them) where you edit.

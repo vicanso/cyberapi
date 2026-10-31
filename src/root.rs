@@ -135,6 +135,9 @@ impl CyberApi {
             }));
             updates.update(cx, |updates, cx| updates.check_at_start(cx));
         }
+        if let Some(local_mcp) = AppStore::global(cx).local_mcp().cloned() {
+            subscriptions.push(cx.observe(&local_mcp, |_, _, cx| cx.notify()));
+        }
         let page = Self::page_for(state.read(cx).route().clone(), window, cx);
         let prefs = state.read(cx).prefs().clone();
         let root = Self {
@@ -513,7 +516,22 @@ impl CyberApi {
                 } else {
                     menu
                 };
-                if signs_in { account_items(menu, cx) } else { menu }
+                if signs_in {
+                    account_items(menu, cx)
+                } else if let Some(local_mcp) = AppStore::global(cx).local_mcp() {
+                    let label = if local_mcp.read(cx).running() {
+                        t!("mcp.menu_running", port = local_mcp.read(cx).port()).to_string()
+                    } else {
+                        t!("mcp.menu").to_string()
+                    };
+                    menu.separator().item(
+                        PopupMenuItem::new(label)
+                            .icon(Icons::Bot)
+                            .on_click(|_, window, cx| open_mcp_dialog(window, cx)),
+                    )
+                } else {
+                    menu
+                }
             })
     }
 }

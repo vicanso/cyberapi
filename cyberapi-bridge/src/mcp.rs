@@ -23,62 +23,23 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use cyberapi_core::EnvironmentId;
-use cyberapi_core::access::CollectionRole;
-use cyberapi_core::auth::{Auth, KeyPlace};
 use cyberapi_core::directory::McpToken;
-use cyberapi_core::graphql::GraphQlBody;
-use cyberapi_core::grpc::GrpcBody;
-use cyberapi_core::inherit::{AuthSource, Inherited, inherited};
-use cyberapi_core::mcp::{
-    MAX_RESULT_BYTES, MAX_TEXT_CHARS, cut, find_api, listing, masked, masked_body, masked_params,
+use cyberapi_service::mcp::{
+    INSTRUCTIONS, INVALID_PARAMS, METHOD_NOT_FOUND, PARSE_ERROR, Rpc, create_api, execute_send_api, finish, get_api,
+    get_history, get_variables, initialize, list_apis, list_projects, prepare_send_api, rpc_error, tool_list,
+    update_api,
 };
-use cyberapi_core::model::{
-    ApiSetting, Collection, ContentType, Environment, HttpMethod, KvParam, ProjectSettings, VariableCategory,
-};
-use cyberapi_core::oauth::Grant;
-use cyberapi_core::response::{BodyKind, HttpResponse};
-use cyberapi_core::template::{Answers, NoEnv, NoFiles};
-use cyberapi_core::version;
-use cyberapi_service::Sender;
 use cyberapi_store::Storage;
 use cyberapi_store_sql::Account;
 use serde_json::{Value as Json, json};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
-
-/// The protocol revisions this server answers. A client that asks for one
-/// of them is answered in kind; any other gets the newest.
-const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const LATEST_PROTOCOL: &str = "2025-06-18";
 
 /// How many tool calls one account may make in a minute: generous for a
 /// conversation, mean for a model in a loop.
 pub const CALLS_PER_MINUTE: usize = 120;
 const WINDOW: Duration = Duration::from_secs(60);
-/// The responses `get_history` gives when not told, and the most.
-const DEFAULT_HISTORY: u64 = 3;
-const MAX_HISTORY: u64 = 10;
-
-const INSTRUCTIONS: &str = "Access to the HTTP API projects this CyberAPI bridge keeps, as the signed-in \
-account sees them. Start with list_projects. list_apis gives a project's folders and APIs, each with its \
-path and id; the other tools take a project by its name or id and an API by its id, its path or a name \
-only one API has. get_api shows an API's saved request, get_variables the project's environments, custom \
-variables and global request headers, get_history an API's latest responses. A token allowed to send also \
-has send_api, which sends a saved API from the bridge with the project's variables and keeps the response \
-in the account's history. When the API has assertions enabled, that answer also lists each one's result \
-(whether it held, and when it did not, the value that was there); those results are not kept in the history. \
-A token allowed to change also has create_api and update_api, which make an API and \
-change one's request where the account edits; nothing deletes. Values that read like secrets (passwords, tokens, keys, cookies) are masked as \
-***, a value made with a template such as {{TOKEN}} is shown as written, long bodies are cut, and every \
-call is logged.";
-
-// JSON-RPC error codes.
-const PARSE_ERROR: i64 = -32700;
-const INVALID_REQUEST: i64 = -32600;
-const METHOD_NOT_FOUND: i64 = -32601;
-const INVALID_PARAMS: i64 = -32602;
 
 /// Calls per account in the last minute: a sliding window, swept as it is
 /// asked.
@@ -132,10 +93,13 @@ pub async fn post(State(bridge): State<Bridge>, headers: HeaderMap, body: Bytes)
     let Some(id) = rpc.id else {
         return StatusCode::ACCEPTED.into_response();
     };
+    let instructions = format!(
+        "{INSTRUCTIONS} Each account may make {CALLS_PER_MINUTE} calls a minute; past that a call answers with an error saying to wait."
+    );
     let result = match rpc.method.as_str() {
-        "initialize" => Ok(initialize(&rpc.params)),
+        "initialize" => Ok(initialize(&rpc.params, "cyberapi-bridge", &instructions)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tool_list(&token) })),
+        "tools/list" => Ok(json!({ "tools": tool_list(token.can_send, token.can_write) })),
         "tools/call" => call(&bridge, &account, &token, rpc.params).await,
         other => Err((METHOD_NOT_FOUND, format!("unknown method {other:?}"))),
     };
@@ -175,162 +139,6 @@ fn reply(status: StatusCode, body: Json) -> Response {
     (status, [(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
 }
 
-fn rpc_error(id: Json, code: i64, message: String) -> Json {
-    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-}
-
-/// One request, taken apart. `id` is `None` for a notification.
-struct Rpc {
-    id: Option<Json>,
-    method: String,
-    params: Json,
-}
-
-impl Rpc {
-    /// The request, or why it is not one, with the id to answer under: its
-    /// own where it named one, else null.
-    fn parse(request: Json) -> Result<Self, (Json, i64, String)> {
-        let Json::Object(mut fields) = request else {
-            let why = if request.is_array() {
-                "one request at a time: JSON-RPC batches are not supported"
-            } else {
-                "a request is a JSON object"
-            };
-            return Err((Json::Null, INVALID_REQUEST, why.into()));
-        };
-        let id = fields.remove("id").filter(|id| !id.is_null());
-        let Some(Json::String(method)) = fields.remove("method") else {
-            let answer_to = id.filter(|id| id.is_string() || id.is_number()).unwrap_or(Json::Null);
-            return Err((answer_to, INVALID_REQUEST, "a request names a method".into()));
-        };
-        let params = fields.remove("params").unwrap_or_else(|| json!({}));
-        Ok(Self { id, method, params })
-    }
-}
-
-fn initialize(params: &Json) -> Json {
-    let asked = params.get("protocolVersion").and_then(Json::as_str);
-    let protocol = asked
-        .filter(|asked| PROTOCOLS.contains(asked))
-        .unwrap_or(LATEST_PROTOCOL);
-    json!({
-        "protocolVersion": protocol,
-        "capabilities": { "tools": {} },
-        "serverInfo": { "name": "cyberapi-bridge", "version": version::VERSION },
-        "instructions": format!(
-            "{INSTRUCTIONS} Each account may make {CALLS_PER_MINUTE} calls a minute; past that a call answers with an error saying to wait."
-        ),
-    })
-}
-
-/// The `tools/list` reply: every tool this token has, with the schema of
-/// its arguments.
-fn tool_list(token: &McpToken) -> Vec<Json> {
-    let project = json!({ "type": "string", "description": "The project's name or id, as list_projects shows it." });
-    let api = json!({ "type": "string", "description": "The API's id, its path (folder/name) or a name only one API has, as list_apis shows them." });
-    let read = json!({ "readOnlyHint": true, "openWorldHint": false });
-    let mut tools = vec![
-        json!({
-            "name": "list_projects",
-            "description": "The projects this account can see: id, name, description, team, the account's role and how many APIs each has.",
-            "inputSchema": { "type": "object", "properties": {} },
-            "annotations": read,
-        }),
-        json!({
-            "name": "list_apis",
-            "description": "A project's folders and APIs in display order, each with its path and id, and an API's method and URL.",
-            "inputSchema": { "type": "object", "properties": { "project": project }, "required": ["project"] },
-            "annotations": read,
-        }),
-        json!({
-            "name": "get_api",
-            "description": "An API's saved request: method, URL, query, headers, the headers of the folders it is in, how it signs in (its own or inherited, and from where), body, the assertions its answers are checked against (subject: status, header, json (a JSONPath), body, latency in ms or size in bytes; op; expected), what it is for (description) and answers kept as examples of what it returns. A URL or value may use the project's variables, written {{NAME}}.",
-            "inputSchema": { "type": "object", "properties": { "project": project, "api": api }, "required": ["project", "api"] },
-            "annotations": read,
-        }),
-        json!({
-            "name": "get_variables",
-            "description": "A project's environment variables ({{NAME}} in a URL), custom variables (value(name)) and global request headers, with whether each is enabled and the named environment it is in (none: every environment's); the project's named environments, and the one this account sends in.",
-            "inputSchema": { "type": "object", "properties": { "project": project }, "required": ["project"] },
-            "annotations": read,
-        }),
-        json!({
-            "name": "get_history",
-            "description": "An API's latest responses in this account's history, newest first: status, time, size, headers and the body, cut.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "project": project,
-                    "api": api,
-                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY, "description": format!("How many, {DEFAULT_HISTORY} when not given.") },
-                },
-                "required": ["project", "api"],
-            },
-            "annotations": read,
-        }),
-    ];
-    if token.can_send {
-        tools.push(json!({
-            "name": "send_api",
-            "description": "Sends an API's saved request from the bridge, with the project's variables and global headers, and answers its response, which also goes into this account's history. When the API has assertions enabled, the answer also lists each one's result: passed, and when it did not hold the actual value; a check that could not be made says why. Those results are not kept in the history. The request really reaches its server: a POST or DELETE does what it says. Needs an editor's role in the project.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "project": project,
-                    "api": api,
-                    "environment": { "type": "string", "description": "The named environment to send in, as get_variables lists them; an empty string for none. When not given, the one this account last chose in the project." },
-                },
-                "required": ["project", "api"],
-            },
-            "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true },
-        }));
-    }
-    // H1: making and changing, never deleting.
-    if token.can_write {
-        let written = json!({
-            "method": { "type": "string", "description": "GET, POST, PUT, PATCH, DELETE, HEAD or OPTIONS." },
-            "url": { "type": "string", "description": "The URL; may start with an environment variable, {{HOST}}/users. Its query goes to the query list." },
-            "query": { "description": "The query, replacing the list: an object of names and values, or a list of {name, value, enabled}." },
-            "headers": { "description": "The headers, replacing the list, as query is given." },
-            "contentType": { "type": "string", "enum": ["json", "form", "multipart", "xml", "text", "graphql"] },
-            "body": { "description": "The body as text; a form's may be an object of fields, a JSON one any JSON." },
-            "requestSchema": { "description": "A JSON Schema object (or its JSON text) describing the request body's fields; an empty string clears it." },
-            "description": { "type": "string", "description": "What the API is for, as plain text." },
-        });
-        let mut create = written.clone();
-        if let Some(properties) = create.as_object_mut() {
-            properties.insert("project".into(), project.clone());
-            properties.insert(
-                "name".into(),
-                json!({ "type": "string", "description": "The new API's name." }),
-            );
-            properties.insert("folder".into(), json!({ "type": "string", "description": "The folder to put it in, by its path (users/admin) or id, as list_apis names them; the top level when not given." }));
-        }
-        let mut update = written;
-        if let Some(properties) = update.as_object_mut() {
-            properties.insert("project".into(), project.clone());
-            properties.insert("api".into(), api.clone());
-            properties.insert(
-                "name".into(),
-                json!({ "type": "string", "description": "A new name for it." }),
-            );
-        }
-        tools.push(json!({
-            "name": "create_api",
-            "description": "Makes an API in a project — in a folder, or at the top level — with the request given; what is not given is left empty (a GET). Answers its id and path. Needs an editor's role in the project.",
-            "inputSchema": { "type": "object", "properties": create, "required": ["project", "name"] },
-            "annotations": { "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false },
-        }));
-        tools.push(json!({
-            "name": "update_api",
-            "description": "Changes an API's saved request: what is given replaces what it had, what is not stays; a new name renames it. Answers it as get_api does. Needs an editor's role in the project.",
-            "inputSchema": { "type": "object", "properties": update, "required": ["project", "api"] },
-            "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false },
-        }));
-    }
-    tools
-}
-
 /// `tools/call`: a protocol error for a call that is not one, otherwise
 /// the tool's answer — its failure too, which the model reads.
 async fn call(bridge: &Bridge, account: &Account, token: &McpToken, params: Json) -> Result<Json, (i64, String)> {
@@ -344,7 +152,20 @@ async fn call(bridge: &Bridge, account: &Account, token: &McpToken, params: Json
     }
     let storage = bridge.inner.store.scoped(account.id.clone());
     let answer = match tool.as_str() {
-        "list_projects" => list_projects(bridge, account, &storage).await,
+        "list_projects" => {
+            let teams = bridge
+                .inner
+                .store
+                .directory(account.id.clone())
+                .me()
+                .await
+                .map_err(|error| error.to_string())
+                .map(|me| me.teams);
+            match teams {
+                Ok(teams) => list_projects(&storage, &teams).await,
+                Err(why) => Err(why),
+            }
+        }
         "list_apis" => list_apis(&storage, &arguments).await,
         "get_api" => get_api(&storage, &arguments).await,
         "get_variables" => get_variables(&storage, &arguments).await,
@@ -362,538 +183,20 @@ async fn call(bridge: &Bridge, account: &Account, token: &McpToken, params: Json
     Ok(finish(answer))
 }
 
-/// A tool's answer as the protocol carries it: one text block of JSON, cut
-/// to fit a context, or the failure, marked as one.
-fn finish(answer: Result<Json, String>) -> Json {
-    match answer {
-        Ok(value) => {
-            let text = serde_json::to_string_pretty(&value).unwrap_or_default();
-            let text = if text.len() > MAX_RESULT_BYTES {
-                let mut at = MAX_RESULT_BYTES;
-                while !text.is_char_boundary(at) {
-                    at -= 1;
-                }
-                format!("{}… [cut: {} bytes in all]", &text[..at], text.len())
-            } else {
-                text
-            };
-            json!({ "content": [{ "type": "text", "text": text }], "isError": false })
-        }
-        Err(why) => json!({ "content": [{ "type": "text", "text": why }], "isError": true }),
-    }
-}
-
-fn argument<'a>(arguments: &'a Json, name: &str) -> Result<&'a str, String> {
-    arguments
-        .get(name)
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{name} is missing"))
-}
-
-fn failed(error: impl std::fmt::Display) -> String {
-    error.to_string()
-}
-
-/// The project `arguments` name: its id, or a name only one project has.
-async fn project(storage: &Storage, arguments: &Json) -> Result<Collection, String> {
-    let spec = argument(arguments, "project")?;
-    let projects = storage.collections().list().await.map_err(failed)?;
-    if let Some(found) = projects.iter().find(|project| project.id.as_str() == spec) {
-        return Ok(found.clone());
-    }
-    let named: Vec<&Collection> = projects.iter().filter(|project| project.name == spec).collect();
-    match named.as_slice() {
-        [found] => Ok((*found).clone()),
-        [] => Err(format!("no project is {spec:?}: list_projects names them")),
-        many => Err(format!("{} projects are named {spec:?}: give one's id", many.len())),
-    }
-}
-
-/// The project and the API `arguments` name.
-/// The API an assistant names, where it is, and what it takes from its
-/// folders and project (#66).
-/// The API `arguments` name: its project, itself, its path in the tree,
-/// what it takes from above, and the project's secret variables (D3).
-async fn api(
-    storage: &Storage,
-    arguments: &Json,
-) -> Result<(Collection, ApiSetting, String, Inherited, ProjectSettings), String> {
-    let collection = project(storage, arguments).await?;
-    let data = storage.tree().load(collection.id.clone()).await.map_err(failed)?;
-    let api = find_api(&data, argument(arguments, "api")?)?.clone();
-    let path = listing(&data)
-        .into_iter()
-        .find(|line| line.id == api.id)
-        .map(|line| line.path)
-        .unwrap_or_else(|| api.name.clone());
-    let inherited = inherited(&data, &api.id);
-    Ok((collection, api, path, inherited, data.settings))
-}
-
-/// H1: an API made where `arguments` say, with the request they give.
-async fn create_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let collection = project(storage, arguments).await?;
-    let name = argument(arguments, "name")?.to_string();
-    let request = cyberapi_core::mcp::written(&Default::default(), arguments)?;
-    let data = storage.tree().load(collection.id.clone()).await.map_err(failed)?;
-    let folder = match arguments
-        .get("folder")
-        .and_then(Json::as_str)
-        .filter(|spec| !spec.trim().is_empty())
-    {
-        Some(spec) => Some(cyberapi_core::mcp::find_folder(&data, spec)?),
-        None => None,
-    };
-    let made = storage
-        .tree()
-        .create_api(collection.id.clone(), folder, name)
-        .await
-        .map_err(failed)?;
-    let id = made.item.id.clone();
-    storage
-        .tree()
-        .save_request(collection.id.clone(), id.clone(), request)
-        .await
-        .map_err(failed)?;
-    let mut arguments = arguments.clone();
-    arguments["api"] = json!(id.as_str());
-    arguments["project"] = json!(collection.id.as_str());
-    get_api(storage, &arguments).await
-}
-
-/// H1: an API's request with what `arguments` give in place, renamed when
-/// they name it anew.
-async fn update_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let (collection, api, ..) = self::api(storage, arguments).await?;
-    let request = cyberapi_core::mcp::written(&api.request, arguments)?;
-    if let Some(name) = arguments.get("name").and_then(Json::as_str).map(str::trim)
-        && !name.is_empty()
-        && name != api.name
-    {
-        storage
-            .tree()
-            .rename(collection.id.clone(), api.id.clone(), name.to_string())
-            .await
-            .map_err(failed)?;
-    }
-    if request != api.request {
-        storage
-            .tree()
-            .save_request(collection.id.clone(), api.id.clone(), request)
-            .await
-            .map_err(failed)?;
-    }
-    let mut arguments = arguments.clone();
-    arguments["api"] = json!(api.id.as_str());
-    arguments["project"] = json!(collection.id.as_str());
-    get_api(storage, &arguments).await
-}
-
-async fn list_projects(bridge: &Bridge, account: &Account, storage: &Storage) -> Result<Json, String> {
-    let projects = storage.collections().list().await.map_err(failed)?;
-    let counts = storage.collections().api_counts().await.map_err(failed)?;
-    let teams = bridge
-        .inner
-        .store
-        .directory(account.id.clone())
-        .me()
-        .await
-        .map_err(failed)?
-        .teams;
-    Ok(Json::Array(
-        projects
-            .iter()
-            .map(|project| {
-                let team = project
-                    .owner
-                    .as_ref()
-                    .and_then(|owner| teams.iter().find(|team| &team.id == owner))
-                    .map(|team| team.name.clone());
-                json!({
-                    "id": project.id,
-                    "name": project.name,
-                    "description": project.description,
-                    "team": team,
-                    "role": project.role.as_str(),
-                    "apis": counts.get(&project.id).copied().unwrap_or_default(),
-                })
-            })
-            .collect(),
-    ))
-}
-
-async fn list_apis(storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let collection = project(storage, arguments).await?;
-    let data = storage.tree().load(collection.id.clone()).await.map_err(failed)?;
-    Ok(Json::Array(
-        listing(&data)
-            .into_iter()
-            .map(|line| match line.method {
-                None => json!({ "kind": "folder", "path": line.path, "id": line.id }),
-                Some(method) => json!({
-                    "kind": "api",
-                    "path": line.path,
-                    "id": line.id,
-                    "method": method.as_str(),
-                    "url": line.uri,
-                }),
-            })
-            .collect(),
-    ))
-}
-
-fn params_json(params: &[KvParam]) -> Json {
-    Json::Array(
-        masked_params(params)
-            .into_iter()
-            .map(|param| {
-                let mut out = json!({ "name": param.key, "value": param.value, "enabled": param.enabled });
-                if !param.description.is_empty() {
-                    out["description"] = json!(param.description);
-                }
-                out
-            })
-            .collect(),
-    )
-}
-
-/// How an API signs in (#66), its secrets masked; null when it does not
-/// (none, or inheriting where nothing above sets one).
-fn auth_json(auth: &Auth) -> Json {
-    match auth {
-        Auth::Inherit | Auth::None => Json::Null,
-        Auth::Basic { username, password } => {
-            json!({ "type": "basic", "username": username, "password": masked("password", password) })
-        }
-        Auth::Bearer { token } => json!({ "type": "bearer", "token": masked("token", token) }),
-        Auth::Digest { username, password } => {
-            json!({ "type": "digest", "username": username, "password": masked("password", password) })
-        }
-        Auth::ApiKey { name, value, place } => json!({
-            "type": "apiKey",
-            "name": name,
-            "in": match place {
-                KeyPlace::Header => "header",
-                KeyPlace::Query => "query",
-            },
-            "value": masked("token", value),
-        }),
-        // C4: where its token is had, the secrets masked.
-        Auth::OAuth2(oauth) => json!({
-            "type": "oauth2",
-            "grant": match oauth.grant {
-                Grant::ClientCredentials => "client_credentials",
-                Grant::Password => "password",
-                Grant::AuthorizationCode => "authorization_code",
-            },
-            "tokenUrl": oauth.token_url,
-            "authorizationUrl": oauth.authorization_url,
-            "clientId": oauth.client_id,
-            "clientSecret": masked("secret", &oauth.client_secret),
-            "username": oauth.username,
-            "password": masked("password", &oauth.password),
-            "scope": oauth.scope,
-        }),
-    }
-}
-
-async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let (_, api, path, inherited, _) = api(storage, arguments).await?;
-    let request = &api.request;
-    // How it signs in as sent: its own, or what it inherits, and from where.
-    let auth = auth_json(inherited.auth(&request.auth));
-    let auth_from = match (&auth, request.auth.is_inherit(), &inherited.from) {
-        (Json::Null, ..) => Json::Null,
-        (_, false, _) => json!("api"),
-        (_, true, AuthSource::Folder { name, .. }) => json!(format!("folder {name}")),
-        (_, true, AuthSource::Project) => json!("project"),
-    };
-    let body = match request.content_type {
-        // A gRPC call: its method and message; its definitions (base64
-        // descriptors) say nothing an assistant reads.
-        _ if request.method == HttpMethod::Grpc => {
-            let grpc = GrpcBody::read(&request.body);
-            json!({
-                "service": grpc.service,
-                "method": grpc.method,
-                "message": cut(&masked_body(&grpc.message), MAX_TEXT_CHARS),
-            })
-        }
-        // A form's fields are kept as the JSON of a list.
-        ContentType::Form | ContentType::Multipart => {
-            let fields: Vec<KvParam> = serde_json::from_str(&request.body).unwrap_or_default();
-            params_json(&fields)
-        }
-        ContentType::GraphQl => {
-            let graphql = GraphQlBody::read(&request.body);
-            json!({
-                "query": cut(&graphql.query, MAX_TEXT_CHARS),
-                "variables": cut(&masked_body(&graphql.variables), MAX_TEXT_CHARS),
-                "operationName": graphql.operation_name,
-            })
-        }
-        _ => Json::String(cut(&masked_body(&request.body), MAX_TEXT_CHARS)),
-    };
-    Ok(json!({
-        "id": api.id,
-        "name": api.name,
-        "path": path,
-        "method": request.method.as_str(),
-        "url": request.uri,
-        "query": params_json(&request.query),
-        "headers": params_json(&request.headers),
-        "folderHeaders": params_json(&inherited.headers),
-        // D5: its own variables and its folders', masked as headers are.
-        "variables": params_json(&request.variables),
-        "folderVariables": params_json(&inherited.variables),
-        "auth": auth,
-        "authFrom": auth_from,
-        "contentType": request.content_type.as_str(),
-        "body": body,
-        // F11: the request body's JSON Schema, when kept.
-        "requestSchema": request.request_schema.as_deref().map(|schema| cut(schema, MAX_TEXT_CHARS)),
-        // A1: what its answers are checked against.
-        "assertions": request.assertions,
-        // F3: what it is for, and what it returned when kept as examples.
-        "description": request.description,
-        "examples": request
-            .examples
-            .iter()
-            .map(|example| json!({
-                "name": example.name,
-                "status": example.status,
-                "body": cut(&masked_body(&example.body), MAX_TEXT_CHARS),
-            }))
-            .collect::<Vec<_>>(),
-    }))
-}
-
-/// The named environment a send is in (#61): the one `arguments` name (an
-/// empty name is none), or else the one the account last chose in the
-/// project.
-async fn chosen_environment(
-    storage: &Storage,
-    collection: &Collection,
-    arguments: &Json,
-) -> Result<Option<Environment>, String> {
-    let environments = storage
-        .variables()
-        .environments(collection.id.clone())
-        .await
-        .map_err(failed)?;
-    match arguments.get("environment").and_then(Json::as_str).map(str::trim) {
-        Some("") => Ok(None),
-        Some(name) => environments
-            .iter()
-            .find(|environment| environment.name.eq_ignore_ascii_case(name))
-            .cloned()
-            .map(Some)
-            .ok_or_else(|| {
-                let names: Vec<&str> = environments
-                    .iter()
-                    .map(|environment| environment.name.as_str())
-                    .collect();
-                format!("{name:?} is none of the project's environments ({})", names.join(", "))
-            }),
-        None => {
-            let prefs = storage
-                .prefs()
-                .workspace(collection.id.clone())
-                .await
-                .unwrap_or_default();
-            Ok(prefs
-                .environment
-                .and_then(|id| environments.into_iter().find(|environment| environment.id == id)))
-        }
-    }
-}
-
-async fn get_variables(storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let collection = project(storage, arguments).await?;
-    // D3: a secret one's value is each reader's own, and never given.
-    let secret = storage
-        .tree()
-        .load(collection.id.clone())
-        .await
-        .map_err(failed)?
-        .settings
-        .secret_variables;
-    let environments = storage
-        .variables()
-        .environments(collection.id.clone())
-        .await
-        .map_err(failed)?;
-    let named = |id: &Option<EnvironmentId>| {
-        id.as_ref()
-            .and_then(|id| environments.iter().find(|environment| &environment.id == id))
-            .map(|environment| environment.name.clone())
-    };
-    let mut answer = serde_json::Map::new();
-    for (key, category) in [
-        ("environments", VariableCategory::Environment),
-        ("custom", VariableCategory::Custom),
-        ("globalHeaders", VariableCategory::GlobalRequestHeader),
-    ] {
-        let variables = storage
-            .variables()
-            .list(collection.id.clone(), category)
-            .await
-            .map_err(failed)?;
-        let listed = variables
-            .iter()
-            .map(|variable| match secret.contains(&variable.id) {
-                true => json!({
-                    "name": variable.name,
-                    "secret": true,
-                    "enabled": variable.enabled,
-                    "environment": named(&variable.environment),
-                }),
-                false => json!({
-                    "name": variable.name,
-                    "value": masked(&variable.name, &variable.value),
-                    "enabled": variable.enabled,
-                    "environment": named(&variable.environment),
-                }),
-            })
-            .collect();
-        answer.insert(key.into(), Json::Array(listed));
-    }
-    answer.insert(
-        "namedEnvironments".into(),
-        json!(
-            environments
-                .iter()
-                .map(|environment| environment.name.clone())
-                .collect::<Vec<_>>()
-        ),
-    );
-    let selected = chosen_environment(storage, &collection, &json!({})).await?;
-    answer.insert("selected".into(), json!(selected.map(|environment| environment.name)));
-    Ok(Json::Object(answer))
-}
-
-/// A response as a tool shows it: secrets masked, the body cut, a body that
-/// is not text described rather than shown.
-fn response_json(response: &HttpResponse) -> Json {
-    let body = match response.body_omitted {
-        Some(size) => format!("[not kept in the history: {size} bytes]"),
-        None => match response.body_kind() {
-            BodyKind::Json | BodyKind::Text => {
-                let text = response.raw_body_text().unwrap_or_default();
-                cut(&masked_body(&text), MAX_TEXT_CHARS)
-            }
-            _ => format!("[{}, {} bytes: not text]", response.media_type(), response.body.len()),
-        },
-    };
-    let headers: Vec<Json> = response
-        .headers
-        .iter()
-        .map(|(name, value)| json!([name, masked(name, value)]))
-        .collect();
-    json!({
-        "id": response.id,
-        "at": response.created_at.to_rfc3339(),
-        "url": response.url,
-        "status": response.status,
-        "error": response.error,
-        "latencyMs": u64::try_from(response.latency.as_millis()).unwrap_or(u64::MAX),
-        "size": response.size(),
-        "truncated": response.truncated,
-        "headers": headers,
-        "body": body,
-    })
-}
-
-async fn get_history(storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let (collection, api, ..) = api(storage, arguments).await?;
-    let limit = arguments
-        .get("limit")
-        .and_then(Json::as_u64)
-        .unwrap_or(DEFAULT_HISTORY)
-        .clamp(1, MAX_HISTORY);
-    let responses = storage.history().list(collection.id, api.id).await.map_err(failed)?;
-    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-    Ok(Json::Array(responses.iter().take(limit).map(response_json).collect()))
-}
-
 async fn send_api(bridge: &Bridge, account: &Account, storage: &Storage, arguments: &Json) -> Result<Json, String> {
-    let (collection, api, _, inherited, settings) = api(storage, arguments).await?;
-    let environment = chosen_environment(storage, &collection, arguments).await?;
-    if collection.role < CollectionRole::Editor {
-        return Err(format!(
-            "sending needs an editor's role in {:?}; this account views it",
-            collection.name
-        ));
-    }
-    // D6: in production, what may change something waits for a person to
-    // say it goes; an assistant cannot.
-    if let Some(environment) = &environment
-        && settings.protects(Some(&environment.id))
-        && cyberapi_core::environments::asks_first(&api.request)
-    {
-        return Err(format!(
-            "{:?} is marked as production, and a {} request may change something there: send it from the app, \
-             or choose another environment",
-            environment.name,
-            api.request.method.as_str()
-        ));
-    }
+    let prepared = prepare_send_api(storage, arguments).await?;
     let _sending = match bridge.inner.in_flight.start(&account.id) {
         Ok(sending) => sending,
         Err(busy) => return Err(busy.to_string()),
     };
-    let prefs = storage.prefs().app().await.unwrap_or_default();
-    let sender = Sender {
-        storage: storage.clone(),
-        engine: bridge.inner.engine.clone(),
-        files: Arc::new(NoFiles("a request an AI assistant sends cannot read files")),
-        // Never the bridge's own: any editor of a project would read the
-        // server's secrets.
-        env: Arc::new(NoEnv(
-            "a request an AI assistant sends cannot read environment variables",
-        )),
-        user_agent: format!("CyberAPI/{} (mcp)", version::VERSION),
-        timeouts: prefs.timeouts,
-        // C5: the bridge's engine reads no certificate files; none are
-        // named to it either.
-        sending: cyberapi_core::prefs::SendPrefs {
-            certificates: Default::default(),
-            ..prefs.sending
-        },
-        inherited,
-        environment,
-        // C4: a call's own; none is kept on the server.
-        tokens: Default::default(),
-        // D3: the account's own values, which the assistant never reads:
-        // what the history keeps of the request has them masked.
-        secrets: storage
-            .prefs()
-            .secret_values(collection.id.clone())
-            .await
-            .unwrap_or_default()
-            .of(&settings.secret_variables),
-    };
-    // H1: the results ride on this answer only. The history keeps the
-    // response as any send does, without them.
-    let assertions = api.request.assertions.clone();
-    let response = cyberapi_service::send(sender, collection.id, api.id, api.request, Answers::default())
-        .await
-        .map_err(failed)?;
-    let mut answer = response_json(&response);
-    let reported = cyberapi_core::assertions::report(&assertions, &response);
-    if !reported.is_empty()
-        && let Some(object) = answer.as_object_mut()
-    {
-        object.insert("assertions".into(), json!(reported));
-    }
-    Ok(answer)
+    execute_send_api(storage, bridge.inner.engine.clone(), prepared).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cyberapi_core::mcp::MAX_RESULT_BYTES;
+    use cyberapi_service::mcp::INVALID_REQUEST;
 
     #[test]
     fn an_account_makes_so_many_calls_a_minute() {

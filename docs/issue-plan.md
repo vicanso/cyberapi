@@ -249,7 +249,7 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 
 | 编号 | 功能 | 规模 | 数据模型 | 内容与落点 |
 |---|---|---|---|---|
-| H2 | 桌面版本机 MCP Server | M | 不变 | 桌面版在运行期间可按开关在 `127.0.0.1` 启动带本机 Token 校验的轻量 MCP HTTP 端点（复用 `cyberapi_http` 的 hyper 监听与 `cyberapi_core::mcp` 的工具定义），让未部署 `bridge` 的个人桌面用户也能在 Claude Code / Cursor 中直接读写和调测本机项目 |
+| H2 | 桌面版本机 MCP Server（已完成） | M | 不变 | 桌面版在运行期间可按开关在 `127.0.0.1` 启动带本机 Token 校验的轻量 MCP HTTP 端点（[`cyberapi_http::McpServer`](../crates/cyberapi-http/src/mcp.rs) 与 [`cyberapi_service::mcp`](../crates/cyberapi-service/src/mcp.rs)），让未部署 `bridge` 的个人桌面用户也能在 Claude Code / Cursor 中直接读写和调测本机项目 |
 | A4b | `cyberapi-cli` 发布预编译包（已完成） | S | 不变 | 在 [`scripts/desktop-dist.sh`](../scripts/desktop-dist.sh) 与 [`scripts/checksums.sh`](../scripts/checksums.sh) 中打包 `cyberapi-cli` 跨平台二进制产物，方便用户在 GitHub Actions / GitLab CI 中直接下载运行接口断言与 JSON Schema 契约测试 |
 
 ### 四、性能与细节尾项（来自 [`review-0.4.1.md`](./review-0.4.1.md) 遗留）
