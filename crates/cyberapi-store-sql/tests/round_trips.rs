@@ -6,12 +6,24 @@ use cyberapi_core::import::ImportItem;
 use cyberapi_core::model::HttpRequest;
 use cyberapi_store::NewCollection;
 use cyberapi_store_sql::{NewAccount, SqlStore};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
+use std::sync::Once;
 
-/// Counts the statements sqlx logs. Set for this thread alone: a test on
-/// tokio's single thread sees its own calls and no other test's.
-struct Statements(Arc<AtomicUsize>);
+thread_local! {
+    /// Statements logged on this thread: each `#[tokio::test]` runs on its
+    /// own single-threaded runtime, so it sees its own calls and no other
+    /// test's.
+    static COUNTED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Counts the statements sqlx logs. Installed as the global subscriber before
+/// any query runs: a per-thread `tracing::subscriber::set_default` leaves
+/// concurrent threads on `NoSubscriber`, and when one of those threads is the
+/// first to hit a `sqlx::query` callsite after `MAX_LEVEL` rises,
+/// `tracing_core`'s single-dispatcher fast path (`Rebuilder::JustOne`) caches
+/// `Interest::never()` from that thread's `NoSubscriber` and silences the
+/// thread that was counting.
+struct Statements;
 
 impl tracing::Subscriber for Statements {
     fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
@@ -24,7 +36,7 @@ impl tracing::Subscriber for Statements {
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
         if event.metadata().target() == "sqlx::query" {
-            self.0.fetch_add(1, Ordering::Relaxed);
+            COUNTED.with(|counted| counted.set(counted.get() + 1));
         }
     }
     fn enter(&self, _: &tracing::span::Id) {}
@@ -36,6 +48,10 @@ impl tracing::Subscriber for Statements {
 const APIS: usize = 120;
 
 async fn a_sync_writes_what_changed(variable: &str) {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(Statements);
+    });
     let Ok(url) = std::env::var(variable) else {
         eprintln!("skipped: {variable} is not set");
         return;
@@ -77,15 +93,13 @@ async fn a_sync_writes_what_changed(variable: &str) {
     let mut changed = read.config.clone();
     changed.apis[7].name = "renamed".into();
 
-    let statements = Arc::new(AtomicUsize::new(0));
-    let counting = tracing::subscriber::set_default(Statements(statements.clone()));
+    COUNTED.with(|counted| counted.set(0));
     let revision = storage
         .tree()
         .replace(collection.id.clone(), changed.clone(), Some(read.revision))
         .await
         .expect("replace");
-    drop(counting);
-    let sent = statements.load(Ordering::Relaxed);
+    let sent = COUNTED.with(Cell::get);
     assert!(sent > 0, "the statements are counted");
     assert!(
         sent < APIS / 2,
