@@ -92,6 +92,7 @@ impl RunView {
             })
             .collect();
         let data = cx.new(|cx| {
+            crate::views::fix_editor_search(cx);
             EditorState::new(window, cx)
                 .soft_wrap(false)
                 .placeholder(t!("run.data_placeholder").to_string())

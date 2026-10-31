@@ -487,6 +487,7 @@ impl AssertionsEditor {
             _ => row.schema.clone(),
         };
         let editor = cx.new(|cx| {
+            crate::views::fix_editor_search(cx);
             EditorState::new(window, cx)
                 .language("json")
                 .line_number(true)

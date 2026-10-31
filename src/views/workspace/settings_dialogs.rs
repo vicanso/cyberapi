@@ -151,6 +151,7 @@ pub fn open_folder_settings(workspace: &Entity<WorkspaceState>, id: ItemId, wind
             .soft_wrap(true)
             .placeholder(t!("docs.placeholder").to_string());
         editor.set_value(folder.settings.description.clone(), window, cx);
+        crate::views::fix_editor_search(cx);
         editor
     });
     let source = cx.new(|cx| {

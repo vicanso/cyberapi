@@ -241,6 +241,7 @@ struct ImportView {
 impl ImportView {
     fn new(into: Option<Arc<MergeInto>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
+            crate::views::fix_editor_search(cx);
             EditorState::new(window, cx)
                 .language("json")
                 .line_number(true)

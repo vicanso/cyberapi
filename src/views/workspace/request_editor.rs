@@ -140,6 +140,7 @@ fn body_state(
             .tab_size(crate::views::json_tab())
             .default_value(text);
         template_hints::complete_in(&mut body, hints);
+        crate::views::fix_editor_search(cx);
         body
     })
 }
@@ -174,6 +175,7 @@ fn grpc_message_state(
             .tab_size(crate::views::json_tab())
             .default_value(message);
         template_hints::complete_in(&mut editor, hints);
+        crate::views::fix_editor_search(cx);
         editor
     })
 }
@@ -215,6 +217,7 @@ fn graphql_fields(
             } else {
                 template_hints::complete_in(&mut editor, hints);
             }
+            crate::views::fix_editor_search(cx);
             editor
         })
     };

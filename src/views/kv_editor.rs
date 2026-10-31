@@ -418,6 +418,7 @@ impl KvEditor {
             if let Some(source) = &hints {
                 template_hints::complete_in(&mut text, source);
             }
+            crate::views::fix_editor_search(cx);
             text
         });
         text.update(cx, |text, cx| text.focus(window, cx));

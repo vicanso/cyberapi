@@ -126,6 +126,7 @@ impl EventStream {
         .collect::<Vec<_>>();
         let fields = (!fields.is_empty()).then(|| fields.join(" · "));
         let editor = cx.new(|cx| {
+            crate::views::fix_editor_search(cx);
             EditorState::new(window, cx)
                 .language(language)
                 .line_number(false)

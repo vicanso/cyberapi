@@ -180,6 +180,7 @@ pub fn bind_mac_page_keys(cx: &mut App) {
         KeyBinding::new("cmd-enter", Send, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-enter", Send, Some("Workspace > Input")),
         KeyBinding::new("cmd-v", PasteCurl, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-f", Search, INPUT),
         KeyBinding::new("cmd-f", FindApi, Some(KEY_CONTEXT)),
     ]);
 }
@@ -1744,5 +1745,111 @@ mod tests {
             assert_eq!(api.request.method, HttpMethod::Post);
             assert_eq!(api.request.body, "{\"a\":1}");
         });
+    }
+
+    /// #63: the response bar shows a search button, and pressing Cmd/Ctrl-F
+    /// in the response body then typing `host` letter by letter keeps every
+    /// character (rather than overwriting `h` with `ost`).
+    #[gpui_kit::test]
+    async fn response_search_button_and_shortcut_keep_every_typed_character(cx: &mut TestAppContext) {
+        struct HostAnswering;
+        impl HttpEngine for HostAnswering {
+            fn send(&self, _: PreparedRequest) -> SendFuture {
+                Box::pin(async {
+                    Ok(cyberapi_core::response::Exchange {
+                        status: 200,
+                        headers: vec![("content-type".into(), "application/json".into())],
+                        body: br#"{"host":"a.test","backup_host":"b.test"}"#.to_vec(),
+                        ..Default::default()
+                    })
+                })
+            }
+        }
+
+        let store = MemoryStore::new();
+        let collection = pollster::block_on(store.storage().collections().create(NewCollection {
+            name: "p".into(),
+            ..Default::default()
+        }))
+        .expect("create");
+        let sign_out: SignOut = Arc::new(|| Box::pin(async {}));
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            bind_keys(cx);
+            AppStore::init(
+                store.storage(),
+                Arc::new(HostAnswering),
+                AppPrefs::default(),
+                Extras {
+                    sign_out: Some(sign_out),
+                    ..Extras::default()
+                },
+                cx,
+            );
+        });
+        let mut view = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(1100.), px(700.)), |window, cx| {
+                let state = cx.new(|cx| {
+                    let sender = AppStore::global(cx).sender(cx);
+                    WorkspaceState::new(sender, collection, cx)
+                });
+                let workspace = cx.new(|cx| WorkspaceView::with_state(state, window, cx));
+                view = Some(workspace.clone());
+                Root::new(workspace, window, cx)
+            })
+            .into();
+        let view = view.expect("built");
+        cx.run_until_parked();
+        let state = cx.read(|cx| view.read(cx).state.clone());
+        state.update(cx, |state, cx| state.create_api(None, "ping".into(), cx));
+        cx.run_until_parked();
+        let api = cx.read(|cx| state.read(cx).api().expect("the API is open").clone());
+        api.update(cx, |api, cx| {
+            api.set_uri("http://a.test/ping".into(), cx);
+            api.send_or_cancel(Default::default(), cx);
+        });
+        cx.run_until_parked();
+
+        let has_button = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let found = window.try_find("response-search").is_some();
+                let response = view
+                    .read(cx)
+                    .selected
+                    .as_ref()
+                    .expect("the panels are open")
+                    .response
+                    .clone();
+                response.update(cx, |response, cx| response.focus_body(window, cx));
+                window.render_frame(cx);
+                window.press("secondary-f", cx);
+                found
+            })
+            .expect("the window is open");
+        assert!(has_button, "the response bar renders the visible search button");
+
+        for ch in ["h", "o", "s", "t"] {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.input(ch, cx);
+                window.render_frame(cx);
+            })
+            .expect("the window is open");
+        }
+
+        let (query, matches) = cx.read(|cx| {
+            let response = &view
+                .read(cx)
+                .selected
+                .as_ref()
+                .expect("the panels are open")
+                .response
+                .read(cx);
+            (response.search_query(cx), response.search_matches(cx))
+        });
+        assert_eq!(query, "host", "typing host after Ctrl/Cmd-F keeps the first letter");
+        assert_eq!(matches, 2, "both occurrences of host in the response body are matched");
     }
 }

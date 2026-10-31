@@ -46,6 +46,7 @@ impl DocsEditor {
                 .soft_wrap(true)
                 .placeholder(t!("docs.placeholder").to_string());
             editor.set_value(text, window, cx);
+            crate::views::fix_editor_search(cx);
             editor
         });
         let mut subscriptions = vec![
@@ -105,6 +106,7 @@ impl DocsEditor {
             },
         };
         let editor = cx.new(|cx| {
+            crate::views::fix_editor_search(cx);
             EditorState::new(window, cx)
                 .language("json")
                 .line_number(true)

@@ -99,6 +99,21 @@ fn json_tab() -> TabSize {
     }
 }
 
+/// Work around gpui-base 0.8.1's `set_search_query` setting `anchor_offset` on
+/// every query change, which makes `gpui-component`'s built-in search overlay
+/// re-select the query field after the first character typed
+/// (`longbridge/gpui-kit#3747`, #63). Remove once `gpui-kit` fixes `#3747`.
+pub(crate) fn fix_editor_search(cx: &mut gpui_kit::Context<gpui_kit::component::input::EditorState>) {
+    cx.observe_self(|editor, cx| {
+        if editor.search_session().anchor_offset.is_some() {
+            let query = editor.search_session().query.clone();
+            let case_insensitive = editor.search_session().case_insensitive;
+            editor.set_search_query(query, case_insensitive, cx);
+        }
+    })
+    .detach();
+}
+
 /// The word that a project has changes the server has not had
 /// (`docs/server-sync.md` §3.2), on a card and in the title bar. Amber text
 /// on a wash of it: the solid warning tag is white on yellow in the light

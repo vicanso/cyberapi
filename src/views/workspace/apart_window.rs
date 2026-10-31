@@ -211,6 +211,7 @@ impl Render for ApartView {
             .to_string();
         let width = (f32::from(window.viewport_size().width) * 0.5).max(280.);
         let (send, focus_url) = (self.editor.downgrade(), self.editor.downgrade());
+        let (find_response, search_response) = (self.response.downgrade(), self.response.downgrade());
         v_flex()
             .size_full()
             .bg(theme.background)
@@ -222,6 +223,12 @@ impl Render for ApartView {
             })
             .on_action(move |_: &FocusUrl, window, cx| {
                 let _ = focus_url.update(cx, |editor, cx| editor.focus_uri_now(window, cx));
+            })
+            .on_action(move |_: &super::FindApi, window, cx| {
+                let _ = find_response.update(cx, |response, cx| response.open_search(window, cx));
+            })
+            .on_action(move |_: &gpui_kit::component::input::Search, window, cx| {
+                let _ = search_response.update(cx, |response, cx| response.open_search(window, cx));
             })
             // ⌘W closes this window, and only it: the tab goes back.
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))

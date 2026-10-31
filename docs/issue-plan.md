@@ -1,6 +1,6 @@
 # Issue #55 起的处理计划
 
-> 状态：A、B 两组和 C 组第 1–3 批已完成（2026-10-25），第 4 批也已完成（2026-10-25）。还搁置的是 #63 的搜索按钮（等组件库修好）和 #59 的从 URL 导入，以及第 4 批可选的环境整理工具。每个 issue 单独提交，提交信息带 issue 编号。
+> 状态：A、B 两组和 C 组第 1–4 批及 #63 全部已完成（2026-10-31）。还搁置的是 #59 的从 URL 导入，以及第 4 批可选的环境整理工具。每个 issue 单独提交，提交信息带 issue 编号。
 
 2026-10-25 把 [vicanso/cyberapi](https://github.com/vicanso/cyberapi/issues) #55 起的 issue 分了组：A 是 bug，B 是改动小、马上能做的优化，C 是要单独规划的功能。
 
@@ -19,7 +19,7 @@
 | #67 | 模板函数 `uuid`、`random`、`randomString`、`now`、`hmacSha256`、`urlEncode` | d1b3849 |
 | #65 | 首页（含空状态）“导入…”：导入的内容新建为项目，名称取集合自己的名字，项目打开、树加载完后导入 | aeed208 |
 | #59 | YAML 写的 Swagger / OpenAPI 照 JSON 导入；剪贴板里的这种 YAML 也会预填（从 URL 导入推后） | 9192d62 |
-| #63 | JSON 响应在 Pretty / Tree 视图用 JSONPath 过滤，开关在响应状态行，条件按接口记住 | 45415d1 |
+| #63 | JSON 响应在 Pretty / Tree 视图用 JSONPath 过滤，开关在响应状态行，条件按接口记住；响应状态行另有搜索按钮，支持在响应体和原始报文中查找并修复 Ctrl/⌘+F 首字母被覆盖的问题 | 45415d1 |
 | #58 | Details 显示实际发出的请求：每个请求头及其来源（含引擎加的），请求体，密钥打码可切换 | 13fc381 |
 | #69 | 复制为 cURL、HTTPie、JavaScript fetch、Python requests、Go net/http（响应的 `>_` 菜单和接口树子菜单） | 98a24a1 |
 | #70 | GraphQL：“格式化”也缩进查询（保留注释）；响应的错误位置标在查询里；浏览 Schema，点字段写进查询 | 7ba0e05、4c148ad、38e7c25 |
@@ -29,10 +29,6 @@
 | #66b | 目录设置（认证、请求头）和项目认证，接口选“继承”时按树从近到远取，认证标签说明来自哪里；各存储、同步、备份、导出、MCP 都带上；数据模型编号加到 4 | 420b28d、cce2ba0 |
 | #61a | 命名环境的存储与规则：环境属于项目，变量可以放进某个环境，发送时当前环境的同名变量优先、其余用共用的；当前环境属于读者；各存储、同步、备份、MCP（`send_api` 可指定环境）都带上；数据模型编号加到 5（界面是 #61b） | c82de97 |
 | #61b | 标题栏切换环境；变量弹窗分层显示（共用 / 各环境），就地新建、重命名、删除环境，列出被覆盖的共用变量；地址栏手写的 `{{NAME}}` 前缀移到选择器 | c330561 |
-
-## 搁置：#63 的可见搜索按钮
-
-gpui-kit 0.8.1（`gpui-base` 0.8.1）编辑器自带的查找栏仍会在输入时全选已输入的内容（打 “chatcmpl” 得到 “hatcmpl”）。`InputBaseState::set_search_query` 在查询变化时改 `anchor_offset`，`input/overlay.rs` 的 `SearchSignature` 因此重新 `select_all`。加一个按钮只会把人引向这个问题。查找栏正常之后再加：聚焦响应体编辑器后 `window.dispatch_action(Box::new(Search), cx)`，提示用 `tooltip_with_action(.., &Search, Some("Input"))`。#63 的另一半（JSONPath 过滤）在第 2 批。
 
 ## 第 1 批：小而独立
 

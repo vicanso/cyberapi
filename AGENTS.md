@@ -8,7 +8,7 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 
 - `MEMORY.md` — 历史决策与踩坑记录索引：
   - `ids-stay-ulid.md` — 所有记录 ID（项目、目录、接口、变量）保持 ULID，不转为 UUID
-  - `kit-search-reselects.md` — gpui-kit 0.8 编辑器查找栏每敲一个键都会全选查询词，因此暂不提供显式的“查找”按钮
+  - `kit-search-reselects.md` — gpui-kit 0.8.1 编辑器内置查找栏首字母被全选覆盖（上游 `longbridge/gpui-kit#3747`）：响应面板采用自定义搜索栏 + `.searchable(false)`（建议长期保留），其余编辑器通过 `views::fix_editor_search` 规避（上游修复后可直接移除 `fix_editor_search`）
   - `browser-test-no-viewport.md` — 在有头 gstack 浏览器测试网页版时不要设 viewport（会导致 DPR 不一致、gpui 点击坐标偏移一半）
   - `worktree-shared-target.md` — 本机全局共享 `/Users/tree/cargo-target`，在 git worktree 构建时需单独指定 `CARGO_TARGET_DIR`，避免污染主仓库产物
   - `break-check-revert.md` — 故意改坏 `MemoryStore` 验证一致性检查会失败后，务必用反向 Edit 还原并用 `git diff` 核对，不要用固定路径的备份文件覆盖

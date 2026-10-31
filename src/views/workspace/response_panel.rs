@@ -35,8 +35,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, Hsla, Image, ImageFormat, ImageSource,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
+    Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Hsla, Image, ImageFormat,
+    ImageSource, InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription, Task, Window, div, img, px, relative,
 };
 use rust_i18n::t;
@@ -197,10 +197,19 @@ pub struct ResponsePanel {
     api: Entity<ApiState>,
     /// Keeps each API's response filter.
     workspace: Entity<WorkspaceState>,
+    focus: FocusHandle,
     /// #63: the JSONPath a JSON body is narrowed by, in Pretty and Tree.
     filter: Entity<InputState>,
     /// The filter's field shows: opened, or a filter kept for this API.
     filtering: bool,
+    /// #63: the field that finds text in `body` or `wire`. Driven here rather
+    /// than through the kit's search overlay, whose `anchor_offset` check
+    /// re-selects the query after the first character typed.
+    search: Entity<InputState>,
+    /// Whether the find bar is open.
+    searching: bool,
+    /// Whether the find bar matches without regard to case.
+    search_case_insensitive: bool,
     /// #58: the sent request's secrets show unmasked.
     reveal: bool,
     found: Option<Found>,
@@ -275,6 +284,8 @@ impl ResponsePanel {
                 .clean_on_escape()
                 .default_value(kept.clone())
         });
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("response.search_placeholder").to_string()));
         let wrap = app.read(cx).prefs().text.wrap;
         let display_limit = app.read(cx).prefs().sending.display_limit();
         let body = cx.new(|cx| {
@@ -283,14 +294,14 @@ impl ResponsePanel {
                 .line_number(true)
                 .tab_size(crate::views::json_tab())
                 .soft_wrap(wrap)
-                .searchable(true)
+                .searchable(false)
         });
         let wire = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language("text")
                 .line_number(false)
                 .soft_wrap(wrap)
-                .searchable(true)
+                .searchable(false)
         });
         let subscriptions = vec![
             cx.observe_in(&api, window, |this, _, window, cx| this.sync(window, cx)),
@@ -302,6 +313,17 @@ impl ResponsePanel {
                         .update(cx, |workspace, cx| workspace.set_response_filter(&api, &text, cx));
                     this.sync(window, cx);
                 }
+            }),
+            cx.subscribe_in(&search, window, |this, _, event, _, cx| match event {
+                InputEvent::Change => {
+                    this.apply_search(true, cx);
+                    cx.notify();
+                }
+                InputEvent::PressEnter { shift, .. } => {
+                    this.step_search(!shift, cx);
+                    cx.notify();
+                }
+                _ => {}
             }),
             cx.observe_in(&app, window, |this, app, window, cx| {
                 let wrap = app.read(cx).prefs().text.wrap;
@@ -326,8 +348,12 @@ impl ResponsePanel {
         let mut panel = Self {
             api,
             workspace,
+            focus: cx.focus_handle(),
             filter,
             filtering: !kept.is_empty(),
+            search,
+            searching: false,
+            search_case_insensitive: true,
             reveal: false,
             found: None,
             _finding: None,
@@ -363,6 +389,21 @@ impl ResponsePanel {
     #[cfg(test)]
     pub(super) fn shown_body(&self, cx: &App) -> String {
         self.body.read(cx).value().to_string()
+    }
+
+    #[cfg(test)]
+    pub(super) fn focus_body(&self, window: &mut Window, cx: &mut App) {
+        self.body.update(cx, |body, cx| body.focus(window, cx));
+    }
+
+    #[cfg(test)]
+    pub(super) fn search_query(&self, cx: &App) -> String {
+        self.search.read(cx).value().to_string()
+    }
+
+    #[cfg(test)]
+    pub(super) fn search_matches(&self, cx: &App) -> usize {
+        self.body.read(cx).search_session().matcher.len()
     }
 
     /// The view this response was switched to; otherwise the default.
@@ -563,10 +604,11 @@ impl ResponsePanel {
                 .line_number(!hex)
                 .tab_size(crate::views::json_tab())
                 .soft_wrap(wrap)
-                .searchable(true)
+                .searchable(false)
                 .default_value(text)
         });
         self.sync_response_tree(cx);
+        self.apply_search(false, cx);
         cx.notify();
     }
 
@@ -733,6 +775,7 @@ impl ResponsePanel {
             && response.is_some_and(|response| !shows_events(response))
             && self.shown_json(cx)
             && self.response_view(cx) != JsonView::Raw;
+        let searchable = self.searchable_editor(cx).is_some();
         h_flex()
             .gap_2()
             .px_3()
@@ -741,8 +784,24 @@ impl ResponsePanel {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(div().flex_1().min_w_0().child(status))
-            // #63: narrowing a JSON body, in Pretty and Tree. Here, not by
-            // the view switch: the tab bar has no room left.
+            // #63: finding text in the shown editor, and narrowing a JSON
+            // body in Pretty and Tree. Here, not by the view switch: the
+            // tab bar has no room left.
+            .when(searchable, |this| {
+                this.child(
+                    Button::new("response-search")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Search)
+                        .selected(self.searching)
+                        .tooltip_with_action(
+                            t!("response.search").to_string(),
+                            &gpui_kit::component::input::Search,
+                            Some("Input"),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_search(window, cx))),
+                )
+            })
             .when(filterable, |this| {
                 this.child(
                     Button::new("response-filter")
@@ -862,6 +921,7 @@ impl ResponsePanel {
                                             Some(1) => this.shown.clone(),
                                             _ => None,
                                         };
+                                        this.apply_search(false, cx);
                                         cx.notify();
                                     })),
                             )
@@ -936,6 +996,7 @@ impl ResponsePanel {
                             self.image_raw,
                             cx.listener(|this, picks: &Vec<usize>, _, cx| {
                                 this.image_raw = picks.first() == Some(&1);
+                                this.apply_search(false, cx);
                                 cx.notify();
                             }),
                         ))
@@ -998,6 +1059,7 @@ impl ResponsePanel {
             .on_click(cx.listener(move |this, index: &usize, _, cx| {
                 if let Some(tab) = tabs.get(*index) {
                     this.tab = *tab;
+                    this.apply_search(false, cx);
                     cx.notify();
                 }
             }))
@@ -1207,9 +1269,11 @@ impl ResponsePanel {
                 // #63: narrowed in Pretty and Tree.
                 let filters =
                     self.filtering && response.body_kind() == BodyKind::Json && self.response_view(cx) != JsonView::Raw;
+                let searches = self.searching && !tree;
                 v_flex()
                     .size_full()
                     .when(filters, |this| this.child(self.render_filter(cx)))
+                    .when(searches, |this| this.child(self.render_search(&self.body, cx)))
                     // The tree has the whole body.
                     .when_some(self.clipped.filter(|_| !tree), |this, shown| {
                         let text = t!("response.clipped", size = format_size(shown as u64)).to_string();
@@ -1295,6 +1359,196 @@ impl ResponsePanel {
         cx.notify();
     }
 
+    /// The editor currently shown that [`Self::search`] can search, when
+    /// there is one.
+    fn searchable_editor(&self, cx: &App) -> Option<Entity<EditorState>> {
+        let api = self.api.read(cx);
+        if api.sending_since().is_some() || api.live().is_some() {
+            return None;
+        }
+        let response = api.shown_response()?;
+        match self.tab_for(response) {
+            ResponseTab::Wire => Some(self.wire.clone()),
+            ResponseTab::Body => {
+                if response.error.is_some() || response.body_omitted.is_some() || response.body.is_empty() {
+                    return None;
+                }
+                if shows_events(response) && self.stream_raw.as_ref() != Some(&response.id) {
+                    return None;
+                }
+                match response.body_kind() {
+                    BodyKind::Json => (!self.response_shows_tree(cx)).then(|| self.body.clone()),
+                    BodyKind::Text | BodyKind::Pdf | BodyKind::Binary => Some(self.body.clone()),
+                    BodyKind::Image => (self.image.is_none() || self.image_raw).then(|| self.body.clone()),
+                }
+            }
+            ResponseTab::Headers | ResponseTab::Cookies | ResponseTab::Info => None,
+        }
+    }
+
+    /// #63: opens the find bar for the shown editor and focuses its field,
+    /// seeding it from the editor's selection when there is one; leaves the
+    /// shortcut to the workspace when no editor is shown.
+    pub(super) fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.searchable_editor(cx) else {
+            cx.propagate();
+            return;
+        };
+        cx.stop_propagation();
+        self.searching = true;
+        let selected = editor.read(cx).selected_text().to_string();
+        if !selected.is_empty() {
+            self.search
+                .update(cx, |input, cx| input.set_value(selected, window, cx));
+        }
+        self.apply_search(true, cx);
+        self.search.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.searching {
+            self.close_search(window, cx);
+        } else {
+            self.open_search(window, cx);
+        }
+    }
+
+    fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.searching = false;
+        let focus = self.searchable_editor(cx);
+        self.apply_search(false, cx);
+        if let Some(editor) = focus {
+            editor.update(cx, |editor, cx| editor.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn apply_search(&self, scroll: bool, cx: &mut Context<Self>) {
+        let active = self.searchable_editor(cx);
+        let query = if self.searching {
+            self.search.read(cx).value().to_string()
+        } else {
+            String::new()
+        };
+        let case_insensitive = self.search_case_insensitive;
+        for editor in [&self.body, &self.wire] {
+            let is_active = active
+                .as_ref()
+                .is_some_and(|shown| shown.entity_id() == editor.entity_id());
+            editor.update(cx, |editor, cx| {
+                if !is_active || query.is_empty() {
+                    editor.close_search(cx);
+                } else {
+                    editor.set_search_query(query.clone(), case_insensitive, cx);
+                    if scroll && !editor.search_session().matcher.is_empty() {
+                        let _ = editor.previous_search_match(cx);
+                        let _ = editor.next_search_match(cx);
+                    }
+                }
+            });
+        }
+    }
+
+    fn step_search(&self, forward: bool, cx: &mut Context<Self>) {
+        let Some(editor) = self.searchable_editor(cx) else {
+            return;
+        };
+        editor.update(cx, |editor, cx| {
+            if forward {
+                let _ = editor.next_search_match(cx);
+            } else {
+                let _ = editor.previous_search_match(cx);
+            }
+        });
+    }
+
+    /// #63: the find bar above `editor`, with match count and navigation.
+    fn render_search(&self, editor: &Entity<EditorState>, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (muted, warning) = (theme.muted_foreground, theme.warning);
+        let query_non_empty = !self.search.read(cx).value().is_empty();
+        let (has_matches, count_label) = {
+            let matcher = &editor.read(cx).search_session().matcher;
+            (!matcher.is_empty(), matcher.label())
+        };
+        h_flex()
+            .id("response-search-bar")
+            .px_3()
+            .py_1p5()
+            .gap_1p5()
+            .items_center()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div().flex_1().min_w_0().child(
+                    Input::new(&self.search)
+                        .small()
+                        .cleanable(true)
+                        .prefix(Icon::new(IconName::Search).small().text_color(muted))
+                        .suffix(
+                            Button::new("response-search-case")
+                                .xsmall()
+                                .compact()
+                                .text()
+                                .icon(IconName::CaseSensitive)
+                                .selected(!self.search_case_insensitive)
+                                .tooltip(t!("response.search_match_case").to_string())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.search_case_insensitive = !this.search_case_insensitive;
+                                    this.apply_search(true, cx);
+                                    cx.notify();
+                                })),
+                        ),
+                ),
+            )
+            .when(query_non_empty, |this| {
+                this.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(if has_matches { muted } else { warning })
+                        .child(count_label),
+                )
+            })
+            .child(
+                Button::new("response-search-prev")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::ChevronUp)
+                    .tooltip(t!("response.search_prev").to_string())
+                    .disabled(!has_matches)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.step_search(false, cx);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("response-search-next")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::ChevronDown)
+                    .tooltip(t!("response.search_next").to_string())
+                    .disabled(!has_matches)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.step_search(true, cx);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("response-search-close")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .tooltip(t!("common.close").to_string())
+                    .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
+            )
+            .into_any_element()
+    }
+
     fn render_editor(&self) -> AnyElement {
         Editor::new(&self.body)
             .w_full()
@@ -1309,6 +1563,7 @@ impl ResponsePanel {
     fn render_bytes(&self, about: AnyElement, cx: &mut Context<Self>) -> AnyElement {
         v_flex()
             .size_full()
+            .when(self.searching, |this| this.child(self.render_search(&self.body, cx)))
             .child(about)
             .when_some(self.clipped, |this, shown| {
                 let text = t!("response.clipped", size = format_size(shown as u64)).to_string();
@@ -1327,6 +1582,7 @@ impl ResponsePanel {
         if self.image_raw {
             return v_flex()
                 .size_full()
+                .when(self.searching, |this| this.child(self.render_search(&self.body, cx)))
                 .when_some(self.clipped, |this, shown| {
                     let text = t!("response.clipped", size = format_size(shown as u64)).to_string();
                     this.child(note(text, Vec::new(), cx))
@@ -1612,6 +1868,7 @@ impl ResponsePanel {
             editor.set_soft_wrap(wraps, window, cx);
             editor.set_value(text, window, cx);
         });
+        self.apply_search(false, cx);
     }
 
     /// #51: the request as it went out and the answer as it came, as
@@ -1628,6 +1885,7 @@ impl ResponsePanel {
         });
         v_flex()
             .size_full()
+            .when(self.searching, |this| this.child(self.render_search(&self.wire, cx)))
             .children(unsent)
             .children(clipped)
             .child(
@@ -2156,8 +2414,22 @@ impl Render for ResponsePanel {
         };
         v_flex()
             .size_full()
+            .track_focus(&self.focus)
             .border_l_1()
             .border_color(cx.theme().border)
+            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Search, window, cx| {
+                this.open_search(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &super::FindApi, window, cx| {
+                this.open_search(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
+                if this.searching {
+                    this.close_search(window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .child(summary)
             .child(content)
     }
