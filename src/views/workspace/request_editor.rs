@@ -91,6 +91,9 @@ pub struct RequestEditor {
     /// the call is the API state's.
     grpc_message: Entity<EditorState>,
     form: Entity<KvEditor>,
+    /// F12: URL `:param` and `{param}` path parameters, stored in
+    /// `HttpRequest.variables`.
+    path_params: Entity<KvEditor>,
     query: Entity<KvEditor>,
     headers: Entity<KvEditor>,
     auth: Entity<AuthEditor>,
@@ -297,6 +300,17 @@ impl RequestEditor {
             window,
             cx,
         );
+        let path_list = cyberapi_core::model::sync_path_variables(&request.uri, &request.variables);
+        let path_params = kv(
+            &path_list,
+            KvOptions {
+                example: "id: 1",
+                ..Default::default()
+            },
+            Some(&hints),
+            window,
+            cx,
+        );
         let query = kv(
             &request.query,
             KvOptions {
@@ -396,11 +410,16 @@ impl RequestEditor {
             // is the workspace's own Send. A cURL command there becomes the
             // request first; a query, the Query list's (#50).
             cx.subscribe_in(&uri, window, |this, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    this.sync_path_params(window, cx);
+                    cx.notify();
+                }
                 InputEvent::Blur => {
                     if !this.take_curl(window, cx) {
                         this.take_query(window, cx);
                         this.take_prefix(window, cx);
                         this.save_uri(cx);
+                        this.sync_path_params(window, cx);
                     }
                 }
                 InputEvent::PressEnter { secondary, .. } => {
@@ -411,6 +430,7 @@ impl RequestEditor {
                         this.take_query(window, cx);
                         this.take_prefix(window, cx);
                         this.save_uri(cx);
+                        this.sync_path_params(window, cx);
                     }
                     let has_uri = !this.api.read(cx).request().uri.trim().is_empty();
                     if !*secondary && has_uri {
@@ -418,6 +438,12 @@ impl RequestEditor {
                     }
                 }
                 _ => {}
+            }),
+            cx.subscribe(&path_params, |this, _, KvEvent::Changed(list), cx| {
+                let uri = this.current_full_uri(cx);
+                let variables = this.api.read(cx).request().variables.clone();
+                let merged = cyberapi_core::model::merge_path_variables(&uri, list, &variables);
+                this.api.update(cx, |api, cx| api.set_variables(merged, cx));
             }),
             cx.subscribe(&query, |this, _, KvEvent::Changed(list), cx| {
                 this.api.update(cx, |api, cx| api.set_query(list.clone(), cx));
@@ -462,6 +488,7 @@ impl RequestEditor {
             settings,
             grpc_message,
             form,
+            path_params,
             query,
             headers,
             auth,
@@ -1006,6 +1033,9 @@ impl RequestEditor {
             form.set_files(request.content_type == ContentType::Multipart, cx);
             form.set_list(&form_fields(&request.body), window, cx);
         });
+        let path_list = cyberapi_core::model::sync_path_variables(&request.uri, &request.variables);
+        self.path_params
+            .update(cx, |kv, cx| kv.set_list(&path_list, window, cx));
         self.query.update(cx, |kv, cx| kv.set_list(&request.query, window, cx));
         self.headers
             .update(cx, |kv, cx| kv.set_list(&request.headers, window, cx));
@@ -1018,11 +1048,22 @@ impl RequestEditor {
     /// what was typed just before sending goes with it.
     pub(super) fn flush(&mut self, cx: &mut Context<Self>) {
         self.save_uri(cx);
-        let (query, headers) = (self.query.read(cx).list(cx), self.headers.read(cx).list(cx));
-        let (method, content_type) = {
+        let (query, headers, path_rows) = (
+            self.query.read(cx).list(cx),
+            self.headers.read(cx).list(cx),
+            self.path_params.read(cx).list(cx),
+        );
+        let (method, content_type, uri, variables) = {
             let request = self.api.read(cx).request();
-            (request.method, request.content_type)
+            (
+                request.method,
+                request.content_type,
+                request.uri.clone(),
+                request.variables.clone(),
+            )
         };
+        let merged_vars = (!cyberapi_core::model::path_param_names(&uri).is_empty())
+            .then(|| cyberapi_core::model::merge_path_variables(&uri, &path_rows, &variables));
         let body = match content_type {
             // A gRPC call's body is its message's, whatever the type.
             _ if method == HttpMethod::Grpc => Some(self.grpc_body(cx)),
@@ -1034,6 +1075,9 @@ impl RequestEditor {
         self.api.update(cx, |api, cx| {
             api.set_query(query, cx);
             api.set_headers(headers, cx);
+            if let Some(vars) = merged_vars {
+                api.set_variables(vars, cx);
+            }
             match (body, form) {
                 (Some(body), _) => api.set_body(body, cx),
                 (_, Some(form)) => api.set_form(form, cx),
@@ -1087,11 +1131,9 @@ impl RequestEditor {
     }
 
     /// The environment prefix, then what the field holds.
-    fn save_uri(&mut self, cx: &mut Context<Self>) {
+    fn current_full_uri(&self, cx: &App) -> String {
         let rest = self.uri.read(cx).value().trim().to_string();
-        // A `{{NAME}}` typed at the field's start is the prefix now, in
-        // place of the one picked.
-        let uri = if split_env_prefix(&rest).0.is_some() {
+        if split_env_prefix(&rest).0.is_some() {
             rest
         } else {
             let prefix = split_env_prefix(&self.api.read(cx).request().uri)
@@ -1099,7 +1141,38 @@ impl RequestEditor {
                 .map(|name| format!("{{{{{name}}}}}"))
                 .unwrap_or_default();
             format!("{prefix}{rest}")
-        };
+        }
+    }
+
+    fn sync_path_params(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let uri = self.current_full_uri(cx);
+        let current_rows = self.path_params.read(cx).list(cx);
+        let mut variables = self.api.read(cx).request().variables.clone();
+        for row in &current_rows {
+            let key = row.key.trim();
+            if key.is_empty() {
+                continue;
+            }
+            if let Some(existing) = variables.iter_mut().find(|kv| kv.key.trim() == key) {
+                *existing = row.clone();
+            } else {
+                variables.push(row.clone());
+            }
+        }
+        let next_rows = cyberapi_core::model::sync_path_variables(&uri, &variables);
+        let same_keys = current_rows.len() == next_rows.len()
+            && current_rows
+                .iter()
+                .zip(&next_rows)
+                .all(|(a, b)| a.key == b.key && a.value == b.value && a.description == b.description);
+        if !same_keys {
+            self.path_params
+                .update(cx, |kv, cx| kv.set_list(&next_rows, window, cx));
+        }
+    }
+
+    fn save_uri(&mut self, cx: &mut Context<Self>) {
+        let uri = self.current_full_uri(cx);
         self.api.update(cx, |api, cx| api.set_uri(uri, cx));
     }
 
@@ -1649,7 +1722,10 @@ impl RequestEditor {
                         0
                     },
                 ),
-                RequestTab::Query => (t!("editor.query"), count(&request.query)),
+                RequestTab::Query => (
+                    t!("editor.query"),
+                    count(&request.query) + cyberapi_core::model::path_param_names(&self.current_full_uri(cx)).len(),
+                ),
                 RequestTab::Headers => (t!("editor.headers"), count(&request.headers)),
                 // #66: one when it signs in itself.
                 RequestTab::Auth => (t!("editor.auth"), usize::from(request.auth.signs())),
@@ -2199,13 +2275,64 @@ impl Render for RequestEditor {
         let content: AnyElement = match tab {
             RequestTab::Body => self.render_body(cx),
             // A long list scrolls rather than running off the column.
-            RequestTab::Query => div()
-                .id("request-query")
-                .size_full()
-                .overflow_y_scrollbar()
-                .p_2()
-                .child(self.query.clone())
-                .into_any_element(),
+            RequestTab::Query => {
+                let has_path = !cyberapi_core::model::path_param_names(&self.current_full_uri(cx)).is_empty();
+                let muted = cx.theme().muted_foreground;
+                let border = cx.theme().border;
+                div()
+                    .id("request-query")
+                    .size_full()
+                    .overflow_y_scrollbar()
+                    .p_2()
+                    .child(if has_path {
+                        v_flex()
+                            .gap_3()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        h_flex()
+                                            .px_1()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_semibold()
+                                                    .text_color(muted)
+                                                    .child(t!("editor.path_params").to_string()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(muted)
+                                                    .child(t!("editor.path_params_hint").to_string()),
+                                            ),
+                                    )
+                                    .child(self.path_params.clone()),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .pt_2()
+                                    .border_t_1()
+                                    .border_color(border)
+                                    .child(
+                                        div()
+                                            .px_1()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(muted)
+                                            .child(t!("editor.query").to_string()),
+                                    )
+                                    .child(self.query.clone()),
+                            )
+                            .into_any_element()
+                    } else {
+                        self.query.clone().into_any_element()
+                    })
+                    .into_any_element()
+            }
             RequestTab::Headers => div()
                 .id("request-headers")
                 .size_full()

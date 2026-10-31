@@ -424,7 +424,28 @@ impl DocsEditor {
 
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut flat_idx = 0usize;
-        for kv in request.variables.iter().filter(|kv| !kv.key.trim().is_empty()) {
+        let path_names = cyberapi_core::model::path_param_names(&request.uri);
+        for name in &path_names {
+            let kv = request
+                .variables
+                .iter()
+                .find(|kv| kv.key.trim() == name)
+                .cloned()
+                .unwrap_or_else(|| KvParam {
+                    key: name.clone(),
+                    value: String::new(),
+                    enabled: true,
+                    description: String::new(),
+                });
+            let fallback = matched.and_then(|m| find_source_desc(&m.variables, name, false));
+            rows.push(Self::render_flat_param(flat_idx, "path", &kv, fallback, false, cx));
+            flat_idx += 1;
+        }
+        for kv in request
+            .variables
+            .iter()
+            .filter(|kv| !kv.key.trim().is_empty() && !path_names.iter().any(|name| name == kv.key.trim()))
+        {
             rows.push(Self::render_flat_param(flat_idx, "var", kv, None, false, cx));
             flat_idx += 1;
         }

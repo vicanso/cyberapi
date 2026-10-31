@@ -186,6 +186,12 @@ impl RequestSettingsView {
             let list = list.clone();
             this.api.update(cx, |api, cx| api.set_variables(list, cx));
         }));
+        subscriptions.push(cx.observe_in(&api, window, |this, api, window, cx| {
+            let latest = api.read(cx).request().variables.clone();
+            if this.variables.read(cx).list(cx) != latest {
+                this.variables.update(cx, |kv, cx| kv.set_list(&latest, window, cx));
+            }
+        }));
         Self {
             api,
             http_version,

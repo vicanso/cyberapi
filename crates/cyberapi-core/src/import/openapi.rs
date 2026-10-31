@@ -382,6 +382,14 @@ fn operation(
         let name = text(parameter, "name");
         let desc = text(parameter, "description").trim();
         match text(parameter, "in") {
+            "path" => {
+                let entry = kv(name, &parameter_value(json, parameter), true).with_description(desc);
+                if let Some(existing) = request.variables.iter_mut().find(|v| v.key.trim() == name) {
+                    *existing = entry;
+                } else {
+                    request.variables.push(entry);
+                }
+            }
             "query" => request
                 .query
                 .push(kv(name, &parameter_value(json, parameter), true).with_description(desc)),

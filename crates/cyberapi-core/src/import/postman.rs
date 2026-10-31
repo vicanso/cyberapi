@@ -257,8 +257,16 @@ fn item(value: &Value) -> Option<ImportItem> {
     if let Some(own) = request.get("auth").and_then(auth) {
         built.auth = own;
     }
-    // D5: the item's own variables.
-    built.variables = pairs(value.get("variable"), "key");
+    // D5 & F12: the item's own variables, and any URL path variables (`url.variable`).
+    let mut variables = pairs(request.get("url").and_then(|url| url.get("variable")), "key");
+    for own in pairs(value.get("variable"), "key") {
+        if let Some(existing) = variables.iter_mut().find(|v| v.key.trim() == own.key.trim()) {
+            *existing = own;
+        } else {
+            variables.push(own);
+        }
+    }
+    built.variables = variables;
     // F3: what it is for, and its saved responses as examples.
     built.description = description(request.get("description"));
     built.examples = value

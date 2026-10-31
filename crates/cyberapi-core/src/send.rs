@@ -21,7 +21,10 @@ use crate::digest::DigestLogin;
 use crate::graphql::GraphQlBody;
 use crate::grpc::{self, GrpcBody};
 use crate::inherit::Inherited;
-use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam, Variable, VariableCategory, split_env_prefix};
+use crate::model::{
+    ContentType, HttpMethod, HttpRequest, KvParam, Variable, VariableCategory, path_param_names, replace_path_params,
+    split_env_prefix,
+};
 use crate::prefs::{HttpVersion, Timeouts};
 use crate::proxy::ProxyPrefs;
 use crate::response::{HeaderSource, SENT_BODY_LIMIT, SentHeader, SentRequest};
@@ -254,6 +257,44 @@ pub fn resolve_uri(uri: &str, variables: &[Variable]) -> String {
     }
 }
 
+/// F12: resolves the environment prefix and substitutes any `:param` or
+/// `{param}` path placeholders from the request's variables (or inherited /
+/// custom variables).
+fn resolve_path_uri(
+    request: &HttpRequest,
+    cx: &Context<'_>,
+    render: impl Fn(&str) -> Result<String, PrepareError>,
+) -> Result<String, PrepareError> {
+    let base = resolve_uri(&request.uri, cx.variables);
+    let names = path_param_names(&request.uri);
+    if names.is_empty() {
+        return Ok(base);
+    }
+    let mut rendered_values: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for name in names {
+        if let Some(kv) = request
+            .variables
+            .iter()
+            .find(|kv| kv.enabled && kv.key.trim() == name && !kv.value.is_empty())
+        {
+            let val = render(&kv.value)?;
+            if !val.is_empty() {
+                rendered_values.insert(name, encode_uri_component(&val));
+            }
+        } else if let Some(val) = cx
+            .template
+            .custom
+            .iter()
+            .find(|(key, _)| key == &name)
+            .map(|(_, val)| val.as_str())
+            .filter(|val| !val.is_empty())
+        {
+            rendered_values.insert(name, encode_uri_component(val));
+        }
+    }
+    Ok(replace_path_params(&base, |name| rendered_values.get(name).cloned()))
+}
+
 /// F5.2: the request with the environment variable resolved and the
 /// project's enabled global headers added after its own.
 pub fn fill_values(request: &HttpRequest, variables: &[Variable]) -> HttpRequest {
@@ -302,6 +343,16 @@ fn templated_texts<'a>(
             .filter(|kv| kv.enabled)
             .map(|kv| kv.value.as_str().into()),
     );
+    if !grpc {
+        let path_names = path_param_names(&request.uri);
+        texts.extend(
+            request
+                .variables
+                .iter()
+                .filter(|kv| kv.enabled && path_names.iter().any(|name| name == kv.key.trim()))
+                .map(|kv| kv.value.as_str().into()),
+        );
+    }
     texts.extend(global_headers(variables).map(|v| v.value.as_str().into()));
     texts.extend(inherited.sent_headers().map(|kv| kv.value.as_str().into()));
     texts.extend(inherited.auth(&request.auth).templates().into_iter().map(Into::into));
@@ -586,11 +637,12 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
     }
     check_environment(request, cx)?;
     let socket = request.method == HttpMethod::WebSocket;
+    let resolved_uri = resolve_path_uri(request, cx, render)?;
     // The URL, then the enabled query appended to what it already has.
     let uri = match socket {
         // E1: a WebSocket's address.
-        true => crate::ws::address(&resolve_uri(&request.uri, cx.variables)),
-        false => with_scheme(&resolve_uri(&request.uri, cx.variables)),
+        true => crate::ws::address(&resolved_uri),
+        false => with_scheme(&resolved_uri),
     };
     let mut url = url::Url::parse(&uri).map_err(|error| PrepareError::Url {
         uri: uri.clone(),

@@ -620,6 +620,192 @@ pub fn split_env_prefix(uri: &str) -> (Option<&str>, &str) {
     }
 }
 
+fn is_path_param_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
+/// Byte range of the path portion of `uri` (after any `{{ENV}}` prefix or
+/// scheme/host/port, and before `?` or `#`).
+fn uri_path_range(uri: &str) -> std::ops::Range<usize> {
+    let end = uri.find(['?', '#']).unwrap_or(uri.len());
+    let before = &uri[..end];
+    let (env, after_prefix) = split_env_prefix(before);
+    let prefix_len = before.len() - after_prefix.len();
+    if let Some((_, after_scheme)) = after_prefix.split_once("://") {
+        let scheme_and_slashes = after_prefix.len() - after_scheme.len();
+        return match after_scheme.find('/') {
+            Some(slash) => (prefix_len + scheme_and_slashes + slash)..end,
+            None => end..end,
+        };
+    }
+    if env.is_none() && !after_prefix.starts_with('/') {
+        let first_seg = after_prefix.split('/').next().unwrap_or_default();
+        let looks_like_host = first_seg == "localhost"
+            || first_seg.contains('.')
+            || first_seg
+                .split_once(':')
+                .is_some_and(|(_, port)| !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()));
+        if looks_like_host {
+            return match after_prefix.find('/') {
+                Some(slash) => (prefix_len + slash)..end,
+                None => end..end,
+            };
+        }
+    }
+    prefix_len..end
+}
+
+/// F12: names of `:param` and `{param}` path parameters in `uri`, in the
+/// order they first appear, without duplicates. Single braces `{param}` are
+/// matched while `{{template}}` expressions and host ports are ignored.
+pub fn path_param_names(uri: &str) -> Vec<String> {
+    let range = uri_path_range(uri);
+    let path = &uri[range];
+    let mut names = Vec::new();
+    let mut push = |name: &str| {
+        if is_path_param_name(name) && !names.iter().any(|seen| seen == name) {
+            names.push(name.to_string());
+        }
+    };
+    for segment in path.split('/') {
+        if let Some(name) = segment.strip_prefix(':') {
+            push(name);
+            continue;
+        }
+        let bytes = segment.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'{' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                    // Skip `{{...}}` template expression.
+                    if let Some(close) = segment[i + 2..].find("}}") {
+                        i += 2 + close + 2;
+                        continue;
+                    }
+                    break;
+                }
+                if let Some(close) = segment[i + 1..].find('}') {
+                    let candidate = &segment[i + 1..i + 1 + close];
+                    if !candidate.contains('{') {
+                        push(candidate);
+                    }
+                    i += 1 + close + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+    names
+}
+
+/// F12: substitutes `:param` and `{param}` placeholders in the path portion
+/// of `uri` using `lookup(name)` (which returns the already-encoded replacement
+/// segment text when present, or `None` to leave the placeholder as written).
+pub fn replace_path_params(uri: &str, mut lookup: impl FnMut(&str) -> Option<String>) -> String {
+    let range = uri_path_range(uri);
+    if range.is_empty() {
+        return uri.to_string();
+    }
+    let path = &uri[range.clone()];
+    let replaced_segments: Vec<String> = path
+        .split('/')
+        .map(|segment| {
+            if let Some(name) = segment.strip_prefix(':')
+                && is_path_param_name(name)
+            {
+                return lookup(name).unwrap_or_else(|| segment.to_string());
+            }
+            let bytes = segment.as_bytes();
+            let mut out = String::with_capacity(segment.len());
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'{' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                        if let Some(close) = segment[i + 2..].find("}}") {
+                            let end = i + 2 + close + 2;
+                            out.push_str(&segment[i..end]);
+                            i = end;
+                            continue;
+                        }
+                    } else if let Some(close) = segment[i + 1..].find('}') {
+                        let candidate = &segment[i + 1..i + 1 + close];
+                        if is_path_param_name(candidate) {
+                            if let Some(val) = lookup(candidate) {
+                                out.push_str(&val);
+                            } else {
+                                out.push_str(&segment[i..i + 1 + close + 1]);
+                            }
+                            i += 1 + close + 1;
+                            continue;
+                        }
+                    }
+                }
+                let Some(ch) = segment[i..].chars().next() else {
+                    break;
+                };
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+            out
+        })
+        .collect();
+    let mut result = String::with_capacity(uri.len());
+    result.push_str(&uri[..range.start]);
+    result.push_str(&replaced_segments.join("/"));
+    result.push_str(&uri[range.end..]);
+    result
+}
+
+/// F12: builds the `KvParam` rows for the path parameters currently present in
+/// `uri`, taking any existing values and descriptions from `variables`.
+pub fn sync_path_variables(uri: &str, variables: &[KvParam]) -> Vec<KvParam> {
+    path_param_names(uri)
+        .into_iter()
+        .map(|name| {
+            variables
+                .iter()
+                .find(|kv| kv.key.trim() == name)
+                .cloned()
+                .unwrap_or_else(|| KvParam {
+                    key: name,
+                    value: String::new(),
+                    enabled: true,
+                    description: String::new(),
+                })
+        })
+        .collect()
+}
+
+/// F12: merges edited `path_rows` back into the request's `variables`, keeping
+/// non-path request variables in place.
+pub fn merge_path_variables(uri: &str, path_rows: &[KvParam], variables: &[KvParam]) -> Vec<KvParam> {
+    let path_names = path_param_names(uri);
+    let mut out: Vec<KvParam> = Vec::new();
+    for row in path_rows {
+        let key = row.key.trim();
+        if !key.is_empty() {
+            out.push(row.clone());
+        }
+    }
+    for existing in variables {
+        let key = existing.key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let in_path = path_names.iter().any(|name| name == key) || out.iter().any(|row| row.key.trim() == key);
+        if !in_path {
+            out.push(existing.clone());
+        }
+    }
+    out
+}
+
 /// Conversions for the old database's columns.
 pub mod legacy {
     use crate::ItemId;
@@ -814,5 +1000,31 @@ mod tests {
         let ids = legacy::parse_id_list("a,,b,a, c ,");
         assert_eq!(legacy::join_id_list(&ids), "a,b,c");
         assert!(legacy::parse_id_list("").is_empty());
+    }
+
+    #[test]
+    fn path_parameters_extract_and_replace_colon_and_brace_segments() {
+        assert_eq!(
+            path_param_names("https://api.example.com:8443/v1/users/:id/orders/{order_id}:cancel?x=:ignored"),
+            vec!["id", "order_id"]
+        );
+        assert_eq!(
+            path_param_names("{{HOST}}/v1/{{env_tpl}}/{user_id}/items/:item_id"),
+            vec!["user_id", "item_id"]
+        );
+        assert_eq!(path_param_names("localhost:8080/health"), Vec::<String>::new());
+
+        let replaced = replace_path_params(
+            "https://api.example.com:8443/v1/users/:id/orders/{order_id}:cancel?x=1",
+            |name| match name {
+                "id" => Some("42".into()),
+                "order_id" => Some("ord-9".into()),
+                _ => None,
+            },
+        );
+        assert_eq!(
+            replaced,
+            "https://api.example.com:8443/v1/users/42/orders/ord-9:cancel?x=1"
+        );
     }
 }

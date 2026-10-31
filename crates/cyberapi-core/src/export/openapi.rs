@@ -159,24 +159,58 @@ fn address(uri: &str, variables: &[(String, String)]) -> (Option<String>, String
     }
 }
 
-/// `/users/{{id}}` as `/users/{id}`, and the names so made.
+/// `/users/{{id}}` or `/users/:id` or `/users/{id}` as `/users/{id}`, and the names so made.
 fn templated_path(path: &str) -> (String, Vec<String>) {
+    let valid = |name: &str| {
+        let mut chars = name.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    };
     let mut names = Vec::new();
+    let mut push = |name: &str| {
+        if !names.iter().any(|seen| seen == name) {
+            names.push(name.to_string());
+        }
+    };
     let segments: Vec<String> = path
         .split('/')
         .map(|segment| {
-            let name = segment
+            let double = segment
                 .strip_prefix("{{")
                 .and_then(|rest| rest.strip_suffix("}}"))
                 .map(str::trim)
-                .filter(|name| !name.is_empty() && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_'));
-            match name {
-                Some(name) => {
-                    names.push(name.to_string());
-                    format!("{{{name}}}")
-                }
-                None => segment.to_string(),
+                .filter(|name| valid(name));
+            if let Some(name) = double {
+                push(name);
+                return format!("{{{name}}}");
             }
+            if let Some(name) = segment.strip_prefix(':').filter(|name| valid(name)) {
+                push(name);
+                return format!("{{{name}}}");
+            }
+            let bytes = segment.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'{' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                        if let Some(close) = segment[i + 2..].find("}}") {
+                            i += 2 + close + 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    if let Some(close) = segment[i + 1..].find('}') {
+                        let candidate = &segment[i + 1..i + 1 + close];
+                        if valid(candidate) {
+                            push(candidate);
+                        }
+                        i += 1 + close + 1;
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+            segment.to_string()
         })
         .collect();
     (segments.join("/"), names)
@@ -193,7 +227,18 @@ fn example(value: &str) -> Value {
 fn parameters(request: &HttpRequest, path: &[String]) -> Vec<Value> {
     let mut out: Vec<Value> = path
         .iter()
-        .map(|name| json!({"name": name, "in": "path", "required": true, "schema": {"type": "string"}}))
+        .map(|name| {
+            let mut param = json!({"name": name, "in": "path", "required": true, "schema": {"type": "string"}});
+            if let Some(kv) = request.variables.iter().find(|kv| kv.key.trim() == name) {
+                if !kv.value.trim().is_empty() {
+                    param["example"] = example(&kv.value);
+                }
+                if !kv.description.trim().is_empty() {
+                    param["description"] = json!(kv.description.trim());
+                }
+            }
+            param
+        })
         .collect();
     for (place, list) in [("query", &request.query), ("header", &request.headers)] {
         for kv in list.iter().filter(|kv| !kv.key.trim().is_empty()) {
