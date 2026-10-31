@@ -12,6 +12,7 @@ use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tree::{Tree, TreeEntry, TreeEvent, TreeItem, TreeState};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
@@ -19,7 +20,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
-    Styled, Subscription, WeakEntity, Window, div, px,
+    Styled, Subscription, Task, WeakEntity, Window, div, px,
 };
 use rust_i18n::t;
 use serde_json::Value;
@@ -32,6 +33,10 @@ const INDENT: f32 = 16.;
 const ROW_INSET: f32 = 8.;
 /// Width a scalar row leaves blank where a container has its chevron.
 const CHEVRON_WIDTH: f32 = 16.;
+/// PERF-3b: JSON bodies larger than this are parsed and turned into a
+/// `JsonTreeNode` on a background thread so multi-megabyte responses never
+/// stall the main thread when switching to the Tree view.
+const ASYNC_PARSE_BYTES: usize = 256 * 1024;
 
 /// Text or Tree, as one outline group. `tree` is the pressed side.
 /// `on_click` receives the group's selection: index 1 is Tree.
@@ -114,6 +119,9 @@ pub(crate) struct JsonTree {
     invalid: SharedString,
     /// Why there is no tree to show, said in its place.
     unavailable: Option<SharedString>,
+    /// PERF-3b: whether a large JSON body is being parsed in the background.
+    loading: bool,
+    parse_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -137,6 +145,8 @@ impl JsonTree {
             expanded: HashSet::new(),
             invalid: t!("editor.json_tree_invalid").to_string().into(),
             unavailable: None,
+            loading: false,
+            parse_task: None,
             _subscriptions: vec![subscription],
         }
     }
@@ -153,10 +163,12 @@ impl JsonTree {
 
     /// Shows `reason` in place of a tree.
     pub(crate) fn set_unavailable(&mut self, reason: SharedString, cx: &mut Context<Self>) {
+        self.parse_task = None;
+        self.loading = false;
         self.text.clear();
         self.doc = None;
         self.unavailable = Some(reason);
-        self.rebuild(cx);
+        self.rebuild_from_node(None, cx);
     }
 
     /// Show `text`. Blank or not JSON leaves the tree empty, and the view
@@ -165,16 +177,40 @@ impl JsonTree {
         if text == self.text && self.unavailable.is_none() {
             return;
         }
+        self.parse_task = None;
         self.unavailable = None;
         self.text = text.to_string();
+        if text.len() > ASYNC_PARSE_BYTES {
+            self.loading = true;
+            self.doc = None;
+            self.rebuild_from_node(None, cx);
+            let owned = self.text.clone();
+            let work = cx.background_spawn(async move {
+                let doc: Option<Value> = serde_json::from_str(&owned).ok();
+                let root = doc.as_ref().map(json_view::json_tree);
+                (doc, root)
+            });
+            self.parse_task = Some(cx.spawn(async move |this, cx| {
+                let (doc, root) = work.await;
+                let _ = this.update(cx, |this, cx| {
+                    this.loading = false;
+                    this.parse_task = None;
+                    this.doc = doc;
+                    this.rebuild_from_node(root.as_ref(), cx);
+                });
+            }));
+            return;
+        }
+        self.loading = false;
         self.doc = serde_json::from_str(text).ok();
-        self.rebuild(cx);
+        let root = self.doc.as_ref().map(json_view::json_tree);
+        self.rebuild_from_node(root.as_ref(), cx);
     }
 
-    fn rebuild(&mut self, cx: &mut Context<Self>) {
+    fn rebuild_from_node(&mut self, root: Option<&JsonTreeNode>, cx: &mut Context<Self>) {
         let mut rows = HashMap::new();
-        let items = match &self.doc {
-            Some(doc) => vec![self.item_for(&json_view::json_tree(doc), true, &mut rows)],
+        let items = match root {
+            Some(node) => vec![self.item_for(node, true, &mut rows)],
             None => Vec::new(),
         };
         self.rows = Rc::new(rows);
@@ -332,6 +368,19 @@ fn suggested_extraction_name(path: &str) -> String {
 
 impl Render for JsonTree {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.loading {
+            return h_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .p_4()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(Spinner::new())
+                .child(t!("dashboard.loading").to_string())
+                .into_any_element();
+        }
         if self.doc.is_none() {
             return v_flex()
                 .size_full()

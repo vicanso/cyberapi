@@ -256,5 +256,5 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 
 | 编号 | 功能 | 规模 | 数据模型 | 内容与落点 |
 |---|---|---|---|---|
-| PERF-3b | 大响应体 `Tree` 视图与首次断言检查后台化 | S–M | 不变 | 将 [`views/json_tree.rs`](../src/views/json_tree.rs)（最多 16 MiB）的首次 JSON 解析与节点构建以及 `ApiState::checks()` 的首次响应 JSON 解析放到 `background_spawn`，避免 5–16 MiB 响应切换 `Tree` 视图时主线程卡顿 |
+| PERF-3b | 大响应体 `Tree` 视图与首次断言检查后台化（已完成） | S–M | 不变 | 将 [`views/json_tree.rs`](../src/views/json_tree.rs)（最多 16 MiB）的首次 JSON 解析与节点构建以及 `ApiState::checks()` 的首次响应 JSON 解析放到 `background_spawn`，避免 5–16 MiB 响应切换 `Tree` 视图时主线程卡顿 |
 | A7b / F7b | 压测动态模板按次求值与未保存修改读取 / 独立窗口多环境对照 | S–M | 不变 | 压测（A7）对打开着的接口先读编辑器最新内容（Q-5），并在请求包含 `uuid()` / `random()` / `now()` 等动态函数时支持按次求值；独立窗口（F7）评估支持同一接口切换不同环境并排对照 |

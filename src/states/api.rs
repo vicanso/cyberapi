@@ -319,6 +319,11 @@ impl LiveStream {
 /// faster are taken in together.
 const LIVE_FRAME: Duration = Duration::from_millis(50);
 
+/// PERF-3b: response bodies larger than this are parsed as JSON on a
+/// background thread before assertions, extractions or GraphQL errors
+/// inspect them.
+const ASYNC_JSON_BYTES: usize = 256 * 1024;
+
 pub struct ApiState {
     sender: Sender,
     workspace: WeakEntity<WorkspaceState>,
@@ -379,6 +384,8 @@ pub struct ApiState {
     /// A1: the shown response's body read as JSON, once for each response:
     /// every keystroke in an assertion checks it again.
     checked_json: RefCell<Option<(String, Option<Arc<serde_json::Value>>)>>,
+    /// PERF-3b: a large response body being parsed as JSON in the background.
+    parsing_json: Option<(String, Task<()>)>,
     /// A1: the last outcomes; the editor and the panel ask for them every
     /// frame.
     checks: RefCell<Option<Checks>>,
@@ -485,6 +492,7 @@ impl ApiState {
             own_grpc: RefCell::new(None),
             grpc_body: RefCell::new(None),
             checked_json: RefCell::new(None),
+            parsing_json: None,
             checks: RefCell::new(None),
             graphql_errors: RefCell::new(None),
         };
@@ -607,6 +615,7 @@ impl ApiState {
                     {
                         this.shown = None;
                     }
+                    this.prewarm_shown_json(cx);
                 }
                 Err(error) => {
                     this.history = Load::Failed(error.clone());
@@ -731,6 +740,7 @@ impl ApiState {
     pub fn set_assertions(&mut self, assertions: Vec<Assertion>, cx: &mut Context<Self>) {
         if self.request.assertions != assertions {
             self.request.assertions = assertions;
+            self.prewarm_shown_json(cx);
             self.save_later(cx);
         }
     }
@@ -741,6 +751,7 @@ impl ApiState {
         if !self.request.assertions.contains(&assertion) {
             self.request.assertions.push(assertion);
             *self.checks.borrow_mut() = None;
+            self.prewarm_shown_json(cx);
             self.save_later(cx);
         }
     }
@@ -755,6 +766,7 @@ impl ApiState {
             .any(|each| each.subject == extraction.subject && each.target == extraction.target);
         if !exists {
             self.request.extractions.push(extraction);
+            self.prewarm_shown_json(cx);
             self.save_later(cx);
         }
     }
@@ -778,6 +790,9 @@ impl ApiState {
             return Some(outcomes.clone());
         }
         let json = if assertions::reads_json(assertions) {
+            if self.parsing_json.as_ref().is_some_and(|(id, _)| id == &response.id) {
+                return None;
+            }
             self.json_of(response)
         } else {
             None
@@ -884,6 +899,7 @@ impl ApiState {
     pub fn set_extractions(&mut self, extractions: Vec<Extraction>, cx: &mut Context<Self>) {
         if self.request.extractions != extractions {
             self.request.extractions = extractions;
+            self.prewarm_shown_json(cx);
             self.save_later(cx);
         }
     }
@@ -896,6 +912,9 @@ impl ApiState {
         }
         let response = self.shown_response()?;
         let json = if extraction.subject == Subject::Json {
+            if self.parsing_json.as_ref().is_some_and(|(id, _)| id == &response.id) {
+                return None;
+            }
             self.json_of(response)
         } else {
             None
@@ -910,6 +929,9 @@ impl ApiState {
             && id == &response.id
         {
             return errors.clone();
+        }
+        if self.parsing_json.as_ref().is_some_and(|(id, _)| id == &response.id) {
+            return Rc::default();
         }
         let errors = Rc::new(
             self.json_of(response)
@@ -932,6 +954,53 @@ impl ApiState {
         let json = response.body_json().map(Arc::new);
         *self.checked_json.borrow_mut() = Some((response.id.clone(), json.clone()));
         json
+    }
+
+    /// PERF-3b: parses a large shown response body as JSON on a background
+    /// thread when assertions, extractions or GraphQL errors will read it, so
+    /// the first render after a large response arrives does not stall.
+    fn prewarm_shown_json(&mut self, cx: &mut Context<Self>) {
+        let Some(response) = self.shown_response().cloned() else {
+            return;
+        };
+        if response.body.len() <= ASYNC_JSON_BYTES {
+            return;
+        }
+        let needs_json = assertions::reads_json(&self.request.assertions)
+            || self
+                .request
+                .extractions
+                .iter()
+                .any(|extraction| extraction.enabled && extraction.subject == Subject::Json)
+            || self.request.content_type == ContentType::GraphQl;
+        if !needs_json {
+            return;
+        }
+        if self
+            .checked_json
+            .borrow()
+            .as_ref()
+            .is_some_and(|(id, _)| id == &response.id)
+            || self.parsing_json.as_ref().is_some_and(|(id, _)| id == &response.id)
+        {
+            return;
+        }
+        let id = response.id.clone();
+        let parsing_id = id.clone();
+        let work = cx.background_spawn(async move { response.body_json().map(Arc::new) });
+        let task = cx.spawn(async move |this, cx| {
+            let json = work.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.parsing_json.as_ref().is_some_and(|(current, _)| current == &id) {
+                    this.parsing_json = None;
+                }
+                *this.checked_json.borrow_mut() = Some((id.clone(), json));
+                *this.checks.borrow_mut() = None;
+                *this.graphql_errors.borrow_mut() = None;
+                cx.notify();
+            });
+        });
+        self.parsing_json = Some((parsing_id, task));
     }
 
     /// D5: the API's own variables.
@@ -1688,6 +1757,7 @@ impl ApiState {
                     }
                 }
                 self.shown = None;
+                self.prewarm_shown_json(cx);
                 // What a `get` path's fields were read from is not the last.
                 let api = self.api.clone();
                 let _ = self.workspace.update(cx, |workspace, _| workspace.forget_answer(&api));
@@ -1815,6 +1885,7 @@ impl ApiState {
             self.saved = Some(self.request.clone());
             cx.emit(ApiEvent::RequestReplaced);
         }
+        self.prewarm_shown_json(cx);
         cx.notify();
     }
 
