@@ -223,3 +223,38 @@ Details 里加“请求”一节：最终的方法和 URL、实际发出的每�
 1. **网页版 `multipart` 选文件（F9 延伸）**：桌面端现已有完整的 `file://` 与 `{{openFile()}}` 能力；浏览器版发送经 bridge 接收 `PreparedRequest`（`body: Vec<u8>` 已是字节），若加浏览器选文件，需要越过 `gpui-kit` 的平台封装直接调用 `web-sys` 挂 `<input type="file">` 并在页面内存暂存字节（且不能把本机路径写进同步数据）。为守住 `AGENTS.md`“浏览器代码不散落在 view、不为浏览器改变桌面行为”的边界，F9 先把桌面端交互和 OpenAPI 二进制字段导入补齐，网页版文件选择记在这里留待单独评估是否加 `this_build::pick_file_bytes` 接缝。
 2. **嵌套 JSON 字段说明的编辑方式（F11）**：不做 Apifox 式“手工逐行填多层嵌套字段表”的重型表单（极易与实际 JSON 请求体脱节），改为“扁平键值参数在表格直接填 `description`（F10）+ 嵌套 JSON 请求体与响应体用 JSON Schema 驱动字段说明树，并提供弹窗直接在 CyberAPI 编辑请求/响应 Schema（F11）”。
 3. **定时拉取的安全与协同边界（B10）**：绝不在后台定时自动写项目库（避免多端同时推高 `revision` 产生草稿冲突，也避免共享项目里的恶意内网 URL 被所有队友桌面端自动探测）。定时拉取设计为“读者本机对具体 URL 显式开启的只读缓存”，既能实时匹配展示手建接口的出入参说明，又在检测到差异时提醒编辑者手动一键合并入库。
+
+## 候选优化与后续规划（2026-10-31 整理）
+
+按投入产出比（ROI）分为四组，守住“不引入重型 JS 引擎、本地优先、桌面与网页端共享核心层、保持原生极速”的原则：
+
+### 一、日常调试体验打磨（小投入 S，高频有感）
+
+| 编号 | 功能 | 规模 | 数据模型 | 内容与落点 |
+|---|---|---|---|---|
+| F12 | 路径参数（`:id` / `{id}`）可视化编辑与自动识别 | S–M | 可选 | 自动识别 URL 中的 `:param` / `{param}` 占位符，在 `Query` 标签页（或紧邻的 Path 分区）以键值行展示（含 `description` 说明，与 OpenAPI 的 `in: path` 参数双向导入导出），发送与生成代码时自动替换进 URL |
+| A8 | 从响应体 JSON Tree 一键生成断言 / 提取 / `{{g(...)}}` 引用 | S | 不变 | 在 [`views/json_tree.rs`](../src/views/json_tree.rs) 节点操作中增加：① 复制为 `{{g(当前接口, 路径)}}`（跨接口引用 token 等）；② 添加为当前接口的 JSONPath 断言（`Assert`）；③ 添加为运行器提取变量（`Extract`） |
+| F13 | 根据请求 Schema 一键生成 JSON 请求体骨架 | S | 不变 | 当接口存在 `request_schema`（来自 F11 手写/导入，或 B10 定时拉取匹配到的入参 Schema）时，在 JSON `Body` 工具栏 `Format` 旁提供“生成示例”按钮，复用 `import/openapi.rs` 的 Schema 示例生成逻辑一键填入 JSON 骨架 |
+| F14 | 响应头与请求详情（Details）快速复制 / 过滤 | S | 不变 | 在响应 `Headers` / `Cookies` 及 `Details` 标签页支持单行或整表一键复制，并在条目较多时提供轻量关键字过滤 |
+
+### 二、环境变量与文档协同（中小投入 S–M，团队提效）
+
+| 编号 | 功能 | 规模 | 数据模型 | 内容与落点 |
+|---|---|---|---|---|
+| D8 | 环境变量多环境矩阵对比与整理（#61 延伸） | S–M | 不变 | 在 [`views/variables_dialog.rs`](../src/views/variables_dialog.rs) 增加“矩阵 / 对比”视图（行为变量名，列为 `共用 \| dev \| staging \| prod`），高亮缺失项，支持在单表内横向编辑各环境值及归并重复同名变量 |
+| G3 | `bridge` 托管只读在线接口文档 | M | 不变 | `cyberapi-bridge` 为项目提供可选的只读文档页面，直接渲染项目树、接口说明、入参/出参字段说明表（F10 / F11）、响应示例（F3）与多语言代码片段（B6），方便前端或外部合作方免编辑器查阅 |
+| G2b | `bridge` 团队共享 Mock 路由 | M | 不变 | 在 `cyberapi-bridge` 上挂载 `/v1/mock/<project-id>/...`，直接复用 [`cyberapi_core::mock::Routes`](../crates/cyberapi-core/src/mock.rs) 匹配项目的响应示例，让网页端和前端无需在本机起桌面端也能联调团队 Mock 接口 |
+
+### 三、桌面端 AI 与工程化能力延伸（中投入 M，差异化亮点）
+
+| 编号 | 功能 | 规模 | 数据模型 | 内容与落点 |
+|---|---|---|---|---|
+| H2 | 桌面版本机 MCP Server | M | 不变 | 桌面版在运行期间可按开关在 `127.0.0.1` 启动带本机 Token 校验的轻量 MCP HTTP 端点（复用 `cyberapi_http` 的 hyper 监听与 `cyberapi_core::mcp` 的工具定义），让未部署 `bridge` 的个人桌面用户也能在 Claude Code / Cursor 中直接读写和调测本机项目 |
+| A4b | `cyberapi-cli` 发布预编译包 | S | 不变 | 在 [`.github/workflows/package.yml`](../.github/workflows/package.yml) 与 `scripts/checksums.sh` 中打包 `cyberapi-cli` 跨平台二进制产物，方便用户在 GitHub Actions / GitLab CI 中直接下载运行接口断言与 JSON Schema 契约测试 |
+
+### 四、性能与细节尾项（来自 [`review-0.4.1.md`](./review-0.4.1.md) 遗留）
+
+| 编号 | 功能 | 规模 | 数据模型 | 内容与落点 |
+|---|---|---|---|---|
+| PERF-3b | 大响应体 `Tree` 视图与首次断言检查后台化 | S–M | 不变 | 将 [`views/json_tree.rs`](../src/views/json_tree.rs)（最多 16 MiB）的首次 JSON 解析与节点构建以及 `ApiState::checks()` 的首次响应 JSON 解析放到 `background_spawn`，避免 5–16 MiB 响应切换 `Tree` 视图时主线程卡顿 |
+| A7b / F7b | 压测动态模板按次求值与未保存修改读取 / 独立窗口多环境对照 | S–M | 不变 | 压测（A7）对打开着的接口先读编辑器最新内容（Q-5），并在请求包含 `uuid()` / `random()` / `now()` 等动态函数时支持按次求值；独立窗口（F7）评估支持同一接口切换不同环境并排对照 |
