@@ -123,42 +123,171 @@ pub fn hosts_compatible(
     }
 }
 
-/// F10: a parameter's description the reader wrote stays when the import
-/// gives none for that key; one the import gives updates it.
-fn keep_descriptions(
+/// A description as updating takes it: the import's, or the reader's when
+/// the import gives none (F10).
+fn kept_description(had: &str, given: &str) -> String {
+    if given.trim().is_empty() {
+        had.to_string()
+    } else {
+        given.to_string()
+    }
+}
+
+/// The list as the import has it — its keys, in its order; a key it no
+/// longer has goes — with what the reader set of a key it had kept: its
+/// value and whether it is on. A description the import gives updates the
+/// reader's; one it gives none for leaves it (F10).
+fn merged_params(
     existing: &[crate::model::KvParam],
     imported: &[crate::model::KvParam],
     ignore_case: bool,
 ) -> Vec<crate::model::KvParam> {
+    let same = |a: &str, b: &str| {
+        if ignore_case {
+            a.trim().eq_ignore_ascii_case(b.trim())
+        } else {
+            a.trim() == b.trim()
+        }
+    };
     imported
         .iter()
-        .map(|kv| {
-            if kv.description.trim().is_empty()
-                && let Some(had) = existing.iter().find(|had| {
-                    !had.description.trim().is_empty()
-                        && if ignore_case {
-                            had.key.eq_ignore_ascii_case(&kv.key)
-                        } else {
-                            had.key == kv.key
-                        }
-                })
-            {
-                return crate::model::KvParam {
-                    description: had.description.clone(),
-                    ..kv.clone()
-                };
-            }
-            kv.clone()
+        .map(|kv| match existing.iter().find(|had| same(&had.key, &kv.key)) {
+            Some(had) => crate::model::KvParam {
+                value: had.value.clone(),
+                enabled: had.enabled,
+                description: kept_description(&had.description, &kv.description),
+                ..kv.clone()
+            },
+            None => kv.clone(),
         })
         .collect()
 }
 
-/// `existing` updated from `imported`: its method, address, query,
-/// headers and body; how it signs in, its assertions and its settings stay.
-/// A6: but for the assertions an import wrote, which are the import's
-/// again — unless the reader checks the body against a schema of their
-/// own, which stands for it. One marked imported that checks something
-/// else now was made the reader's (BUG-11).
+/// The API's own variables after updating (F12 / D5): a path parameter
+/// both addresses have keeps the reader's value, its description updated
+/// as a parameter's is; one only the new address has comes from the
+/// import; one only the old address had goes. The reader's other
+/// variables stay.
+fn merged_variables(existing: &HttpRequest, imported: &HttpRequest) -> Vec<crate::model::KvParam> {
+    let old_names = crate::model::path_param_names(&existing.uri);
+    let new_names = crate::model::path_param_names(&imported.uri);
+    let mut variables: Vec<crate::model::KvParam> = existing
+        .variables
+        .iter()
+        .filter(|kv| {
+            let key = kv.key.trim();
+            !old_names.iter().any(|name| name == key) || new_names.iter().any(|name| name == key)
+        })
+        .map(|kv| {
+            match imported
+                .variables
+                .iter()
+                .find(|given| given.key.trim() == kv.key.trim())
+            {
+                Some(given) => crate::model::KvParam {
+                    description: kept_description(&kv.description, &given.description),
+                    ..kv.clone()
+                },
+                None => kv.clone(),
+            }
+        })
+        .collect();
+    for given in &imported.variables {
+        if !variables.iter().any(|kv| kv.key.trim() == given.key.trim()) {
+            variables.push(given.clone());
+        }
+    }
+    variables
+}
+
+/// Whether a JSON value the reader wrote stands where the import has
+/// `given`: the same kind of value, or a template, which may stand for any.
+fn same_kind(had: &serde_json::Value, given: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    matches!(
+        (had, given),
+        (Value::String(_), Value::String(_))
+            | (Value::Number(_), Value::Number(_))
+            | (Value::Bool(_), Value::Bool(_))
+            | (_, Value::Null)
+    ) || matches!(had, Value::String(text) if text.contains("{{"))
+}
+
+/// A JSON body as the import has it — its fields, in its order; a field it
+/// no longer has goes — with the reader's values where it has the same
+/// field with the same kind of value. A list the reader wrote stays whole.
+fn merged_json(had: &serde_json::Value, given: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match (had, given) {
+        (Value::Object(had), Value::Object(given)) => Value::Object(
+            given
+                .iter()
+                .map(|(key, value)| {
+                    let value = match had.get(key) {
+                        Some(mine) => merged_json(mine, value),
+                        None => value.clone(),
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        (Value::Array(_), Value::Array(_)) => had.clone(),
+        _ if same_kind(had, given) => had.clone(),
+        _ => given.clone(),
+    }
+}
+
+/// The body after updating. Form and multipart fields merge as the query
+/// does. A JSON body takes the import's fields with the reader's values
+/// (`merged_json`); one either side does not read as JSON — comments, a
+/// template in place of a value — stays the reader's. Another body of the
+/// same type stays the reader's unless it is empty; a body of another type
+/// is the import's.
+fn merged_body(existing: &HttpRequest, imported: &HttpRequest) -> String {
+    if existing.content_type.is_key_value() && imported.content_type.is_key_value() {
+        let fields = crate::send::form_fields(&imported.body);
+        let kept = merged_params(&crate::send::form_fields(&existing.body), &fields, false);
+        return if kept == fields {
+            imported.body.clone()
+        } else {
+            serde_json::to_string(&kept).unwrap_or_else(|_| imported.body.clone())
+        };
+    }
+    if existing.content_type != imported.content_type || existing.body.trim().is_empty() {
+        return imported.body.clone();
+    }
+    if imported.content_type != crate::model::ContentType::Json {
+        return existing.body.clone();
+    }
+    let parsed = (
+        serde_json::from_str::<serde_json::Value>(&existing.body),
+        serde_json::from_str::<serde_json::Value>(&imported.body),
+    );
+    match parsed {
+        (Ok(had), Ok(given)) => {
+            let merged = merged_json(&had, &given);
+            // Written as it was when nothing changes.
+            if merged == had {
+                existing.body.clone()
+            } else {
+                crate::format::json(&merged)
+            }
+        }
+        _ => existing.body.clone(),
+    }
+}
+
+/// `existing` updated from `imported`: the structure follows the import —
+/// method, address, its query, headers, path parameters and body fields,
+/// the request schema — while what the reader set is kept: a parameter's
+/// value and whether it is on, a JSON body's values, a description the
+/// import gives none for (`merged_params`, `merged_variables`,
+/// `merged_body`). The import's description of the API updates the
+/// reader's unless it is empty. How it signs in, its other assertions, its
+/// settings, examples and extractions stay. A6: the assertions an import
+/// wrote are the import's again — unless the reader checks the body
+/// against a schema of their own, which stands for it. One marked imported
+/// that checks something else now was made the reader's (BUG-11).
 pub fn updated(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
     let the_imports = |assertion: &Assertion| assertion.imported && assertion.subject == Subject::Schema;
     let own_schema = existing
@@ -180,24 +309,15 @@ pub fn updated(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
                 .cloned(),
         );
     }
-    let body = if existing.content_type.is_key_value() && imported.content_type.is_key_value() {
-        let fields = crate::send::form_fields(&imported.body);
-        let kept = keep_descriptions(&crate::send::form_fields(&existing.body), &fields, false);
-        if kept == fields {
-            imported.body.clone()
-        } else {
-            serde_json::to_string(&kept).unwrap_or_else(|_| imported.body.clone())
-        }
-    } else {
-        imported.body.clone()
-    };
     HttpRequest {
         method: imported.method,
         uri: imported.uri.clone(),
         content_type: imported.content_type,
-        body,
-        query: keep_descriptions(&existing.query, &imported.query, false),
-        headers: keep_descriptions(&existing.headers, &imported.headers, true),
+        body: merged_body(existing, imported),
+        query: merged_params(&existing.query, &imported.query, false),
+        headers: merged_params(&existing.headers, &imported.headers, true),
+        variables: merged_variables(existing, imported),
+        description: kept_description(&existing.description, &imported.description),
         assertions,
         request_schema: imported
             .request_schema
@@ -962,6 +1082,106 @@ mod tests {
         let fields = crate::send::form_fields(&merged.body);
         assert_eq!(fields[0].description, "Account handle");
         assert_eq!(fields[1].description, "Own note");
+    }
+
+    /// Updating follows the import's structure and keeps what the reader
+    /// set: a parameter's value and whether it is on, a JSON body's
+    /// values, path parameters' values; a parameter the import no longer
+    /// has goes, a new one comes with the import's example; descriptions
+    /// of the API and of its path parameters update.
+    #[test]
+    fn updating_keeps_the_readers_values_and_follows_the_imports_structure() {
+        let kv = |key: &str, value: &str, enabled: bool, desc: &str| {
+            KvParam {
+                key: key.into(),
+                value: value.into(),
+                enabled,
+                ..Default::default()
+            }
+            .with_description(desc)
+        };
+        let existing = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "{{HOST}}/users/{id}/orders/{old}".into(),
+            content_type: crate::model::ContentType::Json,
+            body: "{\n  \"name\": \"mine\",\n  \"age\": \"{{value(age)}}\",\n  \"gone\": 1,\n  \"tags\": [\"a\", \"b\"],\n  \"kind\": 3\n}".into(),
+            description: "Old summary".into(),
+            query: vec![kv("page", "7", false, ""), kv("legacy", "x", true, "")],
+            headers: vec![kv("x-trace", "mine", true, "")],
+            variables: vec![
+                kv("id", "42", true, "Old id"),
+                kv("old", "9", true, ""),
+                kv("token", "t", true, "my own variable"),
+            ],
+            ..Default::default()
+        };
+        let imported = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "{{API}}/users/{id}/orders/{orderId}".into(),
+            content_type: crate::model::ContentType::Json,
+            body:
+                "{\"name\": \"string\", \"age\": 0, \"tags\": [\"string\"], \"kind\": \"string\", \"email\": \"a@b\"}"
+                    .into(),
+            description: "New summary".into(),
+            query: vec![
+                kv("page", "1", true, "Page number"),
+                kv("size", "20", true, "Items per page"),
+            ],
+            headers: vec![kv("X-Trace", "", true, "")],
+            variables: vec![kv("id", "", true, "User id"), kv("orderId", "", true, "Order id")],
+            ..Default::default()
+        };
+        let merged = updated(&existing, &imported);
+        assert_eq!(merged.uri, imported.uri);
+        assert_eq!(merged.description, "New summary");
+        assert_eq!(
+            merged.query,
+            [
+                kv("page", "7", false, "Page number"),
+                kv("size", "20", true, "Items per page")
+            ],
+            "the reader's value and switch stay; a removed one goes, a new one comes"
+        );
+        assert_eq!(merged.headers, [kv("X-Trace", "mine", true, "")]);
+        assert_eq!(
+            merged.variables,
+            [
+                kv("id", "42", true, "User id"),
+                kv("token", "t", true, "my own variable"),
+                kv("orderId", "", true, "Order id"),
+            ],
+            "a path parameter the address no longer has goes; the reader's own variables stay"
+        );
+        let body: serde_json::Value = serde_json::from_str(&merged.body).expect("JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "name": "mine",
+                "age": "{{value(age)}}",
+                "tags": ["a", "b"],
+                "kind": "string",
+                "email": "a@b"
+            }),
+            "values kept, a template stands for any kind, a changed kind and new fields from the import"
+        );
+        let order: Vec<&str> = body.as_object().expect("object").keys().map(String::as_str).collect();
+        assert_eq!(order, ["name", "age", "tags", "kind", "email"], "the import's order");
+
+        // An empty import description leaves the reader's; a body that is
+        // no JSON stays as written; nothing changed is written as it was.
+        let quiet = HttpRequest {
+            description: String::new(),
+            ..imported.clone()
+        };
+        assert_eq!(updated(&existing, &quiet).description, "Old summary");
+        let templated = HttpRequest {
+            body: "{\n  // note\n  \"id\": {{id}}\n}".into(),
+            ..existing.clone()
+        };
+        assert_eq!(updated(&templated, &imported).body, templated.body);
+        let same = updated(&existing, &imported);
+        assert_eq!(updated(&same, &imported).body, same.body);
+        assert_eq!(updated(&same, &imported), same, "a second update changes nothing");
     }
 
     /// B9: syncing a folder's own source matches and updates only APIs in
