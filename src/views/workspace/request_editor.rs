@@ -1198,6 +1198,50 @@ impl RequestEditor {
         }
     }
 
+    /// F13: the request JSON Schema this API carries directly, or the one
+    /// matched from a live-polled OpenAPI source (B10).
+    fn active_request_schema(&self, cx: &App) -> Option<String> {
+        let api = self.api.read(cx);
+        if let Some(schema) = api
+            .request()
+            .request_schema
+            .as_deref()
+            .map(str::trim)
+            .filter(|schema| !schema.is_empty())
+        {
+            return Some(schema.to_string());
+        }
+        self.workspace
+            .read(cx)
+            .matched_source_request(api.api(), api.request())
+            .and_then(|matched| matched.request_schema.as_deref())
+            .map(str::trim)
+            .filter(|schema| !schema.is_empty())
+            .map(str::to_string)
+    }
+
+    /// F13: fills the JSON body with a sample generated from its request
+    /// schema.
+    fn generate_sample_body(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(schema) = self.active_request_schema(cx) else {
+            return;
+        };
+        match cyberapi_core::schema_docs::sample_of_schema(&schema) {
+            Ok(sample) => {
+                let pretty = cyberapi_core::format::json(&sample);
+                self.body
+                    .update(cx, |body, cx| body.set_value(pretty.clone(), window, cx));
+                self.api.update(cx, |api, cx| api.set_body(pretty, cx));
+                self.check_json(cx);
+                self.sync_body_tree_if_shown(cx);
+                cx.notify();
+            }
+            Err(why) => {
+                window.push_notification(Notification::warning(t!("docs.bad_schema", why = why).to_string()), cx);
+            }
+        }
+    }
+
     /// F5.1: sends — after asking for what its `prompt`s (D1) and its
     /// `openFile` need, and in production whether it should (D6) — or
     /// cancels the request on its way.
@@ -1962,6 +2006,7 @@ impl RequestEditor {
             )
             .when(current == ContentType::Json, |this| {
                 let tree = self.body_shows_tree(cx);
+                let has_schema = self.active_request_schema(cx).is_some();
                 this.child(
                     Button::new("body-format")
                         .ghost()
@@ -1970,6 +2015,17 @@ impl RequestEditor {
                         .label(t!("editor.format").to_string())
                         .on_click(cx.listener(|this, _, window, cx| this.format_json(window, cx))),
                 )
+                .when(has_schema, |this| {
+                    this.child(
+                        Button::new("body-sample")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Braces)
+                            .label(t!("editor.generate_sample").to_string())
+                            .tooltip(t!("editor.generate_sample_about").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| this.generate_sample_body(window, cx))),
+                    )
+                })
                 .child(json_view_switch(
                     "request-json-view",
                     tree,

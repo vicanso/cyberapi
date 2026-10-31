@@ -57,6 +57,120 @@ pub fn infer_schema(value: &Value) -> Value {
     infer_node(value, false)
 }
 
+/// F13: generates a sample JSON value conforming to `schema_json`, using
+/// `example`, `default`, `const`, `enum`, `allOf`, `oneOf` / `anyOf`,
+/// internal `#/…` `$ref`s (stopping at cycles), and type / format defaults.
+pub fn sample_of_schema(schema_json: &str) -> Result<Value, String> {
+    if schema_json.trim().is_empty() {
+        return Err("the schema is empty".into());
+    }
+    let root: Value = serde_json::from_str(schema_json).map_err(|err| err.to_string())?;
+    match &root {
+        Value::Object(_) => {
+            let mut visited = Vec::new();
+            Ok(sample_node(&root, &root, &mut visited, 0))
+        }
+        _ => Err("a JSON Schema is a JSON object".into()),
+    }
+}
+
+fn primary_type(node: &Value) -> Option<&str> {
+    match node.get("type") {
+        Some(Value::String(kind)) => Some(kind.as_str()),
+        Some(Value::Array(kinds)) => kinds.iter().filter_map(Value::as_str).find(|kind| *kind != "null"),
+        _ => None,
+    }
+}
+
+fn sample_node(root: &Value, node: &Value, visited: &mut Vec<String>, depth: usize) -> Value {
+    if depth > MAX_DEPTH {
+        return Value::Null;
+    }
+    let (resolved, pushed) = deref(root, node, visited);
+    let (unwrapped, _) = unwrap_nullable(root, resolved);
+    let (inner, inner_pushed) = if std::ptr::eq(unwrapped, resolved) {
+        (resolved, 0)
+    } else {
+        deref(root, unwrapped, visited)
+    };
+
+    for key in ["example", "default", "const"] {
+        if let Some(value) = node
+            .get(key)
+            .or_else(|| inner.get(key))
+            .filter(|value| !value.is_null())
+        {
+            pop_visited(visited, inner_pushed + pushed);
+            return value.clone();
+        }
+    }
+    if let Some(first) = node
+        .get("enum")
+        .or_else(|| inner.get("enum"))
+        .and_then(Value::as_array)
+        .and_then(|values| values.iter().find(|value| !value.is_null()).or_else(|| values.first()))
+    {
+        pop_visited(visited, inner_pushed + pushed);
+        return first.clone();
+    }
+
+    let mut properties = Vec::new();
+    let mut required = HashSet::new();
+    collect_object(root, inner, visited, &mut properties, &mut required);
+    if !properties.is_empty() {
+        let mut map = Map::new();
+        for (name, prop) in properties {
+            map.insert(name, sample_node(root, prop, visited, depth + 1));
+        }
+        pop_visited(visited, inner_pushed + pushed);
+        return Value::Object(map);
+    }
+
+    if let Some(branches) = union_branches(root, inner)
+        && let Some(branch) = branches
+            .iter()
+            .find(|branch| !is_null_branch(root, branch))
+            .or_else(|| branches.first())
+    {
+        let out = sample_node(root, branch, visited, depth + 1);
+        pop_visited(visited, inner_pushed + pushed);
+        return out;
+    }
+
+    let out = match primary_type(inner) {
+        Some("array") => match inner.get("items") {
+            Some(items) => json!([sample_node(root, items, visited, depth + 1)]),
+            None => json!([]),
+        },
+        Some("string") => match inner
+            .get("format")
+            .or_else(|| node.get("format"))
+            .and_then(Value::as_str)
+        {
+            Some("date") => json!("2026-01-01"),
+            Some("date-time") => json!("2026-01-01T00:00:00Z"),
+            Some("uuid") => json!("00000000-0000-0000-0000-000000000000"),
+            Some("email") => json!("user@example.com"),
+            Some("uri" | "url") => json!("https://example.com"),
+            _ => json!(""),
+        },
+        Some("integer" | "number") => inner
+            .get("minimum")
+            .or_else(|| node.get("minimum"))
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+        Some("boolean") => json!(false),
+        Some("null") => Value::Null,
+        _ if inner.get("items").is_some() => match inner.get("items") {
+            Some(items) => json!([sample_node(root, items, visited, depth + 1)]),
+            None => json!([]),
+        },
+        _ => json!({}),
+    };
+    pop_visited(visited, inner_pushed + pushed);
+    out
+}
+
 fn infer_node(value: &Value, with_description: bool) -> Value {
     let mut map = match value {
         Value::Null => Map::from_iter([("type".into(), json!(["string", "null"]))]),
@@ -707,6 +821,58 @@ mod tests {
                         "description": ""
                     }
                 }
+            })
+        );
+    }
+
+    #[test]
+    fn sample_of_schema_builds_nested_json_from_types_defaults_and_refs() {
+        let schema = json!({
+            "type": "object",
+            "allOf": [
+                { "$ref": "#/$defs/Base" }
+            ],
+            "properties": {
+                "email": { "type": "string", "format": "email" },
+                "role": { "type": "string", "enum": ["admin", "member"] },
+                "count": { "type": "integer", "minimum": 1 },
+                "active": { "type": "boolean", "default": true },
+                "items": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/Item" }
+                }
+            },
+            "$defs": {
+                "Base": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "format": "uuid" }
+                    }
+                },
+                "Item": {
+                    "type": "object",
+                    "properties": {
+                        "sku": { "type": "string", "example": "A-1" },
+                        "qty": { "type": "integer" }
+                    }
+                }
+            }
+        });
+        let sample = sample_of_schema(&schema.to_string()).expect("valid schema");
+        assert_eq!(
+            sample,
+            json!({
+                "id": "00000000-0000-0000-0000-000000000000",
+                "email": "user@example.com",
+                "role": "admin",
+                "count": 1,
+                "active": true,
+                "items": [
+                    {
+                        "sku": "A-1",
+                        "qty": 0
+                    }
+                ]
             })
         );
     }
