@@ -15,10 +15,11 @@ Download from [Releases](https://github.com/vicanso/cyberapi/releases). Each rel
 | Windows (x86_64) | `cyberapi-<version>-x86_64-pc-windows-msvc.zip` | Unzip and run `cyberapi.exe`. Not signed: SmartScreen may ask once. |
 | Linux (x86_64, arm64) | `cyberapi_<version>_amd64.deb`, `cyberapi_<version>_arm64.deb` | Debian, Ubuntu and their relatives. |
 | Linux (x86_64, aarch64) | `cyberapi-<version>-<arch>-unknown-linux-gnu.tar.gz` | The binary alone. Needs glibc 2.35 or newer. |
+| CLI (macOS, Linux, Windows) | `cyberapi-cli-<version>-<target>.tar.gz` / `.zip` | `cyberapi-cli` for terminals and CI. |
 
 ## The command line
 
-`cyberapi-cli run` runs a project's APIs without the window — in a terminal or CI — as the app's Run… does. There is no package of it yet: build it from the source with Rust installed, `cargo install --path crates/cyberapi-cli` (or `make cli`, which leaves it in the cargo target directory's `release/`).
+`cyberapi-cli run` runs a project's APIs without the window — in a terminal or CI — as the app's Run… does. Download `cyberapi-cli-<version>-<target>` from [Releases](https://github.com/vicanso/cyberapi/releases), or build it from source with Rust installed: `cargo install --path crates/cyberapi-cli` (or `make cli`, which leaves it in the cargo target directory's `release/`).
 
 ```sh
 cyberapi-cli run project.json --env-file staging.postman_environment.json --data users.csv --junit results.xml

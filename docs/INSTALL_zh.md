@@ -15,10 +15,11 @@
 | Windows（x86_64） | `cyberapi-<版本>-x86_64-pc-windows-msvc.zip` | 解压后运行 `cyberapi.exe`。未签名，SmartScreen 可能会提示一次。 |
 | Linux（x86_64、arm64） | `cyberapi_<版本>_amd64.deb`、`cyberapi_<版本>_arm64.deb` | Debian、Ubuntu 及其衍生版。 |
 | Linux（x86_64、aarch64） | `cyberapi-<版本>-<架构>-unknown-linux-gnu.tar.gz` | 只有程序本身。需要 glibc 2.35 或更新。 |
+| 命令行（macOS、Linux、Windows） | `cyberapi-cli-<版本>-<平台>.tar.gz` / `.zip` | 终端与 CI 使用的 `cyberapi-cli`。 |
 
 ## 命令行
 
-`cyberapi-cli run` 不开窗口运行一个项目的接口（终端或 CI 里），和应用里的“运行…”一样。目前还没有它的安装包，需要装好 Rust 从源码构建：`cargo install --path crates/cyberapi-cli`（或 `make cli`，产物在 cargo target 目录的 `release/` 下）。
+`cyberapi-cli run` 不开窗口运行一个项目的接口（终端或 CI 里），和应用里的“运行…”一样。可从 [Releases](https://github.com/vicanso/cyberapi/releases) 下载对应平台的 `cyberapi-cli-<版本>-<平台>` 预编译包，或装好 Rust 从源码构建：`cargo install --path crates/cyberapi-cli`（或 `make cli`，产物在 cargo target 目录的 `release/` 下）。
 
 ```sh
 cyberapi-cli run project.json --env-file staging.postman_environment.json --data users.csv --junit results.xml

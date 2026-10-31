@@ -47,6 +47,8 @@ describe() {
     "cyberapi_${VERSION}_amd64.deb") echo "linux x86_64 deb"; return ;;
     "cyberapi_${VERSION}_arm64.deb") echo "linux aarch64 deb"; return ;;
     "cyberapi-web-$VERSION-"*.tar.gz) kind=web; rest=${name#"cyberapi-web-$VERSION-"}; rest=${rest%.tar.gz} ;;
+    "cyberapi-cli-$VERSION-"*.tar.gz) kind=cli; rest=${name#"cyberapi-cli-$VERSION-"}; rest=${rest%.tar.gz} ;;
+    "cyberapi-cli-$VERSION-"*.zip) kind=cli; rest=${name#"cyberapi-cli-$VERSION-"}; rest=${rest%.zip} ;;
     "cyberapi-$VERSION-"*.tar.gz) kind=tarball; rest=${name#"cyberapi-$VERSION-"}; rest=${rest%.tar.gz} ;;
     "cyberapi-$VERSION-"*.dmg) kind=dmg; rest=${name#"cyberapi-$VERSION-"}; rest=${rest%.dmg} ;;
     "cyberapi-$VERSION-"*.zip) kind=zip; rest=${name#"cyberapi-$VERSION-"}; rest=${rest%.zip} ;;

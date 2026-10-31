@@ -3,9 +3,9 @@
 # `make desktop-dist`; needs cargo-bundle 0.11 (`cargo install --locked
 # cargo-bundle@0.11.0`; 0.12 reads [package.metadata.bundle] differently).
 #
-#   macOS    CyberAPI.app in cyberapi-<version>-<triple>.dmg
-#   Linux    the .deb cargo-bundle makes, and a tarball of the binary
-#   Windows  a zip of cyberapi.exe
+#   macOS    CyberAPI.app in cyberapi-<version>-<triple>.dmg, and cyberapi-cli-<version>-<triple>.tar.gz
+#   Linux    the .deb cargo-bundle makes, a tarball of the binary, and cyberapi-cli-<version>-<triple>.tar.gz
+#   Windows  a zip of cyberapi.exe, and cyberapi-cli-<version>-<triple>.zip
 #
 # All under <cargo target dir>/desktop-dist, each with a .sha256. The
 # version in the names is Cargo.toml's, or a nightly's own when
@@ -29,6 +29,7 @@ CARGO_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
 VERSION=${CYBERAPI_VERSION:-$CARGO_VERSION}
 TARGET=$(rustc -vV | sed -n 's/^host: //p')
 NAME="cyberapi-${VERSION}-${TARGET}"
+CLI_NAME="cyberapi-cli-${VERSION}-${TARGET}"
 # CARGO_TARGET_DIR when set (CI sets it), else asked of cargo, never
 # assumed: `build.target-dir` may move it.
 TARGET_DIR="${CARGO_TARGET_DIR:-$(cargo metadata --format-version 1 --no-deps \
@@ -78,6 +79,19 @@ case "$(uname -s)" in
       done
     fi
     checksum "$NAME.dmg"
+    cargo build --release -p cyberapi-cli
+    if [ -n "${CYBERAPI_SIGN_IDENTITY:-}" ]; then
+      codesign --force --options runtime --timestamp --sign "$CYBERAPI_SIGN_IDENTITY" "$TARGET_DIR/release/cyberapi-cli"
+    else
+      codesign --force --sign - "$TARGET_DIR/release/cyberapi-cli"
+    fi
+    CLI_STAGE="$OUT_DIR/$CLI_NAME"
+    rm -rf "$CLI_STAGE"
+    mkdir -p "$CLI_STAGE"
+    cp "$TARGET_DIR/release/cyberapi-cli" LICENSE "$CLI_STAGE/"
+    tar -czf "$OUT_DIR/$CLI_NAME.tar.gz" -C "$OUT_DIR" "$CLI_NAME"
+    rm -rf "$CLI_STAGE"
+    checksum "$CLI_NAME.tar.gz"
     ;;
   Linux)
     need_bundle
@@ -94,6 +108,14 @@ case "$(uname -s)" in
     cp "$TARGET_DIR/release/cyberapi" LICENSE "$STAGE/"
     tar -czf "$OUT_DIR/$NAME.tar.gz" -C "$OUT_DIR" "$NAME"
     checksum "$NAME.tar.gz"
+    cargo build --release -p cyberapi-cli
+    CLI_STAGE="$OUT_DIR/$CLI_NAME"
+    rm -rf "$CLI_STAGE"
+    mkdir -p "$CLI_STAGE"
+    cp "$TARGET_DIR/release/cyberapi-cli" LICENSE "$CLI_STAGE/"
+    tar -czf "$OUT_DIR/$CLI_NAME.tar.gz" -C "$OUT_DIR" "$CLI_NAME"
+    rm -rf "$CLI_STAGE"
+    checksum "$CLI_NAME.tar.gz"
     ;;
   MINGW* | MSYS* | CYGWIN*)
     cargo build --release
@@ -103,6 +125,14 @@ case "$(uname -s)" in
     cp "$TARGET_DIR/release/cyberapi.exe" LICENSE "$STAGE/"
     (cd "$OUT_DIR" && powershell -NoProfile -Command "Compress-Archive -Force -Path '$NAME' -DestinationPath '$NAME.zip'")
     checksum "$NAME.zip"
+    cargo build --release -p cyberapi-cli
+    CLI_STAGE="$OUT_DIR/$CLI_NAME"
+    rm -rf "$CLI_STAGE"
+    mkdir -p "$CLI_STAGE"
+    cp "$TARGET_DIR/release/cyberapi-cli.exe" LICENSE "$CLI_STAGE/"
+    (cd "$OUT_DIR" && powershell -NoProfile -Command "Compress-Archive -Force -Path '$CLI_NAME' -DestinationPath '$CLI_NAME.zip'")
+    rm -rf "$CLI_STAGE"
+    checksum "$CLI_NAME.zip"
     ;;
   *)
     echo "no package for $(uname -s)" >&2
