@@ -63,6 +63,12 @@ pub struct OpenTab {
     pub id: ItemId,
     pub method: HttpMethod,
     pub name: String,
+    /// Its enclosing folders' names (`" / "` between), from outermost to
+    /// innermost; empty at the project's top level or for a scratch request.
+    pub folders: String,
+    /// Its URI without an `{{ENV}}` prefix, for a top-level or scratch API
+    /// that has no folder to show on the second line.
+    pub path: String,
     pub scratch: bool,
 }
 
@@ -1641,10 +1647,23 @@ impl WorkspaceState {
             .iter()
             .filter_map(|id| {
                 if let Some(api) = self.data.apis.iter().find(|api| &api.id == id) {
+                    let mut folders = Vec::new();
+                    let mut parent = self.tree.get(id).and_then(|node| node.parent()).cloned();
+                    while let Some(folder) = parent {
+                        let node = self.tree.get(&folder);
+                        if let Some(node) = node {
+                            folders.push(node.name());
+                        }
+                        parent = node.and_then(|node| node.parent()).cloned();
+                    }
+                    folders.reverse();
+                    let (_, path) = cyberapi_core::model::split_env_prefix(&api.request.uri);
                     return Some(OpenTab {
                         id: id.clone(),
                         method: api.request.method,
                         name: api.name.clone(),
+                        folders: folders.join(" / "),
+                        path: path.trim().to_string(),
                         scratch: false,
                     });
                 }
@@ -1652,11 +1671,16 @@ impl WorkspaceState {
                     .scratches
                     .iter()
                     .find(|scratch| &scratch.id == id)
-                    .map(|scratch| OpenTab {
-                        id: id.clone(),
-                        method: scratch.request.method,
-                        name: scratch.name.clone(),
-                        scratch: true,
+                    .map(|scratch| {
+                        let (_, path) = cyberapi_core::model::split_env_prefix(&scratch.request.uri);
+                        OpenTab {
+                            id: id.clone(),
+                            method: scratch.request.method,
+                            name: scratch.name.clone(),
+                            folders: String::new(),
+                            path: path.trim().to_string(),
+                            scratch: true,
+                        }
                     })
             })
             .collect()
@@ -4593,9 +4617,17 @@ mod tests {
         };
 
         state.update(cx, |state, cx| state.open_pin(&login, cx));
+        let editor_login = state
+            .read_with(cx, |state, _| state.api().cloned())
+            .expect("login editor");
+        editor_login.update(cx, |api, cx| api.set_uri("{{BASE}}/v1/login".into(), cx));
+        cx.run_until_parked();
         state.read_with(cx, |state, _| {
             assert_eq!(state.selected(), Some(&ping), "the tree keeps its row");
             assert_eq!(state.opened(), Some(&login));
+            let tab_login = state.tabs().into_iter().find(|tab| tab.id == login).expect("tab login");
+            assert_eq!(tab_login.folders, "users");
+            assert_eq!(tab_login.path, "/v1/login");
         });
         assert_eq!(editing(&state, cx), Some(login.clone()));
         assert_eq!(row_names(&state, cx), ["ping", "users"], "its folder stays shut");

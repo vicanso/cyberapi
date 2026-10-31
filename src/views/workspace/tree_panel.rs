@@ -10,7 +10,7 @@ use super::{
     NewApi, NewFolder, PasteCurl, confirm_delete, export, method_color, method_label, new_item, open_import_dialog,
     paste_curl,
 };
-use crate::states::{Load, WorkspaceState};
+use crate::states::{AppStore, Load, WorkspaceState};
 use crate::this_build;
 use crate::views::marked::marked;
 use cyberapi_core::ItemId;
@@ -159,7 +159,7 @@ impl TreePanel {
                 .placeholder(t!("workspace.search").to_string())
                 .clean_on_escape()
         });
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.observe(&state, |this, state, cx| {
                 let selected = state.read(cx).selected().cloned();
                 if selected != this.seen_selection {
@@ -185,6 +185,10 @@ impl TreePanel {
                 _ => {}
             }),
         ];
+        if let Some(store) = cx.try_global::<AppStore>() {
+            let app = store.state().clone();
+            subscriptions.push(cx.observe(&app, |_, _, cx| cx.notify()));
+        }
         Self {
             state,
             search,
@@ -458,8 +462,14 @@ impl TreePanel {
         let editable = self.state.read(cx).editable();
         // `muted` and `border` are the same tone in the dark theme.
         let border = cx.theme().foreground.opacity(0.12);
+        // Aligns with the open-APIs tab bar (36 px) when shown, or with the
+        // 44 px URL and response status bars when the tab bar is hidden.
+        let show_tabs = cx
+            .try_global::<AppStore>()
+            .is_none_or(|store| store.state().read(cx).prefs().text.show_tabs);
+        let height = if show_tabs { px(36.) } else { px(44.) };
         h_flex()
-            .h(px(44.))
+            .h(height)
             .px_2()
             .gap_1()
             .items_center()

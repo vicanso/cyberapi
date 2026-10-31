@@ -1,9 +1,11 @@
-//! F1: the open APIs as tabs above the request editor: the method and the
-//! name, a dot while its request is on its way, the one in the editor drawn
-//! as the page. A click opens one; the close button (on the open tab and
-//! the one under the pointer) or a middle click closes it, and its menu
-//! closes the others or all. More than the row holds scroll sideways, the
-//! open one brought into view.
+//! F1: the open APIs as tabs above the request editor: 36 px tall (aligned
+//! with the tree's search header), showing the method and name on a single
+//! line — plus the enclosing folder when two open tabs share a name — a dot
+//! while its request is on its way, and the one in the editor drawn as the
+//! page. A click opens one; the close button (on the open tab and the one
+//! under the pointer) or a middle click closes it, and its menu closes the
+//! others or all. More than the row holds scroll sideways, the open one
+//! brought into view.
 
 use super::{method_color, method_label};
 use crate::states::WorkspaceState;
@@ -49,7 +51,15 @@ impl Render for TabsBar {
             .into_iter()
             .map(|tab| {
                 let sending = state.tab_sending(&tab.id, cx);
-                (tab.id, tab.method, tab.name, sending, tab.scratch)
+                (
+                    tab.id,
+                    tab.method,
+                    tab.name,
+                    tab.folders,
+                    tab.path,
+                    sending,
+                    tab.scratch,
+                )
             })
             .collect();
         if opened != self.shown {
@@ -58,25 +68,50 @@ impl Render for TabsBar {
             }
             self.shown = opened.clone();
         }
+        let shared_names: std::collections::HashSet<String> = {
+            let mut seen = std::collections::HashSet::new();
+            let mut dup = std::collections::HashSet::new();
+            for (_, _, name, ..) in &tabs {
+                if !seen.insert(name.as_str()) {
+                    dup.insert(name.clone());
+                }
+            }
+            dup
+        };
         let theme = cx.theme();
         let (border, muted) = (theme.border, theme.muted_foreground);
         let row = tabs
             .into_iter()
             .enumerate()
-            .map(|(index, (id, method, name, sending, scratch))| {
+            .map(|(index, (id, method, name, folders, path, sending, scratch))| {
                 let active = opened.as_ref() == Some(&id);
                 let group = SharedString::from(format!("api-tab-{index}"));
                 let (open_id, close_id, middle_id) = (id.clone(), id.clone(), id.clone());
                 let menu_state = self.state.downgrade();
-                let tip = name.clone();
+                let disambiguate =
+                    (shared_names.contains(&name) && (!folders.is_empty() || !path.is_empty())).then(|| {
+                        if !folders.is_empty() {
+                            folders.rsplit(" / ").next().unwrap_or(&folders).to_string()
+                        } else {
+                            path.clone()
+                        }
+                    });
+                let tip = if !folders.is_empty() {
+                    format!("{folders} / {name}")
+                } else if !path.is_empty() {
+                    format!("{name} · {path}")
+                } else {
+                    name.clone()
+                };
                 h_flex()
                     .id(("api-tab", index))
                     .group(group.clone())
+                    .relative()
                     .flex_none()
-                    .max_w(px(200.))
+                    .max_w(px(220.))
                     .h_full()
-                    .pl_2()
-                    .pr_0p5()
+                    .pl_2p5()
+                    .pr_1()
                     .gap_1p5()
                     .items_center()
                     .border_r_1()
@@ -93,6 +128,9 @@ impl Render for TabsBar {
                                 .hover(|style| style.bg(theme.secondary_hover))
                         }
                     })
+                    .when(active, |tab| {
+                        tab.child(div().absolute().top_0().left_0().right_0().h(px(2.)).bg(theme.primary))
+                    })
                     .child(
                         div()
                             .flex_none()
@@ -102,6 +140,17 @@ impl Render for TabsBar {
                             .child(method_label(method)),
                     )
                     .child(div().min_w_0().truncate().child(name.clone()))
+                    .when_some(disambiguate, |tab, folder| {
+                        tab.child(
+                            div()
+                                .flex_none()
+                                .max_w(px(72.))
+                                .truncate()
+                                .text_size(rems(0.68))
+                                .text_color(muted)
+                                .child(folder),
+                        )
+                    })
                     .when(sending, |tab| {
                         tab.child(div().flex_none().size(px(6.)).rounded_full().bg(theme.primary))
                     })
@@ -187,7 +236,7 @@ impl Render for TabsBar {
             .id("api-tabs")
             .flex_none()
             .w_full()
-            .h(px(30.))
+            .h(px(36.))
             .items_center()
             .border_b_1()
             .border_color(border)
