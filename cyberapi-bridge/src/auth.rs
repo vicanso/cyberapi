@@ -117,9 +117,9 @@ pub fn session_token(headers: &HeaderMap) -> Option<String> {
         headers
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
+            .and_then(|value| value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer ")))
             .map(|token| token.trim().to_string())
-            .filter(|token| !token.is_empty())
+            .filter(|token| !token.is_empty() && !token.starts_with(cyberapi_core::directory::MCP_TOKEN_PREFIX))
     })
 }
 
@@ -227,6 +227,8 @@ mod tests {
         assert_eq!(session_token(&headers), None);
         headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer tok"));
         assert_eq!(session_token(&headers), Some("tok".into()));
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer cat_mcp_tok"));
+        assert_eq!(session_token(&headers), None, "an MCP token is not a session token");
         headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Basic tok"));
         assert_eq!(session_token(&headers), None);
         headers.insert(header::COOKIE, HeaderValue::from_static("cyberapi_session=abc"));

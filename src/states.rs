@@ -27,7 +27,7 @@ pub use copy::{ServerCopy, keep_due_drafts};
 pub use dashboard::{DashboardEvent, DashboardState};
 pub use directory::{DirectoryDone, DirectoryEvent, DirectoryState};
 pub use load::LoadState;
-pub use mcp_local::{LocalMcpHandle, LocalMcpState};
+pub use mcp_local::{LocalMcpEvent, LocalMcpHandle, LocalMcpState};
 pub use mock::{DEFAULT_PORT as MOCK_PORT, MockHandle, MockState};
 pub use palette::{FoundApi, PaletteState, found_in};
 pub use run::{Planned, RunState};

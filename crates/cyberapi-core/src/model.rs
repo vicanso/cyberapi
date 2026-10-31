@@ -782,28 +782,29 @@ pub fn sync_path_variables(uri: &str, variables: &[KvParam]) -> Vec<KvParam> {
         .collect()
 }
 
-/// F12: merges edited `path_rows` back into the request's `variables`, keeping
-/// non-path request variables in place.
+/// F12 / Q-1: merges edited `path_rows` back into the request's `variables`,
+/// keeping only the path parameters currently present in `uri`.
 pub fn merge_path_variables(uri: &str, path_rows: &[KvParam], variables: &[KvParam]) -> Vec<KvParam> {
-    let path_names = path_param_names(uri);
-    let mut out: Vec<KvParam> = Vec::new();
-    for row in path_rows {
-        let key = row.key.trim();
-        if !key.is_empty() {
-            out.push(row.clone());
-        }
-    }
-    for existing in variables {
-        let key = existing.key.trim();
-        if key.is_empty() {
-            continue;
-        }
-        let in_path = path_names.iter().any(|name| name == key) || out.iter().any(|row| row.key.trim() == key);
-        if !in_path {
-            out.push(existing.clone());
-        }
-    }
-    out
+    path_param_names(uri)
+        .into_iter()
+        .map(|name| {
+            path_rows
+                .iter()
+                .find(|row| row.key.trim() == name)
+                .or_else(|| variables.iter().find(|existing| existing.key.trim() == name))
+                .cloned()
+                .map(|mut kv| {
+                    kv.key = name.clone();
+                    kv
+                })
+                .unwrap_or_else(|| KvParam {
+                    key: name,
+                    value: String::new(),
+                    enabled: true,
+                    description: String::new(),
+                })
+        })
+        .collect()
 }
 
 /// Conversions for the old database's columns.
@@ -1026,5 +1027,24 @@ mod tests {
             replaced,
             "https://api.example.com:8443/v1/users/42/orders/ord-9:cancel?x=1"
         );
+
+        let existing = vec![
+            KvParam {
+                key: "u".into(),
+                value: "".into(),
+                enabled: true,
+                description: String::new(),
+            },
+            KvParam {
+                key: "user_id".into(),
+                value: "7".into(),
+                enabled: true,
+                description: "User ID".into(),
+            },
+        ];
+        let merged = merge_path_variables("https://api.example.com/users/:user_id", &[], &existing);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].key, "user_id");
+        assert_eq!(merged[0].value, "7");
     }
 }

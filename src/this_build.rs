@@ -237,6 +237,7 @@ pub fn serves_mcp() -> bool {
 
 /// H2: starts the desktop's local loopback MCP server on `127.0.0.1:port`.
 #[cfg(not(target_family = "wasm"))]
+#[allow(clippy::too_many_arguments)]
 pub fn start_local_mcp(
     port: u16,
     token: String,
@@ -244,6 +245,7 @@ pub fn start_local_mcp(
     can_write: bool,
     storage: cyberapi_store::Storage,
     engine: Arc<dyn cyberapi_http::HttpEngine>,
+    context: cyberapi_service::mcp::LocalMcpContext,
     cx: &gpui_kit::App,
 ) -> gpui_kit::Task<Result<Box<dyn crate::states::LocalMcpHandle>, String>> {
     let Some(runtime) = cx.try_global::<crate::Runtime>().map(|runtime| runtime.0.clone()) else {
@@ -257,9 +259,11 @@ pub fn start_local_mcp(
     let handler: cyberapi_http::McpHandler = Arc::new(move |can_send, can_write, body| {
         let storage = storage.clone();
         let engine = engine.clone();
-        Box::pin(
-            async move { cyberapi_service::mcp::handle_local(&storage, &engine, can_send, can_write, &body).await },
-        )
+        let context = context.clone();
+        Box::pin(async move {
+            cyberapi_service::mcp::handle_local_with_context(&storage, &engine, &context, can_send, can_write, &body)
+                .await
+        })
     });
     gpui_kit::AppContext::background_spawn(cx, async move {
         cyberapi_http::McpServer::start(runtime, port, access, handler)
@@ -268,6 +272,7 @@ pub fn start_local_mcp(
     })
 }
 #[cfg(target_family = "wasm")]
+#[allow(clippy::too_many_arguments)]
 pub fn start_local_mcp(
     _port: u16,
     _token: String,
@@ -275,6 +280,7 @@ pub fn start_local_mcp(
     _can_write: bool,
     _storage: cyberapi_store::Storage,
     _engine: Arc<dyn cyberapi_http::HttpEngine>,
+    _context: cyberapi_service::mcp::LocalMcpContext,
     _cx: &gpui_kit::App,
 ) -> gpui_kit::Task<Result<Box<dyn crate::states::LocalMcpHandle>, String>> {
     gpui_kit::Task::ready(Err("The local MCP server runs in the desktop app only".into()))

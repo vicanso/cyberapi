@@ -227,4 +227,92 @@ mod tests {
             assert_eq!(bodies.len(), 5, "each send drew its own randomString");
         });
     }
+
+    #[test]
+    fn load_reuses_static_prepared_request_and_ignores_set_cookie() {
+        struct CookieEngine {
+            sent: Mutex<Vec<PreparedRequest>>,
+        }
+
+        impl HttpEngine for CookieEngine {
+            fn send(&self, request: PreparedRequest) -> SendFuture {
+                self.sent.lock().expect("sent").push(request);
+                Box::pin(async {
+                    Ok(Exchange {
+                        status: 200,
+                        headers: vec![("Set-Cookie".into(), "sid=from-load; Path=/".into())],
+                        body: b"ok".to_vec(),
+                        body_size: 2,
+                        truncated: false,
+                        stats: HttpStats::default(),
+                        trailers: Vec::new(),
+                        stream: None,
+                    })
+                })
+            }
+        }
+
+        futures::executor::block_on(async {
+            let store = Arc::new(MemoryStore::new());
+            let storage = Storage::from_backend(store);
+            let collection = storage
+                .collections()
+                .create(NewCollection {
+                    name: "StaticDemo".into(),
+                    description: String::new(),
+                    owner: None,
+                    id: None,
+                })
+                .await
+                .expect("create collection");
+            let engine = Arc::new(CookieEngine {
+                sent: Mutex::new(Vec::new()),
+            });
+            let sender = Sender {
+                storage: storage.clone(),
+                engine: engine.clone(),
+                files: Arc::new(NoFiles("no files")),
+                env: Arc::new(NoEnv("no env")),
+                user_agent: "CyberAPI/test".into(),
+                timeouts: Timeouts::default(),
+                sending: SendPrefs::default(),
+                inherited: Default::default(),
+                environment: None,
+                tokens: Default::default(),
+                secrets: Default::default(),
+            };
+            let request = HttpRequest {
+                method: HttpMethod::Get,
+                uri: "https://api.example.com/ping".into(),
+                ..Default::default()
+            };
+            let (_, template) = prepare_load(&sender, &collection.id, &request, &Answers::default())
+                .await
+                .expect("prepare_load");
+            assert!(!template.dynamic, "static request should not mark template dynamic");
+
+            let plan = Plan {
+                senders: 2,
+                limit: Limit::Count(4),
+            };
+            load(
+                sender,
+                collection.id.clone(),
+                request,
+                Answers::default(),
+                plan,
+                Arc::new(|_| {}),
+            )
+            .await
+            .expect("load succeeds");
+
+            let sent_len = engine.sent.lock().expect("sent").len();
+            assert_eq!(sent_len, 4);
+            let cookies = storage.cookies().list().await.expect("cookies list");
+            assert!(
+                cookies.is_empty(),
+                "load test responses must not mutate the project's CookieStore"
+            );
+        });
+    }
 }

@@ -4,11 +4,22 @@
 
 use crate::mcp_local::{self, McpFile};
 use crate::this_build;
+use cyberapi_core::access::CollectionRole;
+use cyberapi_core::{AccountId, CollectionId};
 use cyberapi_http::HttpEngine;
-use cyberapi_service::mcp::generate_local_token;
-use cyberapi_store::Storage;
-use gpui_kit::{Context, Task};
-use std::sync::Arc;
+use cyberapi_service::mcp::{LocalMcpContext, generate_local_token};
+use cyberapi_store::{ServerCopyStore, Storage};
+use futures::StreamExt as _;
+use gpui_kit::{Context, EventEmitter, Task};
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LocalMcpEvent {
+    ProjectChanged(CollectionId),
+}
+
+impl EventEmitter<LocalMcpEvent> for LocalMcpState {}
 
 /// A running local MCP server, whichever build made it.
 pub trait LocalMcpHandle: Send {
@@ -21,29 +32,76 @@ pub trait LocalMcpHandle: Send {
 pub struct LocalMcpState {
     storage: Storage,
     engine: Arc<dyn HttpEngine>,
+    context: LocalMcpContext,
     config: McpFile,
     server: Option<Box<dyn LocalMcpHandle>>,
     starting: bool,
     error: Option<String>,
     _starting: Option<Task<()>>,
+    _writes: Task<()>,
 }
 
 impl LocalMcpState {
-    pub fn new(storage: Storage, engine: Arc<dyn HttpEngine>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        storage: Storage,
+        engine: Arc<dyn HttpEngine>,
+        copies: Option<Arc<dyn ServerCopyStore>>,
+        account: Option<AccountId>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let config = mcp_local::read();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<CollectionId>();
+        let writes = cx.spawn(async move |this, cx| {
+            while let Some(id) = rx.next().await {
+                if this
+                    .update(cx, |_, cx| cx.emit(LocalMcpEvent::ProjectChanged(id)))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let context = LocalMcpContext {
+            copies,
+            account: Arc::new(RwLock::new(account)),
+            roles: Arc::default(),
+            on_write: Some(Arc::new(move |id| {
+                let _ = tx.unbounded_send(id);
+            })),
+        };
         let mut state = Self {
             storage,
             engine,
+            context,
             config,
             server: None,
             starting: false,
             error: None,
             _starting: None,
+            _writes: writes,
         };
         if state.config.enabled && this_build::serves_mcp() {
             state.start_listener(cx);
         }
         state
+    }
+
+    pub fn set_account(&self, account: Option<AccountId>) {
+        if let Ok(mut guard) = self.context.account.write() {
+            *guard = account;
+        }
+    }
+
+    pub fn set_roles(&self, roles: HashMap<CollectionId, CollectionRole>) {
+        if let Ok(mut guard) = self.context.roles.write() {
+            *guard = roles;
+        }
+    }
+
+    pub fn note_role(&self, collection: CollectionId, role: CollectionRole) {
+        if let Ok(mut guard) = self.context.roles.write() {
+            guard.insert(collection, role);
+        }
     }
 
     pub fn port(&self) -> u16 {
@@ -144,6 +202,7 @@ impl LocalMcpState {
             self.config.can_write,
             self.storage.clone(),
             self.engine.clone(),
+            self.context.clone(),
             cx,
         );
         self._starting = Some(cx.spawn(async move |this, cx| {

@@ -99,6 +99,7 @@ pub struct DashboardState {
     /// for the same ones again.
     pulling: bool,
     _server: Option<Subscription>,
+    _local_mcp: Option<Subscription>,
     /// The server asked again for the list while it shows: a project made,
     /// shared or changed by others comes in without leaving the page.
     _poll: Option<Task<()>>,
@@ -119,6 +120,14 @@ impl DashboardState {
         let watch = server
             .as_ref()
             .map(|server| cx.observe(server, |this, _, cx| this.server_changed(cx)));
+        let local_mcp = cx
+            .try_global::<super::AppStore>()
+            .and_then(|store| store.local_mcp().cloned())
+            .map(|mcp| {
+                cx.subscribe(&mcp, |this, _, event, cx| match event {
+                    super::LocalMcpEvent::ProjectChanged(_) => this.reload(cx),
+                })
+            });
         let mut state = Self {
             storage,
             listed: Vec::new(),
@@ -135,6 +144,7 @@ impl DashboardState {
             syncing: BTreeSet::new(),
             pulling: false,
             _server: watch,
+            _local_mcp: local_mcp,
             _poll: None,
         };
         state.read_server(cx);
@@ -399,6 +409,10 @@ impl DashboardState {
         run_store(cx, desktop.server.collections().list(), move |this, result, cx| {
             match result {
                 Ok(projects) => {
+                    if let Some(mcp) = cx.try_global::<super::AppStore>().and_then(|s| s.local_mcp().cloned()) {
+                        let roles = projects.iter().map(|p| (p.id.clone(), p.role)).collect();
+                        mcp.read(cx).set_roles(roles);
+                    }
                     let stale: Vec<Collection> =
                         projects.iter().filter(|project| this.stale(project)).cloned().collect();
                     this.on_server = Some(projects);

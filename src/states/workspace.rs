@@ -140,6 +140,9 @@ pub enum WorkspaceEvent {
     /// F7: the open tab `0` is to be shown in a window of its own, or that
     /// window brought forward.
     Parted(ItemId),
+    /// F15 / BUG-7: asks any mounted RequestEditor (main window or apart
+    /// window) to flush pending debounced edits into its ApiState at once.
+    FlushEditors,
 }
 
 /// F6: a delete that can be undone, and what of the reader's own state of
@@ -291,9 +294,12 @@ pub struct WorkspaceState {
     /// keyed by exact URL, for live field-doc matching and update notices.
     cached_bundles: HashMap<String, ImportBundle>,
     cached_requests: HashMap<String, HashMap<(HttpMethod, String), HttpRequest>>,
+    #[allow(clippy::type_complexity)]
+    source_updates_cache: RefCell<HashMap<Option<ItemId>, Option<(usize, usize)>>>,
     fetching_sources: HashSet<String>,
     sources_booted: bool,
     _source_poll: Option<Task<()>>,
+    _local_mcp: Option<gpui_kit::Subscription>,
 }
 
 impl EventEmitter<WorkspaceEvent> for WorkspaceState {}
@@ -327,6 +333,21 @@ impl WorkspaceState {
         cx: &mut Context<Self>,
     ) -> Self {
         let is_copy = copy.is_some();
+        let local_mcp = cx
+            .try_global::<AppStore>()
+            .and_then(|s| s.local_mcp().cloned())
+            .map(|mcp| {
+                if is_copy {
+                    mcp.read(cx).note_role(collection.id.clone(), collection.role);
+                }
+                let id = collection.id.clone();
+                cx.subscribe(&mcp, move |this, _, event, cx| match event {
+                    super::LocalMcpEvent::ProjectChanged(changed) if changed == &id => {
+                        this.reload_after_external_write(cx);
+                    }
+                    _ => {}
+                })
+            });
         // PERF-13: a draft still waiting is written as the project closes.
         cx.on_release(|this, _| {
             if let Some(copy) = &this.copy {
@@ -399,9 +420,11 @@ impl WorkspaceState {
             poll_every: poll,
             cached_bundles: HashMap::new(),
             cached_requests: HashMap::new(),
+            source_updates_cache: RefCell::new(HashMap::new()),
             fetching_sources: HashSet::new(),
             sources_booted: false,
             _source_poll: None,
+            _local_mcp: local_mcp,
         };
         state.reload(cx);
         state
@@ -1517,6 +1540,35 @@ impl WorkspaceState {
         Some(kept)
     }
 
+    /// BUG-4: removes deleted variable IDs from `secret_variables` and
+    /// `secrets` so deleted or deduplicated variables leave no orphan IDs.
+    pub fn remove_secret_variables(&mut self, ids: &[VariableId], cx: &mut Context<Self>) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut secrets_changed = false;
+        for id in ids {
+            if self.secrets.0.remove(id).is_some() {
+                secrets_changed = true;
+            }
+        }
+        if secrets_changed {
+            self.save_secrets(cx);
+        }
+        if self.editable()
+            && self
+                .data
+                .settings
+                .secret_variables
+                .iter()
+                .any(|kept| ids.contains(kept))
+        {
+            let mut settings = self.data.settings.clone();
+            settings.secret_variables.retain(|kept| !ids.contains(kept));
+            self.set_project_settings(settings, cx);
+        }
+    }
+
     /// Reads a category's variables again, when it is one kept here: they
     /// changed.
     pub fn refresh_variables(&mut self, category: VariableCategory, cx: &mut Context<Self>) {
@@ -1984,6 +2036,37 @@ impl WorkspaceState {
     fn build_tree(&mut self) {
         self.tree = Tree::build(&self.data);
         self.tree_built += 1;
+        self.source_updates_cache.borrow_mut().clear();
+    }
+
+    /// Q-2: reloads the tree and refreshes open tabs when an external writer
+    /// (such as the desktop's local MCP server) modified this local project.
+    pub fn reload_after_external_write(&mut self, cx: &mut Context<Self>) {
+        if self.copy.is_some() {
+            return;
+        }
+        let id = self.collection.id.clone();
+        run_serial(
+            cx,
+            &self.gate,
+            self.sender.storage.tree().load(id),
+            |this, result, cx| {
+                if let Ok(data) = result {
+                    for setting in &data.apis {
+                        if let Some(api) = this.kept.get(&setting.id).cloned()
+                            && !api.read(cx).has_unsaved()
+                            && api.read(cx).request() != &setting.request
+                        {
+                            let req = setting.request.clone();
+                            api.update(cx, |api, cx| api.set_stored_request(req, cx));
+                        }
+                    }
+                    this.set_data(data, cx);
+                    this.sync_api(cx);
+                    cx.notify();
+                }
+            },
+        );
     }
 
     /// Loads (or loads again) the tree and the reader's state of it. A
@@ -2357,6 +2440,7 @@ impl WorkspaceState {
                 if let Some(found) = this.data.folders.iter_mut().find(|found| found.id == folder.id) {
                     *found = folder;
                 }
+                this.source_updates_cache.borrow_mut().clear();
                 cx.notify();
             }
             Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
@@ -2373,12 +2457,14 @@ impl WorkspaceState {
         // Held at once: a change made before this one is written starts
         // from it, not from what it replaces (BUG-19).
         let before = std::mem::replace(&mut self.data.settings, settings.clone());
+        self.source_updates_cache.borrow_mut().clear();
         cx.notify();
         run_serial(cx, &self.gate, call, move |this, result, cx| {
             if let Err(error) = result {
                 // Not written: as it was, unless another change came since.
                 if this.data.settings == settings {
                     this.data.settings = before;
+                    this.source_updates_cache.borrow_mut().clear();
                     cx.notify();
                 }
                 cx.emit(WorkspaceEvent::Failed(error));
@@ -2754,6 +2840,7 @@ impl WorkspaceState {
         if !still_on_project && !still_on_folder {
             self.cached_bundles.remove(url);
             self.cached_requests.remove(url);
+            self.source_updates_cache.borrow_mut().clear();
             if self.auto_fetches_source(url) {
                 self.prefs.auto_fetch_sources.retain(|kept| kept != url);
                 self.save_prefs(cx);
@@ -2769,6 +2856,7 @@ impl WorkspaceState {
         let requests = cyberapi_core::import::merge::index_requests(&bundle.items);
         self.cached_requests.insert(url.clone(), requests);
         self.cached_bundles.insert(url, bundle);
+        self.source_updates_cache.borrow_mut().clear();
         cx.notify();
     }
 
@@ -2891,17 +2979,25 @@ impl WorkspaceState {
     /// source) has additions or updates compared to the saved tree, returns
     /// `(added_items, updated_apis)`.
     pub fn source_updates(&self, folder: Option<&ItemId>) -> Option<(usize, usize)> {
-        let url = match folder {
-            Some(id) => self.folder_source(id)?,
-            None => self.source().map(|source| source.url.as_str())?,
-        };
-        let bundle = self.cached_bundles.get(url)?;
-        let preview = match folder {
-            Some(id) => cyberapi_core::import::merge::preview_folder(&self.data, id, &bundle.items),
-            None => cyberapi_core::import::merge::preview(&self.data, self.source_folder().as_ref(), &bundle.items),
-        };
-        let added = preview.added.0 + preview.added.1;
-        (added > 0 || preview.updated > 0).then_some((added, preview.updated))
+        let key = folder.cloned();
+        if let Some(&cached) = self.source_updates_cache.borrow().get(&key) {
+            return cached;
+        }
+        let computed = (|| {
+            let url = match folder {
+                Some(id) => self.folder_source(id)?,
+                None => self.source().map(|source| source.url.as_str())?,
+            };
+            let bundle = self.cached_bundles.get(url)?;
+            let preview = match folder {
+                Some(id) => cyberapi_core::import::merge::preview_folder(&self.data, id, &bundle.items),
+                None => cyberapi_core::import::merge::preview(&self.data, self.source_folder().as_ref(), &bundle.items),
+            };
+            let added = preview.added.0 + preview.added.1;
+            (added > 0 || preview.updated > 0).then_some((added, preview.updated))
+        })();
+        self.source_updates_cache.borrow_mut().insert(key, computed);
+        computed
     }
 
     /// B4: what an import brings besides its items: how the project signs
@@ -3349,6 +3445,12 @@ impl WorkspaceState {
         }
     }
 
+    /// F15 / BUG-7: asks any mounted `RequestEditor` (main window or apart
+    /// window) to flush pending debounced edits into its `ApiState` at once.
+    pub fn flush_editors(&mut self, cx: &mut Context<Self>) {
+        cx.emit(WorkspaceEvent::FlushEditors);
+    }
+
     /// F15: `TreeData` with any unsaved edits from open tabs folded in, so a
     /// project-wide find-and-replace previews what the editors hold now.
     pub fn tree_data_with_open(&self, cx: &gpui_kit::App) -> TreeData {
@@ -3370,16 +3472,31 @@ impl WorkspaceState {
         if !self.editable() || plan.hits.is_empty() {
             return;
         }
-        for api in self.kept.values() {
-            api.update(cx, |api, cx| api.save_now(cx));
-        }
+        self.flush_editors(cx);
         self.deletes += 1;
         let count = self.deletes;
         let apis = plan.hits.len();
         let occurrences = plan.total_occurrences;
         let originals = plan.originals();
-        let updates = plan.updates();
+        let mut updates = plan.updates();
         let touched: Vec<ItemId> = updates.iter().map(|(id, _)| id.clone()).collect();
+        // Fold any other open tabs' unsaved edits into the same atomic replace
+        // and cancel all pending per-API debounces so they never race with
+        // `self.gate` (BUG-7).
+        for (id, api) in &self.kept {
+            if !touched.contains(id) {
+                let request = api.read(cx).request().clone();
+                if self
+                    .data
+                    .apis
+                    .iter()
+                    .any(|stored| &stored.id == id && stored.request != request)
+                {
+                    updates.push((id.clone(), request));
+                }
+            }
+            api.update(cx, |api, _| api.forget_unsaved());
+        }
         self.replace_undo = Some((count, originals));
 
         let storage = self.sender.storage.clone();
@@ -3403,12 +3520,15 @@ impl WorkspaceState {
         });
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(data) => {
-                this.set_data(data, cx);
                 for id in &touched {
-                    if this.kept.contains_key(id) {
-                        this.start_again(id, cx);
+                    if let Some(api) = this.kept.get(id).cloned()
+                        && let Some(setting) = data.apis.iter().find(|a| &a.id == id)
+                    {
+                        let req = setting.request.clone();
+                        api.update(cx, |api, cx| api.set_stored_request(req, cx));
                     }
                 }
+                this.set_data(data, cx);
                 this.sync_api(cx);
                 cx.emit(WorkspaceEvent::Replaced {
                     apis,
@@ -3433,11 +3553,23 @@ impl WorkspaceState {
         let Some((count, originals)) = self.replace_undo.take() else {
             return;
         };
-        for api in self.kept.values() {
-            api.update(cx, |api, cx| api.save_now(cx));
-        }
+        self.flush_editors(cx);
         let touched: Vec<ItemId> = originals.iter().map(|(id, _)| id.clone()).collect();
-        let updates = originals.clone();
+        let mut updates = originals.clone();
+        for (id, api) in &self.kept {
+            if !touched.contains(id) {
+                let request = api.read(cx).request().clone();
+                if self
+                    .data
+                    .apis
+                    .iter()
+                    .any(|stored| &stored.id == id && stored.request != request)
+                {
+                    updates.push((id.clone(), request));
+                }
+            }
+            api.update(cx, |api, _| api.forget_unsaved());
+        }
         let storage = self.sender.storage.clone();
         let collection = self.collection.id.clone();
         let call: StoreFuture<TreeData> = Box::pin(async move {
@@ -3459,12 +3591,15 @@ impl WorkspaceState {
         });
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(data) => {
-                this.set_data(data, cx);
                 for id in &touched {
-                    if this.kept.contains_key(id) {
-                        this.start_again(id, cx);
+                    if let Some(api) = this.kept.get(id).cloned()
+                        && let Some(setting) = data.apis.iter().find(|a| &a.id == id)
+                    {
+                        let req = setting.request.clone();
+                        api.update(cx, |api, cx| api.set_stored_request(req, cx));
                     }
                 }
+                this.set_data(data, cx);
                 this.sync_api(cx);
                 cx.notify();
             }

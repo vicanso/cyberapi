@@ -294,6 +294,12 @@ pub async fn api(
 /// H1: an API made where `arguments` say, with the request they give.
 pub async fn create_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
     let collection = project(storage, arguments).await?;
+    if collection.role < CollectionRole::Editor {
+        return Err(format!(
+            "changing APIs needs an editor's role in {:?}; this account views it",
+            collection.name
+        ));
+    }
     let name = argument(arguments, "name")?.to_string();
     let request = cyberapi_core::mcp::written(&Default::default(), arguments)?;
     let data = storage.tree().load(collection.id.clone()).await.map_err(failed)?;
@@ -326,6 +332,12 @@ pub async fn create_api(storage: &Storage, arguments: &Json) -> Result<Json, Str
 /// they name it anew.
 pub async fn update_api(storage: &Storage, arguments: &Json) -> Result<Json, String> {
     let (collection, api, ..) = self::api(storage, arguments).await?;
+    if collection.role < CollectionRole::Editor {
+        return Err(format!(
+            "changing APIs needs an editor's role in {:?}; this account views it",
+            collection.name
+        ));
+    }
     let request = cyberapi_core::mcp::written(&api.request, arguments)?;
     if let Some(name) = arguments.get("name").and_then(Json::as_str).map(str::trim)
         && !name.is_empty()
@@ -655,9 +667,20 @@ pub async fn get_history(storage: &Storage, arguments: &Json) -> Result<Json, St
         .and_then(Json::as_u64)
         .unwrap_or(DEFAULT_HISTORY)
         .clamp(1, MAX_HISTORY);
-    let responses = storage.history().list(collection.id, api.id).await.map_err(failed)?;
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-    Ok(Json::Array(responses.iter().take(limit).map(response_json).collect()))
+    let mut responses = storage
+        .history()
+        .summaries(collection.id.clone(), api.id.clone())
+        .await
+        .map_err(failed)?;
+    responses.truncate(limit);
+    if let Some(first) = responses.first_mut()
+        && !first.id.is_empty()
+        && let Ok(full) = storage.history().get(collection.id, api.id, first.id.clone()).await
+    {
+        *first = full;
+    }
+    Ok(Json::Array(responses.iter().map(response_json).collect()))
 }
 
 pub struct PreparedSend {
@@ -753,12 +776,85 @@ pub async fn execute_send_api(
     Ok(answer)
 }
 
+/// H2 / Q-2: desktop-specific context for the local loopback MCP server so it
+/// hides copies belonging to other/signed-out accounts, applies known server
+/// roles, refuses `create_api` / `update_api` on server-synced project copies,
+/// and notifies open workspaces when a local project is modified.
+#[derive(Clone, Default)]
+pub struct LocalMcpContext {
+    pub copies: Option<Arc<dyn cyberapi_store::ServerCopyStore>>,
+    pub account: Arc<std::sync::RwLock<Option<cyberapi_core::AccountId>>>,
+    pub roles: Arc<std::sync::RwLock<std::collections::HashMap<cyberapi_core::CollectionId, CollectionRole>>>,
+    pub on_write: Option<Arc<dyn Fn(cyberapi_core::CollectionId) + Send + Sync>>,
+}
+
+async fn visible_local_projects(
+    storage: &Storage,
+    context: &LocalMcpContext,
+) -> Result<(Vec<Collection>, std::collections::HashSet<cyberapi_core::CollectionId>), String> {
+    let projects = storage.collections().list().await.map_err(failed)?;
+    let mut bound_ids = std::collections::HashSet::new();
+    let Some(copies) = &context.copies else {
+        return Ok((projects, bound_ids));
+    };
+    let bindings = copies.copies().await.unwrap_or_default();
+    let current_account = context.account.read().ok().and_then(|g| g.clone());
+    let roles = context.roles.read().ok().map(|g| g.clone()).unwrap_or_default();
+    let mut visible = Vec::with_capacity(projects.len());
+    for mut project in projects {
+        if let Some(binding) = bindings.iter().find(|b| b.collection == project.id) {
+            if current_account.as_ref() != Some(&binding.account) {
+                continue;
+            }
+            bound_ids.insert(project.id.clone());
+            if let Some(&role) = roles.get(&project.id) {
+                project.role = role;
+            }
+        }
+        visible.push(project);
+    }
+    Ok((visible, bound_ids))
+}
+
+async fn resolve_local_project(
+    storage: &Storage,
+    context: &LocalMcpContext,
+    arguments: &Json,
+) -> Result<(Collection, bool), String> {
+    let spec = argument(arguments, "project")?;
+    let (projects, bound_ids) = visible_local_projects(storage, context).await?;
+    if let Some(found) = projects.iter().find(|project| project.id.as_str() == spec) {
+        let is_copy = bound_ids.contains(&found.id);
+        return Ok((found.clone(), is_copy));
+    }
+    let named: Vec<&Collection> = projects.iter().filter(|project| project.name == spec).collect();
+    match named.as_slice() {
+        [found] => {
+            let is_copy = bound_ids.contains(&found.id);
+            Ok(((*found).clone(), is_copy))
+        }
+        [] => Err(format!("no project is {spec:?}: list_projects names them")),
+        many => Err(format!("{} projects are named {spec:?}: give one's id", many.len())),
+    }
+}
+
 /// H2: handles one JSON-RPC request for the desktop's local loopback MCP
 /// server (`127.0.0.1`), returning the HTTP status code and optional JSON
 /// body (`None` for a JSON-RPC notification).
 pub async fn handle_local(
     storage: &Storage,
     engine: &Arc<dyn HttpEngine>,
+    can_send: bool,
+    can_write: bool,
+    body: &[u8],
+) -> (u16, Option<String>) {
+    handle_local_with_context(storage, engine, &LocalMcpContext::default(), can_send, can_write, body).await
+}
+
+pub async fn handle_local_with_context(
+    storage: &Storage,
+    engine: &Arc<dyn HttpEngine>,
+    context: &LocalMcpContext,
     can_send: bool,
     can_write: bool,
     body: &[u8],
@@ -781,7 +877,7 @@ pub async fn handle_local(
         "initialize" => Ok(initialize(&rpc.params, "cyberapi-desktop", INSTRUCTIONS)),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tool_list(can_send, can_write) })),
-        "tools/call" => call_local(storage, engine, can_send, can_write, rpc.params).await,
+        "tools/call" => call_local(storage, engine, context, can_send, can_write, rpc.params).await,
         other => Err((METHOD_NOT_FOUND, format!("unknown method {other:?}"))),
     };
     let reply = match result {
@@ -794,6 +890,7 @@ pub async fn handle_local(
 async fn call_local(
     storage: &Storage,
     engine: &Arc<dyn HttpEngine>,
+    context: &LocalMcpContext,
     can_send: bool,
     can_write: bool,
     params: Json,
@@ -801,23 +898,126 @@ async fn call_local(
     let Some(tool) = params.get("name").and_then(Json::as_str).map(str::to_string) else {
         return Err((INVALID_PARAMS, "tools/call names a tool".into()));
     };
-    let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let mut arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
     let answer = match tool.as_str() {
-        "list_projects" => list_projects(storage, &[]).await,
-        "list_apis" => list_apis(storage, &arguments).await,
-        "get_api" => get_api(storage, &arguments).await,
-        "get_variables" => get_variables(storage, &arguments).await,
-        "get_history" => get_history(storage, &arguments).await,
-        "send_api" if can_send => match prepare_send_api(storage, &arguments).await {
-            Ok(prepared) => execute_send_api(storage, engine.clone(), prepared).await,
+        "list_projects" => match visible_local_projects(storage, context).await {
+            Ok((projects, _)) => match storage.collections().api_counts().await.map_err(failed) {
+                Ok(counts) => Ok(Json::Array(
+                    projects
+                        .iter()
+                        .map(|project| {
+                            json!({
+                                "id": project.id,
+                                "name": project.name,
+                                "description": project.description,
+                                "team": Json::Null,
+                                "role": project.role.as_str(),
+                                "apis": counts.get(&project.id).copied().unwrap_or_default(),
+                            })
+                        })
+                        .collect(),
+                )),
+                Err(why) => Err(why),
+            },
+            Err(why) => Err(why),
+        },
+        "list_apis" => match resolve_local_project(storage, context, &arguments).await {
+            Ok((collection, _)) => {
+                arguments["project"] = json!(collection.id.as_str());
+                list_apis(storage, &arguments).await
+            }
+            Err(why) => Err(why),
+        },
+        "get_api" => match resolve_local_project(storage, context, &arguments).await {
+            Ok((collection, _)) => {
+                arguments["project"] = json!(collection.id.as_str());
+                get_api(storage, &arguments).await
+            }
+            Err(why) => Err(why),
+        },
+        "get_variables" => match resolve_local_project(storage, context, &arguments).await {
+            Ok((collection, _)) => {
+                arguments["project"] = json!(collection.id.as_str());
+                get_variables(storage, &arguments).await
+            }
+            Err(why) => Err(why),
+        },
+        "get_history" => match resolve_local_project(storage, context, &arguments).await {
+            Ok((collection, _)) => {
+                arguments["project"] = json!(collection.id.as_str());
+                get_history(storage, &arguments).await
+            }
+            Err(why) => Err(why),
+        },
+        "send_api" if can_send => match resolve_local_project(storage, context, &arguments).await {
+            Ok((collection, _)) => {
+                if collection.role < CollectionRole::Editor {
+                    Err(format!(
+                        "sending needs an editor's role in {:?}; this account views it",
+                        collection.name
+                    ))
+                } else {
+                    arguments["project"] = json!(collection.id.as_str());
+                    match prepare_send_api(storage, &arguments).await {
+                        Ok(prepared) => execute_send_api(storage, engine.clone(), prepared).await,
+                        Err(why) => Err(why),
+                    }
+                }
+            }
             Err(why) => Err(why),
         },
         "send_api" => Err(
             "this local MCP server is not allowed to send requests: enable 'Allow sending requests' in CyberAPI"
                 .into(),
         ),
-        "create_api" if can_write => create_api(storage, &arguments).await,
-        "update_api" if can_write => update_api(storage, &arguments).await,
+        "create_api" if can_write => match resolve_local_project(storage, context, &arguments).await {
+            Ok((collection, true)) => Err(format!(
+                "{:?} is a server-synced project: edit it in the CyberAPI app or use the bridge's MCP endpoint",
+                collection.name
+            )),
+            Ok((collection, false)) => {
+                if collection.role < CollectionRole::Editor {
+                    Err(format!(
+                        "changing APIs needs an editor's role in {:?}; this account views it",
+                        collection.name
+                    ))
+                } else {
+                    arguments["project"] = json!(collection.id.as_str());
+                    let res = create_api(storage, &arguments).await;
+                    if res.is_ok()
+                        && let Some(on_write) = &context.on_write
+                    {
+                        on_write(collection.id);
+                    }
+                    res
+                }
+            }
+            Err(why) => Err(why),
+        },
+        "update_api" if can_write => match resolve_local_project(storage, context, &arguments).await {
+            Ok((collection, true)) => Err(format!(
+                "{:?} is a server-synced project: edit it in the CyberAPI app or use the bridge's MCP endpoint",
+                collection.name
+            )),
+            Ok((collection, false)) => {
+                if collection.role < CollectionRole::Editor {
+                    Err(format!(
+                        "changing APIs needs an editor's role in {:?}; this account views it",
+                        collection.name
+                    ))
+                } else {
+                    arguments["project"] = json!(collection.id.as_str());
+                    let res = update_api(storage, &arguments).await;
+                    if res.is_ok()
+                        && let Some(on_write) = &context.on_write
+                    {
+                        on_write(collection.id);
+                    }
+                    res
+                }
+            }
+            Err(why) => Err(why),
+        },
         "create_api" | "update_api" => Err(
             "this local MCP server is not allowed to change projects: enable 'Allow creating and updating APIs' in CyberAPI"
                 .into(),
@@ -831,8 +1031,10 @@ async fn call_local(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cyberapi_core::AccountId;
+    use cyberapi_core::sync::CopyBinding;
     use cyberapi_http::{HttpEngine, PreparedRequest, SendError, SendFuture, Watch};
-    use cyberapi_store::{MemoryStore, NewCollection};
+    use cyberapi_store::{MemoryStore, NewCollection, ServerCopyStore};
 
     struct DummyEngine;
 
@@ -904,6 +1106,140 @@ mod tests {
 
             let tree = storage.tree().load(created.id).await.expect("tree loaded");
             assert_eq!(tree.apis.len(), 1);
+        });
+    }
+
+    #[test]
+    fn handle_local_hides_other_account_copies_and_protects_server_copies_and_viewer_roles() {
+        pollster::block_on(async {
+            let store = Arc::new(MemoryStore::new());
+            let storage = Storage::from_backend(store.clone());
+            let engine: Arc<dyn HttpEngine> = Arc::new(DummyEngine);
+
+            let local_proj = storage
+                .collections()
+                .create(NewCollection {
+                    id: None,
+                    name: "LocalProj".into(),
+                    description: String::new(),
+                    owner: None,
+                })
+                .await
+                .expect("local_proj");
+            let my_copy = storage
+                .collections()
+                .create(NewCollection {
+                    id: None,
+                    name: "MyServerCopy".into(),
+                    description: String::new(),
+                    owner: None,
+                })
+                .await
+                .expect("my_copy");
+            let other_copy = storage
+                .collections()
+                .create(NewCollection {
+                    id: None,
+                    name: "OtherAccountCopy".into(),
+                    description: String::new(),
+                    owner: None,
+                })
+                .await
+                .expect("other_copy");
+
+            let copies: Arc<dyn ServerCopyStore> = store.clone();
+            copies
+                .bind(CopyBinding {
+                    collection: my_copy.id.clone(),
+                    account: AccountId::new("acct-me"),
+                    base: Some(1),
+                    unsynced: false,
+                })
+                .await
+                .expect("bind my_copy");
+            copies
+                .bind(CopyBinding {
+                    collection: other_copy.id.clone(),
+                    account: AccountId::new("acct-other"),
+                    base: Some(1),
+                    unsynced: false,
+                })
+                .await
+                .expect("bind other_copy");
+
+            let touched = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let touched_cl = touched.clone();
+            let mut roles_map = std::collections::HashMap::new();
+            roles_map.insert(my_copy.id.clone(), CollectionRole::Viewer);
+            let ctx = LocalMcpContext {
+                copies: Some(copies),
+                account: Arc::new(std::sync::RwLock::new(Some(AccountId::new("acct-me")))),
+                roles: Arc::new(std::sync::RwLock::new(roles_map)),
+                on_write: Some(Arc::new(move |id| {
+                    touched_cl.lock().expect("lock").push(id);
+                })),
+            };
+
+            // 1. list_projects hides OtherAccountCopy and shows MyServerCopy as viewer.
+            let (_, list_reply) = handle_local_with_context(
+                &storage,
+                &engine,
+                &ctx,
+                true,
+                true,
+                br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_projects","arguments":{}}}"#,
+            )
+            .await;
+            let list_text = list_reply.unwrap_or_default();
+            assert!(list_text.contains("LocalProj"));
+            assert!(list_text.contains("MyServerCopy"));
+            assert!(
+                !list_text.contains("OtherAccountCopy"),
+                "other account's server copy must be hidden: {list_text}"
+            );
+            assert!(list_text.contains("\\\"role\\\": \\\"viewer\\\""));
+
+            // 2. Accessing OtherAccountCopy by name is refused as not found.
+            let (_, hidden_reply) = handle_local_with_context(
+                &storage,
+                &engine,
+                &ctx,
+                true,
+                true,
+                br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_apis","arguments":{"project":"OtherAccountCopy"}}}"#,
+            )
+            .await;
+            let hidden_text = hidden_reply.unwrap_or_default();
+            assert!(hidden_text.contains("\"isError\":true"));
+            assert!(hidden_text.contains("no project is"));
+
+            // 3. create_api on MyServerCopy is refused because it is a server-synced project.
+            let (_, copy_write_reply) = handle_local_with_context(
+                &storage,
+                &engine,
+                &ctx,
+                true,
+                true,
+                br#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"create_api","arguments":{"project":"MyServerCopy","name":"NewApi"}}}"#,
+            )
+            .await;
+            let copy_write_text = copy_write_reply.unwrap_or_default();
+            assert!(copy_write_text.contains("\"isError\":true"));
+            assert!(copy_write_text.contains("server-synced project"));
+
+            // 4. create_api on LocalProj succeeds and triggers on_write.
+            let (_, local_write_reply) = handle_local_with_context(
+                &storage,
+                &engine,
+                &ctx,
+                true,
+                true,
+                br#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"create_api","arguments":{"project":"LocalProj","name":"Ping","url":"https://example.com/ping"}}}"#,
+            )
+            .await;
+            let local_write_text = local_write_reply.unwrap_or_default();
+            assert!(local_write_text.contains("\"isError\":false"), "{local_write_text}");
+            assert_eq!(touched.lock().expect("lock").as_slice(), &[local_proj.id]);
         });
     }
 }

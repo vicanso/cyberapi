@@ -236,9 +236,20 @@ impl VariablesState {
             .variables()
             .delete_environment(self.collection.clone(), id.clone());
         self.change_environments(call, cx, move |this, (), cx| {
+            let removed_ids: Vec<VariableId> = this
+                .variables
+                .iter()
+                .filter(|variable| variable.environment.as_ref() == Some(&id))
+                .map(|variable| variable.id.clone())
+                .collect();
             this.environments.retain(|environment| environment.id != id);
             this.variables
                 .retain(|variable| variable.environment.as_ref() != Some(&id));
+            if !removed_ids.is_empty() {
+                let _ = this
+                    .workspace
+                    .update(cx, |workspace, cx| workspace.remove_secret_variables(&removed_ids, cx));
+            }
             if this.layer.as_ref() == Some(&id) {
                 this.layer = None;
             }
@@ -266,6 +277,9 @@ impl VariablesState {
     }
 
     /// D8: creates an enabled variable in `environment` with `name` and `value`.
+    /// When another layer already marks `name` as secret (BUG-4), the new row
+    /// is created with an empty stored value, marked secret, and its value is
+    /// stored in the reader's local `SecretValues`.
     pub fn create_at(
         &mut self,
         environment: Option<EnvironmentId>,
@@ -273,16 +287,25 @@ impl VariablesState {
         value: String,
         cx: &mut Context<Self>,
     ) {
+        let secret = self.is_name_secret(&name, cx);
+        let stored_value = if secret { String::new() } else { value.clone() };
         let call = self.storage.variables().create(NewVariable {
             collection: self.collection.clone(),
             category: self.category,
             name,
-            value,
+            value: stored_value,
             enabled: true,
             environment,
         });
-        run_store(cx, call, |this, result, cx| match result {
-            Ok(variable) => {
+        run_store(cx, call, move |this, result, cx| match result {
+            Ok(mut variable) => {
+                if secret {
+                    variable.value = value;
+                    let _ = this
+                        .workspace
+                        .update(cx, |workspace, cx| workspace.set_secret(&variable, true, cx));
+                    variable.value = String::new();
+                }
                 this.variables.push(variable);
                 this.changed(cx);
             }
@@ -296,17 +319,49 @@ impl VariablesState {
     }
 
     /// D8: removes redundant duplicate variables within the same layer, keeping
-    /// the primary entry for each name and layer.
+    /// the primary entry for each name and layer and preserving any secret
+    /// flag/value from duplicate entries (BUG-4).
     pub fn deduplicate(&mut self, cx: &mut Context<Self>) -> usize {
         let ids = cyberapi_core::environments::duplicate_ids(&self.variables, self.category);
         let count = ids.len();
         if count == 0 {
             return 0;
         }
+        // If a duplicate row was marked secret, transfer its secret status and
+        // value (if the kept primary row has none) to the primary row before
+        // removing the duplicate IDs.
+        let mut promote: Vec<(VariableId, Option<String>)> = Vec::new();
+        for dup in self.variables.iter().filter(|v| ids.contains(&v.id)) {
+            if self.is_secret(&dup.id, cx)
+                && let Some(primary) = self.variables.iter().find(|v| {
+                    !ids.contains(&v.id)
+                        && v.category == dup.category
+                        && v.environment == dup.environment
+                        && v.name.trim() == dup.name.trim()
+                })
+            {
+                let dup_val = self.shown_value(dup, cx);
+                let primary_val = self.shown_value(primary, cx);
+                let migrated = (primary_val.is_empty() && !dup_val.is_empty()).then_some(dup_val);
+                promote.push((primary.id.clone(), migrated));
+            }
+        }
+        for (primary_id, migrated_val) in promote {
+            if !self.is_secret(&primary_id, cx) {
+                self.set_secret_one(&primary_id, true, cx);
+            }
+            if let Some(val) = migrated_val {
+                self.set_value(&primary_id, val, cx);
+            }
+        }
         for id in &ids {
             self.saving.remove(id);
         }
         self.variables.retain(|variable| !ids.contains(&variable.id));
+        let clean_ids = ids.clone();
+        let _ = self
+            .workspace
+            .update(cx, |workspace, cx| workspace.remove_secret_variables(&clean_ids, cx));
         let call = self.storage.variables().delete(self.collection.clone(), ids);
         run_store(cx, call, |this, result, cx| match result {
             Ok(()) => this.changed(cx),
@@ -317,10 +372,25 @@ impl VariablesState {
     }
 
     pub fn set_name(&mut self, id: &VariableId, name: String, cx: &mut Context<Self>) {
+        let should_be_secret = !self.is_secret(id, cx) && self.is_name_secret(&name, cx);
         self.edit(id, |variable| variable.name = name, false, cx);
+        if should_be_secret {
+            self.set_secret_one(id, true, cx);
+        }
     }
 
     pub fn set_value(&mut self, id: &VariableId, value: String, cx: &mut Context<Self>) {
+        if !self.is_secret(id, cx) {
+            let name_secret = self
+                .variables
+                .iter()
+                .find(|v| &v.id == id)
+                .map(|v| v.name.clone())
+                .is_some_and(|name| self.is_name_secret(&name, cx));
+            if name_secret {
+                self.set_secret_one(id, true, cx);
+            }
+        }
         if self.is_secret(id, cx) {
             let id = id.clone();
             let _ = self
@@ -338,6 +408,16 @@ impl VariablesState {
             .is_some_and(|workspace| workspace.read(cx).is_secret(id))
     }
 
+    /// BUG-4: whether any variable named `name` in this category is marked
+    /// secret across any layer (Shared or named environment).
+    pub fn is_name_secret(&self, name: &str, cx: &gpui_kit::App) -> bool {
+        let name = name.trim();
+        !name.is_empty()
+            && self.variables.iter().any(|variable| {
+                variable.category == self.category && variable.name.trim() == name && self.is_secret(&variable.id, cx)
+            })
+    }
+
     /// The value a row shows: the reader's own, for a secret one.
     pub fn shown_value(&self, variable: &Variable, cx: &gpui_kit::App) -> String {
         match self.workspace.upgrade() {
@@ -350,9 +430,7 @@ impl VariablesState {
         }
     }
 
-    /// D3: `id` made secret, its value moved to the reader's own and the
-    /// row keeping none; or not, the reader's value the row's again.
-    pub fn set_secret(&mut self, id: &VariableId, secret: bool, cx: &mut Context<Self>) {
+    fn set_secret_one(&mut self, id: &VariableId, secret: bool, cx: &mut Context<Self>) {
         let Some(variable) = self.variables.iter().find(|variable| &variable.id == id).cloned() else {
             return;
         };
@@ -364,6 +442,28 @@ impl VariablesState {
         if let Some(kept) = kept {
             self.edit(id, |variable| variable.value = kept, true, cx);
             cx.notify();
+        }
+    }
+
+    /// D3 / BUG-4: `id` (and any same-named variable in this category across
+    /// environments) made secret, its value moved to the reader's own and the
+    /// row keeping none; or not, the reader's value the row's again.
+    pub fn set_secret(&mut self, id: &VariableId, secret: bool, cx: &mut Context<Self>) {
+        let Some(target) = self.variables.iter().find(|variable| &variable.id == id).cloned() else {
+            return;
+        };
+        let trimmed = target.name.trim();
+        let target_ids: Vec<VariableId> = if trimmed.is_empty() {
+            vec![id.clone()]
+        } else {
+            self.variables
+                .iter()
+                .filter(|v| v.category == self.category && v.name.trim() == trimmed)
+                .map(|v| v.id.clone())
+                .collect()
+        };
+        for tid in target_ids {
+            self.set_secret_one(&tid, secret, cx);
         }
     }
 
@@ -425,11 +525,16 @@ impl VariablesState {
         for id in waiting {
             self.save(id, cx);
         }
+        let _ = self.workspace.update(cx, |workspace, cx| workspace.flush_secrets(cx));
     }
 
     pub fn delete(&mut self, id: &VariableId, cx: &mut Context<Self>) {
         self.saving.remove(id);
         self.variables.retain(|variable| &variable.id != id);
+        let clean_id = id.clone();
+        let _ = self.workspace.update(cx, |workspace, cx| {
+            workspace.remove_secret_variables(std::slice::from_ref(&clean_id), cx)
+        });
         let call = self
             .storage
             .variables()
@@ -649,5 +754,164 @@ mod tests {
         });
         let stored = pollster::block_on(storage.variables().list(collection, VariableCategory::Custom)).expect("list");
         assert_eq!(stored.len(), 1, "dev's went with it");
+    }
+
+    #[gpui_kit::test]
+    async fn matrix_create_at_and_deduplicate_keep_secrets_out_of_variable_store(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = storage
+            .collections()
+            .create(NewCollection {
+                name: "p".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("create");
+        let id = collection.id.clone();
+
+        struct NoEngine;
+        impl cyberapi_http::HttpEngine for NoEngine {
+            fn send(&self, _: cyberapi_http::PreparedRequest) -> cyberapi_http::SendFuture {
+                Box::pin(std::future::pending())
+            }
+        }
+        let sender = cyberapi_service::Sender {
+            storage: storage.clone(),
+            engine: std::sync::Arc::new(NoEngine),
+            files: std::sync::Arc::new(cyberapi_core::template::NoFiles("no files")),
+            env: std::sync::Arc::new(cyberapi_core::template::NoEnv("no environment")),
+            user_agent: "CyberAPI/test".into(),
+            timeouts: Default::default(),
+            sending: Default::default(),
+            inherited: Default::default(),
+            environment: None,
+            tokens: Default::default(),
+            secrets: Default::default(),
+        };
+        let workspace = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
+        cx.run_until_parked();
+        let state = cx.new(|cx| {
+            VariablesState::new(
+                storage.clone(),
+                workspace.downgrade(),
+                id.clone(),
+                VariableCategory::Environment,
+                None,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        // Create two environments (dev, prod)
+        state.update(cx, |state, cx| state.create_environment("dev".into(), cx));
+        state.update(cx, |state, cx| state.create_environment("prod".into(), cx));
+        cx.run_until_parked();
+        let (dev_id, prod_id) = state.read_with(cx, |state, _| {
+            (state.environments()[0].id.clone(), state.environments()[1].id.clone())
+        });
+
+        // Create a variable in dev and mark it secret
+        state.update(cx, |state, cx| {
+            state.create_at(Some(dev_id.clone()), "API_KEY".into(), "secret-val".into(), cx);
+        });
+        cx.run_until_parked();
+        let dev_var_id = state.read_with(cx, |state, _| state.variables()[0].id.clone());
+        state.update(cx, |state, cx| state.set_secret(&dev_var_id, true, cx));
+        cx.run_until_parked();
+
+        // Now create_at in prod for the same secret name "API_KEY" with identical value "secret-val"
+        state.update(cx, |state, cx| {
+            state.create_at(Some(prod_id.clone()), "API_KEY".into(), "secret-val".into(), cx);
+        });
+        cx.run_until_parked();
+        let prod_var_id = state.read_with(cx, |state, _| {
+            state
+                .variables()
+                .iter()
+                .find(|v| v.environment.as_ref() == Some(&prod_id))
+                .expect("prod var")
+                .id
+                .clone()
+        });
+
+        // Verify prod_var_id was automatically marked secret and its plaintext is NOT in VariableStore
+        let stored_vars =
+            pollster::block_on(storage.variables().list(id.clone(), VariableCategory::Environment)).expect("list");
+        assert!(
+            stored_vars.iter().all(|v| v.value.is_empty()),
+            "no secret plaintext stored in VariableStore: {stored_vars:?}"
+        );
+        assert!(state.read_with(cx, |state, cx| state.is_secret(&prod_var_id, cx)));
+        let secret_vals = pollster::block_on(storage.prefs().secret_values(id.clone())).expect("secrets");
+        assert_eq!(secret_vals.get(&dev_var_id), Some("secret-val"));
+        assert_eq!(secret_vals.get(&prod_var_id), Some("secret-val"));
+
+        // Now test deduplicate within the same layer (Shared): first row plain empty, second row secret
+        state.update(cx, |state, cx| {
+            state.create_at(None, "TOKEN".into(), String::new(), cx);
+            state.create_at(None, "TOKEN".into(), "tok-secret".into(), cx);
+        });
+        cx.run_until_parked();
+        let (first_tok_id, dup_tok_id) = state.read_with(cx, |state, _| {
+            let toks: Vec<_> = state.variables().iter().filter(|v| v.name == "TOKEN").collect();
+            assert_eq!(toks.len(), 2);
+            (toks[0].id.clone(), toks[1].id.clone())
+        });
+        state.update(cx, |state, cx| state.set_secret(&dup_tok_id, true, cx));
+        cx.run_until_parked();
+
+        assert_eq!(state.read_with(cx, |state, _| state.duplicate_count()), 1);
+        let removed = state.update(cx, |state, cx| state.deduplicate(cx));
+        cx.run_until_parked();
+        assert_eq!(removed, 1);
+
+        // Verify the kept primary TOKEN variable inherited the secret flag and value,
+        // and the duplicate ID was cleaned up from secret preferences.
+        assert!(state.read_with(cx, |state, cx| state.is_secret(&first_tok_id, cx)));
+        let secret_vals_after = pollster::block_on(storage.prefs().secret_values(id.clone())).expect("secrets");
+        assert_eq!(secret_vals_after.get(&first_tok_id), Some("tok-secret"));
+        assert_eq!(secret_vals_after.get(&dup_tok_id), None);
+
+        // Also verify that if a variable already exists in both dev and prod before one is marked secret,
+        // marking one secret synchronizes all same-named rows and typing into prod via set_value keeps it out of VariableStore.
+        state.update(cx, |state, cx| {
+            state.create_at(Some(dev_id.clone()), "DB_PASS".into(), "dev-pass".into(), cx);
+            state.create_at(Some(prod_id.clone()), "DB_PASS".into(), String::new(), cx);
+        });
+        cx.run_until_parked();
+        let (dev_db_id, prod_db_id) = state.read_with(cx, |state, _| {
+            let dev_v = state
+                .variables()
+                .iter()
+                .find(|v| v.name == "DB_PASS" && v.environment.as_ref() == Some(&dev_id))
+                .expect("dev DB_PASS")
+                .id
+                .clone();
+            let prod_v = state
+                .variables()
+                .iter()
+                .find(|v| v.name == "DB_PASS" && v.environment.as_ref() == Some(&prod_id))
+                .expect("prod DB_PASS")
+                .id
+                .clone();
+            (dev_v, prod_v)
+        });
+        state.update(cx, |state, cx| state.set_secret(&dev_db_id, true, cx));
+        cx.run_until_parked();
+        assert!(state.read_with(cx, |state, cx| state.is_secret(&prod_db_id, cx)));
+
+        state.update(cx, |state, cx| {
+            state.set_value(&prod_db_id, "prod-super-secret".into(), cx);
+            state.flush(cx);
+        });
+        cx.run_until_parked();
+        let stored_after =
+            pollster::block_on(storage.variables().list(id.clone(), VariableCategory::Environment)).expect("list");
+        assert!(
+            stored_after.iter().all(|v| v.value.is_empty()),
+            "existing row in prod must not write secret plaintext to VariableStore: {stored_after:?}"
+        );
+        let secret_vals_final = pollster::block_on(storage.prefs().secret_values(id)).expect("secrets");
+        assert_eq!(secret_vals_final.get(&prod_db_id), Some("prod-super-secret"));
     }
 }

@@ -94,6 +94,11 @@ pub struct RequestEditor {
     /// F12: URL `:param` and `{param}` path parameters, stored in
     /// `HttpRequest.variables`.
     path_params: Entity<KvEditor>,
+    /// F12 / Q-1: remembers `(value, description)` typed for path parameter
+    /// names while editing the URI so changing `:u` -> `:user_id` or
+    /// temporarily removing a placeholder does not leave ghost variables in
+    /// `HttpRequest.variables` or lose previously entered values.
+    path_drafts: HashMap<String, (String, String)>,
     query: Entity<KvEditor>,
     headers: Entity<KvEditor>,
     auth: Entity<AuthEditor>,
@@ -103,6 +108,8 @@ pub struct RequestEditor {
     json_problem: Option<String>,
     /// A10: why the JSON body does not conform to its `request_schema`.
     schema_problem: Option<String>,
+    /// The `active_request_schema` last checked by `check_json` (BUG-10).
+    checked_schema: Option<String>,
     /// That being worked out; a newer change drops it.
     json_check: Task<()>,
     /// The body as a tree, when this API's JSON is shown that way.
@@ -302,10 +309,17 @@ impl RequestEditor {
             window,
             cx,
         );
+        let path_drafts: HashMap<String, (String, String)> = request
+            .variables
+            .iter()
+            .filter(|kv| !kv.key.trim().is_empty())
+            .map(|kv| (kv.key.trim().to_string(), (kv.value.clone(), kv.description.clone())))
+            .collect();
         let path_list = cyberapi_core::model::sync_path_variables(&request.uri, &request.variables);
         let path_params = kv(
             &path_list,
             KvOptions {
+                fixed_keys: true,
                 example: "id: 1",
                 ..Default::default()
             },
@@ -354,9 +368,17 @@ impl RequestEditor {
             cx.observe(&api, |this, _, cx| {
                 this.follow_sending(cx);
                 this.mark_graphql_errors(cx);
+                if this.active_request_schema(cx) != this.checked_schema {
+                    this.check_json(cx);
+                }
                 cx.notify();
             }),
-            cx.observe(&workspace, |_, _, cx| cx.notify()),
+            cx.observe(&workspace, |this, _, cx| {
+                if this.active_request_schema(cx) != this.checked_schema {
+                    this.check_json(cx);
+                }
+                cx.notify();
+            }),
             cx.subscribe_in(&api, window, |this, _, event, window, cx| match event {
                 ApiEvent::RequestReplaced => this.reload(window, cx),
                 ApiEvent::NotSent(message) => {
@@ -442,10 +464,16 @@ impl RequestEditor {
                 _ => {}
             }),
             cx.subscribe(&path_params, |this, _, KvEvent::Changed(list), cx| {
+                for row in list {
+                    let key = row.key.trim();
+                    if !key.is_empty() {
+                        this.path_drafts
+                            .insert(key.to_string(), (row.value.clone(), row.description.clone()));
+                    }
+                }
                 let uri = this.current_full_uri(cx);
-                let variables = this.api.read(cx).request().variables.clone();
-                let merged = cyberapi_core::model::merge_path_variables(&uri, list, &variables);
-                this.api.update(cx, |api, cx| api.set_variables(merged, cx));
+                let synced = cyberapi_core::model::sync_path_variables(&uri, list);
+                this.api.update(cx, |api, cx| api.set_variables(synced, cx));
             }),
             cx.subscribe(&query, |this, _, KvEvent::Changed(list), cx| {
                 this.api.update(cx, |api, cx| api.set_query(list.clone(), cx));
@@ -491,6 +519,7 @@ impl RequestEditor {
             grpc_message,
             form,
             path_params,
+            path_drafts,
             query,
             headers,
             auth,
@@ -499,6 +528,7 @@ impl RequestEditor {
             ticker: None,
             json_problem: None,
             schema_problem: None,
+            checked_schema: None,
             json_check: Task::ready(()),
             json_tree,
             body_as_tree: None,
@@ -516,6 +546,7 @@ impl RequestEditor {
     /// the main thread: at each keystroke, a big body was parsed whole
     /// (PERF-10).
     fn check_json(&mut self, cx: &mut Context<Self>) {
+        self.checked_schema = self.active_request_schema(cx);
         if self.api.read(cx).request().content_type != ContentType::Json {
             self.json_check = Task::ready(());
             if self.json_problem.take().is_some() | self.schema_problem.take().is_some() {
@@ -526,7 +557,9 @@ impl RequestEditor {
         self.json_check = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(JSON_CHECK_AFTER).await;
             let Ok((body, schema)) = this.update(cx, |this, cx| {
-                (this.api.read(cx).request().body.clone(), this.active_request_schema(cx))
+                let schema = this.active_request_schema(cx);
+                this.checked_schema = schema.clone();
+                (this.api.read(cx).request().body.clone(), schema)
             }) else {
                 return;
             };
@@ -1048,7 +1081,15 @@ impl RequestEditor {
             form.set_files(request.content_type == ContentType::Multipart, cx);
             form.set_list(&form_fields(&request.body), window, cx);
         });
-        let path_list = cyberapi_core::model::sync_path_variables(&request.uri, &request.variables);
+        self.path_drafts.clear();
+        for kv in &request.variables {
+            let key = kv.key.trim();
+            if !key.is_empty() {
+                self.path_drafts
+                    .insert(key.to_string(), (kv.value.clone(), kv.description.clone()));
+            }
+        }
+        let path_list = self.current_path_rows(&request.uri, cx);
         self.path_params
             .update(cx, |kv, cx| kv.set_list(&path_list, window, cx));
         self.query.update(cx, |kv, cx| kv.set_list(&request.query, window, cx));
@@ -1068,6 +1109,13 @@ impl RequestEditor {
             self.headers.read(cx).list(cx),
             self.path_params.read(cx).list(cx),
         );
+        for row in &path_rows {
+            let key = row.key.trim();
+            if !key.is_empty() {
+                self.path_drafts
+                    .insert(key.to_string(), (row.value.clone(), row.description.clone()));
+            }
+        }
         let (method, content_type, uri, variables) = {
             let request = self.api.read(cx).request();
             (
@@ -1077,8 +1125,7 @@ impl RequestEditor {
                 request.variables.clone(),
             )
         };
-        let merged_vars = (!cyberapi_core::model::path_param_names(&uri).is_empty())
-            .then(|| cyberapi_core::model::merge_path_variables(&uri, &path_rows, &variables));
+        let next_vars = self.path_rows_from(&uri, &path_rows, &variables);
         let body = match content_type {
             // A gRPC call's body is its message's, whatever the type.
             _ if method == HttpMethod::Grpc => Some(self.grpc_body(cx)),
@@ -1090,8 +1137,8 @@ impl RequestEditor {
         self.api.update(cx, |api, cx| {
             api.set_query(query, cx);
             api.set_headers(headers, cx);
-            if let Some(vars) = merged_vars {
-                api.set_variables(vars, cx);
+            if next_vars != variables {
+                api.set_variables(next_vars, cx);
             }
             match (body, form) {
                 (Some(body), _) => api.set_body(body, cx),
@@ -1159,27 +1206,66 @@ impl RequestEditor {
         }
     }
 
+    fn path_rows_from(
+        &self,
+        uri: &str,
+        current_rows: &[cyberapi_core::model::KvParam],
+        saved_vars: &[cyberapi_core::model::KvParam],
+    ) -> Vec<cyberapi_core::model::KvParam> {
+        let mut combined: Vec<cyberapi_core::model::KvParam> = Vec::new();
+        for row in current_rows {
+            let key = row.key.trim();
+            if !key.is_empty() && !combined.iter().any(|existing| existing.key.trim() == key) {
+                combined.push(row.clone());
+            }
+        }
+        for (key, (value, description)) in &self.path_drafts {
+            if !combined.iter().any(|existing| existing.key.trim() == key) {
+                let enabled = saved_vars
+                    .iter()
+                    .find(|existing| existing.key.trim() == key)
+                    .map(|existing| existing.enabled)
+                    .unwrap_or(true);
+                combined.push(cyberapi_core::model::KvParam {
+                    key: key.clone(),
+                    value: value.clone(),
+                    enabled,
+                    description: description.clone(),
+                });
+            }
+        }
+        for row in saved_vars {
+            let key = row.key.trim();
+            if !key.is_empty() && !combined.iter().any(|existing| existing.key.trim() == key) {
+                combined.push(row.clone());
+            }
+        }
+        cyberapi_core::model::sync_path_variables(uri, &combined)
+    }
+
+    fn current_path_rows(&self, uri: &str, cx: &App) -> Vec<cyberapi_core::model::KvParam> {
+        let saved_vars = &self.api.read(cx).request().variables;
+        self.path_rows_from(uri, &[], saved_vars)
+    }
+
     fn sync_path_params(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let uri = self.current_full_uri(cx);
         let current_rows = self.path_params.read(cx).list(cx);
-        let mut variables = self.api.read(cx).request().variables.clone();
         for row in &current_rows {
             let key = row.key.trim();
-            if key.is_empty() {
-                continue;
-            }
-            if let Some(existing) = variables.iter_mut().find(|kv| kv.key.trim() == key) {
-                *existing = row.clone();
-            } else {
-                variables.push(row.clone());
+            if !key.is_empty() {
+                self.path_drafts
+                    .insert(key.to_string(), (row.value.clone(), row.description.clone()));
             }
         }
-        let next_rows = cyberapi_core::model::sync_path_variables(&uri, &variables);
+        let next_rows = {
+            let saved_vars = &self.api.read(cx).request().variables;
+            self.path_rows_from(&uri, &current_rows, saved_vars)
+        };
         let same_keys = current_rows.len() == next_rows.len()
-            && current_rows
-                .iter()
-                .zip(&next_rows)
-                .all(|(a, b)| a.key == b.key && a.value == b.value && a.description == b.description);
+            && current_rows.iter().zip(&next_rows).all(|(a, b)| {
+                a.key == b.key && a.value == b.value && a.description == b.description && a.enabled == b.enabled
+            });
         if !same_keys {
             self.path_params
                 .update(cx, |kv, cx| kv.set_list(&next_rows, window, cx));
@@ -1188,7 +1274,24 @@ impl RequestEditor {
 
     fn save_uri(&mut self, cx: &mut Context<Self>) {
         let uri = self.current_full_uri(cx);
-        self.api.update(cx, |api, cx| api.set_uri(uri, cx));
+        let current_rows = self.path_params.read(cx).list(cx);
+        for row in &current_rows {
+            let key = row.key.trim();
+            if !key.is_empty() {
+                self.path_drafts
+                    .insert(key.to_string(), (row.value.clone(), row.description.clone()));
+            }
+        }
+        let next_vars = {
+            let saved_vars = &self.api.read(cx).request().variables;
+            self.path_rows_from(&uri, &current_rows, saved_vars)
+        };
+        self.api.update(cx, |api, cx| {
+            api.set_uri(uri, cx);
+            if api.request().variables != next_vars {
+                api.set_variables(next_vars, cx);
+            }
+        });
     }
 
     /// F4.4: a `{{NAME}}` typed at the start of the field is the URI's

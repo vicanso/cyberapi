@@ -29,6 +29,7 @@ pub fn open_find_replace_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
+    workspace.update(cx, |ws, cx| ws.flush_editors(cx));
     let title_name = {
         let ws = workspace.read(cx);
         folder

@@ -54,13 +54,20 @@ impl Inherited {
     }
 
     /// D5: the values a request reads of variables: the folders' (an inner
-    /// one's in place of an outer one's), then the request's `own`, then a
-    /// run's `given`, each in place of what came before of its name.
+    /// one's in place of an outer one's), then the request's non-empty `own`
+    /// path parameters, then a run's `given`, each in place of what came
+    /// before of its name.
     pub fn values(&self, own: &[KvParam], given: &[(String, String)]) -> crate::run::Values {
         let mut values = crate::run::Values::new();
-        for kv in self.variables.iter().chain(own) {
+        for kv in &self.variables {
             let name = kv.key.trim();
             if kv.enabled && !name.is_empty() {
+                crate::run::set(&mut values, name, kv.value.clone());
+            }
+        }
+        for kv in own {
+            let name = kv.key.trim();
+            if kv.enabled && !name.is_empty() && !kv.value.is_empty() {
                 crate::run::set(&mut values, name, kv.value.clone());
             }
         }

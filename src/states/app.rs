@@ -75,10 +75,12 @@ impl AppStore {
             let engine = engine.clone();
             cx.new(|_| UpdateState::new(engine, install, kinds))
         });
+        let initial_account = server.as_ref().and_then(|s| s.read(cx).account());
+        let copies = extras.copies.clone();
         let local_mcp = this_build::serves_mcp().then(|| {
             let storage = storage.clone();
             let engine = engine.clone();
-            cx.new(|cx| LocalMcpState::new(storage, engine, cx))
+            cx.new(|cx| LocalMcpState::new(storage, engine, copies, initial_account, cx))
         });
         cx.set_global(Self {
             storage,
@@ -313,6 +315,13 @@ impl AppState {
     /// Who is signed in, as the desktop's bridge says. A copy of a server
     /// project open that is no longer theirs closes.
     pub fn set_me(&mut self, me: Option<Me>, cx: &mut Context<Self>) {
+        let account = AppStore::global(cx)
+            .server()
+            .and_then(|server| server.read(cx).account())
+            .or_else(|| me.as_ref().map(|me| me.account.id.clone()));
+        if let Some(mcp) = AppStore::global(cx).local_mcp().cloned() {
+            mcp.read(cx).set_account(account);
+        }
         if self.me != me {
             self.me = me;
             cx.notify();

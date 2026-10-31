@@ -19,6 +19,38 @@ use cyberapi_core::CollectionId;
 use cyberapi_core::mock::{Answer, EXAMPLE_HEADER, Routes};
 use cyberapi_store::StoreError;
 use serde_json::json;
+use std::sync::{Arc, Mutex};
+
+const MAX_CACHED_PROJECTS: usize = 64;
+
+#[derive(Default)]
+pub struct RouteCache {
+    entries: Mutex<Vec<(CollectionId, u64, Arc<Routes>)>>,
+}
+
+impl RouteCache {
+    pub fn get(&self, project: &CollectionId, revision: u64) -> Option<Arc<Routes>> {
+        let mut guard = self.entries.lock().ok()?;
+        let pos = guard
+            .iter()
+            .position(|(id, rev, _)| id == project && *rev == revision)?;
+        let entry = guard.remove(pos);
+        let routes = entry.2.clone();
+        guard.push(entry);
+        Some(routes)
+    }
+
+    pub fn put(&self, project: CollectionId, revision: u64, routes: Arc<Routes>) {
+        let Ok(mut guard) = self.entries.lock() else {
+            return;
+        };
+        guard.retain(|(id, _, _)| id != &project);
+        if guard.len() >= MAX_CACHED_PROJECTS {
+            guard.remove(0);
+        }
+        guard.push((project, revision, routes));
+    }
+}
 
 pub async fn handle_root(State(bridge): State<Bridge>, Path(project): Path<String>, request: Request) -> Response {
     handle(bridge, project, "/".to_string(), request).await
@@ -60,21 +92,59 @@ async fn handle(bridge: Bridge, project: String, subpath: String, request: Reque
         }
     };
 
+    let project_id = CollectionId::from(project);
     let storage = bridge.inner.store.scoped(account.id);
-    let tree = match storage.tree().load(CollectionId::from(project)).await {
-        Ok(tree) => tree,
+    let collection = match storage.collections().get(project_id.clone()).await {
+        Ok(collection) => collection,
         Err(StoreError::NotFound { .. } | StoreError::Forbidden { .. }) => {
             return cors_json(StatusCode::NOT_FOUND, "project not found");
         }
         Err(error) => {
-            tracing::warn!(%error, "a project's tree could not be loaded for mock");
+            tracing::warn!(%error, "a project could not be checked for mock");
             return cors_json(StatusCode::INTERNAL_SERVER_ERROR, "project could not be loaded");
         }
     };
 
+    let routes = match bridge.inner.mock_routes.get(&project_id, collection.revision) {
+        Some(cached) => cached,
+        None => {
+            let tree = match storage.tree().load(project_id.clone()).await {
+                Ok(tree) => tree,
+                Err(StoreError::NotFound { .. } | StoreError::Forbidden { .. }) => {
+                    return cors_json(StatusCode::NOT_FOUND, "project not found");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "a project's tree could not be loaded for mock");
+                    return cors_json(StatusCode::INTERNAL_SERVER_ERROR, "project could not be loaded");
+                }
+            };
+            let built = Arc::new(Routes::of(&tree));
+            bridge
+                .inner
+                .mock_routes
+                .put(project_id, collection.revision, built.clone());
+            built
+        }
+    };
+
     let wanted = header_str(EXAMPLE_HEADER);
-    let answered = Routes::of(&tree).answer(&method, &subpath, wanted, preflight);
+    let answered = routes.answer(&method, &subpath, wanted, preflight);
     into_response(answered)
+}
+
+fn is_forbidden_mock_header(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "set-cookie"
+            | "set-cookie2"
+            | "content-security-policy"
+            | "content-security-policy-report-only"
+            | "x-content-type-options"
+            | "x-frame-options"
+            | "strict-transport-security"
+            | "clear-site-data"
+    ) || lower.starts_with("cross-origin-")
 }
 
 fn into_response(answer: Answer) -> Response {
@@ -82,10 +152,19 @@ fn into_response(answer: Answer) -> Response {
     let mut response = Response::builder().status(status);
     if let Some(headers) = response.headers_mut() {
         for (name, value) in &answer.headers {
+            if is_forbidden_mock_header(name) {
+                continue;
+            }
             if let (Ok(name), Ok(value)) = (HeaderName::from_bytes(name.as_bytes()), HeaderValue::from_str(value)) {
                 headers.append(name, value);
             }
         }
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox; default-src 'none'"),
+        );
+        headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     }
     response
         .body(Body::from(answer.body))
@@ -103,4 +182,54 @@ fn cors_json(status: StatusCode, message: &str) -> Response {
         json!({ "error": message }).to_string(),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_responses_strip_set_cookie_and_enforce_sandbox_csp() {
+        let answer = Answer {
+            api: None,
+            status: 200,
+            headers: vec![
+                ("Content-Type".into(), "text/html".into()),
+                ("Set-Cookie".into(), "cyberapi_session=forged; Path=/".into()),
+                ("Content-Security-Policy".into(), "default-src *".into()),
+                ("X-Custom".into(), "ok".into()),
+            ],
+            body: b"<script>alert(1)</script>".to_vec(),
+        };
+        let response = into_response(answer);
+        let headers = response.headers();
+        assert!(headers.get(header::SET_COOKIE).is_none());
+        assert_eq!(
+            headers
+                .get(header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some("sandbox; default-src 'none'")
+        );
+        assert_eq!(
+            headers
+                .get(header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            headers.get(header::X_FRAME_OPTIONS).and_then(|v| v.to_str().ok()),
+            Some("DENY")
+        );
+        assert_eq!(headers.get("x-custom").and_then(|v| v.to_str().ok()), Some("ok"));
+    }
+
+    #[test]
+    fn route_cache_matches_revision_and_invalidates_on_new_revision() {
+        let cache = RouteCache::default();
+        let pid: CollectionId = "proj-1".into();
+        let routes = Arc::new(Routes::default());
+        cache.put(pid.clone(), 1, routes.clone());
+        assert!(cache.get(&pid, 1).is_some());
+        assert!(cache.get(&pid, 2).is_none());
+    }
 }

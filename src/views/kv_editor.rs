@@ -41,6 +41,10 @@ pub enum KvEvent {
 pub struct KvOptions {
     /// Rows can take a file (multipart, F4.8), where files can be read.
     pub files: bool,
+    /// Keys are fixed by the caller (e.g. URL path parameters, F12): key
+    /// inputs are read-only, rows are not added or removed here, and there
+    /// is no bulk editor.
+    pub fixed_keys: bool,
     /// Rows offered ready made, name and a start of the value: the
     /// headers one types most.
     pub presets: &'static [(&'static str, &'static str)],
@@ -115,19 +119,29 @@ impl KvEditor {
 
     /// Shows `list` in place of what the rows hold, without reporting it.
     pub fn set_list(&mut self, list: &[KvParam], window: &mut Window, cx: &mut Context<Self>) {
-        self.bulk = None;
+        if let Some(bulk) = &mut self.bulk {
+            bulk.descriptions = list
+                .iter()
+                .filter(|kv| !kv.key.is_empty() && !kv.description.is_empty())
+                .map(|kv| (kv.key.clone(), kv.description.clone()))
+                .collect();
+            let text = kv_text(list);
+            bulk.text.update(cx, |editor, cx| editor.set_value(text, window, cx));
+        }
         self.rows.clear();
         for kv in list {
             self.push_row(kv, window, cx);
         }
-        self.push_row(
-            &KvParam {
-                enabled: true,
-                ..Default::default()
-            },
-            window,
-            cx,
-        );
+        if !self.options.fixed_keys {
+            self.push_row(
+                &KvParam {
+                    enabled: true,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+        }
         self.report = None;
         self.removing = None;
         self.menu = None;
@@ -161,7 +175,7 @@ impl KvEditor {
                 .default_value(kv.description.clone())
         });
         let watch_key = cx.subscribe_in(&key, window, |this, _, event: &InputEvent, window, cx| {
-            if matches!(event, InputEvent::Change) {
+            if matches!(event, InputEvent::Change) && !this.options.fixed_keys {
                 this.edited(window, cx);
             }
         });
@@ -219,7 +233,8 @@ impl KvEditor {
 
     fn edited(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Typing in the blank row makes the next one.
-        if let Some(last) = self.rows.last()
+        if !self.options.fixed_keys
+            && let Some(last) = self.rows.last()
             && (!last.key.read(cx).value().is_empty()
                 || !last.value.read(cx).value().is_empty()
                 || !last.description.read(cx).value().is_empty())
@@ -392,6 +407,7 @@ impl KvEditor {
     fn toggle_bulk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.bulk.is_some() {
             let list = self.list(cx);
+            self.bulk = None;
             self.set_list(&list, window, cx);
             // What was typed last may not have been reported yet.
             self.report_later(cx);
@@ -512,6 +528,7 @@ impl Render for KvEditor {
                 )
                 .into_any_element();
         }
+        let fixed_keys = self.options.fixed_keys;
         let (key_label, value_label, description_label) = self.labels();
         let last = self.rows.len().saturating_sub(1);
         // A row of the common ones, from a menu.
@@ -567,9 +584,9 @@ impl Render for KvEditor {
                             .child(description_label),
                     ),
             )
-            .child(actions().children(presets).child(toggle));
+            .child(actions().children(presets).when(!fixed_keys, |this| this.child(toggle)));
         let rows = self.rows.iter().enumerate().map(|(index, row)| {
-            let blank = index == last;
+            let blank = !fixed_keys && index == last;
             let file_value = files
                 .then(|| row.value.read(cx).value().to_string())
                 .and_then(|value| value.strip_prefix("file://").map(str::to_string));
@@ -612,7 +629,7 @@ impl Render for KvEditor {
                                 .w(relative(0.28))
                                 .min_w_0()
                                 .flex_none()
-                                .child(Input::new(&row.key).small().appearance(false)),
+                                .child(Input::new(&row.key).small().appearance(false).disabled(fixed_keys)),
                         )
                         .child(
                             cell()
@@ -661,7 +678,7 @@ impl Render for KvEditor {
                                     ),
                             )
                         })
-                        .when(!blank, |this| this.child(remove)),
+                        .when(!blank && !fixed_keys, |this| this.child(remove)),
                 )
         });
         v_flex()

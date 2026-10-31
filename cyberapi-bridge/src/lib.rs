@@ -103,6 +103,8 @@ struct Inner {
     in_flight: Arc<InFlight>,
     /// Each account's MCP calls in the last minute.
     mcp_calls: mcp::Limiter,
+    /// Cached mock route tables keyed by `(CollectionId, revision)` (PERF-1).
+    mock_routes: mock::RouteCache,
 }
 
 impl Bridge {
@@ -128,6 +130,7 @@ impl Bridge {
                 throttle: Throttle::default(),
                 in_flight: Arc::new(InFlight::new(max_sends)),
                 mcp_calls: mcp::Limiter::default(),
+                mock_routes: mock::RouteCache::default(),
             }),
         }
     }

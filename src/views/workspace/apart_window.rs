@@ -117,16 +117,23 @@ impl ApartView {
         let app = AppStore::global(cx).state().clone();
         let subscriptions = vec![
             cx.observe_in(&workspace, window, |this, _, window, cx| this.follow(window, cx)),
+            cx.subscribe(&workspace, |this, _, event, cx| {
+                if matches!(event, crate::states::WorkspaceEvent::FlushEditors) {
+                    this.editor.update(cx, |editor, cx| editor.flush(cx));
+                }
+            }),
             cx.observe_in(&api, window, |this, _, window, cx| this.follow(window, cx)),
             // The editor's width presets are of this window's columns.
             cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
                 RequestEditorEvent::EditorShare(share) => this.set_editor_share(*share, window, cx),
             }),
-            // Leaving the project ends it.
+            // Leaving the project ends it; layout/prefs changes redraw this window (BUG-13).
             cx.observe_in(&app, window, move |_, app, window, cx| {
                 let here = matches!(app.read(cx).route(), Route::Workspace(open) if open.id == collection);
                 if !here {
                     window.remove_window();
+                } else {
+                    cx.notify();
                 }
             }),
             // What was typed last goes back with the tab — while the tab is
@@ -308,7 +315,14 @@ impl Render for ApartView {
             .strip_prefix(&format!("{APP_NAME} - "))
             .unwrap_or_default()
             .to_string();
-        let width = (f32::from(window.viewport_size().width) * 0.5).max(280.);
+        let ratio = AppStore::global(cx)
+            .state()
+            .read(cx)
+            .prefs()
+            .columns
+            .editor_ratio
+            .clamp(0.2, 0.8);
+        let width = (f32::from(window.viewport_size().width) * ratio).max(280.);
         let (send, focus_url) = (self.editor.downgrade(), self.editor.downgrade());
         let (find_response, search_response) = (self.response.downgrade(), self.response.downgrade());
         v_flex()

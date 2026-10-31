@@ -3,7 +3,7 @@
 //! Schema assertion, both editable right here), and the answers kept as
 //! examples of what it returns.
 
-use crate::states::ApiState;
+use crate::states::{ApiEvent, ApiState};
 use crate::views::name_dialog::ok_button;
 use cyberapi_core::assertions::Subject;
 use cyberapi_core::model::{ContentType, HttpRequest, KvParam};
@@ -44,7 +44,12 @@ pub struct DocsEditor {
 impl DocsEditor {
     pub fn new(api: Entity<ApiState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let text = api.read(cx).request().description.clone();
-        let editing_description = text.trim().is_empty();
+        let editable = api
+            .read(cx)
+            .workspace()
+            .upgrade()
+            .is_none_or(|workspace| workspace.read(cx).editable());
+        let editing_description = editable && text.trim().is_empty();
         let description = cx.new(|cx| {
             let mut editor = EditorState::new(window, cx)
                 .line_number(false)
@@ -56,15 +61,36 @@ impl DocsEditor {
         });
         let mut subscriptions = vec![
             cx.observe(&api, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&api, window, |this, api, event: &ApiEvent, window, cx| {
+                if matches!(event, ApiEvent::RequestReplaced) {
+                    let request = api.read(cx).request();
+                    let text = request.description.clone();
+                    let examples_len = request.examples.len();
+                    if this.open.is_some_and(|open| open >= examples_len) {
+                        this.open = None;
+                    }
+                    if this.description.read(cx).value().as_ref() != text {
+                        this.description
+                            .update(cx, |editor, cx| editor.set_value(text.clone(), window, cx));
+                    }
+                    this.editing_description = this.editable(cx) && text.trim().is_empty();
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&description, |this, editor, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
+                if matches!(event, InputEvent::Change) && this.editable(cx) {
                     let text = editor.read(cx).value().to_string();
                     this.api.update(cx, |api, cx| api.set_description(text, cx));
                 }
             }),
         ];
         if let Some(workspace) = api.read(cx).workspace().upgrade() {
-            subscriptions.push(cx.observe(&workspace, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.observe(&workspace, |this, workspace, cx| {
+                if !workspace.read(cx).editable() {
+                    this.editing_description = false;
+                }
+                cx.notify();
+            }));
         }
         Self {
             api,
@@ -73,6 +99,14 @@ impl DocsEditor {
             open: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn editable(&self, cx: &App) -> bool {
+        self.api
+            .read(cx)
+            .workspace()
+            .upgrade()
+            .is_none_or(|workspace| workspace.read(cx).editable())
     }
 
     /// F11: opens a JSON editor dialog for either the request body schema
@@ -410,7 +444,7 @@ impl DocsEditor {
             .cloned()
     }
 
-    fn render_inputs(&self, matched: Option<&HttpRequest>, cx: &mut Context<Self>) -> AnyElement {
+    fn render_inputs(&self, matched: Option<&HttpRequest>, editable: bool, cx: &mut Context<Self>) -> AnyElement {
         fn find_source_desc<'a>(list: &'a [KvParam], key: &str, ignore_case: bool) -> Option<&'a str> {
             list.iter()
                 .find(|kv| {
@@ -445,14 +479,6 @@ impl DocsEditor {
                 });
             let fallback = matched.and_then(|m| find_source_desc(&m.variables, name, false));
             rows.push(Self::render_flat_param(flat_idx, "path", &kv, fallback, false, cx));
-            flat_idx += 1;
-        }
-        for kv in request
-            .variables
-            .iter()
-            .filter(|kv| !kv.key.trim().is_empty() && !path_names.iter().any(|name| name == kv.key.trim()))
-        {
-            rows.push(Self::render_flat_param(flat_idx, "var", kv, None, false, cx));
             flat_idx += 1;
         }
         for kv in request.query.iter().filter(|kv| !kv.key.trim().is_empty()) {
@@ -566,15 +592,17 @@ impl DocsEditor {
                                 )
                             }),
                     )
-                    .child(
-                        Button::new("docs-edit-request-schema")
-                            .ghost()
-                            .xsmall()
-                            .label(t!("docs.edit_request_schema").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.edit_schema(true, window, cx);
-                            })),
-                    ),
+                    .when(editable, |this| {
+                        this.child(
+                            Button::new("docs-edit-request-schema")
+                                .ghost()
+                                .xsmall()
+                                .label(t!("docs.edit_request_schema").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.edit_schema(true, window, cx);
+                                })),
+                        )
+                    }),
             )
             .when_some(schema_problem, |this, problem| {
                 this.child(div().text_xs().text_color(warning).child(problem))
@@ -593,7 +621,7 @@ impl DocsEditor {
             .into_any_element()
     }
 
-    fn render_outputs(&self, matched: Option<&HttpRequest>, cx: &mut Context<Self>) -> AnyElement {
+    fn render_outputs(&self, matched: Option<&HttpRequest>, editable: bool, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (border, muted, warning) = (theme.border, theme.muted_foreground, theme.warning);
         let own_schema = self
@@ -652,15 +680,17 @@ impl DocsEditor {
                                 )
                             }),
                     )
-                    .child(
-                        Button::new("docs-edit-response-schema")
-                            .ghost()
-                            .xsmall()
-                            .label(t!("docs.edit_response_schema").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.edit_schema(false, window, cx);
-                            })),
-                    ),
+                    .when(editable, |this| {
+                        this.child(
+                            Button::new("docs-edit-response-schema")
+                                .ghost()
+                                .xsmall()
+                                .label(t!("docs.edit_response_schema").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.edit_schema(false, window, cx);
+                                })),
+                        )
+                    }),
             )
             .when_some(schema_problem, |this, problem| {
                 this.child(div().text_xs().text_color(warning).child(problem))
@@ -684,9 +714,10 @@ impl Render for DocsEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (border, muted, mono) = (theme.border, theme.muted_foreground, theme.mono_font_family.clone());
+        let editable = self.editable(cx);
         let matched = self.matched_source(cx);
-        let inputs = self.render_inputs(matched.as_ref(), cx);
-        let outputs = self.render_outputs(matched.as_ref(), cx);
+        let inputs = self.render_inputs(matched.as_ref(), editable, cx);
+        let outputs = self.render_outputs(matched.as_ref(), editable, cx);
         let examples = self.api.read(cx).request().examples.clone();
         let rows: Vec<AnyElement> = examples
             .iter()
@@ -733,17 +764,19 @@ impl Render for DocsEditor {
                             )
                             .child(div().flex_1().min_w_0().truncate().child(example.name.clone()))
                             .child(div().text_xs().text_color(muted).child(note))
-                            .child(
-                                Button::new(("example-remove", at))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Close)
-                                    .tooltip(SharedString::from(t!("common.delete").to_string()))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.open = None;
-                                        this.api.update(cx, |api, cx| api.remove_example(at, cx));
-                                    })),
-                            ),
+                            .when(editable, |this| {
+                                this.child(
+                                    Button::new(("example-remove", at))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Close)
+                                        .tooltip(SharedString::from(t!("common.delete").to_string()))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.open = None;
+                                            this.api.update(cx, |api, cx| api.remove_example(at, cx));
+                                        })),
+                                )
+                            }),
                     )
                     .when(opened, |this| {
                         this.child(
@@ -766,7 +799,7 @@ impl Render for DocsEditor {
         let empty = rows.is_empty();
         let desc_text = self.description.read(cx).value().to_string();
         let has_desc = !desc_text.trim().is_empty();
-        let show_markdown = has_desc && !self.editing_description;
+        let show_markdown = has_desc && (!self.editing_description || !editable);
         v_flex()
             .id("request-docs")
             .size_full()
@@ -784,7 +817,7 @@ impl Render for DocsEditor {
                             .font_semibold()
                             .child(t!("docs.description").to_string()),
                     )
-                    .when(has_desc, |this| {
+                    .when(editable && has_desc, |this| {
                         let label = if show_markdown {
                             t!("common.edit").to_string()
                         } else {
@@ -813,13 +846,19 @@ impl Render for DocsEditor {
                     .rounded_md()
                     .child(TextView::markdown("docs-markdown", desc_text))
                     .into_any_element()
-            } else {
+            } else if editable {
                 div()
                     .h(px(140.))
                     .border_1()
                     .border_color(border)
                     .rounded_md()
                     .child(Editor::new(&self.description).w_full().h_full().bordered(false))
+                    .into_any_element()
+            } else {
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(t!("docs.placeholder").to_string())
                     .into_any_element()
             })
             .child(inputs)

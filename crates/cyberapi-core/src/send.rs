@@ -257,9 +257,51 @@ pub fn resolve_uri(uri: &str, variables: &[Variable]) -> String {
     }
 }
 
+fn raw_path_param<'a>(
+    request: &'a HttpRequest,
+    variables: &'a [Variable],
+    inherited: &'a Inherited,
+    custom: &'a [(String, String)],
+    name: &str,
+) -> Option<&'a str> {
+    if let Some(v) = variables
+        .iter()
+        .find(|v| v.id.as_str().is_empty() && v.enabled && v.name == name && !v.value.is_empty())
+    {
+        return Some(v.value.as_str());
+    }
+    if let Some((_, val)) = custom.iter().rfind(|(key, val)| key == name && !val.is_empty()) {
+        return Some(val.as_str());
+    }
+    if let Some(kv) = request
+        .variables
+        .iter()
+        .find(|kv| kv.enabled && kv.key.trim() == name && !kv.value.is_empty())
+    {
+        return Some(kv.value.as_str());
+    }
+    if let Some(kv) = inherited
+        .variables
+        .iter()
+        .rev()
+        .find(|kv| kv.enabled && kv.key.trim() == name && !kv.value.is_empty())
+    {
+        return Some(kv.value.as_str());
+    }
+    variables
+        .iter()
+        .find(|v| {
+            v.enabled
+                && matches!(v.category, VariableCategory::Custom | VariableCategory::Environment)
+                && v.name == name
+                && !v.value.is_empty()
+        })
+        .map(|v| v.value.as_str())
+}
+
 /// F12: resolves the environment prefix and substitutes any `:param` or
 /// `{param}` path placeholders from the request's variables (or inherited /
-/// custom variables).
+/// custom / environment variables).
 fn resolve_path_uri(
     request: &HttpRequest,
     cx: &Context<'_>,
@@ -272,24 +314,11 @@ fn resolve_path_uri(
     }
     let mut rendered_values: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for name in names {
-        if let Some(kv) = request
-            .variables
-            .iter()
-            .find(|kv| kv.enabled && kv.key.trim() == name && !kv.value.is_empty())
-        {
-            let val = render(&kv.value)?;
+        if let Some(raw) = raw_path_param(request, cx.variables, cx.inherited, &cx.template.custom, &name) {
+            let val = render(raw)?;
             if !val.is_empty() {
                 rendered_values.insert(name, encode_uri_component(&val));
             }
-        } else if let Some(val) = cx
-            .template
-            .custom
-            .iter()
-            .find(|(key, _)| key == &name)
-            .map(|(_, val)| val.as_str())
-            .filter(|val| !val.is_empty())
-        {
-            rendered_values.insert(name, encode_uri_component(val));
         }
     }
     Ok(replace_path_params(&base, |name| rendered_values.get(name).cloned()))
@@ -345,13 +374,11 @@ fn templated_texts<'a>(
     );
     if !grpc {
         let path_names = path_param_names(&request.uri);
-        texts.extend(
-            request
-                .variables
-                .iter()
-                .filter(|kv| kv.enabled && path_names.iter().any(|name| name == kv.key.trim()))
-                .map(|kv| kv.value.as_str().into()),
-        );
+        for name in path_names {
+            if let Some(raw) = raw_path_param(request, variables, inherited, &[], &name) {
+                texts.push(raw.into());
+            }
+        }
     }
     texts.extend(global_headers(variables).map(|v| v.value.as_str().into()));
     texts.extend(inherited.sent_headers().map(|kv| kv.value.as_str().into()));
@@ -1687,5 +1714,73 @@ mod tests {
         let json = serde_json::to_string(&prepared).expect("json");
         assert!(json.contains("\"body\":\"AJ+Slg==\""), "{json}");
         assert_eq!(serde_json::from_str::<PreparedRequest>(&json).expect("read"), prepared);
+    }
+
+    #[test]
+    fn path_params_fall_back_when_blank_and_evaluate_templates_from_folder_or_run_values() {
+        let request = HttpRequest {
+            uri: "https://api.example.com/orders/:id/items/{sku}".into(),
+            // `id` has an empty value row (as synced from URI), `sku` has a default.
+            variables: vec![kv("id", ""), kv("sku", "req-sku")],
+            ..Default::default()
+        };
+        let inherited = Inherited {
+            variables: vec![kv("id", "{{timestamp()}}")],
+            ..Default::default()
+        };
+        let values = inherited.values(&request.variables, &[("sku".into(), "run-sku".into())]);
+        let vars = crate::run::with_values(&[], &values);
+        let inputs = Inputs {
+            now: 7,
+            custom: vars
+                .iter()
+                .filter(|v| v.category == VariableCategory::Custom)
+                .map(|v| (v.name.clone(), v.value.clone()))
+                .collect(),
+            ..Default::default()
+        };
+        let prepared = prepare(
+            &request,
+            &Context {
+                variables: &vars,
+                template: &inputs,
+                files: &NoFiles("no files"),
+                user_agent: "CyberAPI",
+                timeouts: Timeouts::default(),
+                accept_invalid_certs: false,
+                http_version: HttpVersion::Auto,
+                proxy: &ProxyPrefs::default(),
+                boundary: "B",
+                inherited: &inherited,
+                environment: None,
+            },
+        )
+        .expect("prepared");
+        assert_eq!(prepared.url, "https://api.example.com/orders/7/items/run-sku");
+
+        // Also verify direct Inputs.custom (without run::with_values) overrides request.variables
+        let direct_inputs = Inputs {
+            now: 9,
+            custom: vec![("sku".into(), "direct-{{timestamp()}}".into())],
+            ..Default::default()
+        };
+        let direct_prepared = prepare(
+            &request,
+            &Context {
+                variables: &[],
+                template: &direct_inputs,
+                files: &NoFiles("no files"),
+                user_agent: "CyberAPI",
+                timeouts: Timeouts::default(),
+                accept_invalid_certs: false,
+                http_version: HttpVersion::Auto,
+                proxy: &ProxyPrefs::default(),
+                boundary: "B",
+                inherited: &inherited,
+                environment: None,
+            },
+        )
+        .expect("direct prepared");
+        assert_eq!(direct_prepared.url, "https://api.example.com/orders/9/items/direct-9");
     }
 }

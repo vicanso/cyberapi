@@ -1178,8 +1178,7 @@ none_heard = "None yet."
 
 [own_variables]
 title = "Variables"
-folder_hint = "The APIs in this folder, its subfolders' too, read these as {{value(name)}}, or as {{NAME}} at the start of an address. They come before the environment's variables and the project's custom ones; an inner folder's before an outer one's, and an API's own before its folders'. Keep what changes with the environment in the environment."
-api_hint = "This API's own: read as {{value(name)}}, or as {{NAME}} at the start of its address. They come before its folders', the environment's and the project's of the same names; a run's data and extracted values come before them."
+folder_hint = "The APIs in this folder, its subfolders' too, read these as {{value(name)}}, or as {{NAME}} at the start of an address. They come before the environment's variables and the project's custom ones; an inner folder's before an outer one's. Keep what changes with the environment in the environment."
 
 [undo]
 undo = "Undo"

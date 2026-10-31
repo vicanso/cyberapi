@@ -248,6 +248,16 @@ impl GrpcBody {
     /// The message the prepared request carries, as one line of JSON: what
     /// a grpcurl command sends.
     fn sent_message(&self, framed: &[u8]) -> Option<String> {
+        if framed.is_empty() || self.descriptors.trim().is_empty() {
+            let trimmed = self.message.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            return serde_json::from_str::<serde_json::Value>(trimmed)
+                .ok()
+                .map(|v| v.to_string())
+                .or_else(|| Some(trimmed.to_string()));
+        }
         let definitions = self.definitions()?.ok()?;
         let method = self.method_in(&definitions).ok()?;
         let message = unframe(framed).ok()?.into_iter().next()?;

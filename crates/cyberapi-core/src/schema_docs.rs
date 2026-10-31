@@ -44,25 +44,68 @@ pub enum SchemaBreakingChange {
     AddedRequired { path: String },
 }
 
+fn canonical_path(path: &str) -> &str {
+    if path == "[]" {
+        "[]"
+    } else {
+        path.strip_suffix("[]").unwrap_or(path)
+    }
+}
+
+fn is_ancestor_path(ancestor: &str, child: &str) -> bool {
+    child.strip_prefix(ancestor).is_some_and(|rest| rest.starts_with('.'))
+}
+
+fn is_compatible_type(old_kind: &str, new_kind: &str) -> bool {
+    if old_kind == new_kind {
+        return true;
+    }
+    let (old_base, old_null) = match old_kind.strip_suffix('?') {
+        Some(base) => (base, true),
+        None => (old_kind, false),
+    };
+    let (new_base, new_null) = match new_kind.strip_suffix('?') {
+        Some(base) => (base, true),
+        None => (new_kind, false),
+    };
+    if old_null && !new_null {
+        return false;
+    }
+    if old_base == new_base {
+        return true;
+    }
+    if let (Some(old_inner), Some(new_inner)) = (
+        old_base.strip_prefix("array<").and_then(|s| s.strip_suffix('>')),
+        new_base.strip_prefix("array<").and_then(|s| s.strip_suffix('>')),
+    ) {
+        return is_compatible_type(old_inner, new_inner);
+    }
+    false
+}
+
 /// B11: compares `old_schema` and `new_schema` and lists removed fields,
 /// changed field types, and newly required fields.
 pub fn breaking_changes_of_schema(old_schema: &str, new_schema: &str) -> Vec<SchemaBreakingChange> {
     let (Ok(old_fields), Ok(new_fields)) = (fields_of_schema(old_schema), fields_of_schema(new_schema)) else {
         return Vec::new();
     };
-    if old_fields.is_empty() && new_fields.is_empty() {
+    if old_fields.is_empty() {
         return Vec::new();
     }
     let mut changes = Vec::new();
     for old in &old_fields {
-        match new_fields.iter().find(|f| f.path == old.path) {
+        let old_canon = canonical_path(&old.path);
+        match new_fields.iter().find(|f| canonical_path(&f.path) == old_canon) {
             None => {
-                changes.push(SchemaBreakingChange::RemovedField { path: old.path.clone() });
+                let ancestor_missing = old_fields.iter().any(|anc| {
+                    is_ancestor_path(&anc.path, &old.path) && !new_fields.iter().any(|f| f.path == anc.path)
+                });
+                if !ancestor_missing {
+                    changes.push(SchemaBreakingChange::RemovedField { path: old.path.clone() });
+                }
             }
             Some(new) => {
-                let old_base = old.kind.strip_suffix('?').unwrap_or(&old.kind);
-                let new_base = new.kind.strip_suffix('?').unwrap_or(&new.kind);
-                if old_base != new_base {
+                if !is_compatible_type(&old.kind, &new.kind) {
                     changes.push(SchemaBreakingChange::TypeChanged {
                         path: old.path.clone(),
                         from: old.kind.clone(),
@@ -74,12 +117,24 @@ pub fn breaking_changes_of_schema(old_schema: &str, new_schema: &str) -> Vec<Sch
     }
     for new in &new_fields {
         if new.required {
+            let new_canon = canonical_path(&new.path);
             let was_required = old_fields
                 .iter()
-                .find(|f| f.path == new.path)
+                .find(|f| canonical_path(&f.path) == new_canon)
                 .is_some_and(|old| old.required);
             if !was_required {
-                changes.push(SchemaBreakingChange::AddedRequired { path: new.path.clone() });
+                let mandatory_from_root = new_fields
+                    .iter()
+                    .filter(|anc| is_ancestor_path(&anc.path, &new.path))
+                    .all(|anc| {
+                        (anc.required || anc.path == "[]")
+                            && old_fields
+                                .iter()
+                                .any(|old| canonical_path(&old.path) == canonical_path(&anc.path))
+                    });
+                if mandatory_from_root {
+                    changes.push(SchemaBreakingChange::AddedRequired { path: new.path.clone() });
+                }
             }
         }
     }
@@ -964,6 +1019,40 @@ mod tests {
                 SchemaBreakingChange::AddedRequired { path: "name".into() },
                 SchemaBreakingChange::AddedRequired { path: "tenant".into() },
             ]
+        );
+
+        // First-time schema addition does not flag required fields as breaking.
+        assert!(breaking_changes_of_schema("", &new.to_string()).is_empty());
+
+        // Removing a parent object only reports the parent once, and adding an
+        // optional parent object with required subfields is not breaking.
+        let nested_old = json!({
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "integer" },
+                        "email": { "type": "string" }
+                    }
+                }
+            }
+        });
+        let nested_new = json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "required": ["keyword"],
+                    "properties": {
+                        "keyword": { "type": "string" }
+                    }
+                }
+            }
+        });
+        assert_eq!(
+            breaking_changes_of_schema(&nested_old.to_string(), &nested_new.to_string()),
+            vec![SchemaBreakingChange::RemovedField { path: "user".into() }]
         );
     }
 }

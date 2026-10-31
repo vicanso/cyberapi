@@ -708,6 +708,19 @@ impl ApiState {
         cx.emit(ApiEvent::RequestReplaced);
     }
 
+    /// Updates the in-memory request to match what was already persisted to the
+    /// store (e.g. after project-wide find-and-replace or an external MCP
+    /// write), clearing any pending debounce without issuing a duplicate save.
+    pub fn set_stored_request(&mut self, request: HttpRequest, cx: &mut Context<Self>) {
+        self.forget_unsaved();
+        if self.request == request {
+            return;
+        }
+        self.request = request;
+        cx.emit(ApiEvent::RequestReplaced);
+        cx.notify();
+    }
+
     /// F4.8: a form or multipart body's fields. A gRPC call's body is its
     /// own: the hidden list writes nothing there.
     pub fn set_form(&mut self, fields: Vec<KvParam>, cx: &mut Context<Self>) {

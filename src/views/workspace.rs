@@ -668,6 +668,11 @@ impl WorkspaceView {
                         move |cx| theirs.update(cx, |state, cx| state.take_server(cx)),
                     );
                 }
+                WorkspaceEvent::FlushEditors => {
+                    if let Some(selected) = &this.selected {
+                        selected.editor.update(cx, |editor, cx| editor.flush(cx));
+                    }
+                }
             }),
             // BUG-24: leaving the project takes its undo notice away. The
             // view goes as a frame is drawn, the window taken: later.

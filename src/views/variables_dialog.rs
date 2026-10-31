@@ -18,8 +18,8 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Styled as _, Subscription, Window, div, px,
+    App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, Styled as _, Subscription, Window, div, px,
 };
 use rust_i18n::t;
 use std::collections::HashMap;
@@ -105,6 +105,7 @@ struct VariablesEditor {
     /// D8: side-by-side matrix mode across Shared and all named environments.
     matrix: bool,
     matrix_cells: HashMap<(Option<EnvironmentId>, String), MatrixCell>,
+    syncing: bool,
     naming: Option<Naming>,
     /// The environment asked about before it goes, with its variables.
     deleting: Option<EnvironmentId>,
@@ -136,6 +137,7 @@ impl VariablesEditor {
             rows: HashMap::new(),
             matrix: false,
             matrix_cells: HashMap::new(),
+            syncing: false,
             naming: None,
             deleting: None,
             _subscriptions: subscriptions,
@@ -200,12 +202,16 @@ impl VariablesEditor {
                 .when(selected, |button| button.primary())
                 .when(!selected, |button| button.ghost())
                 .label(label)
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let was_matrix = this.matrix;
                     this.matrix = false;
                     this.naming = None;
                     this.deleting = None;
                     let chosen = chosen.clone();
                     this.state.update(cx, |state, cx| state.set_layer(chosen, cx));
+                    if was_matrix {
+                        this.sync_rows(window, cx);
+                    }
                 }))
         };
         let mut buttons = vec![button(
@@ -410,10 +416,29 @@ impl VariablesEditor {
             .retain(|id, _| variables.iter().any(|variable| &variable.id == id));
         for variable in variables {
             let secret = self.state.read(cx).is_secret(&variable.id, cx);
-            if self.rows.get(&variable.id).is_some_and(|row| row.secret == secret) {
+            let shown = self.state.read(cx).shown_value(&variable, cx);
+            if let Some(row) = self.rows.get(&variable.id)
+                && row.secret == secret
+            {
+                if !row.name.read(cx).focus_handle(cx).is_focused(window)
+                    && row.name.read(cx).value().as_ref() != variable.name
+                {
+                    let name_input = row.name.clone();
+                    self.syncing = true;
+                    name_input.update(cx, |input, cx| input.set_value(variable.name.clone(), window, cx));
+                    self.syncing = false;
+                }
+                if let Some(row) = self.rows.get(&variable.id)
+                    && !row.value.read(cx).focus_handle(cx).is_focused(window)
+                    && row.value.read(cx).value().as_ref() != shown
+                {
+                    let val_input = row.value.clone();
+                    self.syncing = true;
+                    val_input.update(cx, |input, cx| input.set_value(shown, window, cx));
+                    self.syncing = false;
+                }
                 continue;
             }
-            let shown = self.state.read(cx).shown_value(&variable, cx);
             let name = cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("variables.name").to_string())
@@ -431,13 +456,13 @@ impl VariablesEditor {
             let (for_name, for_value) = (variable.id.clone(), variable.id.clone());
             let subscriptions = [
                 cx.subscribe(&name, move |this, input, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
+                    if !this.syncing && matches!(event, InputEvent::Change) {
                         let text = input.read(cx).value().to_string();
                         this.state.update(cx, |state, cx| state.set_name(&for_name, text, cx));
                     }
                 }),
                 cx.subscribe(&value, move |this, input, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
+                    if !this.syncing && matches!(event, InputEvent::Change) {
                         let text = input.read(cx).value().to_string();
                         this.state.update(cx, |state, cx| state.set_value(&for_value, text, cx));
                     }
@@ -453,7 +478,9 @@ impl VariablesEditor {
                 },
             );
         }
-        self.sync_matrix_cells(window, cx);
+        if self.matrix {
+            self.sync_matrix_cells(window, cx);
+        }
         cx.notify();
     }
 
@@ -480,16 +507,17 @@ impl VariablesEditor {
         self.matrix_cells
             .retain(|(env, key), _| names.iter().any(|name| name == key) && layers.iter().any(|layer| layer == env));
         for name in &names {
+            let row_secret = self.state.read(cx).is_name_secret(name, cx);
             let shared_var = cyberapi_core::environments::layer_variable(&variables, category, None, name);
             let shared_shown = match shared_var.filter(|v| v.enabled) {
-                Some(v) if self.state.read(cx).is_secret(&v.id, cx) => cyberapi_core::secrets::MASK.to_string(),
+                Some(_) if row_secret => cyberapi_core::secrets::MASK.to_string(),
                 Some(v) => v.value.clone(),
                 None => String::new(),
             };
             for layer in &layers {
                 let var = cyberapi_core::environments::layer_variable(&variables, category, layer.as_ref(), name);
                 let var_id = var.map(|v| v.id.clone());
-                let secret = var.is_some_and(|v| self.state.read(cx).is_secret(&v.id, cx));
+                let secret = row_secret || var.is_some_and(|v| self.state.read(cx).is_secret(&v.id, cx));
                 let shown = var.map(|v| self.state.read(cx).shown_value(v, cx)).unwrap_or_default();
                 let placeholder = if secret {
                     t!("variables.secret_value").to_string()
@@ -502,6 +530,8 @@ impl VariablesEditor {
                 if let Some(cell) = self.matrix_cells.get_mut(&cell_key)
                     && cell.secret == secret
                 {
+                    let mut next_input_val: Option<(Entity<InputState>, String)> = None;
+                    let mut next_placeholder: Option<(Entity<InputState>, String)> = None;
                     if cell.creating
                         && let Some(new_id) = var_id.clone()
                     {
@@ -513,13 +543,24 @@ impl VariablesEditor {
                         }
                     } else if cell.variable_id != var_id {
                         cell.variable_id = var_id;
-                        cell.input
-                            .update(cx, |input, cx| input.set_value(shown.clone(), window, cx));
+                        next_input_val = Some((cell.input.clone(), shown.clone()));
+                    } else if !cell.creating
+                        && !cell.input.read(cx).focus_handle(cx).is_focused(window)
+                        && cell.input.read(cx).value().as_ref() != shown
+                    {
+                        next_input_val = Some((cell.input.clone(), shown.clone()));
                     }
                     if cell.placeholder != placeholder {
                         cell.placeholder = placeholder.clone();
-                        cell.input
-                            .update(cx, |input, cx| input.set_placeholder(placeholder, window, cx));
+                        next_placeholder = Some((cell.input.clone(), placeholder));
+                    }
+                    if let Some((input, val)) = next_input_val {
+                        self.syncing = true;
+                        input.update(cx, |input, cx| input.set_value(val, window, cx));
+                        self.syncing = false;
+                    }
+                    if let Some((input, ph)) = next_placeholder {
+                        input.update(cx, |input, cx| input.set_placeholder(ph, window, cx));
                     }
                     continue;
                 }
@@ -532,7 +573,7 @@ impl VariablesEditor {
                 });
                 let (cell_layer, cell_name) = (layer.clone(), name.clone());
                 let subscription = cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
-                    if !matches!(event, InputEvent::Change) {
+                    if this.syncing || !matches!(event, InputEvent::Change) {
                         return;
                     }
                     let text = input.read(cx).value().to_string();

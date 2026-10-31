@@ -138,6 +138,11 @@ fn replace_kv_list(list: &mut [KvParam], find: &str, replace: &str, case_sensiti
             kv.value = next_val;
             total += v_count;
         }
+        let (next_desc, d_count) = replace_str(&kv.description, find, replace, case_sensitive);
+        if d_count > 0 {
+            kv.description = next_desc;
+            total += d_count;
+        }
     }
     total
 }
@@ -178,7 +183,33 @@ pub fn preview(data: &TreeData, folder: Option<&ItemId>, find: &str, replace: &s
             header_matches += replace_kv_list(&mut after.headers, find, replace, scope.case_sensitive);
         }
         if scope.body {
-            if after.content_type.is_key_value() {
+            if after.method == HttpMethod::Grpc {
+                let mut grpc = crate::grpc::GrpcBody::read(&after.body);
+                let (next_service, s_count) = replace_str(&grpc.service, find, replace, scope.case_sensitive);
+                let (next_method, m_count) = replace_str(&grpc.method, find, replace, scope.case_sensitive);
+                let (next_msg, msg_count) = replace_str(&grpc.message, find, replace, scope.case_sensitive);
+                let count = s_count + m_count + msg_count;
+                if count > 0 {
+                    grpc.service = next_service;
+                    grpc.method = next_method;
+                    grpc.message = next_msg;
+                    after.body = grpc.to_body();
+                    body_matches = count;
+                }
+            } else if after.content_type == crate::model::ContentType::GraphQl {
+                let mut gql = crate::graphql::GraphQlBody::read(&after.body);
+                let (next_query, q_count) = replace_str(&gql.query, find, replace, scope.case_sensitive);
+                let (next_vars, v_count) = replace_str(&gql.variables, find, replace, scope.case_sensitive);
+                let (next_op, op_count) = replace_str(&gql.operation_name, find, replace, scope.case_sensitive);
+                let count = q_count + v_count + op_count;
+                if count > 0 {
+                    gql.query = next_query;
+                    gql.variables = next_vars;
+                    gql.operation_name = next_op;
+                    after.body = gql.to_body();
+                    body_matches = count;
+                }
+            } else if after.content_type.is_key_value() {
                 let mut fields = form_fields(&after.body);
                 let count = replace_kv_list(&mut fields, find, replace, scope.case_sensitive);
                 if count > 0 {
@@ -295,5 +326,64 @@ mod tests {
         assert!(apply_requests(&mut config, &plan.originals()));
         let restored_me: &ApiSetting = config.apis.iter().find(|api| api.id.as_str() == "me").expect("me");
         assert_eq!(restored_me.request.uri, "{{OLD_HOST}}/v1/users/me");
+    }
+
+    #[test]
+    fn body_replace_preserves_grpc_definitions_and_graphql_envelope() {
+        let mut data = TreeData::default();
+        let grpc_id: ItemId = "grpc-1".into();
+        let gql_id: ItemId = "gql-1".into();
+        data.top_order = vec![grpc_id.clone(), gql_id.clone()];
+        data.apis = vec![
+            ApiSetting {
+                id: grpc_id,
+                name: "gRPC".into(),
+                request: HttpRequest {
+                    method: HttpMethod::Grpc,
+                    body: crate::grpc::GrpcBody {
+                        service: "v1.Shop".into(),
+                        method: "Get".into(),
+                        message: r#"{"version":"v1"}"#.into(),
+                        descriptors: "BASE64_v1_PROTO_DEFINITIONS".into(),
+                        ..Default::default()
+                    }
+                    .to_body(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ApiSetting {
+                id: gql_id,
+                name: "GraphQL".into(),
+                request: HttpRequest {
+                    method: HttpMethod::Post,
+                    content_type: ContentType::GraphQl,
+                    body: crate::graphql::GraphQlBody {
+                        query: "query { query }".into(),
+                        variables: r#"{"env":"query"}"#.into(),
+                        operation_name: String::new(),
+                    }
+                    .to_body(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ];
+
+        let grpc_plan = preview(&data, None, "v1", "v2", FindScope::default());
+        assert_eq!(grpc_plan.hits.len(), 1);
+        let updated_grpc = crate::grpc::GrpcBody::read(&grpc_plan.hits[0].after.body);
+        assert_eq!(updated_grpc.service, "v2.Shop");
+        assert_eq!(updated_grpc.message, r#"{"version":"v2"}"#);
+        assert_eq!(
+            updated_grpc.descriptors, "BASE64_v1_PROTO_DEFINITIONS",
+            "protobuf descriptors must not be modified by text find/replace"
+        );
+
+        let gql_plan = preview(&data, None, "query", "mutation", FindScope::default());
+        assert_eq!(gql_plan.hits.len(), 1);
+        let updated_gql = crate::graphql::GraphQlBody::read(&gql_plan.hits[0].after.body);
+        assert_eq!(updated_gql.query, "mutation { mutation }");
+        assert_eq!(updated_gql.variables, r#"{"env":"mutation"}"#);
     }
 }

@@ -71,9 +71,24 @@ pub fn masked_params(params: &[KvParam]) -> Vec<KvParam> {
 
 /// JSON with the values of keys that read like secrets masked, at any
 /// depth. An object or an array under such a key is masked whole.
+/// A `KvParam`-shaped object (`{key/name, value, enabled?, description?}`)
+/// masks `value` when `key`/`name` reads like a secret, leaving `key` intact.
 pub fn mask_json(value: &mut Value) {
     match value {
         Value::Object(fields) => {
+            if let Some(param_name) = kv_param_name(fields).map(str::to_string) {
+                if let Some(val) = fields.get_mut("value") {
+                    let empty_or_template = val
+                        .as_str()
+                        .is_some_and(|text| text.is_empty() || names_a_template(text));
+                    if secret_name(&param_name) && !val.is_null() && !empty_or_template {
+                        *val = Value::String(MASK.into());
+                    } else {
+                        mask_json(val);
+                    }
+                }
+                return;
+            }
             for (key, field) in fields.iter_mut() {
                 let template = field.as_str().is_some_and(names_a_template);
                 if secret_name(key) && !field.is_null() && !template {
@@ -86,6 +101,19 @@ pub fn mask_json(value: &mut Value) {
         Value::Array(items) => items.iter_mut().for_each(mask_json),
         _ => {}
     }
+}
+
+fn kv_param_name(fields: &serde_json::Map<String, Value>) -> Option<&str> {
+    if !fields.contains_key("value") {
+        return None;
+    }
+    let only_kv_fields = fields
+        .keys()
+        .all(|k| matches!(k.as_str(), "key" | "name" | "value" | "enabled" | "description"));
+    if !only_kv_fields {
+        return None;
+    }
+    fields.get("key").or_else(|| fields.get("name")).and_then(Value::as_str)
 }
 
 /// A body as text with what reads like a secret masked: JSON by its keys,
@@ -110,6 +138,43 @@ pub fn masked_body(body: &str) -> String {
             .join("&");
     }
     body.to_string()
+}
+
+/// BUG-1: masks a stored `HttpRequest.body` according to its `(method, content_type)`:
+/// - `HttpMethod::Grpc`: masks `GrpcBody.message` and omits base64 `descriptors`.
+/// - `ContentType::Form` / `Multipart`: masks each `KvParam.value` by its `key`.
+/// - `ContentType::GraphQl`: masks `GraphQlBody.variables`.
+/// - Everything else: [`masked_body`].
+pub fn masked_request_body(method: HttpMethod, content_type: ContentType, body: &str) -> String {
+    if method == HttpMethod::Grpc {
+        let grpc = crate::grpc::GrpcBody::read(body);
+        return crate::grpc::GrpcBody {
+            service: grpc.service,
+            method: grpc.method,
+            message: masked_body(&grpc.message),
+            ..Default::default()
+        }
+        .to_body();
+    }
+    match content_type {
+        ContentType::Form | ContentType::Multipart => {
+            if let Ok(fields) = serde_json::from_str::<Vec<KvParam>>(body) {
+                serde_json::to_string(&masked_params(&fields)).unwrap_or_default()
+            } else {
+                masked_body(body)
+            }
+        }
+        ContentType::GraphQl => {
+            let gql = crate::graphql::GraphQlBody::read(body);
+            crate::graphql::GraphQlBody {
+                query: gql.query,
+                variables: masked_body(&gql.variables),
+                operation_name: gql.operation_name,
+            }
+            .to_body()
+        }
+        _ => masked_body(body),
+    }
 }
 
 /// `text` cut after `max` characters, with a note of how much there was.
@@ -527,5 +592,61 @@ mod tests {
             &json!({"method": "post", "contentType": "form", "body": [{"name": "user", "value": "me"}, {"name": "pass", "value": "p", "enabled": false}]}),
         )
         .expect("a form")
+    }
+
+    #[test]
+    fn masked_body_preserves_kv_param_keys_and_masks_secret_values() {
+        let form = serde_json::to_string(&vec![
+            KvParam {
+                key: "username".into(),
+                value: "alice".into(),
+                enabled: true,
+                description: String::new(),
+            },
+            KvParam {
+                key: "password".into(),
+                value: "super-secret".into(),
+                enabled: true,
+                description: String::new(),
+            },
+        ])
+        .expect("json");
+        let out: Vec<KvParam> = serde_json::from_str(&masked_body(&form)).expect("parse masked");
+        assert_eq!(out[0].key, "username");
+        assert_eq!(out[0].value, "alice");
+        assert_eq!(out[1].key, "password");
+        assert_eq!(out[1].value, MASK);
+
+        let form_masked: Vec<KvParam> =
+            serde_json::from_str(&masked_request_body(HttpMethod::Post, ContentType::Form, &form))
+                .expect("parse masked_request_body form");
+        assert_eq!(form_masked[0].key, "username");
+        assert_eq!(form_masked[0].value, "alice");
+        assert_eq!(form_masked[1].key, "password");
+        assert_eq!(form_masked[1].value, MASK);
+
+        let grpc = crate::grpc::GrpcBody {
+            service: "auth.Service".into(),
+            method: "Login".into(),
+            message: r#"{"username":"alice","api_key":"sk-123"}"#.into(),
+            descriptors: "RAW_BASE64_DESCRIPTORS".into(),
+            source: "auth.proto".into(),
+        }
+        .to_body();
+        let grpc_masked = crate::grpc::GrpcBody::read(&masked_request_body(HttpMethod::Grpc, ContentType::Json, &grpc));
+        assert!(grpc_masked.descriptors.is_empty());
+        assert!(grpc_masked.message.contains("alice"));
+        assert!(!grpc_masked.message.contains("sk-123"));
+
+        let gql = crate::graphql::GraphQlBody {
+            query: "mutation($token: String!) { login(token: $token) }".into(),
+            variables: r#"{"token":"secret-tok","page":1}"#.into(),
+            operation_name: String::new(),
+        }
+        .to_body();
+        let gql_masked =
+            crate::graphql::GraphQlBody::read(&masked_request_body(HttpMethod::Post, ContentType::GraphQl, &gql));
+        assert!(!gql_masked.variables.contains("secret-tok"));
+        assert!(gql_masked.variables.contains(MASK));
     }
 }

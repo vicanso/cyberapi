@@ -3,12 +3,8 @@
 //! settings until set here, and saying what the settings say. A gRPC call
 //! has only the timeouts and the certificates: it speaks HTTP/2 and is not
 //! redirected.
-//!
-//! D5: and its own variables, read before its folders' and the
-//! environment's of the same names.
 
 use crate::states::{ApiState, AppStore};
-use crate::views::kv_editor::{KvEditor, KvEvent, KvOptions};
 use crate::views::settings::{Choice, setting_row};
 use cyberapi_core::model::HttpMethod;
 use cyberapi_core::prefs::{HttpVersion, RequestSettings, SendPrefs, Timeouts};
@@ -35,8 +31,6 @@ pub struct RequestSettingsView {
     connect: Entity<InputState>,
     write: Entity<InputState>,
     read: Entity<InputState>,
-    /// D5.
-    variables: Entity<KvEditor>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -66,16 +60,6 @@ fn theirs(what: String) -> String {
 impl RequestSettingsView {
     pub fn new(api: Entity<ApiState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let own = api.read(cx).request().settings;
-        let variables = {
-            let list = api.read(cx).request().variables.clone();
-            let options = KvOptions {
-                example: super::settings_dialogs::VARIABLE_EXAMPLE,
-                ..Default::default()
-            };
-            // Used as they are, not evaluated (D5): no template hints
-            // (Q-4).
-            cx.new(|cx| KvEditor::new(&list, options, window, cx))
-        };
         let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
         let (sending, timeouts): (SendPrefs, Timeouts) = (prefs.sending, prefs.timeouts.effective());
         let mut subscriptions = Vec::new();
@@ -182,16 +166,6 @@ impl RequestSettingsView {
         let connect = seconds(own.timeouts.connect, timeouts.connect, |t, v| t.connect = v, window, cx);
         let write = seconds(own.timeouts.write, timeouts.write, |t, v| t.write = v, window, cx);
         let read = seconds(own.timeouts.read, timeouts.read, |t, v| t.read = v, window, cx);
-        subscriptions.push(cx.subscribe(&variables, |this, _, KvEvent::Changed(list), cx| {
-            let list = list.clone();
-            this.api.update(cx, |api, cx| api.set_variables(list, cx));
-        }));
-        subscriptions.push(cx.observe_in(&api, window, |this, api, window, cx| {
-            let latest = api.read(cx).request().variables.clone();
-            if this.variables.read(cx).list(cx) != latest {
-                this.variables.update(cx, |kv, cx| kv.set_list(&latest, window, cx));
-            }
-        }));
         Self {
             api,
             http_version,
@@ -200,7 +174,6 @@ impl RequestSettingsView {
             connect,
             write,
             read,
-            variables,
             _subscriptions: subscriptions,
         }
     }
@@ -273,23 +246,5 @@ impl Render for RequestSettingsView {
                     .child(t!("editor.settings_hint").to_string()),
             )
             .children(rows)
-            .child(
-                v_flex()
-                    .gap_1()
-                    .pt_4()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(gpui_kit::FontWeight::MEDIUM)
-                            .child(t!("own_variables.title").to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("own_variables.api_hint").to_string()),
-                    )
-                    .child(self.variables.clone()),
-            )
     }
 }
