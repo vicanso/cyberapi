@@ -392,6 +392,10 @@ pub struct ApiState {
     /// PERF-2: a GraphQL answer's errors, by the response they are of: the
     /// panel asks every frame, the query editor at every change.
     graphql_errors: RefCell<Option<(String, Rc<GraphQlErrors>)>>,
+    /// F7b: when open in a window of its own, the environment this tab sends
+    /// in instead of the workspace's (`None` = follow workspace,
+    /// `Some(None)` = no environment, `Some(Some(id))` = named environment).
+    environment_override: Option<Option<cyberapi_core::EnvironmentId>>,
 }
 
 /// What a GraphQL answer's `errors` say, and where in the query.
@@ -495,6 +499,7 @@ impl ApiState {
             parsing_json: None,
             checks: RefCell::new(None),
             graphql_errors: RefCell::new(None),
+            environment_override: None,
         };
         state.load_history(cx);
         state
@@ -1908,16 +1913,52 @@ impl ApiState {
             self.sender.timeouts = prefs.timeouts;
             self.sender.sending = prefs.sending.clone();
         }
-        // #66, #61: what the API takes from its folders and project now,
-        // and the reader's environment.
+        // #66, #61, F7b: what the API takes from its folders and project now,
+        // and the environment it sends in (its window's override or the
+        // workspace's).
         if let Some(workspace) = self.workspace.upgrade() {
             let workspace = workspace.read(cx);
             self.sender.inherited = workspace.inherited(&self.api);
-            self.sender.environment = workspace.current_environment().cloned();
+            self.sender.environment = self.effective_environment(workspace).cloned();
             // D3: the reader's values of the secret ones.
             self.sender.secrets = workspace.secrets();
         }
         self.sender.clone()
+    }
+
+    /// F7b: the environment override set for this tab while it is in a window
+    /// of its own (`None` = follow the workspace).
+    pub fn environment_override(&self) -> Option<Option<&cyberapi_core::EnvironmentId>> {
+        self.environment_override.as_ref().map(Option::as_ref)
+    }
+
+    /// F7b: overrides the environment this tab sends in while in a window of
+    /// its own, or returns to following the workspace (`None`).
+    pub fn set_environment_override(
+        &mut self,
+        environment: Option<Option<cyberapi_core::EnvironmentId>>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.environment_override != environment {
+            self.environment_override = environment;
+            cx.notify();
+        }
+    }
+
+    /// F7b: the named environment this tab effectively sends in.
+    pub fn effective_environment<'a>(
+        &self,
+        workspace: &'a WorkspaceState,
+    ) -> Option<&'a cyberapi_core::model::Environment> {
+        match &self.environment_override {
+            Some(None) => None,
+            Some(Some(id)) => workspace
+                .named_environments()
+                .iter()
+                .find(|environment| &environment.id == id)
+                .or_else(|| workspace.current_environment()),
+            None => workspace.current_environment(),
+        }
     }
 
     /// The schema of the GraphQL endpoint the request goes to, as this API

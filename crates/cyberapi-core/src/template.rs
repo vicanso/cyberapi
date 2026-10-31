@@ -359,6 +359,20 @@ pub fn needs(text: &str) -> Needs {
     needs
 }
 
+/// A7b: whether `text` calls any template function whose result changes from
+/// one send to the next (`uuid`, `random`, `randomString`, `now`,
+/// `timestamp`, `ts`).
+pub fn has_dynamic(text: &str) -> bool {
+    parse(text).iter().any(|expr| {
+        expr.chain.iter().any(|name| {
+            matches!(
+                name.as_str(),
+                "uuid" | "random" | "randomString" | "now" | "timestamp" | "ts"
+            )
+        })
+    })
+}
+
 /// What flows along a chain.
 #[derive(Clone, Debug, PartialEq)]
 enum Value {
@@ -1059,5 +1073,17 @@ mod tests {
             prompts: HashMap::from([("tenant".to_string(), "x".to_string())]),
         };
         assert_eq!(answers.unanswered(&needs.prompts), ["code", "region"]);
+    }
+
+    #[test]
+    fn has_dynamic_recognizes_random_and_time_functions() {
+        assert!(!has_dynamic("plain text"));
+        assert!(!has_dynamic("{{value(token)}} {{md5(abc)}}"));
+        assert!(has_dynamic("{{uuid()}}"));
+        assert!(has_dynamic("{{base64.randomString(8)}}"));
+        assert!(has_dynamic("{{random(1, 10)}}"));
+        assert!(has_dynamic("{{now()}}"));
+        assert!(has_dynamic("{{timestamp()}}"));
+        assert!(has_dynamic("{{ts()}}"));
     }
 }

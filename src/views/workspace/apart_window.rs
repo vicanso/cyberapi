@@ -9,15 +9,22 @@ use super::request_editor::{RequestEditor, RequestEditorEvent};
 use super::response_panel::ResponsePanel;
 use super::{FocusUrl, KEY_CONTEXT, Send};
 use crate::states::{ApiState, AppStore, Route, WorkspaceState};
+use crate::views::open_variables_dialog;
 use crate::{APP_NAME, CloseWindow};
-use cyberapi_core::ItemId;
+use cyberapi_core::model::VariableCategory;
+use cyberapi_core::{EnvironmentId, ItemId};
+use gpui_kit::assets::IconName as Icons;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
-use gpui_kit::component::{ActiveTheme as _, TitleBar, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, TitleBar, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, DisplayId, Entity, FocusHandle, Global,
+    Anchor, AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, Context, DisplayId, Entity, FocusHandle, Global,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, WindowBounds,
     WindowOptions, div, px, size,
 };
+use rust_i18n::t;
 use std::collections::HashMap;
 use tracing::error;
 
@@ -110,6 +117,7 @@ impl ApartView {
         let app = AppStore::global(cx).state().clone();
         let subscriptions = vec![
             cx.observe_in(&workspace, window, |this, _, window, cx| this.follow(window, cx)),
+            cx.observe_in(&api, window, |this, _, window, cx| this.follow(window, cx)),
             // The editor's width presets are of this window's columns.
             cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
                 RequestEditorEvent::EditorShare(share) => this.set_editor_share(*share, window, cx),
@@ -125,6 +133,7 @@ impl ApartView {
             // still this window's. One started again from the server's or
             // an import's request, or closed, is not written over (BUG-5).
             cx.on_release(|this, cx| {
+                this.api.update(cx, |api, cx| api.set_environment_override(None, cx));
                 let still = this
                     .workspace
                     .read(cx)
@@ -194,6 +203,96 @@ impl ApartView {
         }
         cx.notify();
     }
+
+    /// F7b: this window's environment switcher, allowing the reader to compare
+    /// or send the request against another environment without changing the
+    /// main window's environment.
+    fn environment_switch(&self, cx: &mut Context<Self>) -> AnyElement {
+        let state = self.workspace.read(cx);
+        let api = self.api.read(cx);
+        let override_env: Option<Option<EnvironmentId>> = api.environment_override().map(|inner| inner.cloned());
+        let effective = api.effective_environment(state);
+        let production = effective.is_some_and(|env| state.protects(&env.id));
+        let workspace_env_label = state
+            .current_environment()
+            .map(|environment| environment.name.clone())
+            .unwrap_or_else(|| t!("environments.none").to_string());
+        let named: Vec<(cyberapi_core::model::Environment, bool)> = state
+            .named_environments()
+            .iter()
+            .map(|environment| (environment.clone(), state.protects(&environment.id)))
+            .collect();
+        let mut label = effective
+            .map(|environment| environment.name.clone())
+            .unwrap_or_else(|| t!("environments.none").to_string());
+        if production {
+            label += &t!("environments.production_mark");
+        }
+        let api_handle = self.api.downgrade();
+        let workspace = self.workspace.downgrade();
+        Button::new("apart-environment-switch")
+            .when(production, |button| button.danger())
+            .when(!production, |button| button.ghost())
+            .xsmall()
+            .icon(Icons::Globe)
+            .label(label)
+            .tooltip(if production {
+                t!("environments.production_tooltip").to_string()
+            } else {
+                t!("environments.window_tooltip").to_string()
+            })
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
+                let pick = |choice: Option<Option<EnvironmentId>>| {
+                    let api_handle = api_handle.clone();
+                    move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
+                        let _ = api_handle.update(cx, |api, cx| {
+                            api.set_environment_override(choice.clone(), cx);
+                        });
+                    }
+                };
+                let menu = menu
+                    .item(
+                        PopupMenuItem::new(
+                            t!("environments.follow_workspace", name = workspace_env_label.clone()).to_string(),
+                        )
+                        .checked(override_env.is_none())
+                        .on_click(pick(None)),
+                    )
+                    .separator()
+                    .item(
+                        PopupMenuItem::new(t!("environments.none").to_string())
+                            .checked(override_env == Some(None))
+                            .on_click(pick(Some(None))),
+                    );
+                let menu = if named.is_empty() {
+                    menu
+                } else {
+                    named.iter().fold(menu.separator(), |menu, (environment, production)| {
+                        let mut name = environment.name.clone();
+                        if *production {
+                            name += &t!("environments.production_mark");
+                        }
+                        let checked = override_env.as_ref() == Some(&Some(environment.id.clone()));
+                        menu.item(
+                            PopupMenuItem::new(name)
+                                .checked(checked)
+                                .on_click(pick(Some(Some(environment.id.clone())))),
+                        )
+                    })
+                };
+                let manage = workspace.clone();
+                menu.separator().item(
+                    PopupMenuItem::new(t!("environments.manage").to_string())
+                        .icon(Icons::Globe)
+                        .on_click(move |_, window, cx| {
+                            if let Some(workspace) = manage.upgrade() {
+                                open_variables_dialog(&workspace, VariableCategory::Environment, window, cx);
+                            }
+                        }),
+                )
+            })
+            .into_any_element()
+    }
 }
 
 impl Render for ApartView {
@@ -233,7 +332,18 @@ impl Render for ApartView {
             // ⌘W closes this window, and only it: the tab goes back.
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
             .on_action(cx.listener(|_, _: &super::CloseTab, window, _| window.remove_window()))
-            .child(TitleBar::new().child(h_flex().flex_1().justify_center().text_sm().child(name)))
+            .child(
+                TitleBar::new().child(
+                    h_flex()
+                        .flex_1()
+                        .justify_center()
+                        .items_center()
+                        .gap_2()
+                        .text_sm()
+                        .child(name)
+                        .child(self.environment_switch(cx)),
+                ),
+            )
             .child(
                 div().flex_1().min_h_0().w_full().child(
                     h_resizable("apart-columns")

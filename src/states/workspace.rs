@@ -1068,7 +1068,13 @@ impl WorkspaceState {
     /// F4.4: the enabled environment variables, by name, as the reader's
     /// environment reads them (#61).
     pub fn environments(&self) -> Vec<Variable> {
-        self.in_environment(&self.environment)
+        self.environments_for(self.current_environment().map(|found| &found.id))
+    }
+
+    /// F7b: the enabled environment variables, by name, as `environment`
+    /// reads them.
+    pub fn environments_for(&self, environment: Option<&EnvironmentId>) -> Vec<Variable> {
+        environments::effective(&self.environment, environment)
             .into_iter()
             .filter(|variable| variable.enabled)
             .map(|variable| self.shown_secret(variable))
@@ -1092,7 +1098,12 @@ impl WorkspaceState {
     /// The global request headers, enabled or not, as the reader's
     /// environment reads them (#61).
     pub fn global_headers(&self) -> Vec<Variable> {
-        self.in_environment(&self.global_headers)
+        self.global_headers_for(self.current_environment().map(|found| &found.id))
+    }
+
+    /// F7b: the global request headers as `environment` reads them.
+    pub fn global_headers_for(&self, environment: Option<&EnvironmentId>) -> Vec<Variable> {
+        environments::effective(&self.global_headers, environment)
     }
 
     /// `variables` as a send in the reader's environment reads them.
@@ -1142,7 +1153,22 @@ impl WorkspaceState {
     /// environment is production, the request may change something there,
     /// and the reader has not said to stop asking in this project.
     pub fn asks_before(&self, request: &HttpRequest, cx: &gpui_kit::App) -> bool {
-        self.in_production()
+        self.asks_before_in(
+            request,
+            self.current_environment().map(|environment| &environment.id),
+            cx,
+        )
+    }
+
+    /// D6 / F7b: whether sending `request` in `environment` is asked about
+    /// first.
+    pub fn asks_before_in(
+        &self,
+        request: &HttpRequest,
+        environment: Option<&EnvironmentId>,
+        cx: &gpui_kit::App,
+    ) -> bool {
+        self.data.settings.protects(environment)
             && cyberapi_core::environments::asks_first(request)
             && !cx
                 .try_global::<Unasked>()

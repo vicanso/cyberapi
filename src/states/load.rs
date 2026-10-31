@@ -57,10 +57,13 @@ impl LoadState {
         }
     }
 
-    /// The API's request as the project has it now.
+    /// The API's request as its open tab or the project has it now (A7b).
     pub fn request(&self, cx: &App) -> Option<HttpRequest> {
         let workspace = self.workspace.upgrade()?;
         let workspace = workspace.read(cx);
+        if let Some(kept) = workspace.kept_api(&self.api) {
+            return Some(kept.read(cx).request().clone());
+        }
         workspace
             .tree_data()
             .apis

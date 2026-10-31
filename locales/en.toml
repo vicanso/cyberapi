@@ -970,7 +970,9 @@ hint = "How the project's APIs and folders sign in when they inherit and no fold
 
 [environments]
 none = "No environment"
+follow_workspace = "Follow workspace (%{name})"
 switch_tooltip = "The environment you send in: its variables come before the shared ones. It is yours alone."
+window_tooltip = "The environment this window sends in (overrides the main window's environment while this window is open)."
 manage = "Manage environments…"
 production = "Production: asked before a request that may change something is sent"
 production_mark = " · production"

@@ -379,6 +379,15 @@ pub fn needs(request: &HttpRequest, variables: &[Variable], inherited: &Inherite
     needs
 }
 
+/// A7b: whether `request` or any header/auth/variable it sends calls a
+/// dynamic template function (`uuid`, `random`, `randomString`, `now`,
+/// `timestamp`, `ts`).
+pub fn has_dynamic_templates(request: &HttpRequest, variables: &[Variable], inherited: &Inherited) -> bool {
+    templated_texts(request, variables, inherited)
+        .iter()
+        .any(|text| template::has_dynamic(text))
+}
+
 /// A form or multipart body's fields; an unreadable list is none.
 pub fn form_fields(body: &str) -> Vec<KvParam> {
     if body.trim().is_empty() {

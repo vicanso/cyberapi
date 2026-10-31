@@ -1330,14 +1330,16 @@ impl RequestEditor {
         }
         // D6: what starts — not a message on what is open — in production.
         let workspace = self.workspace.read(cx);
-        if api.sending_since().is_none() && workspace.asks_before(api.request(), cx) {
+        let effective_env = api.effective_environment(workspace);
+        if api.sending_since().is_none()
+            && workspace.asks_before_in(api.request(), effective_env.map(|env| &env.id), cx)
+        {
             let request = api.request();
             let what = match (request.content_type, request.method) {
                 (ContentType::GraphQl, HttpMethod::Get | HttpMethod::Post) => format!("mutation {}", request.uri),
                 (_, method) => format!("{} {}", method.as_str(), request.uri),
             };
-            let environment = workspace
-                .current_environment()
+            let environment = effective_env
                 .map(|environment| environment.name.clone())
                 .unwrap_or_default();
             let (editor, workspace) = (cx.entity().downgrade(), self.workspace.downgrade());
@@ -1357,7 +1359,8 @@ impl RequestEditor {
         let api = self.api.read(cx);
         let workspace = self.workspace.read(cx);
         let inherited = workspace.inherited(api.api());
-        let needs = send::needs(api.request(), &workspace.global_headers(), &inherited);
+        let effective_env = api.effective_environment(workspace).map(|env| &env.id);
+        let needs = send::needs(api.request(), &workspace.global_headers_for(effective_env), &inherited);
         let picks_file = needs.picks_file && this_build::reads_files();
         if needs.prompts.is_empty() {
             self.pick_and_send(picks_file, HashMap::new(), cx);
@@ -1448,10 +1451,15 @@ impl RequestEditor {
         let streaming = self.api.read(cx).live().is_some();
         let (env, _) = split_env_prefix(&uri);
         let env = env.map(str::to_string);
+        let effective_env = self
+            .api
+            .read(cx)
+            .effective_environment(self.workspace.read(cx))
+            .map(|env| &env.id);
         let mut environments: Vec<(String, String)> = self
             .workspace
             .read(cx)
-            .environments()
+            .environments_for(effective_env)
             .into_iter()
             .map(|variable| (variable.name, variable.value))
             .collect();

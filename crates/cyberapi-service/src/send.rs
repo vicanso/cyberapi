@@ -769,6 +769,7 @@ pub(crate) async fn prepare(
             .map_err(store)?
     };
     let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let seed = getrandom::u64().unwrap_or(since_epoch.as_nanos() as u64);
     let inputs = Inputs {
         now: since_epoch.as_secs() as i64,
         custom: variables
@@ -788,7 +789,7 @@ pub(crate) async fn prepare(
         },
         utc_offset: chrono::Local::now().offset().local_minus_utc(),
         // The clock, should the system have no randomness to give.
-        draws: Draws::new(getrandom::u64().unwrap_or(since_epoch.as_nanos() as u64)),
+        draws: Draws::new(seed),
     };
     let boundary = boundary();
     let cx = send::Context {
@@ -811,6 +812,138 @@ pub(crate) async fn prepare(
     .map_err(|source| SendFailure::Prepare { source })?;
     prepared.tls = certificates::tls_for(&sender.sending.certificates, &prepared.url);
     Ok((prepared, send::global_header_names(&variables)))
+}
+
+/// A7b: what a load test gathers once before its sends, so dynamic template
+/// functions (`uuid`, `random`, `randomString`, `now`, `timestamp`) can be
+/// evaluated afresh for each send without querying storage again.
+pub(crate) struct LoadTemplate {
+    pub variables: Vec<Variable>,
+    pub inputs: Inputs,
+    pub dynamic: bool,
+    pub seed: u64,
+}
+
+impl LoadTemplate {
+    pub fn prepare_again(
+        &self,
+        sender: &Sender,
+        request: &HttpRequest,
+        turn: u32,
+    ) -> Result<PreparedRequest, SendFailure> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let seed = self
+            .seed
+            .wrapping_add(u64::from(turn).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let inputs = Inputs {
+            now,
+            draws: Draws::new(seed),
+            ..self.inputs.clone()
+        };
+        let boundary = boundary();
+        let cx = send::Context {
+            variables: &self.variables,
+            template: &inputs,
+            files: sender.files.as_ref(),
+            user_agent: &sender.user_agent,
+            timeouts: sender.timeouts,
+            accept_invalid_certs: sender.sending.accept_invalid_certs,
+            http_version: sender.sending.http_version,
+            proxy: &sender.sending.proxy,
+            boundary: &boundary,
+            inherited: &sender.inherited,
+            environment: sender.environment.as_ref().map(|found| found.name.as_str()),
+        };
+        let mut prepared = send::prepare(request, &cx).map_err(|source| SendFailure::Prepare { source })?;
+        prepared.tls = certificates::tls_for(&sender.sending.certificates, &prepared.url);
+        Ok(prepared)
+    }
+}
+
+pub(crate) async fn prepare_load(
+    sender: &Sender,
+    collection: &CollectionId,
+    request: &HttpRequest,
+    answers: &Answers,
+) -> Result<(PreparedRequest, LoadTemplate), SendFailure> {
+    let store = |source| SendFailure::Store { source };
+    let mut variables: Vec<Variable> = Vec::new();
+    for category in [
+        VariableCategory::Environment,
+        VariableCategory::Custom,
+        VariableCategory::GlobalRequestHeader,
+    ] {
+        variables.extend(
+            sender
+                .storage
+                .variables()
+                .list(collection.clone(), category)
+                .await
+                .map_err(store)?,
+        );
+    }
+    let variables = secrets::fill(variables, &sender.secrets);
+    let variables = environments::effective(&variables, sender.environment.as_ref().map(|found| &found.id));
+    let values = sender.inherited.values(&request.variables, &[]);
+    let variables = if values.is_empty() {
+        variables
+    } else {
+        cyberapi_core::run::with_values(&variables, &values)
+    };
+    let needs = send::needs(request, &variables, &sender.inherited);
+    let missing = answers.unanswered(&needs.prompts);
+    if !missing.is_empty() {
+        return Err(SendFailure::Unanswered {
+            labels: missing.into_iter().map(str::to_string).collect(),
+        });
+    }
+    let responses = if needs.responses.is_empty() {
+        Vec::new()
+    } else {
+        sender
+            .storage
+            .history()
+            .latest(
+                collection.clone(),
+                needs.responses.iter().map(|id| ItemId::new(id.as_str())).collect(),
+            )
+            .await
+            .map_err(store)?
+    };
+    let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let seed = getrandom::u64().unwrap_or(since_epoch.as_nanos() as u64);
+    let inputs = Inputs {
+        now: since_epoch.as_secs() as i64,
+        custom: variables
+            .iter()
+            .filter(|v| v.enabled && v.category == VariableCategory::Custom)
+            .map(|v| (v.name.clone(), v.value.clone()))
+            .collect(),
+        responses: responses
+            .iter()
+            .filter_map(|response| Some((response.api.to_string(), response.body_json()?)))
+            .collect(),
+        answers: answers.clone(),
+        env: if needs.env.is_empty() {
+            Env::default()
+        } else {
+            sender.env.read(&needs.env)
+        },
+        utc_offset: chrono::Local::now().offset().local_minus_utc(),
+        draws: Draws::new(seed),
+    };
+    let dynamic = send::has_dynamic_templates(request, &variables, &sender.inherited);
+    let template = LoadTemplate {
+        variables,
+        inputs,
+        dynamic,
+        seed,
+    };
+    let prepared = template.prepare_again(sender, request, 0)?;
+    Ok((prepared, template))
 }
 
 #[cfg(test)]
