@@ -462,6 +462,17 @@ pub fn matched_summaries_with_vars(
     cx.summaries
 }
 
+/// B11: a breaking schema change detected on an existing API during source sync preview.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BreakingChange {
+    pub api: ItemId,
+    pub name: String,
+    pub method: HttpMethod,
+    /// `true` for request schema, `false` for response schema.
+    pub is_request: bool,
+    pub change: crate::schema_docs::SchemaBreakingChange,
+}
+
 /// B7: what syncing from a source would do, told before it is done.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Preview {
@@ -475,6 +486,9 @@ pub struct Preview {
     /// them: left as they are. A gRPC call is never among them, nor one
     /// outside the folder the source went into (Q-2).
     pub missing: Vec<ItemId>,
+    /// B11: breaking schema changes (removed fields, type changes, newly required fields)
+    /// detected across updated APIs.
+    pub breaking: Vec<BreakingChange>,
 }
 
 /// The APIs in `folder`, at any depth.
@@ -598,11 +612,52 @@ fn preview_scoped(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem]
             _ => {}
         }
     }
+    let mut breaking = Vec::new();
+    for (id, updated_req) in &merge.updates {
+        let Some(api) = tree.apis.iter().find(|api| &api.id == id) else {
+            continue;
+        };
+        for change in crate::schema_docs::breaking_changes_of_schema(
+            api.request.request_schema.as_deref().unwrap_or_default(),
+            updated_req.request_schema.as_deref().unwrap_or_default(),
+        ) {
+            breaking.push(BreakingChange {
+                api: id.clone(),
+                name: api.name.clone(),
+                method: updated_req.method,
+                is_request: true,
+                change,
+            });
+        }
+        let old_resp_schema = api
+            .request
+            .assertions
+            .iter()
+            .find(|assertion| assertion.subject == Subject::Schema)
+            .map(|assertion| assertion.expected.as_str())
+            .unwrap_or_default();
+        let new_resp_schema = updated_req
+            .assertions
+            .iter()
+            .find(|assertion| assertion.subject == Subject::Schema)
+            .map(|assertion| assertion.expected.as_str())
+            .unwrap_or_default();
+        for change in crate::schema_docs::breaking_changes_of_schema(old_resp_schema, new_resp_schema) {
+            breaking.push(BreakingChange {
+                api: id.clone(),
+                name: api.name.clone(),
+                method: updated_req.method,
+                is_request: false,
+                change,
+            });
+        }
+    }
     Preview {
         added: merge.added(),
         updated: merge.updates.len(),
         same: had.saturating_sub(merge.updates.len()),
         missing,
+        breaking,
     }
 }
 
@@ -1025,6 +1080,7 @@ mod tests {
                 updated: 1,
                 same: 2,
                 missing: vec!["a-mine".into()],
+                breaking: Vec::new(),
             }
         );
     }
@@ -1213,6 +1269,7 @@ mod tests {
                 updated: 1,
                 same: 0,
                 missing: Vec::new(),
+                breaking: Vec::new(),
             }
         );
         let merged = merge_folder(&tree, &folder_id, &orders_spec, true);
@@ -1291,6 +1348,77 @@ mod tests {
             matched_request(&tree, &order_api.id, &order_api.request, &cached).map(|r| r.description.as_str()),
             Some("project-spec"),
             "falls back to project source when folder has none"
+        );
+    }
+
+    /// B11: source sync preview detects breaking request and response schema changes.
+    #[test]
+    fn preview_detects_breaking_schema_changes() {
+        use crate::schema_docs::SchemaBreakingChange;
+
+        let mut existing = api("a-users", HttpMethod::Post, "{{HOST}}/users");
+        existing.request.request_schema = Some(
+            r#"{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"legacy":{"type":"integer"}}}"#
+                .into(),
+        );
+        existing.request.assertions.push(Assertion {
+            subject: Subject::Schema,
+            expected: r#"{"type":"object","properties":{"id":{"type":"integer"}}}"#.into(),
+            imported: true,
+            ..Default::default()
+        });
+        let tree = TreeData {
+            apis: vec![existing],
+            top_order: vec!["a-users".into()],
+            ..Default::default()
+        };
+
+        let mut incoming = request(HttpMethod::Post, "{{HOST}}/users");
+        incoming.request_schema = Some(
+            r#"{"type":"object","required":["name","email"],"properties":{"name":{"type":"string"},"email":{"type":"string"}}}"#
+                .into(),
+        );
+        incoming.assertions.push(Assertion {
+            subject: Subject::Schema,
+            expected: r#"{"type":"object","properties":{"id":{"type":"string"}}}"#.into(),
+            imported: true,
+            ..Default::default()
+        });
+        let items = vec![ImportItem::Api {
+            name: "a-users".into(),
+            request: Box::new(incoming),
+        }];
+
+        let p = preview(&tree, None, &items);
+        assert_eq!(
+            p.breaking,
+            vec![
+                BreakingChange {
+                    api: "a-users".into(),
+                    name: "a-users".into(),
+                    method: HttpMethod::Post,
+                    is_request: true,
+                    change: SchemaBreakingChange::RemovedField { path: "legacy".into() },
+                },
+                BreakingChange {
+                    api: "a-users".into(),
+                    name: "a-users".into(),
+                    method: HttpMethod::Post,
+                    is_request: true,
+                    change: SchemaBreakingChange::AddedRequired { path: "email".into() },
+                },
+                BreakingChange {
+                    api: "a-users".into(),
+                    name: "a-users".into(),
+                    method: HttpMethod::Post,
+                    is_request: false,
+                    change: SchemaBreakingChange::TypeChanged {
+                        path: "id".into(),
+                        from: "integer".into(),
+                        to: "string".into(),
+                    },
+                },
+            ]
         );
     }
 }

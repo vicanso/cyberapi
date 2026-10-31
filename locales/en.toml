@@ -679,6 +679,12 @@ save_only = "Save address only"
 auto_fetch = "Periodically fetch field descriptions on this device (read-only)"
 open_updates = "Sync from source… (updates)"
 cached_updates = "Background check found upstream changes (%{added} new, %{updated} updated). Fetch to review and sync."
+breaking_title = "Breaking schema changes (%{count}):"
+breaking_removed = "%{method} %{name} (%{side}): removed %{path}"
+breaking_type = "%{method} %{name} (%{side}): %{path} type %{from} → %{to}"
+breaking_required = "%{method} %{name} (%{side}): newly required %{path}"
+side_request = "request"
+side_response = "response"
 
 [export]
 project = "Export the project"

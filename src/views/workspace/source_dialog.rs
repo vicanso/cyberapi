@@ -15,6 +15,7 @@ use crate::views::name_dialog::ok_button;
 use cyberapi_core::ItemId;
 use cyberapi_core::import::merge::{self, Preview};
 use cyberapi_core::import::{self, ImportBundle};
+use cyberapi_core::schema_docs::SchemaBreakingChange;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
@@ -332,6 +333,56 @@ fn told(fetched: &Fetched) -> Vec<String> {
     lines
 }
 
+/// B11: breaking schema changes detected in the preview, formatted as lines.
+fn breaking_lines(fetched: &Fetched) -> Vec<String> {
+    let breaking = &fetched.preview.breaking;
+    if breaking.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = Vec::with_capacity(breaking.len().min(NAMED) + 2);
+    lines.push(t!("source.breaking_title", count = breaking.len()).to_string());
+    for item in breaking.iter().take(NAMED) {
+        let side = if item.is_request {
+            t!("source.side_request")
+        } else {
+            t!("source.side_response")
+        };
+        let line = match &item.change {
+            SchemaBreakingChange::RemovedField { path } => t!(
+                "source.breaking_removed",
+                method = item.method.as_str(),
+                name = item.name,
+                side = side,
+                path = path
+            )
+            .to_string(),
+            SchemaBreakingChange::TypeChanged { path, from, to } => t!(
+                "source.breaking_type",
+                method = item.method.as_str(),
+                name = item.name,
+                side = side,
+                path = path,
+                from = from,
+                to = to
+            )
+            .to_string(),
+            SchemaBreakingChange::AddedRequired { path } => t!(
+                "source.breaking_required",
+                method = item.method.as_str(),
+                name = item.name,
+                side = side,
+                path = path
+            )
+            .to_string(),
+        };
+        lines.push(format!("• {line}"));
+    }
+    if breaking.len() > NAMED {
+        lines.push(format!("… (+{})", breaking.len() - NAMED));
+    }
+    lines
+}
+
 impl Render for SourceView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
@@ -429,11 +480,21 @@ impl Render for SourceView {
                 this.child(div().text_sm().text_color(danger).child(why))
             })
             .when_some(self.fetched.as_ref(), |this, fetched| {
+                let breaking = breaking_lines(fetched);
                 this.child(
                     v_flex()
                         .gap_1()
                         .text_sm()
-                        .children(told(fetched).into_iter().map(|line| div().child(line))),
+                        .children(told(fetched).into_iter().map(|line| div().child(line)))
+                        .when(!breaking.is_empty(), |col| {
+                            col.child(
+                                v_flex()
+                                    .pt_1()
+                                    .gap_0p5()
+                                    .text_color(warning)
+                                    .children(breaking.into_iter().map(|line| div().child(line))),
+                            )
+                        }),
                 )
             })
             .when(self.kept_url.is_some() || can_save_only, |this| {

@@ -31,6 +31,61 @@ pub struct SchemaField {
     pub description: String,
 }
 
+/// B11: a breaking or incompatible change between two versions of a JSON
+/// Schema (`old` vs `new`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SchemaBreakingChange {
+    /// A field present in the old schema was removed.
+    RemovedField { path: String },
+    /// A field's type changed between the old and new schemas.
+    TypeChanged { path: String, from: String, to: String },
+    /// A field became required (either newly added as required, or changed
+    /// from optional to required).
+    AddedRequired { path: String },
+}
+
+/// B11: compares `old_schema` and `new_schema` and lists removed fields,
+/// changed field types, and newly required fields.
+pub fn breaking_changes_of_schema(old_schema: &str, new_schema: &str) -> Vec<SchemaBreakingChange> {
+    let (Ok(old_fields), Ok(new_fields)) = (fields_of_schema(old_schema), fields_of_schema(new_schema)) else {
+        return Vec::new();
+    };
+    if old_fields.is_empty() && new_fields.is_empty() {
+        return Vec::new();
+    }
+    let mut changes = Vec::new();
+    for old in &old_fields {
+        match new_fields.iter().find(|f| f.path == old.path) {
+            None => {
+                changes.push(SchemaBreakingChange::RemovedField { path: old.path.clone() });
+            }
+            Some(new) => {
+                let old_base = old.kind.strip_suffix('?').unwrap_or(&old.kind);
+                let new_base = new.kind.strip_suffix('?').unwrap_or(&new.kind);
+                if old_base != new_base {
+                    changes.push(SchemaBreakingChange::TypeChanged {
+                        path: old.path.clone(),
+                        from: old.kind.clone(),
+                        to: new.kind.clone(),
+                    });
+                }
+            }
+        }
+    }
+    for new in &new_fields {
+        if new.required {
+            let was_required = old_fields
+                .iter()
+                .find(|f| f.path == new.path)
+                .is_some_and(|old| old.required);
+            if !was_required {
+                changes.push(SchemaBreakingChange::AddedRequired { path: new.path.clone() });
+            }
+        }
+    }
+    changes
+}
+
 /// The input or output fields `schema_json` describes, in display order, or
 /// why `schema_json` does not read as a JSON Schema. An empty string yields
 /// an empty list.
@@ -874,6 +929,41 @@ mod tests {
                     }
                 ]
             })
+        );
+    }
+
+    #[test]
+    fn breaking_changes_lists_removed_type_changed_and_newly_required_fields() {
+        let old = json!({
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+                "id": { "type": "integer" },
+                "name": { "type": "string" },
+                "legacy": { "type": "boolean" }
+            }
+        });
+        let new = json!({
+            "type": "object",
+            "required": ["id", "name", "tenant"],
+            "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string" },
+                "tenant": { "type": "string" }
+            }
+        });
+        assert_eq!(
+            breaking_changes_of_schema(&old.to_string(), &new.to_string()),
+            vec![
+                SchemaBreakingChange::TypeChanged {
+                    path: "id".into(),
+                    from: "integer".into(),
+                    to: "string".into(),
+                },
+                SchemaBreakingChange::RemovedField { path: "legacy".into() },
+                SchemaBreakingChange::AddedRequired { path: "name".into() },
+                SchemaBreakingChange::AddedRequired { path: "tenant".into() },
+            ]
         );
     }
 }
