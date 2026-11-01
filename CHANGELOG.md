@@ -1,5 +1,123 @@
 # Changelog
 
+## [0.5.0](https://github.com/vicanso/cyberapi/compare/v0.4.0..v0.5.0) - 2026-11-01
+
+### ⛰️  Features
+
+- *(A6)* Check that a response conforms to a JSON Schema - ([494b9c1](https://github.com/vicanso/cyberapi/commit/494b9c1d706426e615a37668b5996663e4554323))
+- *(A7)* Load test an API on the desktop - ([1855b16](https://github.com/vicanso/cyberapi/commit/1855b16afbb98e0ce9d72b822c51834da1073b20))
+- *(B10)* Opt-in local polling of bound sources to match API field docs - ([35c7783](https://github.com/vicanso/cyberapi/commit/35c7783e08f401722fd08509e08bdd9d9569ec5b))
+- *(B7)* A project keeps the address it was imported from, and syncs from it again - ([9e9b112](https://github.com/vicanso/cyberapi/commit/9e9b112dfd7a5fb546d97c4e6da896e2d4886407))
+- *(B8)* Import a .http file, and its environment files - ([6def49d](https://github.com/vicanso/cyberapi/commit/6def49d7192ca3c9b74a2b353621525c498acbe8))
+- *(B9)* Bind an import source to a folder and sync it there - ([856603a](https://github.com/vicanso/cyberapi/commit/856603a952a5b003f9dae9dd8448f8d00bde71e6))
+- *(D5)* Folders and APIs have variables of their own - ([4fcc5ab](https://github.com/vicanso/cyberapi/commit/4fcc5ab8887b72e7fd8f22bc589c263e1e72c81f))
+- *(D6)* An environment marked as production asks before a send that may change something - ([8c27841](https://github.com/vicanso/cyberapi/commit/8c27841ec4bc4a7e272e2d321986690e54dbffdd))
+- *(D7)* More template functions, and now() shifted - ([fc7c3ab](https://github.com/vicanso/cyberapi/commit/fc7c3abdd1eb74894da5df12815fc6da2f173e77))
+- *(F1)* Align the tab bar and tree header at 36px and disambiguate same-name tabs - ([b8fc268](https://github.com/vicanso/cyberapi/commit/b8fc268080c190ac0741848ab652368b2622fb6d))
+- *(F10)* Per-parameter descriptions in query, headers and form bodies - ([5857741](https://github.com/vicanso/cyberapi/commit/5857741a6f4a5573b471abd231542464d8c28afc))
+- *(F11)* Show and edit request and response field schemas in Docs - ([0f3b9aa](https://github.com/vicanso/cyberapi/commit/0f3b9aa16e9592633642327b74e12fff40513632))
+- *(F5)* Copy or move an API or a folder to another project - ([755eb2c](https://github.com/vicanso/cyberapi/commit/755eb2ca578475d03d2e8d6de34ec1e648a424fd))
+- *(F6)* Undo a delete from the tree, and the desktop backs up every day - ([714f098](https://github.com/vicanso/cyberapi/commit/714f098be7a67892fac38beece8fe722d44f4632))
+- *(F7)* Open a tab in a window of its own on the desktop - ([cbf8a58](https://github.com/vicanso/cyberapi/commit/cbf8a58c417d73421620fb00ebb56ae1e5c523e1))
+- *(F8)* Find an API by its path in the command palette - ([fbc81ae](https://github.com/vicanso/cyberapi/commit/fbc81ae921975e6782afcb91adc4fab3ad993060))
+- *(F9)* Pick a file on any multipart row, and import binary fields as file:// - ([dc409b8](https://github.com/vicanso/cyberapi/commit/dc409b887589c520d60a401d96342a832d059e99))
+- *(G8)* Compare a project's version with now, or with the version after it - ([7220ffe](https://github.com/vicanso/cyberapi/commit/7220ffe9856b8fb613d46ed25bfcc9879ce79491))
+- *(source)* Follow the document on sync except values and secrets - ([55bf382](https://github.com/vicanso/cyberapi/commit/55bf382a05209f08ff035471ccb36ac4266c236e))
+- *(source)* Add periodic auto-sync with configurable interval for bound OpenAPI sources - ([bbaa963](https://github.com/vicanso/cyberapi/commit/bbaa9636b89e2bbe0199dad84a5a3ba8df805f49))
+- *(source)* Highlight breaking schema changes in source sync preview - ([69fea4a](https://github.com/vicanso/cyberapi/commit/69fea4a9714ab67a7b59ea72dabc39e4be5e80e3))
+- *(workspace)* Keep pinned APIs out of the open tabs bar - ([2d6646e](https://github.com/vicanso/cyberapi/commit/2d6646ee475679f2a6eb303908153b449caecaa2))
+- Show path, query, and header types from OpenAPI - ([5dda0f0](https://github.com/vicanso/cyberapi/commit/5dda0f0cedcc7cbea25974f3e95d52d7bded160f))
+- Add OIDC sign-in, snapshot assertions, and page file picks - ([b687e54](https://github.com/vicanso/cyberapi/commit/b687e5468eba615b5fe7f92a3ac6effdbf8dcd2b))
+- Support per-send dynamic templates in load tests and per-window environments - ([7001694](https://github.com/vicanso/cyberapi/commit/700169411c405ff981b674115267b9a04af13f9f))
+- Add local loopback MCP server to the desktop app - ([42fe4ad](https://github.com/vicanso/cyberapi/commit/42fe4ad578456cfd3e2c97bcdfc8e4117ca0cd9f))
+- Serve read-only HTML project documentation on cyberapi-bridge - ([5b8d0f9](https://github.com/vicanso/cyberapi/commit/5b8d0f9e1870c2523e561cc5675607912c736e04))
+- Add shared project mock endpoint on cyberapi-bridge - ([d90cbc6](https://github.com/vicanso/cyberapi/commit/d90cbc689d9534c2800494bdfa7821d477a712c1))
+- Add multi-environment matrix view and duplicate variable cleanup - ([be940dc](https://github.com/vicanso/cyberapi/commit/be940dca0fcfcc92e75b3b39f68f2157995b8ebc))
+- Support visual editing and substitution of URL path parameters - ([b694be3](https://github.com/vicanso/cyberapi/commit/b694be3b72fcc4cbe27a7daff970a5b2d8b170f1))
+- Add quick copy and filtering for response headers and details - ([5e73225](https://github.com/vicanso/cyberapi/commit/5e732259e331b4039dca1a6d55a74c58910b03f5))
+- Allow copying g() references and adding assertions or extractions from response JSON tree - ([509a124](https://github.com/vicanso/cyberapi/commit/509a124407e13bc06e2ca8d959ac450ef1c1aec9))
+- Add sample JSON body generation from request schema - ([53cb845](https://github.com/vicanso/cyberapi/commit/53cb845c9a33bfe11bf16ad162c170e5dfdaf6e6))
+
+### 🐛 Bug Fixes
+
+- *(BUG-1)* Now() with a shift past the calendar is an error, not a panic - ([bc73e64](https://github.com/vicanso/cyberapi/commit/bc73e64bbd46992d1968919ec23cc8d473388ee3))
+- *(BUG-10)* An undo beaten by a save is tried again, and kept when it fails - ([99490bb](https://github.com/vicanso/cyberapi/commit/99490bb89f589b620bf7268d8289c9179eb22fdc))
+- *(BUG-11)* An imported schema assertion the reader changed is theirs - ([d575297](https://github.com/vicanso/cyberapi/commit/d5752973b564d9131c65bc04902b5425eb225f43))
+- *(BUG-12)* An OpenAPI 3.0 schema reads as JSON Schema with nullable refs and any property name - ([5b7c874](https://github.com/vicanso/cyberapi/commit/5b7c874d27c1adf0e26dcbe98cc6ede68d736918))
+- *(BUG-13)* Syncing from a source merges what its address holds, not the last one's - ([c073a30](https://github.com/vicanso/cyberapi/commit/c073a3099caa6a9d922c0d8c9174e2a4ffdf5afa))
+- *(BUG-14)* An import remembers the address only for the text fetched from it - ([37193c6](https://github.com/vicanso/cyberapi/commit/37193c66df29724e0b8a39137140f98be9e9a83d))
+- *(BUG-16)* A .http request with a pre-request script is imported - ([1b3c39d](https://github.com/vicanso/cyberapi/commit/1b3c39d52cf45b3276b5d3c6f57ac5edc37c0d8c))
+- *(BUG-17)* A tab's own window keeps the keys after a dialog closes - ([010473d](https://github.com/vicanso/cyberapi/commit/010473d9d860f2808ebba248a82c3bf9ad5b19e2))
+- *(BUG-18)* A tab's own window opens on the main window's display - ([a27ec7b](https://github.com/vicanso/cyberapi/commit/a27ec7b333697c64ac36da477158ad5693cc396a))
+- *(BUG-19)* A project settings change made before the last is written keeps it - ([a95c7fe](https://github.com/vicanso/cyberapi/commit/a95c7fe57260a62ecc5e1aa800a4c1b8e7fcf706))
+- *(BUG-2)* A production send that asks for prompts can go - ([5cca505](https://github.com/vicanso/cyberapi/commit/5cca505d37f7bbbe0524a684e060ce4e11dd2c9f))
+- *(BUG-20)* A version comparison shows a request's changes a line at a time - ([1db5fcf](https://github.com/vicanso/cyberapi/commit/1db5fcf2c9f03b3d67d7770214c4b2fb58a90e3d))
+- *(BUG-21)* A version comparison keeps its version by id - ([b72f1c2](https://github.com/vicanso/cyberapi/commit/b72f1c2d0378ee00643a7ed60d4f62ea987ef3f5))
+- *(BUG-22)* An OpenAPI 3.0 export writes its schemas as 3.0 has them - ([1349376](https://github.com/vicanso/cyberapi/commit/1349376e0c8fa2366bf3236ca200ba0b4977bdaf))
+- *(BUG-23)* Copying into a server copy keeps the base it was synced to - ([de75440](https://github.com/vicanso/cyberapi/commit/de7544071e32c7ac9bbaa9dc6599ba23e48c5524))
+- *(BUG-24)* An undo notice goes with its project - ([7dac401](https://github.com/vicanso/cyberapi/commit/7dac401a05e34197ebd9929086f9bf8f803ba9b1))
+- *(BUG-25)* A multipart part that starts with < is text unless it names a file - ([0f74ed0](https://github.com/vicanso/cyberapi/commit/0f74ed0518a8bd3006a755c976949d2a412b634e))
+- *(BUG-26)* An import reads a file that starts with a byte-order mark - ([05d932e](https://github.com/vicanso/cyberapi/commit/05d932ebdd1795c3fa8ba53f017942a52beac7de))
+- *(BUG-27)* Digests and urlEncode take the bytes they are given - ([01f5806](https://github.com/vicanso/cyberapi/commit/01f58068cd54aef5a76f506108cbfd230f205560))
+- *(BUG-3)* An undone delete keeps the reader's own items their own - ([294da82](https://github.com/vicanso/cyberapi/commit/294da82d868ad23a6067f4606b08721553fe62c8))
+- *(BUG-4)* An API's editor shows that API's tab, in any window - ([6cd91ba](https://github.com/vicanso/cyberapi/commit/6cd91ba6436f4077782dc1f94ee319b0128afd63))
+- *(BUG-5)* Closing a tab's window does not write back a request replaced meanwhile - ([67d4a4d](https://github.com/vicanso/cyberapi/commit/67d4a4de595e3142054c64ea96bb8d60e6fa7781))
+- *(BUG-6)* A backup named ahead of the clock does not make one due every hour - ([721c11d](https://github.com/vicanso/cyberapi/commit/721c11d79218de7ce951f0965b4c57c1ba532824))
+- *(BUG-7)* A load test takes as long as its sends - ([10043ba](https://github.com/vicanso/cyberapi/commit/10043ba36f61242e7aac90492bf4640b2452709a))
+- *(BUG-8)* A load test counts a failed gRPC call as a failure - ([b3d15ac](https://github.com/vicanso/cyberapi/commit/b3d15acab313b63e301daf429ef5cdfa2cae286c))
+- *(BUG-9)* Each delete has a number of its own, and only the last one's notice stays - ([38c3ac9](https://github.com/vicanso/cyberapi/commit/38c3ac985ccedcf32c5de638c12e12f8bc49186b))
+- *(Q-1)* Sync from source fetches when asked, and points out a local address - ([398d8dd](https://github.com/vicanso/cyberapi/commit/398d8dd1927f39c5b63c8a0685d0bd946b6f6c98))
+- *(Q-2)* What a source no longer has is looked for in its own folder - ([bab2b2c](https://github.com/vicanso/cyberapi/commit/bab2b2cbd20b6ded0448c66025adf69cf70bafcd))
+- *(Q-3)* Importing a project's source again keeps the folder it went into - ([e102291](https://github.com/vicanso/cyberapi/commit/e1022918a4f11f9d3213d260d1d3b964ce0f97a2))
+- *(Q-4)* Folder and API variables offer no template hints - ([156ef82](https://github.com/vicanso/cyberapi/commit/156ef82eb7fd14cc247c3ee8be85f3b9e23bd6c2))
+- *(import)* Keep the reader's values when updating APIs from an import or source sync - ([0f018e6](https://github.com/vicanso/cyberapi/commit/0f018e6417bfed28de8015240a427056504a4db1))
+- *(import)* Compare and display resolved host URLs when matching existing APIs ([#84](https://github.com/vicanso/cyberapi/issues/84)) - ([6b705df](https://github.com/vicanso/cyberapi/commit/6b705df563dbde8b7363a2fbed112fab70955227))
+- Select an opened pin, and correct the import and source text - ([988d99e](https://github.com/vicanso/cyberapi/commit/988d99eece6f55bf282c48557d5edddc69d29f6d))
+- Address issues #78-#89 across import, assertions, auth, send, and i18n - ([2060e6c](https://github.com/vicanso/cyberapi/commit/2060e6c02acd0e2260ceefa0c585aa2e14b900bc))
+- Add response search bar and fix first-character overwrite on Ctrl+F ([#63](https://github.com/vicanso/cyberapi/issues/63)) - ([b967374](https://github.com/vicanso/cyberapi/commit/b96737462b4ea3fce1af70bef63a0da2fa67a2a7))
+- An open pin yields on the first click to another API - ([293e96d](https://github.com/vicanso/cyberapi/commit/293e96d2865eb654b95e7f501652e54321cc7fb7))
+
+### 📚 Documentation
+
+- Show the desktop app on the front page - ([217ea1a](https://github.com/vicanso/cyberapi/commit/217ea1a87e6ed5452f6fae1fda96edabfa88f3e6))
+- Keep the front page short and split the long feature guides out - ([7cf2715](https://github.com/vicanso/cyberapi/commit/7cf27152915aaaf2637be48c0dbcf959f3fc697b))
+- Record next-round feature candidates and #84 follow-up in issue-plan - ([485ea16](https://github.com/vicanso/cyberapi/commit/485ea161aef1328ab8e43ac20a47c181d4a27718))
+- Record candidate feature optimizations and roadmap in issue-plan - ([09705fb](https://github.com/vicanso/cyberapi/commit/09705fb2cc0d6a387c614a92a07a796105afaafa))
+- Convert CLAUDE.md to AGENTS.md and symlink CLAUDE.md - ([c20771b](https://github.com/vicanso/cyberapi/commit/c20771b71b5031eadcbdaab327453c6211c23100))
+- The maintainer's calls on the review's open questions - ([7f3beec](https://github.com/vicanso/cyberapi/commit/7f3beec17e54f28c47ddda4bb766c71d5dc60d6c))
+- What a review of the work since 0.4.0 found, and where the app is slow - ([3358d74](https://github.com/vicanso/cyberapi/commit/3358d7461cacca04ae273b453f7a6899d12dc94b))
+- What is worth adding after 0.4.0, each with the way it goes unless changed - ([a80a88d](https://github.com/vicanso/cyberapi/commit/a80a88da08cb47dbd7d51f2f3ef28995a19036a9))
+
+### ⚡ Performance
+
+- *(PERF-1)* The tree's rows are made once and drawn only in view - ([08256f3](https://github.com/vicanso/cyberapi/commit/08256f35b89cd045770001645bacf5b1e6479426))
+- *(PERF-10)* The request editor reads the request where it is - ([eb3424a](https://github.com/vicanso/cyberapi/commit/eb3424a7ba66af726244a06b5e861bc007fe0e91))
+- *(PERF-11)* The command palette reads other projects only for a search - ([b30c40c](https://github.com/vicanso/cyberapi/commit/b30c40cbcd1a31dfa176da015d64b3170a5dad76))
+- *(PERF-13)* A page writes a project's draft once the changes pause - ([579009b](https://github.com/vicanso/cyberapi/commit/579009b585168b83842beb9b4e62dbba9fe146f4))
+- *(PERF-14)* PostgreSQL finds what a deleted API takes with it by an index - ([9155934](https://github.com/vicanso/cyberapi/commit/91559343cd1003590b07b530069b5a9758040c8f))
+- *(PERF-15)* The bridge sends so many requests of all accounts at once - ([f48c1e8](https://github.com/vicanso/cyberapi/commit/f48c1e825864ad11fde32b0fafd957f3abb98baa))
+- *(PERF-16)* A version comparison works out an API's changes in the background - ([193a92e](https://github.com/vicanso/cyberapi/commit/193a92e02c443b8ea0b67e2eb24455742311fb55))
+- *(PERF-2)* A GraphQL answer's errors are read once per response - ([3adb321](https://github.com/vicanso/cyberapi/commit/3adb32191f8676792bd217a82f79bb8bad17d28f))
+- *(PERF-3)* A large response shows its start without being read whole - ([6e05762](https://github.com/vicanso/cyberapi/commit/6e05762e92f2f9ccdbb6862c39907e28debf77bd))
+- *(PERF-4)* The home page counts only the APIs of projects the reader reaches - ([99ff9cd](https://github.com/vicanso/cyberapi/commit/99ff9cd69a63cf1079da5db44dd8f7919758d744))
+- *(PERF-5)* The run dialog draws only the results in view - ([422825e](https://github.com/vicanso/cyberapi/commit/422825eae08b8020524555a831ebe8fbb148b4d8))
+- *(PERF-6)* An open stream redraws once a second and keeps at most 64 MB - ([81c93e9](https://github.com/vicanso/cyberapi/commit/81c93e9915af9488bd3e8eae81f3cf6d97b59771))
+- *(PERF-7)* A sync on the bridge writes what changed - ([d18dd54](https://github.com/vicanso/cyberapi/commit/d18dd54a98699a31928ac203d60ce03b07f5ca68))
+- *(PERF-8)* An API holds only its newest answer whole - ([0e20071](https://github.com/vicanso/cyberapi/commit/0e20071aea6e1ce6ede2d987fbcd19ba1f38acdc))
+- *(PERF-9)* An opened API reads its history without the bodies - ([c934753](https://github.com/vicanso/cyberapi/commit/c934753b87f35f08d72c6008e36e7e8d85019f2d))
+- Parse large JSON response trees and assertion bodies in background - ([b0c46fa](https://github.com/vicanso/cyberapi/commit/b0c46fa2c940531235ecad5d88318dfef4bc5911))
+
+### 🧪 Testing
+
+- *(store-sql)* Use global tracing subscriber in round_trips to avoid callsite interest race - ([0b795af](https://github.com/vicanso/cyberapi/commit/0b795af23d37113404788db8ed8f98963a96eb55))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(web)* Pin nightly toolchain in cyberapi-web to avoid rustc E0391 regression - ([41acc42](https://github.com/vicanso/cyberapi/commit/41acc426f90734f196e6fa8e7f7ce145aff9b96d))
+- *(web)* Pass --enable-simd to wasm-opt for stripped release wasm - ([dbd4d51](https://github.com/vicanso/cyberapi/commit/dbd4d5187881910a12e8a9c796c44c2fbbb8660f))
+- Package cyberapi-cli archives in desktop release builds - ([1e6fb23](https://github.com/vicanso/cyberapi/commit/1e6fb236dd98608ae5c9c2fe95d0ab0066e903cd))
+- GPUI Kit 0.8.1, and secondary shortcuts still load from the host - ([3322be0](https://github.com/vicanso/cyberapi/commit/3322be0ecfd3b29ea6872d4cb9b4637b8462afad))
+
 ## [0.4.0](https://github.com/vicanso/cyberapi/compare/v0.3.0..v0.4.0) - 2026-10-28
 
 ### ⛰️  Features
