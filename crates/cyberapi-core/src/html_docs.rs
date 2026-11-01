@@ -626,15 +626,18 @@ fn render_params_table(data: &TreeData, api: &ApiSetting, out: &mut String) {
             .into_iter()
             .filter(|kv| kv.enabled && !kv.key.trim().is_empty())
         {
-            let place = if req.content_type == ContentType::Multipart && kv.value.starts_with("file://") {
+            let place = if req.content_type == ContentType::Multipart && crate::send::is_file_value(&kv.value) {
                 "file"
             } else {
                 "form"
             };
+            let shown = crate::send::page_file(&kv.value)
+                .map(|(_, name)| name)
+                .unwrap_or(kv.value.as_str());
             rows.push((
                 kv.key.trim().to_string(),
                 place,
-                masked(&kv.key, &kv.value),
+                masked(&kv.key, shown),
                 kv.description.clone(),
             ));
         }

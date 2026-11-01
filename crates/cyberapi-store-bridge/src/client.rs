@@ -159,6 +159,116 @@ pub async fn session_me(transport: &dyn Transport) -> Result<Option<Me>, String>
     }
 }
 
+/// Whether the bridge at `address` offers single sign-on. An answer other
+/// than 200 is an error, so a client can treat a failure as "not offered".
+pub async fn oidc_enabled(engine: Arc<dyn HttpEngine>, address: String) -> Result<bool, String> {
+    let response = exchange(engine, HttpMethod::Get, format!("{address}/v1/oidc"), Vec::new()).await?;
+    if response.status != 200 {
+        return Err(format!("the bridge answered {}", response.status));
+    }
+    #[derive(Deserialize)]
+    struct Enabled {
+        enabled: bool,
+    }
+    serde_json::from_slice::<Enabled>(&response.body)
+        .map(|answer| answer.enabled)
+        .map_err(|error| error.to_string())
+}
+
+/// Begins a bearer single sign-on. The caller opens `url` and then polls
+/// `state`.
+pub async fn oidc_start(engine: Arc<dyn HttpEngine>, address: String) -> Result<(String, String), SignInError> {
+    #[derive(Serialize)]
+    struct Start {
+        bearer: bool,
+    }
+    #[derive(Deserialize)]
+    struct Started {
+        url: String,
+        state: String,
+    }
+    let body = serde_json::to_vec(&Start { bearer: true }).map_err(|error| SignInError::Failed(error.to_string()))?;
+    let response = exchange(engine, HttpMethod::Post, format!("{address}/v1/oidc/start"), body)
+        .await
+        .map_err(SignInError::Failed)?;
+    if response.status != 200 {
+        return Err(SignInError::Failed(answered(response.status, &response.body)));
+    }
+    let started =
+        serde_json::from_slice::<Started>(&response.body).map_err(|error| SignInError::Failed(error.to_string()))?;
+    Ok((started.url, started.state))
+}
+
+/// What a poll of a bearer sign-in found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OidcPoll {
+    /// The provider has not come back yet.
+    Pending,
+    /// The session's token, once.
+    Session(String),
+}
+
+/// Polls a bearer sign-in. 202 is still waiting; 200 is the token; anything
+/// else, including an unknown or used state, is the bridge's reason.
+pub async fn oidc_poll(engine: Arc<dyn HttpEngine>, address: String, state: String) -> Result<OidcPoll, SignInError> {
+    let response = exchange(
+        engine,
+        HttpMethod::Get,
+        format!("{address}/v1/oidc/poll?state={state}"),
+        Vec::new(),
+    )
+    .await
+    .map_err(SignInError::Failed)?;
+    match response.status {
+        202 => Ok(OidcPoll::Pending),
+        200 => serde_json::from_slice::<BearerSession>(&response.body)
+            .map(|session| OidcPoll::Session(session.token))
+            .map_err(|error| SignInError::Failed(error.to_string())),
+        status => Err(SignInError::Failed(answered(status, &response.body))),
+    }
+}
+
+fn answered(status: u16, body: &[u8]) -> String {
+    let text = String::from_utf8_lossy(body);
+    let text = text.trim();
+    if text.is_empty() {
+        format!("the bridge answered {status}")
+    } else {
+        text.to_string()
+    }
+}
+
+async fn exchange(
+    engine: Arc<dyn HttpEngine>,
+    method: HttpMethod,
+    url: String,
+    body: Vec<u8>,
+) -> Result<crate::Response, String> {
+    let mut headers = Vec::new();
+    if !body.is_empty() {
+        headers.push(("content-type".to_string(), "application/json".to_string()));
+    }
+    let request = PreparedRequest {
+        method,
+        url,
+        headers,
+        body,
+        timeouts: Timeouts::default().effective(),
+        accept_invalid_certs: false,
+        http_version: HttpVersion::Auto,
+        streams: false,
+        proxy: Default::default(),
+        digest: None,
+        oauth: None,
+        tls: Default::default(),
+    };
+    let exchange = engine.send(request).await.map_err(|error| error.to_string())?;
+    Ok(crate::Response {
+        status: exchange.status,
+        body: exchange.body,
+    })
+}
+
 /// Ends the session at the bridge.
 pub async fn sign_out(transport: &dyn Transport) -> Result<(), String> {
     let response = transport.post(LOGOUT_PATH, Vec::new()).await?;

@@ -57,6 +57,46 @@ pub fn reads_files() -> bool {
     false
 }
 
+/// F9b: the largest file a page keeps in memory. The desktop never reads it.
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+pub const PAGE_FILE_LIMIT: u64 = 32 * 1024 * 1024;
+
+/// One file a page was asked for. The desktop's picker returns nothing: it
+/// keeps a `file://` path instead, so these variants are built only on a page.
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+pub enum PageFile {
+    /// Stored as `marker` (`webfile://<id>/<name>`). The bytes are in the page.
+    /// The name is the marker's last segment.
+    Chosen { marker: String },
+    /// Larger than [`PAGE_FILE_LIMIT`].
+    TooBig,
+}
+
+/// Whether the file button asks the page for bytes (F9b). The desktop keeps
+/// its path picker.
+#[cfg(not(target_family = "wasm"))]
+pub fn picks_page_files() -> bool {
+    false
+}
+#[cfg(target_family = "wasm")]
+pub fn picks_page_files() -> bool {
+    true
+}
+
+/// Asks the page for one file's bytes. The desktop answers at once with
+/// nothing. A page's answer arrives when the reader picks or cancels; the
+/// bytes stay in the page, and `marker` is what the field stores.
+#[cfg(not(target_family = "wasm"))]
+pub fn pick_file_bytes() -> futures::channel::oneshot::Receiver<Option<PageFile>> {
+    let (sender, receiver) = futures::channel::oneshot::channel();
+    let _ = sender.send(None);
+    receiver
+}
+#[cfg(target_family = "wasm")]
+pub fn pick_file_bytes() -> futures::channel::oneshot::Receiver<Option<PageFile>> {
+    web::pick()
+}
+
 /// E1: whether a WebSocket can be opened: the desktop's engine opens
 /// them; a page's bridge relays none.
 #[cfg(not(target_family = "wasm"))]
@@ -660,9 +700,7 @@ pub fn files() -> Arc<dyn FileReader + Send + Sync> {
 }
 #[cfg(target_family = "wasm")]
 pub fn files() -> Arc<dyn FileReader + Send + Sync> {
-    Arc::new(cyberapi_core::template::NoFiles(
-        "the browser build cannot read local files",
-    ))
+    Arc::new(web::Files)
 }
 
 /// What reads this machine's environment variables for `env` (D2): the
@@ -728,6 +766,10 @@ mod desktop {
 
     impl FileReader for Files {
         fn read(&self, file: &str, dir: Option<BaseDir>) -> Result<Vec<u8>, String> {
+            // F9b: a page's marker is not a path on this machine.
+            if file.starts_with(cyberapi_core::send::PAGE_FILE) {
+                return Err("this file was chosen in the browser and is not on this machine".into());
+            }
             let path = resolve(file, dir);
             std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))
         }
@@ -879,6 +921,177 @@ mod web {
         let _ = web_sys::Url::revoke_object_url(&url);
         Ok(name.to_string())
     }
+
+    /// F9b: bytes a page picked, kept here until the page closes or the
+    /// shelf drops the oldest. The field stores `webfile://<id>/<name>`.
+    pub(super) struct Files;
+
+    impl cyberapi_core::template::FileReader for Files {
+        fn read(&self, file: &str, _: Option<cyberapi_core::template::BaseDir>) -> Result<Vec<u8>, String> {
+            let Some(id) = file.strip_prefix(cyberapi_core::send::PAGE_FILE) else {
+                return Err("the browser build cannot read local files".into());
+            };
+            let id = id.split('/').next().filter(|id| !id.is_empty()).unwrap_or(id);
+            shelf_get(id)
+        }
+    }
+
+    #[derive(Default)]
+    struct Shelf {
+        order: Vec<String>,
+        bytes: std::collections::HashMap<String, Vec<u8>>,
+    }
+
+    fn shelf() -> &'static std::sync::Mutex<Shelf> {
+        static SHELF: std::sync::OnceLock<std::sync::Mutex<Shelf>> = std::sync::OnceLock::new();
+        SHELF.get_or_init(|| std::sync::Mutex::new(Shelf::default()))
+    }
+
+    fn shelf_keep(id: &str, bytes: Vec<u8>) {
+        let Ok(mut shelf) = shelf().lock() else {
+            return;
+        };
+        shelf.order.retain(|each| each != id);
+        shelf.order.push(id.to_string());
+        shelf.bytes.insert(id.to_string(), bytes);
+        while shelf.order.len() > 8 {
+            let old = shelf.order.remove(0);
+            shelf.bytes.remove(&old);
+        }
+    }
+
+    fn shelf_get(id: &str) -> Result<Vec<u8>, String> {
+        let shelf = shelf()
+            .lock()
+            .map_err(|_| "pick this file again in the page".to_string())?;
+        shelf
+            .bytes
+            .get(id)
+            .cloned()
+            .ok_or_else(|| "pick this file again in the page".to_string())
+    }
+
+    fn next_id() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(1);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        format!("{:x}{n:x}", js_sys::Date::now() as u64)
+    }
+
+    /// A file name with no directory and nothing a marker or a header cannot hold.
+    fn file_name(name: &str) -> String {
+        let name = name.rsplit(['/', '\\']).next().unwrap_or(name).trim();
+        let cleaned: String = name
+            .chars()
+            .map(|c| match c.is_control() || matches!(c, '/' | '\\' | '"') {
+                true => '_',
+                false => c,
+            })
+            .collect();
+        match cleaned.is_empty() {
+            true => "file".into(),
+            false => cleaned,
+        }
+    }
+
+    fn answer(
+        slot: &std::sync::Mutex<Option<futures::channel::oneshot::Sender<Option<super::PageFile>>>>,
+        value: Option<super::PageFile>,
+    ) {
+        if let Ok(mut guard) = slot.lock()
+            && let Some(sender) = guard.take()
+        {
+            let _ = sender.send(value);
+        }
+    }
+
+    /// Opens the browser's file dialog. The bytes, when the reader picks
+    /// one that fits, are kept by [`Files`].
+    pub(super) fn pick() -> futures::channel::oneshot::Receiver<Option<super::PageFile>> {
+        use std::sync::{Arc, Mutex};
+        use wasm_bindgen::closure::Closure;
+
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let slot = Arc::new(Mutex::new(Some(sender)));
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            answer(&slot, None);
+            return receiver;
+        };
+        let input = match document.create_element("input") {
+            Ok(element) => match element.dyn_into::<web_sys::HtmlInputElement>() {
+                Ok(input) => input,
+                Err(_) => {
+                    answer(&slot, None);
+                    return receiver;
+                }
+            },
+            Err(_) => {
+                answer(&slot, None);
+                return receiver;
+            }
+        };
+        input.set_type("file");
+        if let Some(body) = document.body() {
+            let _ = body.append_child(&input);
+        }
+
+        let cancel_slot = Arc::clone(&slot);
+        let on_cancel = Closure::once(move |_event: web_sys::Event| answer(&cancel_slot, None));
+        let _ = input.add_event_listener_with_callback("cancel", on_cancel.as_ref().unchecked_ref());
+        on_cancel.forget();
+
+        let changed_slot = Arc::clone(&slot);
+        let input_for_change = input.clone();
+        let on_change = Closure::once(move |_event: web_sys::Event| {
+            let _ = input_for_change.remove();
+            let Some(file) = input_for_change.files().and_then(|list| list.get(0)) else {
+                answer(&changed_slot, None);
+                return;
+            };
+            let name = file_name(&file.name());
+            if file.size() as u64 > super::PAGE_FILE_LIMIT {
+                answer(&changed_slot, Some(super::PageFile::TooBig));
+                return;
+            }
+            let Ok(reader) = web_sys::FileReader::new() else {
+                answer(&changed_slot, None);
+                return;
+            };
+            let loaded_slot = Arc::clone(&changed_slot);
+            let reader_for_load = reader.clone();
+            let on_load = Closure::once(move |_event: web_sys::Event| {
+                let bytes = reader_for_load.result().ok().and_then(|value| {
+                    if value.is_null() || value.is_undefined() {
+                        None
+                    } else {
+                        Some(js_sys::Uint8Array::new(&value).to_vec())
+                    }
+                });
+                match bytes {
+                    Some(bytes) => {
+                        let id = next_id();
+                        shelf_keep(&id, bytes);
+                        answer(
+                            &loaded_slot,
+                            Some(super::PageFile::Chosen {
+                                marker: cyberapi_core::send::page_file_marker(&id, &name),
+                            }),
+                        );
+                    }
+                    None => answer(&loaded_slot, None),
+                }
+            });
+            reader.set_onload(Some(on_load.as_ref().unchecked_ref()));
+            on_load.forget();
+            if reader.read_as_array_buffer(&file).is_err() {
+                answer(&changed_slot, None);
+            }
+        });
+        input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
+        on_change.forget();
+        input.click();
+        receiver
+    }
 }
 
 #[cfg(all(test, not(target_family = "wasm")))]
@@ -896,6 +1109,8 @@ mod tests {
         let path = file.to_str().expect("UTF-8");
         assert_eq!(files().read(path, Some(BaseDir::Desktop)), Ok(b"hello".to_vec()));
         assert!(files().read("/no/such/file", None).is_err());
+        assert!(!picks_page_files());
+        assert!(files().read("webfile://abc/a.png", None).is_err());
         // Saving never overwrites (F15.4).
         let first = desktop::save_unique(dir.path(), "a/b.json", b"1").expect("saved");
         let second = desktop::save_unique(dir.path(), "a/b.json", b"2").expect("saved");

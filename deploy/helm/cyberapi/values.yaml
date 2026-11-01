@@ -47,6 +47,15 @@ bridge:
   # More arguments, as `cyberapi-bridge --help` lists them.
   extraArgs: []
   extraEnv: []
+  # OpenID Connect (*0.4.1*). issuer, clientId and a secret, together, or none.
+  # existingSecret wins over clientSecret. redirect is the public callback URL.
+  oidc:
+    issuer: ""
+    clientId: ""
+    clientSecret: ""
+    existingSecret: ""
+    existingSecretKey: oidc-client-secret
+    redirect: ""
 
 service:
   type: ClusterIP

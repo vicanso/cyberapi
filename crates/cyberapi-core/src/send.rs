@@ -837,8 +837,32 @@ fn oauth_login(
     }
 }
 
+/// F9b: a file a page picked. `webfile://<id>/<filename>`. The id is not a
+/// filesystem path; the bytes stay in that page, and a synced request does
+/// not carry them.
+pub const PAGE_FILE: &str = "webfile://";
+
+/// The value a page stores for a picked file. `name` is the file's own
+/// name, with no directory.
+pub fn page_file_marker(id: &str, name: &str) -> String {
+    format!("{PAGE_FILE}{id}/{name}")
+}
+
+/// `(id, filename)` when `value` is a file a page picked.
+pub fn page_file(value: &str) -> Option<(&str, &str)> {
+    let rest = value.trim().strip_prefix(PAGE_FILE)?;
+    let (id, name) = rest.split_once('/')?;
+    (!id.is_empty() && !name.is_empty()).then_some((id, name))
+}
+
+/// A multipart field that sends a file: a desktop path, or a page's pick.
+pub fn is_file_value(value: &str) -> bool {
+    value.trim().starts_with("file://") || page_file(value).is_some()
+}
+
 /// F5.3: enabled fields with a name; a `file://` value is the file's bytes,
-/// sent under its file name (the old app sent the whole local path).
+/// sent under its file name (the old app sent the whole local path). A
+/// page's pick (`webfile://`) is the bytes that page is holding.
 fn multipart(
     body: &str,
     cx: &Context<'_>,
@@ -848,37 +872,54 @@ fn multipart(
     let mut out = Vec::new();
     for kv in form_fields(body).iter().filter(|kv| kv.enabled && !kv.key.is_empty()) {
         out.extend_from_slice(format!("--{}\r\n", cx.boundary).as_bytes());
-        match kv.value.strip_prefix("file://") {
-            Some(path) => {
-                let rendered = render(path)?;
-                let path = match rendered.trim() {
-                    "" => cx.template.answers.file.as_deref().unwrap_or_default(),
-                    other => other,
-                };
-                let bytes = cx.files.read(path, None).map_err(|message| PrepareError::Template {
+        if let Some((id, name)) = page_file(&kv.value) {
+            let bytes = cx
+                .files
+                .read(&format!("{PAGE_FILE}{id}"), None)
+                .map_err(|message| PrepareError::Template {
                     source: TemplateError::ReadFile {
-                        file: path.to_string(),
+                        file: name.to_string(),
                         message,
                     },
                 })?;
-                let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-                let mime = mime_guess::from_path(path).first_or_octet_stream();
-                out.extend_from_slice(
-                    format!(
-                        "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\nContent-Type: {mime}\r\n\r\n",
-                        quote(&kv.key),
-                        quote(name)
-                    )
-                    .as_bytes(),
-                );
-                out.extend_from_slice(&bytes);
-            }
-            None => {
-                out.extend_from_slice(
-                    format!("Content-Disposition: form-data; name=\"{}\"\r\n\r\n", quote(&kv.key)).as_bytes(),
-                );
-                out.extend_from_slice(render(&kv.value)?.as_bytes());
-            }
+            let mime = mime_guess::from_path(name).first_or_octet_stream();
+            out.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\nContent-Type: {mime}\r\n\r\n",
+                    quote(&kv.key),
+                    quote(name)
+                )
+                .as_bytes(),
+            );
+            out.extend_from_slice(&bytes);
+        } else if let Some(path) = kv.value.strip_prefix("file://") {
+            let rendered = render(path)?;
+            let path = match rendered.trim() {
+                "" => cx.template.answers.file.as_deref().unwrap_or_default(),
+                other => other,
+            };
+            let bytes = cx.files.read(path, None).map_err(|message| PrepareError::Template {
+                source: TemplateError::ReadFile {
+                    file: path.to_string(),
+                    message,
+                },
+            })?;
+            let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            out.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\nContent-Type: {mime}\r\n\r\n",
+                    quote(&kv.key),
+                    quote(name)
+                )
+                .as_bytes(),
+            );
+            out.extend_from_slice(&bytes);
+        } else {
+            out.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{}\"\r\n\r\n", quote(&kv.key)).as_bytes(),
+            );
+            out.extend_from_slice(render(&kv.value)?.as_bytes());
         }
         out.extend_from_slice(b"\r\n");
     }
@@ -1580,6 +1621,48 @@ mod tests {
         assert!(String::from_utf8_lossy(&picked.body).contains(
             "Content-Disposition: form-data; name=\"avatar\"; filename=\"a.png\"\r\nContent-Type: image/png"
         ));
+
+        // F9b: a page's pick is bytes held under an id, not a filesystem path,
+        // and it does not ask for a path before sending.
+        let page = HttpRequest {
+            body: serde_json::to_string(&[kv("shot", "webfile://abc/photo.png")]).expect("json"),
+            ..request.clone()
+        };
+        assert!(!needs(&page, &[], &Inherited::default()).picks_file);
+        assert_eq!(page_file("webfile://abc/photo.png"), Some(("abc", "photo.png")));
+        assert!(page_file("file:///tmp/a.png").is_none());
+        struct Held;
+        impl FileReader for Held {
+            fn read(&self, file: &str, _: Option<template::BaseDir>) -> Result<Vec<u8>, String> {
+                if file == "webfile://abc" {
+                    Ok(b"png".to_vec())
+                } else {
+                    Err("missing".into())
+                }
+            }
+        }
+        let sent = prepare(
+            &page,
+            &Context {
+                variables: &[],
+                template: &Inputs::default(),
+                files: &Held,
+                user_agent: "CyberAPI/test",
+                timeouts: Timeouts::default(),
+                accept_invalid_certs: false,
+                http_version: HttpVersion::Auto,
+                proxy: &ProxyPrefs::default(),
+                boundary: "XYZ",
+                inherited: &Inherited::default(),
+                environment: None,
+            },
+        )
+        .expect("page file");
+        let body = String::from_utf8_lossy(&sent.body);
+        assert!(body.contains(
+            "Content-Disposition: form-data; name=\"shot\"; filename=\"photo.png\"\r\nContent-Type: image/png\r\n\r\npng"
+        ));
+        assert!(!body.contains("webfile://"));
 
         let missing = HttpRequest {
             body: serde_json::to_string(&[kv("f", "file:///nope")]).expect("json"),

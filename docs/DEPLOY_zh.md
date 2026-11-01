@@ -138,7 +138,7 @@ helm install cyberapi deploy/helm/cyberapi \
 
 - **数据库**：`store.existingSecret`（及 `store.existingSecretKey`，默认 `store-url`）指向你自己的 Secret；或者用 `store.url`，由 chart 写进它生成的 Secret。两者都没有时拒绝安装。
 - **第一个管理员**：`setupToken.value` 或 `setupToken.existingSecret`；都没有时初始化 token 在日志里（`kubectl logs deploy/cyberapi | grep -i "setup token"`）。
-- **上面的选项**都有对应的 value：`bridge.basePath`（Ingress 的路径要和它一致）、`bridge.allowTargets`（列表）、`bridge.publicOnly`（默认开启；请求只发往公网地址）、`bridge.maxSends`（*0.4.1*；留空即 bridge 的默认值）、`bridge.insecureCookie`，其余用 `bridge.extraArgs` / `bridge.extraEnv`。
+- **上面的选项**都有对应的 value：`bridge.basePath`（Ingress 的路径要和它一致）、`bridge.allowTargets`（列表）、`bridge.publicOnly`（默认开启；请求只发往公网地址）、`bridge.maxSends`（*0.4.1*；留空即 bridge 的默认值）、`bridge.insecureCookie`、`bridge.oidc`（*0.4.1*；issuer、client id、client secret，以及可选的回调地址），其余用 `bridge.extraArgs` / `bridge.extraEnv`。
 - **一个副本**（`replicaCount: 1`）：登录限流、MCP 调用限制和同时发送的请求数都是在各自进程里计数的。Pod 以非 root 用户、只读根文件系统运行，连上数据库后才算就绪。
 - **TLS** 交给 Ingress（`ingress.tls`），这样登录 Cookie 保持 `Secure`。要用 chart 之外的版本就设 `image.tag`（`nightly` 跟随 `main`）。
 
@@ -155,6 +155,10 @@ helm install cyberapi deploy/helm/cyberapi \
 | `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | *0.2.2* 起就有；*0.3.1* 起不写它也一样。请求只发往公网地址。要访问内网，用 `--allow-target`。 |
 | `--base-path <路径>` | `CYBERAPI_BRIDGE_BASE_PATH` | *0.2.2*。把页面和接口放在这个路径下，如 `/cyberapi`，登录 Cookie 也只在这个路径下有效（见[子路径](#反向代理和-https)）。默认为空，即根路径。 |
 | `--max-sends <n>` | `CYBERAPI_BRIDGE_MAX_SENDS` | *0.4.1*。所有账号合起来同时最多有多少个请求在发送，默认 `64`；再多的会立即回复“忙”。每个请求可能占着最多 64 MB 的响应和发给页面的应答，这个数限制了 bridge 的内存。 |
+| `--oidc-issuer <url>` | `CYBERAPI_BRIDGE_OIDC_ISSUER` | *0.4.1*。OpenID Connect 的 issuer。和 client id、client secret 一起设置后，登录页和桌面版提供单点登录。空白视为未设置。 |
+| `--oidc-client-id <id>` | `CYBERAPI_BRIDGE_OIDC_CLIENT_ID` | *0.4.1*。身份提供方发给这个 bridge 的 client id。 |
+| `--oidc-client-secret <secret>` | `CYBERAPI_BRIDGE_OIDC_CLIENT_SECRET` | *0.4.1*。client secret。建议用环境变量。 |
+| `--oidc-redirect <url>` | `CYBERAPI_BRIDGE_OIDC_REDIRECT` | *0.4.1*。完整的回调地址。放在反向代理后面时要设置；否则 bridge 按它自己看到的请求拼出 `{base}/v1/oidc/callback`。 |
 | `--insecure-cookie` | | 登录 Cookie 不带 `Secure`，用于在自己机器上走纯 HTTP。 |
 | `--www <dir>` | | 用这个目录作为页面，代替内置的页面（开发用）。 |
 | | `RUST_LOG` | 日志详细程度：默认 `info`，`debug` 更详细。日志写到标准输出。 |
@@ -231,12 +235,13 @@ bridge 总是自己连接每台服务器，不经过代理：既不读它所在�
 - **个人空间和团队。** 每个账号有一个别人不能加入的个人空间。团队有所有者、管理员和成员：成员可以编辑团队的项目，所有者和管理员负责管理。
 - **共享项目。** 项目的**访问权限…**菜单可以把项目以查看者、编辑者或管理者的身份共享给其他账号或团队，也可以把项目移到另一个团队。查看者只能看，不能改。
 - **登录会话。** 登录表单上有“保持登录 30 天”（*0.2.2*），默认勾选。取消勾选时，关闭浏览器即退出；即使浏览器一直开着，bridge 上的会话也最多保留 12 小时。桌面版的登录总是保持 30 天。过期的会话每小时清理一次。
+- **单点登录**（*0.4.1*）。设置了 `--oidc-issuer`、`--oidc-client-id` 和 `--oidc-client-secret` 后，登录页和桌面版提供 OpenID Connect（授权码加 PKCE）。身份提供方必须在 ID token 里带上 `email` 和 `email_verified`（scope 为 `openid email`）。账号的用户名就是这个邮箱，而且账号必须已经存在：仍然由邀请创建，并设置密码。第一次登录成功时绑定这一个账号；已经绑定的身份之后直接登录，密码仍然可用。issuer 和 subject 各自不能超过 255 个字符。接受 RSA（RS256、RS384、RS512、PS256、PS384、PS512）和 EC（ES256、ES384），不接受 EdDSA。身份提供方在内网时，要用 `--allow-target` 放行它所在的网段。单点登录的会话保持 30 天。放在反向代理后面时设置 `--oidc-redirect` 为对外的回调地址，否则 bridge 按自己看到的请求来拼。
 
 系统管理员管理账号，但只能看到共享给他的项目。
 
 ## 桌面版登录
 
-桌面版可以登录同一台服务器：**设置 → 服务器**，填写页面的地址（`https://cyberapi.example.com`，有子路径时带上子路径），再填用户名和密码。账号在页面上创建，桌面版只负责登录。
+桌面版可以登录同一台服务器：**设置 → 服务器**，填写页面的地址（`https://cyberapi.example.com`，有子路径时带上子路径），再填用户名和密码。这台服务器开了单点登录时，同一个表单上还有**使用单点登录**。账号在页面上创建，桌面版只负责登录。
 
 - 桌面版必须能访问这个地址，而且证书要被系统信任。桌面版总会校验这个证书，即使它自己的设置允许请求跳过证书校验。
 - 登录后，首页会在本机项目旁边列出该账号的服务器项目。每个服务器项目都会复制一份到本机，在本机编辑（离线也可以），同步时再推到服务器；如果期间别人也改过，由你选择保留哪一份。

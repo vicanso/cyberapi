@@ -48,13 +48,24 @@ impl ServerSection {
                 ServerEvent::SignInFailed(failure) => {
                     window.push_notification(Notification::error(failure_text(failure)), cx);
                 }
+                ServerEvent::Visit(url) => cx.open_url(url),
             }),
             cx.subscribe_in(&password, window, |this, _, event, _, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     this.sign_in(cx);
                 }
             }),
+            cx.subscribe_in(&address, window, |this, _, event, _, cx| {
+                if matches!(event, InputEvent::Blur) {
+                    let typed = this.address.read(cx).value().to_string();
+                    this.state.update(cx, |state, cx| state.look_up_oidc(&typed, cx));
+                }
+            }),
         ];
+        let saved = state.read(cx).address().to_string();
+        if !saved.is_empty() {
+            state.update(cx, |state, cx| state.look_up_oidc(&saved, cx));
+        }
         Self {
             state,
             address,
@@ -71,8 +82,26 @@ impl ServerSection {
             .update(cx, |state, cx| state.sign_in(&address, name, password, cx));
     }
 
+    fn sign_in_oidc(&mut self, cx: &mut Context<Self>) {
+        let address = self.address.read(cx).value().to_string();
+        self.state.update(cx, |state, cx| state.sign_in_oidc(&address, cx));
+    }
+
     fn render_form(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let signing_in = self.state.read(cx).signing_in();
+        let typed = self.address.read(cx).value().to_string();
+        let offered = self.state.read(cx).single_sign_on(&typed);
+        let mut buttons = h_flex().justify_end().gap_2().py_2();
+        if offered {
+            buttons = buttons.child(
+                Button::new("server-oidc")
+                    .outline()
+                    .small()
+                    .label(t!("server.oidc").to_string())
+                    .loading(signing_in)
+                    .on_click(cx.listener(|this, _, _, cx| this.sign_in_oidc(cx))),
+            );
+        }
         vec![
             setting_row(
                 t!("server.address").to_string(),
@@ -87,9 +116,7 @@ impl ServerSection {
                 Input::new(&self.password).small(),
                 cx,
             ),
-            h_flex()
-                .justify_end()
-                .py_2()
+            buttons
                 .child(
                     Button::new("server-sign-in")
                         .primary()

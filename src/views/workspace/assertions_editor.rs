@@ -41,6 +41,7 @@ pub(super) fn subject_label(subject: Subject) -> String {
         Subject::Latency => t!("assertions.latency"),
         Subject::Size => t!("assertions.size"),
         Subject::Schema => t!("assertions.schema"),
+        Subject::Snapshot => t!("assertions.snapshot"),
     }
     .to_string()
 }
@@ -73,6 +74,7 @@ pub(super) fn problem_text(problem: &Problem) -> String {
         Problem::UnknownType => t!("assertions.unknown_type", types = TYPES.join(", ")).to_string(),
         Problem::NoTarget => t!("assertions.no_target").to_string(),
         Problem::Schema(why) => t!("assertions.bad_schema", why = why).to_string(),
+        Problem::NoExample => t!("assertions.no_example").to_string(),
     }
 }
 
@@ -84,10 +86,11 @@ pub(super) fn actual_text(checked: &Checked) -> String {
     }
 }
 
-fn target_placeholder(subject: Subject) -> &'static str {
+fn target_placeholder(subject: Subject) -> String {
     match subject {
-        Subject::Header => "Content-Type",
-        _ => "$.data.id",
+        Subject::Header => "Content-Type".into(),
+        Subject::Snapshot => t!("assertions.example_name").into(),
+        _ => "$.data.id".into(),
     }
 }
 
@@ -97,6 +100,7 @@ fn expected_placeholder(subject: Subject, op: Op) -> String {
         Op::IsType => TYPES.join(" / "),
         Op::Less | Op::Greater if subject == Subject::Latency => "500".into(),
         _ if subject == Subject::Status => "200".into(),
+        _ if subject == Subject::Snapshot => "$.id, $.createdAt".into(),
         _ => t!("assertions.value").to_string(),
     }
 }
@@ -683,6 +687,8 @@ impl AssertionsEditor {
     fn outcome(&self, index: usize, row: &Row, cx: &App) -> Option<Result<Checked, Problem>> {
         let expected = match row.subject {
             Subject::Schema => row.schema.trim().is_empty(),
+            // A11: the paths it ignores may be empty; it has to name an example.
+            Subject::Snapshot => row.target.read(cx).value().trim().is_empty(),
             _ => row.op.takes_value() && row.expected.read(cx).value().trim().is_empty(),
         };
         if expected {
@@ -749,7 +755,10 @@ impl Render for AssertionsEditor {
                             .when(row.subject.has_target(), |this| {
                                 this.child(div().flex_1().min_w_0().child(Input::new(&row.target).small()))
                             })
-                            .child(div().w(px(110.)).flex_none().child(Select::new(&row.ops).small()))
+                            // A snapshot names an example; it has one comparison.
+                            .when(row.subject != Subject::Snapshot, |this| {
+                                this.child(div().w(px(110.)).flex_none().child(Select::new(&row.ops).small()))
+                            })
                             // A6: the schema opens in a dialog.
                             .when(row.subject == Subject::Schema, |this| {
                                 let label = match row.schema.trim().is_empty() {
@@ -781,9 +790,11 @@ impl Render for AssertionsEditor {
                                         }),
                                 )
                             })
-                            .when(row.subject != Subject::Schema && row.op.takes_value(), |this| {
-                                this.child(div().flex_1().min_w_0().child(Input::new(&row.expected).small()))
-                            })
+                            .when(
+                                row.subject == Subject::Snapshot
+                                    || (row.subject != Subject::Schema && row.op.takes_value()),
+                                |this| this.child(div().flex_1().min_w_0().child(Input::new(&row.expected).small())),
+                            )
                             // Room for the inputs left by what a row has not.
                             .when(!row.subject.has_target() && !row.op.takes_value(), |this| {
                                 this.child(div().flex_1())

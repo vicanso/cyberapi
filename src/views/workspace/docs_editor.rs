@@ -30,6 +30,17 @@ const SHOWN: usize = 64 * 1024;
 /// A starter JSON Schema when there is no JSON body or response to infer from.
 const SCHEMA_EXAMPLE: &str = "{\n    \"type\": \"object\",\n    \"required\": [\"id\"],\n    \"properties\": {\n        \"id\": {\n            \"type\": \"integer\",\n            \"description\": \"\"\n        }\n    }\n}\n";
 
+/// A page-picked file shows its name. The stored marker stays on the request.
+fn shown_file(kv: &KvParam) -> KvParam {
+    match send::page_file(&kv.value) {
+        Some((_, name)) => KvParam {
+            value: name.to_string(),
+            ..kv.clone()
+        },
+        None => kv.clone(),
+    }
+}
+
 pub struct DocsEditor {
     api: Entity<ApiState>,
     description: Entity<EditorState>,
@@ -527,13 +538,14 @@ impl DocsEditor {
             let multipart = request.content_type == ContentType::Multipart;
             let own_form = form_fields(&request.body);
             for kv in own_form.iter().filter(|kv| !kv.key.trim().is_empty()) {
-                let place = if multipart && kv.value.starts_with("file://") {
+                let place = if multipart && send::is_file_value(&kv.value) {
                     "file"
                 } else {
                     "form"
                 };
                 let fallback = find_source_desc(&matched_form, &kv.key, false);
-                rows.push(Self::render_flat_param(flat_idx, place, kv, fallback, false, cx));
+                let shown = shown_file(kv);
+                rows.push(Self::render_flat_param(flat_idx, place, &shown, fallback, false, cx));
                 flat_idx += 1;
             }
             for kv in matched_form
@@ -541,12 +553,13 @@ impl DocsEditor {
                 .filter(|kv| !kv.key.trim().is_empty() && !kv.description.trim().is_empty())
             {
                 if !own_form.iter().any(|own| own.key.trim() == kv.key.trim()) {
-                    let place = if multipart && kv.value.starts_with("file://") {
+                    let place = if multipart && send::is_file_value(&kv.value) {
                         "file"
                     } else {
                         "form"
                     };
-                    rows.push(Self::render_flat_param(flat_idx, place, kv, None, true, cx));
+                    let shown = shown_file(kv);
+                    rows.push(Self::render_flat_param(flat_idx, place, &shown, None, true, cx));
                     flat_idx += 1;
                 }
             }

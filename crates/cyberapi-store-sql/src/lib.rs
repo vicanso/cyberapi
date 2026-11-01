@@ -24,6 +24,7 @@ use cyberapi_store::{DirectoryStore, Refusal, Storage, StoreError, VersionStore}
 use directory::NoPasswords;
 use scoped::Scoped;
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
+
 use sqlx::migrate::MigrateError;
 use sqlx::{AnyConnection, AnyPool, Row};
 use std::sync::Arc;
@@ -97,6 +98,46 @@ pub struct Account {
     pub name: String,
     pub display_name: String,
     pub admin: bool,
+}
+
+/// An account found by its provider subject (G5). `disabled` is kept so a
+/// link to a disabled account is not mistaken for "no such subject".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OidcAccount {
+    pub account: Account,
+    pub disabled: bool,
+}
+
+/// An enabled account whose name matched, and whether a subject is already
+/// linked to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedAccount {
+    pub account: Account,
+    pub linked: bool,
+}
+
+/// What linking a subject to an account did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OidcBind {
+    Linked,
+    /// Already linked, disabled, or the subject is someone else's.
+    Taken,
+}
+
+/// Issuer and subject are `VARCHAR(255)`. Empty is not an identity.
+fn oidc_id(value: &str) -> Result<String, StoreError> {
+    if value.is_empty() || value.chars().count() > 255 {
+        return Err(db("an OpenID Connect issuer or subject must be 1 to 255 characters"));
+    }
+    Ok(value.to_string())
+}
+
+/// The unique subject was taken. MySQL reports that as SQLSTATE `23000`
+/// with error number 1062, so the vendor code alone is not enough.
+fn unique_violation(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .is_some_and(|db_error| sqlx::error::DatabaseError::kind(db_error) == sqlx::error::ErrorKind::UniqueViolation)
 }
 
 fn account(row: &sqlx::any::AnyRow) -> Result<Account, StoreError> {
@@ -427,6 +468,61 @@ impl SqlStore {
             .await
             .map_err(db)?;
         row.map(|row| Ok((account(&row)?, rows::text(&row, 4)?))).transpose()
+    }
+
+    /// The account linked to this provider subject, disabled ones included.
+    pub async fn find_oidc(&self, issuer: &str, subject: &str) -> Result<Option<OidcAccount>, StoreError> {
+        let (issuer, subject) = (oidc_id(issuer)?, oidc_id(subject)?);
+        let row = sqlx::query(self.dialect.sql(sql::ACCOUNT_OIDC))
+            .bind(issuer)
+            .bind(subject)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        row.map(|row| {
+            Ok(OidcAccount {
+                account: account(&row)?,
+                disabled: row.try_get::<i32, _>(4).map_err(db)? != 0,
+            })
+        })
+        .transpose()
+    }
+
+    /// Enabled accounts whose name matches `name`, ignoring ASCII case.
+    /// The caller still compares: more than one match is ambiguous.
+    pub async fn accounts_named(&self, name: &str) -> Result<Vec<NamedAccount>, StoreError> {
+        let row = sqlx::query(self.dialect.sql(sql::ACCOUNT_BY_NAME_CI))
+            .bind(name.to_string())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+        row.into_iter()
+            .map(|row| {
+                let linked = row.try_get::<Option<String>, _>(4).map_err(db)?.is_some();
+                Ok(NamedAccount {
+                    account: account(&row)?,
+                    linked,
+                })
+            })
+            .collect()
+    }
+
+    /// Links `account` to the subject. [`OidcBind::Taken`] when it was
+    /// already linked, disabled, or the subject belongs to someone else.
+    pub async fn bind_oidc(&self, issuer: &str, subject: &str, account: &AccountId) -> Result<OidcBind, StoreError> {
+        let (issuer, subject) = (oidc_id(issuer)?, oidc_id(subject)?);
+        let result = sqlx::query(self.dialect.sql(sql::ACCOUNT_BIND_OIDC))
+            .bind(issuer)
+            .bind(subject)
+            .bind(account.as_str().to_string())
+            .execute(&self.pool)
+            .await;
+        match result {
+            Ok(done) if done.rows_affected() >= 1 => Ok(OidcBind::Linked),
+            Ok(_) => Ok(OidcBind::Taken),
+            Err(error) if unique_violation(&error) => Ok(OidcBind::Taken),
+            Err(error) => Err(db(error)),
+        }
     }
 
     /// A login that lasts until `expires_at` (unix seconds). The store keeps

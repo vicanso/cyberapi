@@ -763,11 +763,12 @@ pub async fn execute_send_api(
             .of(&settings.secret_variables),
     };
     let assertions = api.request.assertions.clone();
+    let examples = api.request.examples.clone();
     let response = crate::send(sender, collection.id, api.id, api.request, Answers::default())
         .await
         .map_err(failed)?;
     let mut answer = response_json(&response);
-    let reported = cyberapi_core::assertions::report(&assertions, &response);
+    let reported = cyberapi_core::assertions::report(&assertions, &response, &examples);
     if !reported.is_empty()
         && let Some(object) = answer.as_object_mut()
     {

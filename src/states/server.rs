@@ -14,7 +14,8 @@ use cyberapi_core::{AccountId, CollectionId};
 use cyberapi_http::HttpEngine;
 use cyberapi_store::{DirectoryStore, ServerCopyStore, Storage, VersionStore};
 use cyberapi_store_bridge::{
-    BridgeStore, EngineTransport, LoginForm, SignInError, bridge_address, session_me, sign_in, sign_out,
+    BridgeStore, EngineTransport, LoginForm, OidcPoll, SignInError, bridge_address, oidc_enabled, oidc_poll,
+    oidc_start, session_me, sign_in, sign_out,
 };
 use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 use std::sync::Arc;
@@ -41,6 +42,8 @@ pub enum SignInFailure {
 pub enum ServerEvent {
     SignInFailed(SignInFailure),
     SignedIn,
+    /// Open this address: the provider's sign-in page.
+    Visit(String),
 }
 
 pub struct ServerState {
@@ -59,6 +62,10 @@ pub struct ServerState {
     /// How many times in a row it could not be: each retry waits longer
     /// (`pacing::retry_after`).
     failures: u32,
+    /// The last answer for an address: whether that bridge offers single
+    /// sign-on. A slow answer for an older address does not replace it.
+    oidc: Option<(String, bool)>,
+    oidc_lookup: u64,
 }
 
 impl EventEmitter<ServerEvent> for ServerState {}
@@ -77,6 +84,8 @@ impl ServerState {
             bound: None,
             _retry: None,
             failures: 0,
+            oidc: None,
+            oidc_lookup: 0,
         };
         state.check(cx);
         state.reload_copies(cx);
@@ -346,22 +355,135 @@ impl ServerState {
             let _ = this.update(cx, |this, cx| {
                 this.signing_in = false;
                 match answer {
-                    Ok(token) => {
-                        this.file = ServerFile {
-                            address,
-                            token: Some(token),
-                            account: None,
-                        };
-                        server_local::write(&this.file);
-                        this.check(cx);
-                        cx.emit(ServerEvent::SignedIn);
+                    Ok(token) => this.keep_session(address, token, cx),
+                    Err(error) => {
+                        cx.emit(ServerEvent::SignInFailed(SignInFailure::Login(error)));
+                        cx.notify();
                     }
-                    Err(error) => cx.emit(ServerEvent::SignInFailed(SignInFailure::Login(error))),
                 }
-                cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Whether `address` last said it offers single sign-on.
+    pub fn single_sign_on(&self, address: &str) -> bool {
+        let Some(address) = bridge_address(address) else {
+            return false;
+        };
+        self.oidc.as_ref().is_some_and(|(kept, on)| kept == &address && *on)
+    }
+
+    /// Asks `address` once whether it offers single sign-on. The same
+    /// address is not asked again. The view calls this; opening the app
+    /// does not.
+    pub fn look_up_oidc(&mut self, address: &str, cx: &mut Context<Self>) {
+        let Some(address) = bridge_address(address) else {
+            if self.oidc.take().is_some() {
+                self.oidc_lookup += 1;
+                cx.notify();
+            }
+            return;
+        };
+        if self.oidc.as_ref().is_some_and(|(kept, _)| kept == &address) {
+            return;
+        }
+        self.oidc = None;
+        self.oidc_lookup += 1;
+        let generation = self.oidc_lookup;
+        cx.notify();
+        let engine = self.engine.clone();
+        let asked = address.clone();
+        cx.spawn(async move |this, cx| {
+            let offered = cx
+                .background_spawn(async move { oidc_enabled(engine, asked).await.unwrap_or(false) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.oidc_lookup == generation {
+                    this.oidc = Some((address, offered));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Opens the provider's page and waits up to five minutes for the
+    /// session token. Both sign-in buttons stay busy until it arrives or
+    /// fails.
+    pub fn sign_in_oidc(&mut self, address: &str, cx: &mut Context<Self>) {
+        if self.signing_in {
+            return;
+        }
+        let Some(address) = bridge_address(address) else {
+            return cx.emit(ServerEvent::SignInFailed(SignInFailure::BadAddress));
+        };
+        self.signing_in = true;
+        cx.notify();
+        let engine = self.engine.clone();
+        cx.spawn(async move |this, cx| {
+            let started = cx.background_spawn(oidc_start(engine.clone(), address.clone())).await;
+            let state = match started {
+                Ok((url, state)) => {
+                    let _ = this.update(cx, |_, cx| cx.emit(ServerEvent::Visit(url)));
+                    state
+                }
+                Err(error) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.signing_in = false;
+                        cx.emit(ServerEvent::SignInFailed(SignInFailure::Login(error)));
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5 * 60);
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    let _ = this.update(cx, |this, cx| {
+                        this.signing_in = false;
+                        cx.emit(ServerEvent::SignInFailed(SignInFailure::Login(SignInError::Failed(
+                            "Single sign-on did not finish. Try again.".into(),
+                        ))));
+                        cx.notify();
+                    });
+                    return;
+                }
+                cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                match cx
+                    .background_spawn(oidc_poll(engine.clone(), address.clone(), state.clone()))
+                    .await
+                {
+                    Ok(OidcPoll::Pending) => {}
+                    Ok(OidcPoll::Session(token)) => {
+                        let _ = this.update(cx, |this, cx| this.keep_session(address.clone(), token, cx));
+                        return;
+                    }
+                    Err(error) => {
+                        let _ = this.update(cx, |this, cx| {
+                            this.signing_in = false;
+                            cx.emit(ServerEvent::SignInFailed(SignInFailure::Login(error)));
+                            cx.notify();
+                        });
+                        return;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn keep_session(&mut self, address: String, token: String, cx: &mut Context<Self>) {
+        self.signing_in = false;
+        self.file = ServerFile {
+            address,
+            token: Some(token),
+            account: None,
+        };
+        server_local::write(&self.file);
+        self.check(cx);
+        cx.emit(ServerEvent::SignedIn);
+        cx.notify();
     }
 
     /// Ends the session, here at once and at the bridge when it answers.

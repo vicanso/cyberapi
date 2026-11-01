@@ -116,6 +116,9 @@ struct Files {
 
 impl FileReader for Files {
     fn read(&self, file: &str, _: Option<BaseDir>) -> Result<Vec<u8>, String> {
+        if file.starts_with(cyberapi_core::send::PAGE_FILE) {
+            return Err("this file was chosen in the browser and is not on this machine".into());
+        }
         let path = self.base.join(file);
         std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))
     }

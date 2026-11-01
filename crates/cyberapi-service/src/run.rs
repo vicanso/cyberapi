@@ -133,7 +133,12 @@ pub async fn run_with_options(
                         let json = assertions::reads_json(&step.request.assertions)
                             .then(|| response.body_json())
                             .flatten();
-                        let outcomes = assertions::check_all(&step.request.assertions, &response, json.as_ref());
+                        let outcomes = assertions::check_all(
+                            &step.request.assertions,
+                            &response,
+                            json.as_ref(),
+                            &step.request.examples,
+                        );
                         let extracted = assertions::extract_all(&step.request.extractions, &response);
                         (Ok(response.summary()), outcomes, extracted)
                     }

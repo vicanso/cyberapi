@@ -9,6 +9,12 @@
 //! `$ref`s within itself only — nothing is fetched. One an OpenAPI import
 //! wrote is marked so, and is the one a sync from the source updates.
 //!
+//! A11: whether the answer matches one example the API keeps (F3). The
+//! row names the example; the example's status and body are what is
+//! compared, and the row lists JSONPaths to ignore (a timestamp, an id).
+//! The example is read when the check is made, so a later edit of it is
+//! what the next check uses.
+//!
 //! A2: what is taken from an answer the same way — an [`Extraction`] —
 //! under a name the requests after it in a run (A3) read as
 //! `{{value(name)}}` (or as a URI's `{{name}}` prefix). Only a run uses
@@ -52,9 +58,16 @@ impl Default for Assertion {
 
 impl Assertion {
     /// #80: whether the assertion is enabled and has its expected value filled
-    /// in when its operator takes one.
+    /// in when its operator takes one. A snapshot (A11) names an example;
+    /// the paths it ignores may be empty.
     pub fn is_active(&self) -> bool {
-        self.enabled && (!self.op.takes_value() || !self.expected.trim().is_empty())
+        if !self.enabled {
+            return false;
+        }
+        if self.subject == Subject::Snapshot {
+            return !self.target.trim().is_empty();
+        }
+        !self.op.takes_value() || !self.expected.trim().is_empty()
     }
 
     /// A6: an enabled check that the body conforms to `schema`, written by
@@ -89,10 +102,12 @@ pub enum Subject {
     Size,
     /// A6: the body's JSON, against a JSON Schema.
     Schema,
+    /// A11: the status and the body, against one of the API's examples.
+    Snapshot,
 }
 
 impl Subject {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Status,
         Self::Header,
         Self::Json,
@@ -100,6 +115,7 @@ impl Subject {
         Self::Latency,
         Self::Size,
         Self::Schema,
+        Self::Snapshot,
     ];
 
     /// What a run can take a value from (A2): not a schema.
@@ -112,9 +128,9 @@ impl Subject {
         Self::Size,
     ];
 
-    /// Whether it names something: a header, a path.
+    /// Whether it names something: a header, a path, an example.
     pub fn has_target(self) -> bool {
-        matches!(self, Self::Header | Self::Json)
+        matches!(self, Self::Header | Self::Json | Self::Snapshot)
     }
 
     /// The comparisons that mean something for it, the first the default.
@@ -136,6 +152,8 @@ impl Subject {
                 IsType,
             ],
             Self::Schema => &[Conforms],
+            // The example is named; ignoring paths is not a comparison.
+            Self::Snapshot => &[Equals],
         }
     }
 }
@@ -202,6 +220,8 @@ pub enum Problem {
     NoTarget,
     /// A6: the schema does not read, or refers outside itself: why.
     Schema(String),
+    /// A11: the API has no example of that name.
+    NoExample,
 }
 
 impl Problem {
@@ -217,6 +237,7 @@ impl Problem {
             Self::UnknownType => format!("the type is one of {}", TYPES.join(", ")),
             Self::NoTarget => "it names no header or path".into(),
             Self::Schema(why) => format!("the schema does not read: {why}"),
+            Self::NoExample => "that example is not on the API".into(),
         }
     }
 }
@@ -275,13 +296,95 @@ fn number_text(number: f64) -> String {
 /// Checks `assertion` against `response`, whose body read as JSON is `json`
 /// (`None` when it is no JSON): read once for every check of it.
 pub fn check(assertion: &Assertion, response: &HttpResponse, json: Option<&Value>) -> Result<Checked, Problem> {
+    check_examples(assertion, response, json, &[])
+}
+
+/// [`check`], with the API's examples (A11). Other subjects ignore them.
+pub fn check_examples(
+    assertion: &Assertion,
+    response: &HttpResponse,
+    json: Option<&Value>,
+    examples: &[crate::model::Example],
+) -> Result<Checked, Problem> {
     if assertion.subject == Subject::Schema {
         return conforms(&assertion.expected, response, json);
+    }
+    if assertion.subject == Subject::Snapshot {
+        return matches_example(assertion, response, examples);
     }
     let found = found(assertion.subject, &assertion.target, response, json)?;
     let actual = found.as_ref().map(Found::shown);
     let passed = compare(assertion.op, found.as_ref(), assertion.expected.trim())?;
     Ok(Checked { passed, actual })
+}
+
+/// A11: the answer's status and body against the named example. JSON is
+/// compared by value, after the listed paths are dropped from both; text
+/// is compared as written, and then those paths do not apply.
+fn matches_example(
+    assertion: &Assertion,
+    response: &HttpResponse,
+    examples: &[crate::model::Example],
+) -> Result<Checked, Problem> {
+    let Some(status) = response.status else {
+        return Err(Problem::NoResponse);
+    };
+    let name = assertion.target.trim();
+    if name.is_empty() {
+        return Err(Problem::NoTarget);
+    }
+    let example = examples
+        .iter()
+        .find(|example| example.name == name)
+        .ok_or(Problem::NoExample)?;
+    if status != example.status {
+        return Ok(Checked {
+            passed: false,
+            actual: Some(status.to_string()),
+        });
+    }
+    let paths = ignore_paths(&assertion.expected);
+    let response_text = String::from_utf8_lossy(&response.body);
+    match (
+        serde_json::from_str::<Value>(&example.body),
+        serde_json::from_str::<Value>(&response_text),
+    ) {
+        (Ok(mut wanted), Ok(mut got)) => {
+            for path in &paths {
+                crate::json_filter::omit(&mut wanted, path).map_err(Problem::Path)?;
+                crate::json_filter::omit(&mut got, path).map_err(Problem::Path)?;
+            }
+            let passed = json_equal(&wanted, &got);
+            Ok(Checked {
+                passed,
+                actual: (!passed).then(|| shown_text(&response_text)),
+            })
+        }
+        (Err(_), Err(_)) if paths.is_empty() => {
+            let passed = response_text == example.body;
+            Ok(Checked {
+                passed,
+                actual: (!passed).then(|| shown_text(&response_text)),
+            })
+        }
+        _ => Err(Problem::NotJson),
+    }
+}
+
+/// JSONPaths a snapshot ignores: one a line, or several separated by commas.
+fn ignore_paths(text: &str) -> Vec<&str> {
+    text.split([',', '\n'])
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+/// As said: its start, when long.
+fn shown_text(text: &str) -> String {
+    match text.char_indices().nth(SHOWN) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
+    }
 }
 
 /// A6: whether the body's JSON conforms to `schema` (its text); what does
@@ -340,8 +443,8 @@ fn found<'a>(
                 .collect();
             (!values.is_empty()).then(|| Found::Text(values.join(", ").into()))
         }
-        // Checked whole by `conforms`; nothing to take.
-        Subject::Schema => None,
+        // Checked whole by `conforms` or `matches_example`; nothing to take.
+        Subject::Schema | Subject::Snapshot => None,
         Subject::Json => {
             let doc = json.ok_or(Problem::NotJson)?;
             let matches = crate::json_filter::filter(doc, target).map_err(Problem::Path)?;
@@ -500,18 +603,24 @@ pub type Outcomes = Vec<(usize, Result<Checked, Problem>)>;
 /// Whether any enabled assertion looks in the body's JSON: only then is
 /// the body read so.
 pub fn reads_json(assertions: &[Assertion]) -> bool {
-    assertions
-        .iter()
-        .any(|assertion| assertion.is_active() && matches!(assertion.subject, Subject::Json | Subject::Schema))
+    assertions.iter().any(|assertion| {
+        assertion.is_active() && matches!(assertion.subject, Subject::Json | Subject::Schema | Subject::Snapshot)
+    })
 }
 
-/// Every enabled assertion's outcome, `json` as for [`check`].
-pub fn check_all(assertions: &[Assertion], response: &HttpResponse, json: Option<&Value>) -> Outcomes {
+/// Every enabled assertion's outcome, `json` as for [`check`], `examples`
+/// as for a snapshot (A11).
+pub fn check_all(
+    assertions: &[Assertion],
+    response: &HttpResponse,
+    json: Option<&Value>,
+    examples: &[crate::model::Example],
+) -> Outcomes {
     assertions
         .iter()
         .enumerate()
         .filter(|(_, assertion)| assertion.is_active())
-        .map(|(index, assertion)| (index, check(assertion, response, json)))
+        .map(|(index, assertion)| (index, check_examples(assertion, response, json, examples)))
         .collect()
 }
 
@@ -543,9 +652,9 @@ pub struct Reported {
 /// The enabled assertions' results for `response`. Empty when none is
 /// enabled, so an answer can leave the field out. The body's JSON is read
 /// only when one of them looks in it.
-pub fn report(assertions: &[Assertion], response: &HttpResponse) -> Vec<Reported> {
+pub fn report(assertions: &[Assertion], response: &HttpResponse, examples: &[crate::model::Example]) -> Vec<Reported> {
     let json = reads_json(assertions).then(|| response.body_json()).flatten();
-    check_all(assertions, response, json.as_ref())
+    check_all(assertions, response, json.as_ref(), examples)
         .into_iter()
         .filter_map(|(index, outcome)| {
             let assertion = assertions.get(index)?;
@@ -670,6 +779,113 @@ mod tests {
         let assertion = Assertion::imported_schema(&serde_json::json!({"type": "object"}));
         assert_eq!(check(&assertion, &text, None), Err(Problem::NotJson));
         assert!(assertion.imported && assertion.enabled);
+    }
+
+    /// A11: the status and the body against a named example. JSON is compared
+    /// by value, and the listed paths are ignored on both sides. A later
+    /// edit of the example is what the next check uses. Text has no paths.
+    #[test]
+    fn a_snapshot_matches_an_example_except_the_paths_it_ignores() {
+        let response = response();
+        let mut example = crate::model::Example::of(&response, "created").expect("example");
+        example.body = "{\n  \"name\": \"tree\",\n  \"id\": 1,\n  \"ok\": true,\n  \"tags\": [\"a\", \"b\"],\n  \"price\": 9.5,\n  \"none\": null,\n  \"items\": [{\"n\": 1, \"at\": \"then\"}, {\"n\": 2, \"at\": \"now\"}]\n}\n".into();
+        let assertion = Assertion {
+            subject: Subject::Snapshot,
+            target: "created".into(),
+            expected: "$.id, $.items[*].at".into(),
+            ..Default::default()
+        };
+        let checked = check_examples(
+            &assertion,
+            &response,
+            response.body_json().as_ref(),
+            std::slice::from_ref(&example),
+        )
+        .expect("checked");
+        assert!(checked.passed, "{checked:?}");
+
+        let drifted = HttpResponse {
+            body: br#"{"id": 7, "name": "other", "ok": true, "tags": ["a", "b"], "price": 9.5, "none": null, "items": [{"n": 1}, {"n": 2}]}"#.to_vec(),
+            ..response.clone()
+        };
+        let missed = check_examples(
+            &assertion,
+            &drifted,
+            drifted.body_json().as_ref(),
+            std::slice::from_ref(&example),
+        )
+        .expect("checked");
+        assert!(!missed.passed);
+
+        let wrong_status = HttpResponse {
+            status: Some(200),
+            ..response.clone()
+        };
+        let status = check_examples(&assertion, &wrong_status, None, std::slice::from_ref(&example)).expect("checked");
+        assert!(!status.passed);
+        assert_eq!(status.actual.as_deref(), Some("200"));
+
+        let missing = Assertion {
+            target: "gone".into(),
+            ..assertion.clone()
+        };
+        assert_eq!(
+            check_examples(&missing, &response, None, std::slice::from_ref(&example)),
+            Err(Problem::NoExample)
+        );
+        let unnamed = Assertion {
+            target: "  ".into(),
+            ..assertion.clone()
+        };
+        assert!(!unnamed.is_active());
+
+        let edited = crate::model::Example {
+            body: response.body_json().expect("json").to_string(),
+            ..example.clone()
+        };
+        let bare = Assertion {
+            expected: String::new(),
+            ..assertion.clone()
+        };
+        assert!(
+            check_examples(&bare, &response, None, &[edited])
+                .expect("checked")
+                .passed
+        );
+
+        let text = HttpResponse {
+            status: Some(200),
+            body: b"hello".to_vec(),
+            ..Default::default()
+        };
+        let sample = crate::model::Example {
+            name: "plain".into(),
+            status: 200,
+            body: "hello".into(),
+            ..Default::default()
+        };
+        let text_assertion = Assertion {
+            subject: Subject::Snapshot,
+            target: "plain".into(),
+            ..Default::default()
+        };
+        assert!(
+            check_examples(&text_assertion, &text, None, std::slice::from_ref(&sample))
+                .expect("checked")
+                .passed
+        );
+        let with_path = Assertion {
+            expected: "$.id".into(),
+            ..text_assertion
+        };
+        assert_eq!(
+            check_examples(&with_path, &text, None, &[sample]),
+            Err(Problem::NotJson)
+        );
+        assert_eq!(
+            check_examples(&assertion, &HttpResponse::default(), None, &[example]),
+            Err(Problem::NoResponse)
+        );
     }
 
     #[test]
@@ -846,7 +1062,7 @@ mod tests {
             // not evaluated as failed.
             Assertion::default(),
         ];
-        let outcomes = check_all(&assertions, &response(), None);
+        let outcomes = check_all(&assertions, &response(), None, &[]);
         assert_eq!(outcomes.iter().map(|(index, _)| *index).collect::<Vec<_>>(), [0, 2]);
         assert_eq!(tally(&outcomes), (1, 2));
         assert!(!reads_json(&assertions));
@@ -924,7 +1140,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let value = serde_json::to_value(report(&assertions, &response())).expect("writes");
+        let value = serde_json::to_value(report(&assertions, &response(), &[])).expect("writes");
         assert_eq!(
             value,
             serde_json::json!([
@@ -934,6 +1150,6 @@ mod tests {
                 {"index": 4, "subject": "json", "op": "exists", "error": "it names no header or path"},
             ])
         );
-        assert!(report(&[], &response()).is_empty());
+        assert!(report(&[], &response(), &[]).is_empty());
     }
 }

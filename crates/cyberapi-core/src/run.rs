@@ -92,6 +92,7 @@ fn assertion_subject(assertion: &Assertion) -> String {
         Subject::Latency => "time (ms)".into(),
         Subject::Size => "size (bytes)".into(),
         Subject::Schema => "the body".into(),
+        Subject::Snapshot => format!("example {}", assertion.target.trim()),
     }
 }
 
@@ -122,6 +123,7 @@ fn assertion_problem(problem: &Problem) -> String {
         Problem::UnknownType => format!("the type is one of {}", TYPES.join(", ")),
         Problem::NoTarget => "it names no header or path".into(),
         Problem::Schema(why) => format!("the schema does not read: {why}"),
+        Problem::NoExample => "that example is not on the API".into(),
     }
 }
 
@@ -139,14 +141,21 @@ pub fn details(response: &Result<HttpResponse, String>, outcomes: &Outcomes, ass
             continue;
         };
         // A6: a schema is too long to repeat.
-        let asked = match assertion.op.takes_value() && assertion.subject != Subject::Schema {
-            true => format!(
-                "{} {} {}",
-                assertion_subject(assertion),
-                assertion_op(assertion.op),
-                assertion.expected.trim()
-            ),
-            false => format!("{} {}", assertion_subject(assertion), assertion_op(assertion.op)),
+        let asked = if assertion.subject == Subject::Snapshot {
+            match assertion.expected.trim() {
+                "" => assertion_subject(assertion),
+                paths => format!("{} ignoring {paths}", assertion_subject(assertion)),
+            }
+        } else {
+            match assertion.op.takes_value() && assertion.subject != Subject::Schema {
+                true => format!(
+                    "{} {} {}",
+                    assertion_subject(assertion),
+                    assertion_op(assertion.op),
+                    assertion.expected.trim()
+                ),
+                false => format!("{} {}", assertion_subject(assertion), assertion_op(assertion.op)),
+            }
         };
         match outcome {
             Ok(Checked { passed: true, .. }) => {}

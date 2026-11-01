@@ -121,6 +121,19 @@ pub const ACCOUNT_INSERT: &str = "INSERT INTO accounts \
 pub const ACCOUNT_COUNT: &str = "SELECT COUNT(*) FROM accounts";
 pub const ACCOUNT_LOGIN: &str = "SELECT id, name, display_name, admin, password_hash \
     FROM accounts WHERE name = $1 AND disabled = 0";
+/// The account a provider subject is linked to, disabled ones included:
+/// a disabled link must not fall through and bind someone else (G5).
+pub const ACCOUNT_OIDC: &str = "SELECT id, name, display_name, admin, disabled \
+    FROM accounts WHERE oidc_issuer = $1 AND oidc_subject = $2";
+/// Enabled accounts whose name matches, ignoring case (the database's own
+/// collation is not asked: `utf8mb4_bin` would not fold it). `oidc_issuer`
+/// says whether one is already linked.
+pub const ACCOUNT_BY_NAME_CI: &str = "SELECT id, name, display_name, admin, oidc_issuer \
+    FROM accounts WHERE LOWER(name) = LOWER($1) AND disabled = 0";
+/// Links an account that is still enabled and still unlinked. Zero rows, or
+/// the unique index, means someone else took the subject or the account.
+pub const ACCOUNT_BIND_OIDC: &str = "UPDATE accounts SET oidc_issuer = $1, oidc_subject = $2 \
+    WHERE id = $3 AND disabled = 0 AND oidc_issuer IS NULL AND oidc_subject IS NULL";
 pub const SESSION_INSERT: &str =
     "INSERT INTO sessions (token_hash, account, expires_at, created_at) VALUES ($1, $2, $3, $4)";
 pub const SESSION_ACCOUNT: &str = "SELECT a.id, a.name, a.display_name, a.admin \
@@ -438,6 +451,9 @@ mod tests {
         ACCOUNT_INSERT,
         ACCOUNT_COUNT,
         ACCOUNT_LOGIN,
+        ACCOUNT_OIDC,
+        ACCOUNT_BY_NAME_CI,
+        ACCOUNT_BIND_OIDC,
         SESSION_INSERT,
         SESSION_ACCOUNT,
         SESSION_DELETE,

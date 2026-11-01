@@ -11,6 +11,10 @@
 //! | `POST /v1/invite` | what an invitation's token opens, while it can be used |
 //! | `POST /v1/invite/accept` | makes the account it invites, and signs it in |
 //! | `GET /v1/session` | who is signed in, or 401 |
+//! | `GET /v1/oidc` | whether single sign-on is on (`{"enabled": bool}`) |
+//! | `POST /v1/oidc/start` | begins an OpenID Connect sign-in (`G5`) |
+//! | `GET /v1/oidc/callback` | the provider's return: a session cookie, or a page the desktop closes |
+//! | `GET /v1/oidc/poll` | the desktop's one read of the session token |
 //! | `POST /v1/store` | one store call (`cyberapi_store_bridge::Call`) |
 //! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5), a few of an account's at a time ([`in_flight`]) |
 //! | `POST /v1/send/stream` | the same, an event stream's answer told as it comes (NDJSON of `StreamReply`); the page leaving stops it |
@@ -36,6 +40,7 @@ mod docs;
 mod in_flight;
 mod mcp;
 mod mock;
+mod oidc;
 pub mod static_files;
 mod throttle;
 
@@ -105,6 +110,8 @@ struct Inner {
     mcp_calls: mcp::Limiter,
     /// Cached mock route tables keyed by `(CollectionId, revision)` (PERF-1).
     mock_routes: mock::RouteCache,
+    /// OpenID Connect, when the process was given an issuer and a client.
+    oidc: Option<oidc::Service>,
 }
 
 impl Bridge {
@@ -131,8 +138,29 @@ impl Bridge {
                 in_flight: Arc::new(InFlight::new(max_sends)),
                 mcp_calls: mcp::Limiter::default(),
                 mock_routes: mock::RouteCache::default(),
+                oidc: None,
             }),
         }
+    }
+
+    /// Turns single sign-on on. The three of issuer, client id and client
+    /// secret come together; a blank one counts as unset. Call this before
+    /// the bridge is shared.
+    pub fn with_single_sign_on(
+        self,
+        issuer: Option<String>,
+        client_id: Option<String>,
+        client_secret: Option<String>,
+        redirect: Option<String>,
+    ) -> Result<Self, String> {
+        let Some(settings) = oidc::configure(issuer, client_id, client_secret, redirect)? else {
+            return Ok(self);
+        };
+        tracing::info!(issuer = settings.issuer(), "single sign-on is on");
+        let mut bridge = self;
+        let inner = Arc::get_mut(&mut bridge.inner).ok_or_else(|| "the bridge is already shared".to_string())?;
+        inner.oidc = Some(oidc::Service::new(settings));
+        Ok(bridge)
     }
 
     /// Forgets the logins that ran out, now and every hour after, for as
@@ -147,6 +175,12 @@ impl Bridge {
                     Ok(0) => {}
                     Ok(forgotten) => tracing::info!(forgotten, "forgot the logins that ran out"),
                     Err(error) => tracing::warn!(%error, "the logins that ran out could not be forgotten"),
+                }
+                if let Some(oidc) = &bridge.inner.oidc {
+                    let forgotten = oidc.forget_expired();
+                    if forgotten > 0 {
+                        tracing::info!(forgotten, "forgot single sign-on attempts that ran out");
+                    }
                 }
             }
         })
@@ -168,6 +202,10 @@ impl Bridge {
             .route(&at("/v1/invite"), post(invite_info))
             .route(&at("/v1/invite/accept"), post(accept_invite))
             .route(&at("/v1/session"), get(session))
+            .route(&at("/v1/oidc"), get(oidc::enabled))
+            .route(&at("/v1/oidc/start"), post(oidc::start))
+            .route(&at("/v1/oidc/callback"), get(oidc::callback))
+            .route(&at("/v1/oidc/poll"), get(oidc::poll))
             .route(&at(STORE_PATH), post(store_call))
             .route(&at(SEND_PATH), post(send_request))
             .route(&at(SEND_STREAM_PATH), post(send_watched))
@@ -193,31 +231,36 @@ impl Bridge {
     /// session not `remember`ed has a cookie that ends with the browser, and
     /// a shorter life on the bridge; a bearer session is always kept.
     async fn sign_in(&self, account: Account, bearer: bool, remember: bool) -> Response {
-        let token = match new_token() {
-            Ok(token) => token,
-            Err(error) => return internal(error),
-        };
         let kept = remember || bearer;
+        match self.issue_session(&account, kept).await {
+            Ok(token) if bearer => Json(BearerSession { token }).into_response(),
+            Ok(token) => {
+                let cookie = session_cookie(
+                    &token,
+                    kept.then_some(KEPT_SESSION),
+                    self.inner.secure_cookie,
+                    &self.cookie_path(),
+                );
+                ([(header::SET_COOKIE, cookie)], Json(account)).into_response()
+            }
+            Err(response) => *response,
+        }
+    }
+
+    /// Makes a session and returns its token. The caller sets the cookie,
+    /// or hands the token to a client that keeps it. Single sign-on always
+    /// keeps the session. The error is boxed: an axum `Response` is larger
+    /// than clippy allows in a `Result`.
+    async fn issue_session(&self, account: &Account, kept: bool) -> Result<String, Box<Response>> {
+        let token = new_token().map_err(|error| Box::new(internal(error)))?;
         let lifetime = if kept { KEPT_SESSION } else { UNKEPT_SESSION };
         let expires_at = auth::unix_now() + lifetime;
-        if let Err(error) = self
-            .inner
+        self.inner
             .store
             .create_session(&hash_token(&token), &account.id, expires_at)
             .await
-        {
-            return internal(error);
-        }
-        if bearer {
-            return Json(BearerSession { token }).into_response();
-        }
-        let cookie = session_cookie(
-            &token,
-            kept.then_some(KEPT_SESSION),
-            self.inner.secure_cookie,
-            &self.cookie_path(),
-        );
-        ([(header::SET_COOKIE, cookie)], Json(account)).into_response()
+            .map_err(|error| Box::new(internal(error)))?;
+        Ok(token)
     }
 }
 

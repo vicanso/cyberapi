@@ -32,6 +32,7 @@
   input { width: 100%; box-sizing: border-box; padding: .5rem .625rem; border: 1px solid var(--line); border-radius: .375rem; background: var(--field); color: inherit; font: inherit; }
   input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   button { padding: .5rem; border: 0; border-radius: .375rem; background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 500; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); }
   button:disabled { opacity: .6; cursor: default; }
   .msg { min-height: 1.25rem; margin: 0; color: var(--bad); font-size: .8125rem; }
   .aside { color: var(--muted); font-size: .8125rem; text-align: center; }
@@ -51,6 +52,7 @@
     <label class="check"><input id="login-remember" type="checkbox" checked /><span data-t="remember"></span></label>
     <p id="login-msg" class="msg" role="alert"></p>
     <button id="login-go" data-t="sign_in"></button>
+    <button type="button" class="ghost" id="login-oidc" data-t="oidc" hidden></button>
   </form>
 </div>
 
@@ -138,6 +140,11 @@
       name_taken: "That name is taken.",
       have_account: "I have an account",
       remember: "Keep me signed in for 30 days",
+      oidc: "Sign in with single sign-on",
+      oidc_no_account: "No account matches this sign-in. An administrator invites the account first, and its name is the email.",
+      oidc_unverified: "The identity provider did not confirm this email.",
+      oidc_taken: "That account is already linked to a different sign-in.",
+      oidc_failed: "Single sign-on did not finish. Try again.",
     },
     zh: {
       loading: "正在加载…",
@@ -162,6 +169,11 @@
       name_taken: "这个用户名已被占用。",
       have_account: "已有账号，去登录",
       remember: "保持登录 30 天",
+      oidc: "使用单点登录",
+      oidc_no_account: "没有账号对得上这次登录。管理员要先邀请账号，用户名是这个人的邮箱。",
+      oidc_unverified: "身份提供方没有确认这个邮箱。",
+      oidc_taken: "这个账号已经绑定了另一个登录。",
+      oidc_failed: "单点登录没有完成。请再试一次。",
     },
   };
   const lang = (navigator.languages || [navigator.language]).some((l) => /^zh/i.test(l)) ? "zh" : "en";
@@ -186,6 +198,38 @@
       : ["login", "login-form", "login-msg", "login-go"];
     show(panel);
     $(panel).querySelector("input").focus();
+    if (panel === "login") {
+      const params = new URLSearchParams(location.search);
+      const oidc = params.get("oidc");
+      const oidcKey = {
+        "no-account": "oidc_no_account",
+        unverified: "oidc_unverified",
+        taken: "oidc_taken",
+        failed: "oidc_failed",
+      }[oidc];
+      if (oidcKey) {
+        $(msg).textContent = t(oidcKey);
+        history.replaceState(null, "", location.pathname + location.hash);
+      }
+      const offered = await api("/v1/oidc");
+      if (offered.ok && (await offered.json()).enabled) $("login-oidc").hidden = false;
+      $("login-oidc").onclick = async () => {
+        $("login-oidc").disabled = true;
+        $(msg).textContent = "";
+        try {
+          const res = await postJson("/v1/oidc/start", { bearer: false });
+          if (!res.ok) {
+            $(msg).textContent = await res.text();
+            $("login-oidc").disabled = false;
+            return;
+          }
+          location.assign((await res.json()).url);
+        } catch (error) {
+          $(msg).textContent = String(error);
+          $("login-oidc").disabled = false;
+        }
+      };
+    }
     return new Promise((resolve) => {
       $(form).onsubmit = async (event) => {
         event.preventDefault();

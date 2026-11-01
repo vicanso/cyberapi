@@ -138,7 +138,7 @@ helm install cyberapi deploy/helm/cyberapi \
 
 - **The database**: `store.existingSecret` (and `store.existingSecretKey`, `store-url` by default) names a Secret of yours; or `store.url` puts the URL in a Secret the chart writes. Without either it refuses to install.
 - **The first administrator**: `setupToken.value` or `setupToken.existingSecret`; without one the token is in the log (`kubectl logs deploy/cyberapi | grep -i "setup token"`).
-- **The options** above, as values: `bridge.basePath` (the ingress path should match it), `bridge.allowTargets` (a list), `bridge.publicOnly` (on by default; requests go to public addresses only), `bridge.maxSends` (*0.4.1*; empty: the bridge's default), `bridge.insecureCookie`, and `bridge.extraArgs` / `bridge.extraEnv` for the rest.
+- **The options** above, as values: `bridge.basePath` (the ingress path should match it), `bridge.allowTargets` (a list), `bridge.publicOnly` (on by default; requests go to public addresses only), `bridge.maxSends` (*0.4.1*; empty: the bridge's default), `bridge.insecureCookie`, `bridge.oidc` (*0.4.1*; issuer, client id, client secret and an optional redirect URL), and `bridge.extraArgs` / `bridge.extraEnv` for the rest.
 - **One replica** (`replicaCount: 1`): the login throttle, the MCP limit and the requests under way at once are counted in each process. The pod runs as non-root with a read-only root filesystem; it is ready once it reaches its database.
 - **TLS** is the Ingress's (`ingress.tls`): behind it the login cookie stays `Secure`. A version other than the chart's is `image.tag` (`nightly` follows `main`).
 
@@ -155,6 +155,10 @@ Each is a flag and, where given, an environment variable.
 | `--public-only` | `CYBERAPI_BRIDGE_PUBLIC_ONLY` | *0.2.2*, and what the bridge does without it since *0.3.1*. Requests go to public addresses only either way; a private range is `--allow-target`. |
 | `--base-path <path>` | `CYBERAPI_BRIDGE_BASE_PATH` | *0.2.2.* Serve the page and the API under this path, e.g. `/cyberapi`, and keep the login cookie to it ([under a sub-path](#https-behind-a-reverse-proxy)). Empty by default: the root. |
 | `--max-sends <n>` | `CYBERAPI_BRIDGE_MAX_SENDS` | *0.4.1.* How many requests of all accounts may be under way at once, `64` by default; one more is answered "busy" at once. Each may hold up to 64 MB of response and its answer to the page, so this bounds the bridge's memory. |
+| `--oidc-issuer <url>` | `CYBERAPI_BRIDGE_OIDC_ISSUER` | *0.4.1.* The OpenID Connect issuer. With the client id and secret, the sign-in page and the desktop offer single sign-on. Blank is unset. |
+| `--oidc-client-id <id>` | `CYBERAPI_BRIDGE_OIDC_CLIENT_ID` | *0.4.1.* The client id the provider gave this bridge. |
+| `--oidc-client-secret <secret>` | `CYBERAPI_BRIDGE_OIDC_CLIENT_SECRET` | *0.4.1.* The client secret. Prefer the variable. |
+| `--oidc-redirect <url>` | `CYBERAPI_BRIDGE_OIDC_REDIRECT` | *0.4.1.* The full callback URL. Set it behind a reverse proxy; otherwise the bridge builds `{base}/v1/oidc/callback` from the request. |
 | `--insecure-cookie` | | Leave `Secure` off the login cookie, for plain HTTP on your own machine. |
 | `--www <dir>` | | Serve this directory as the page instead of the built-in one (development). |
 | | `RUST_LOG` | How much to log: `info` by default, `debug` for more. Logs go to standard output. |
@@ -231,12 +235,13 @@ The desktop app sends its requests from the computer it runs on, even for server
 - **Spaces and teams.** Every account has a personal space no one else can join. Teams have owners, admins and members; members edit the team's projects, owners and admins manage them.
 - **Sharing a project.** A project's **Access…** menu shares it with another account or team as Viewer, Editor or Manager, or moves it to another team. Viewers see but do not change it.
 - **Sessions.** The sign-in forms have "Keep me signed in for 30 days" (*0.2.2*), ticked by default. Unticked, the login ends when the browser closes, and on the bridge within 12 hours even while it stays open. The desktop app's sign-in is always kept for 30 days. Expired sessions are removed every hour.
+- **Single sign-on** (*0.4.1*). With `--oidc-issuer`, `--oidc-client-id` and `--oidc-client-secret` the sign-in page and the desktop offer OpenID Connect (authorization code with PKCE). The provider must put `email` and `email_verified` in the ID token (`openid email`); the account's name is that email, and it has to exist already — an invitation still creates it and sets its password. The first successful sign-in links that one account; a subject already linked signs in on its own, and the password still works. Issuer and subject must each fit 255 characters. RSA (RS256, RS384, RS512, PS256, PS384, PS512) and EC (ES256, ES384) are accepted; EdDSA is not. A provider on a private network needs `--allow-target` for that range. A single sign-on session is kept for 30 days. Behind a proxy, set `--oidc-redirect` to the public callback URL, because the bridge otherwise builds it from the request it sees.
 
 System administrators manage accounts but see only the projects shared with them.
 
 ## Signing in from the desktop app
 
-The desktop app can sign in to the same server: **Settings → Server**, the page's address (`https://cyberapi.example.com`, or with its sub-path), then a name and password. Accounts are made in the page; the desktop only signs in.
+The desktop app can sign in to the same server: **Settings → Server**, the page's address (`https://cyberapi.example.com`, or with its sub-path), then a name and password. When that server offers single sign-on, the same form has **Sign in with single sign-on**. Accounts are made in the page; the desktop only signs in.
 
 - The address must be reachable from the desktop with a certificate the system trusts. The desktop always checks it, also when its own settings let requests skip certificate checks.
 - Once signed in, the home page lists the account's server projects beside this computer's own. Each is copied to the computer, edited there, also offline, and sent to the server when you sync; if someone else changed it meanwhile, you choose whose version to keep.

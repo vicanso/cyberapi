@@ -17,7 +17,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme as _, IconName, Selectable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::{ActiveTheme as _, IconName, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, KeyDownEvent,
@@ -455,8 +456,33 @@ impl KvEditor {
         cx.notify();
     }
 
-    /// F4.8: a file for a multipart field, as `file://` and its path.
+    /// F4.8: a file for a multipart field, as `file://` and its path. A page
+    /// (F9b) keeps the bytes itself and stores a marker that is not a path.
     fn pick_file(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if this_build::picks_page_files() {
+            let picked = this_build::pick_file_bytes();
+            cx.spawn_in(window, async move |this, cx| {
+                let Ok(Some(picked)) = picked.await else {
+                    return;
+                };
+                let _ = this.update_in(cx, |this, window, cx| match picked {
+                    this_build::PageFile::TooBig => {
+                        window.push_notification(Notification::warning(t!("editor.file_too_big").to_string()), cx);
+                    }
+                    this_build::PageFile::Chosen { marker } => {
+                        if let Some(row) = this.rows.get(index) {
+                            if row.key.read(cx).value().trim().is_empty() {
+                                row.key.update(cx, |input, cx| input.set_value("file", window, cx));
+                            }
+                            row.value.update(cx, |input, cx| input.set_value(marker, window, cx));
+                            this.edited(window, cx);
+                        }
+                    }
+                });
+            })
+            .detach();
+            return;
+        }
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -552,7 +578,7 @@ impl Render for KvEditor {
         });
         let removing = self.removing.as_ref().map(|(index, _)| *index);
         let (menu, view) = (self.menu.as_ref(), cx.entity().downgrade());
-        let files = self.options.files && this_build::reads_files();
+        let files = self.options.files && (this_build::reads_files() || this_build::picks_page_files());
         let theme = cx.theme();
         let (border, muted) = (theme.border, theme.muted_foreground);
         // A table: the fields sit in its cells without frames of their own,
@@ -587,9 +613,12 @@ impl Render for KvEditor {
             .child(actions().children(presets).when(!fixed_keys, |this| this.child(toggle)));
         let rows = self.rows.iter().enumerate().map(|(index, row)| {
             let blank = !fixed_keys && index == last;
-            let file_value = files
-                .then(|| row.value.read(cx).value().to_string())
-                .and_then(|value| value.strip_prefix("file://").map(str::to_string));
+            let file_value = files.then(|| row.value.read(cx).value().to_string()).and_then(|value| {
+                if let Some(path) = value.strip_prefix("file://") {
+                    return Some(path.to_string());
+                }
+                cyberapi_core::send::page_file(&value).map(|(_, name)| t!("editor.page_file", name = name).to_string())
+            });
             let remove = if removing == Some(index) {
                 Button::new(("kv-remove", index))
                     .danger()

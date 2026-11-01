@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 argon2 = "0.6.0"
 axum = "0.8.9"
+base64 = { workspace = true }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 cyberapi-core = { workspace = true }
 cyberapi-http = { workspace = true }
@@ -26,6 +27,8 @@ futures = { workspace = true }
 getrandom = "0.4.3"
 hex = "0.4.3"
 ipnet = "2.12.2"
+# 9.3.1 signs with ring. `rust_crypto` arrived in 10 and is not needed here.
+jsonwebtoken = { version = "9.3.1", default-features = false, features = ["use_pem"] }
 mime_guess = { workspace = true }
 # The page, compiled into a release binary (`static_files::WebBuild`) so a
 # deployment is one file. No `debug-embed`: a debug bridge reads

@@ -9,7 +9,7 @@ use cyberapi_core::prefs::{AppPrefs, ThemeMode, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse};
 use cyberapi_core::{AccountId, CollectionId};
 use cyberapi_store::{AccountEdit, CollectionEdit, Entity, NewCollection, NewVariable, Refusal, Storage, StoreError};
-use cyberapi_store_sql::{Acceptance, NewAccount, SqlStore};
+use cyberapi_store_sql::{Acceptance, NewAccount, OidcBind, SqlStore};
 use std::sync::Arc;
 
 async fn account(store: &SqlStore, name: &str) -> AccountId {
@@ -491,6 +491,107 @@ async fn postgres_sign_ins() {
 #[tokio::test]
 async fn mysql_sign_ins() {
     sign_ins("CYBERAPI_TEST_MYSQL").await;
+}
+
+/// An OpenID Connect subject links one enabled account. Many unbound
+/// accounts stay allowed, and a disabled link is still found.
+async fn oidc_links(variable: &str) {
+    let Ok(url) = std::env::var(variable) else {
+        eprintln!("skipped: {variable} is not set");
+        return;
+    };
+    let store = SqlStore::connect(&url).await.expect("connect");
+    let issuer = format!("https://idp.example/{}", ulid::Ulid::generate());
+    let subject = format!("sub-{}", ulid::Ulid::generate());
+    let email = format!("ada-{}@example.com", ulid::Ulid::generate());
+    let ada = store
+        .create_account(NewAccount {
+            name: email.clone(),
+            display_name: "Ada".into(),
+            password_hash: "unused".into(),
+            admin: false,
+        })
+        .await
+        .expect("ada");
+    let other = store
+        .create_account(NewAccount {
+            name: format!("bea-{}@example.com", ulid::Ulid::generate()),
+            display_name: "Bea".into(),
+            password_hash: "unused".into(),
+            admin: false,
+        })
+        .await
+        .expect("bea");
+    assert!(store.find_oidc(&issuer, &subject).await.expect("find").is_none());
+    let named = store.accounts_named(&email.to_ascii_uppercase()).await.expect("named");
+    assert_eq!(named.len(), 1);
+    assert!(!named[0].linked && named[0].account.id == ada);
+    assert!(store.find_oidc("", &subject).await.is_err());
+    assert!(store.bind_oidc(&"x".repeat(256), &subject, &ada).await.is_err());
+
+    assert_eq!(
+        store.bind_oidc(&issuer, &subject, &ada).await.expect("link"),
+        OidcBind::Linked
+    );
+    let found = store.find_oidc(&issuer, &subject).await.expect("find").expect("linked");
+    assert!(!found.disabled && found.account.id == ada);
+    assert!(store.accounts_named(&email).await.expect("named")[0].linked);
+    assert_eq!(
+        store
+            .bind_oidc(&issuer, &format!("sub-{}", ulid::Ulid::generate()), &ada)
+            .await
+            .expect("again"),
+        OidcBind::Taken
+    );
+    assert_eq!(
+        store.bind_oidc(&issuer, &subject, &other).await.expect("taken"),
+        OidcBind::Taken
+    );
+
+    let admin = store
+        .create_account(NewAccount {
+            name: format!("admin-{}", ulid::Ulid::generate()),
+            display_name: "Admin".into(),
+            password_hash: "unused".into(),
+            admin: true,
+        })
+        .await
+        .expect("admin");
+    store
+        .directory(admin)
+        .update_account(
+            ada.clone(),
+            AccountEdit {
+                display_name: "Ada".into(),
+                admin: false,
+                disabled: true,
+            },
+        )
+        .await
+        .expect("disable");
+    let found = store
+        .find_oidc(&issuer, &subject)
+        .await
+        .expect("find")
+        .expect("still linked");
+    assert!(found.disabled);
+    assert_eq!(
+        store
+            .bind_oidc(&issuer, &format!("sub-{}", ulid::Ulid::generate()), &ada)
+            .await
+            .expect("disabled"),
+        OidcBind::Taken
+    );
+}
+
+#[tokio::test]
+async fn postgres_oidc_links() {
+    oidc_links("CYBERAPI_TEST_POSTGRES").await;
+}
+
+#[tokio::test]
+async fn mysql_oidc_links() {
+    oidc_links("CYBERAPI_TEST_MYSQL").await;
 }
 
 /// Passwords kept as they are: what is checked is the rules, not Argon2.

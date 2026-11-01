@@ -1,6 +1,16 @@
 {{- if and (not .Values.store.url) (not .Values.store.existingSecret) }}
 {{- fail "store.url or store.existingSecret: the bridge needs a PostgreSQL or MySQL database" }}
 {{- end }}
+{{- $oidcIssuer := .Values.bridge.oidc.issuer }}
+{{- $oidcId := .Values.bridge.oidc.clientId }}
+{{- $oidcSecret := .Values.bridge.oidc.clientSecret }}
+{{- $oidcExisting := .Values.bridge.oidc.existingSecret }}
+{{- $oidcRedirect := .Values.bridge.oidc.redirect }}
+{{- $oidcAny := or $oidcIssuer $oidcId $oidcSecret $oidcExisting $oidcRedirect }}
+{{- $oidcReady := and $oidcIssuer $oidcId (or $oidcSecret $oidcExisting) }}
+{{- if and $oidcAny (not $oidcReady) }}
+{{- fail "bridge.oidc needs issuer, clientId, and clientSecret or existingSecret together" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -75,6 +85,21 @@ spec:
             {{- if .Values.bridge.publicOnly }}
             - name: CYBERAPI_BRIDGE_PUBLIC_ONLY
               value: "true"
+            {{- end }}
+            {{- if .Values.bridge.oidc.issuer }}
+            - name: CYBERAPI_BRIDGE_OIDC_ISSUER
+              value: {{ .Values.bridge.oidc.issuer | quote }}
+            - name: CYBERAPI_BRIDGE_OIDC_CLIENT_ID
+              value: {{ .Values.bridge.oidc.clientId | quote }}
+            - name: CYBERAPI_BRIDGE_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bridge.oidc.existingSecret | default (include "cyberapi.secretName" .) }}
+                  key: {{ ternary .Values.bridge.oidc.existingSecretKey "oidc-client-secret" (not (empty .Values.bridge.oidc.existingSecret)) }}
+            {{- with .Values.bridge.oidc.redirect }}
+            - name: CYBERAPI_BRIDGE_OIDC_REDIRECT
+              value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             {{- with .Values.bridge.extraEnv }}
             {{- toYaml . | nindent 12 }}

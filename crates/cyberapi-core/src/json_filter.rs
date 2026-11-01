@@ -18,6 +18,17 @@ pub fn filter(doc: &Value, path: &str) -> Result<Value, String> {
     }
 }
 
+/// Drops every match of `path` from `doc` (A11: a snapshot ignores those
+/// places). A path that does not read is why, on one line, as [`filter`]
+/// says it. Nothing matched is still success.
+pub fn omit(doc: &mut Value, path: &str) -> Result<(), String> {
+    use jsonpath_rust::query::queryable::Queryable;
+    let path = rooted(path);
+    doc.query(&path).map_err(|error| reason(&error.to_string()))?;
+    doc.delete_by_path(&path).map_err(|error| reason(&error.to_string()))?;
+    Ok(())
+}
+
 /// Why a path does not read, on one line. The parser draws the path with
 /// a caret under the place; what it expected there, and where, is enough:
 /// `expected comparable at 16`.

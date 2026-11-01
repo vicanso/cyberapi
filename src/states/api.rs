@@ -815,7 +815,12 @@ impl ApiState {
         } else {
             None
         };
-        let outcomes = Rc::new(assertions::check_all(assertions, response, json.as_deref()));
+        let outcomes = Rc::new(assertions::check_all(
+            assertions,
+            response,
+            json.as_deref(),
+            &self.request.examples,
+        ));
         *self.checks.borrow_mut() = Some((response.id.clone(), assertions.clone(), outcomes.clone()));
         Some(outcomes)
     }

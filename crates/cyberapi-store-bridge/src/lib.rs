@@ -58,8 +58,8 @@ use std::sync::Arc;
 mod client;
 
 pub use client::{
-    BearerSession, EngineTransport, LOGIN_PATH, LOGOUT_PATH, LoginForm, SignInError, bridge_address, session_me,
-    sign_in, sign_out,
+    BearerSession, EngineTransport, LOGIN_PATH, LOGOUT_PATH, LoginForm, OidcPoll, SignInError, bridge_address,
+    oidc_enabled, oidc_poll, oidc_start, session_me, sign_in, sign_out,
 };
 
 /// Where calls are posted.

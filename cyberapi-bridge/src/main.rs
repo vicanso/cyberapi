@@ -63,6 +63,20 @@ struct Args {
     /// more is answered "busy". Each account has 16 at most either way.
     #[arg(long, env = "CYBERAPI_BRIDGE_MAX_SENDS", default_value_t = NonZeroUsize::new(cyberapi_bridge::MAX_SENDS).expect("not zero"))]
     max_sends: NonZeroUsize,
+    /// OpenID Connect issuer (*0.4.1*). With the client id and secret, the
+    /// sign-in page and the desktop offer single sign-on. Blank is unset.
+    #[arg(long, env = "CYBERAPI_BRIDGE_OIDC_ISSUER")]
+    oidc_issuer: Option<String>,
+    /// The client id the provider gave this bridge.
+    #[arg(long, env = "CYBERAPI_BRIDGE_OIDC_CLIENT_ID")]
+    oidc_client_id: Option<String>,
+    /// The client secret. Prefer the variable: a flag is in the process list.
+    #[arg(long, env = "CYBERAPI_BRIDGE_OIDC_CLIENT_SECRET", hide_env_values = true)]
+    oidc_client_secret: Option<String>,
+    /// The full callback URL, when the bridge is behind a proxy and should
+    /// not guess it from the request. `{base}/v1/oidc/callback` otherwise.
+    #[arg(long, env = "CYBERAPI_BRIDGE_OIDC_REDIRECT")]
+    oidc_redirect: Option<String>,
 }
 
 #[tokio::main]
@@ -99,7 +113,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         !args.insecure_cookie,
         base_path.clone(),
         args.max_sends.get(),
-    );
+    )
+    .with_single_sign_on(
+        args.oidc_issuer,
+        args.oidc_client_id,
+        args.oidc_client_secret,
+        args.oidc_redirect,
+    )?;
     bridge.spawn_housekeeping();
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     let at = format!("{base_path}/");
