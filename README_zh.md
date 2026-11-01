@@ -39,6 +39,18 @@
 - 👥 **团队协作** —— 同一份代码的网页版可自行部署；桌面版登录后离线编辑，想同步时再同步。
 - 🤖 **接入 AI 助手** —— Claude Code、Cursor 等 MCP 客户端可以读取你的接口（敏感值打码），经你允许还能发送。
 
+<p align="center">
+  <img src="./docs/images/workspace.png" alt="列出商品：200 响应、两条检查通过，以及 JSON 正文" width="880">
+</p>
+
+<p align="center">
+  <img src="./docs/images/send.gif" alt="发送创建订单，读到 201" width="720"><br>
+  <img src="./docs/images/events.gif" alt="订单事件在实时流里逐条到达" width="720"><br>
+  <img src="./docs/images/sync.gif" alt="从来源同步后树里多了 Get a product，查询参数的值仍在" width="720">
+</p>
+
+发送一次请求、事件流边到边显示，以及把一份 OpenAPI 文档同步进项目树。GraphQL、JSON 树，以及 DNS / TCP / TLS 各段耗时见[图集](./docs/GALLERY_zh.md)。
+
 从 Postman、Insomnia、Hoppscotch、Bruno 或 Swagger 过来？**导入集合，或者直接粘贴 cURL 命令。**
 
 📖 **[完整功能说明 →](./docs/FEATURES_zh.md)**

@@ -39,6 +39,18 @@
 - 👥 **Built for teams** — a self-hosted web version from the same code; the desktop app signs in, works offline and syncs when you choose.
 - 🤖 **Ready for AI assistants** — Claude Code, Cursor and other MCP clients read your APIs, secrets masked, and send them when you allow.
 
+<p align="center">
+  <img src="./docs/images/workspace.png" alt="List products: a 200 response, two passing checks, and the JSON" width="880">
+</p>
+
+<p align="center">
+  <img src="./docs/images/send.gif" alt="Send Create order and read the 201" width="720"><br>
+  <img src="./docs/images/events.gif" alt="Order events arriving on a live stream" width="720"><br>
+  <img src="./docs/images/sync.gif" alt="Sync from source adds Get a product; the query value stays" width="720">
+</p>
+
+Sending a request, an event stream as it arrives, and syncing an OpenAPI document into the tree. GraphQL, the JSON tree, and the DNS / TCP / TLS timings are in the [gallery](./docs/GALLERY.md).
+
 Coming from Postman, Insomnia, Hoppscotch, Bruno or Swagger? **Import the collection, or just paste a cURL command.**
 
 📖 **[Every feature in detail →](./docs/FEATURES.md)**

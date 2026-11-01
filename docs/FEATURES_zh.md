@@ -4,7 +4,7 @@
 
 桌面版和网页版的功能。只有其中一端才有的会写明。返回 [README](../README_zh.md)。
 
-较长的三篇：[检查与运行](./CHECKS_zh.md)、[导入与导出](./IMPORT_zh.md)、[从来源同步](./SOURCE_zh.md)。
+较长的三篇：[检查与运行](./CHECKS_zh.md)、[导入与导出](./IMPORT_zh.md)、[从来源同步](./SOURCE_zh.md)。桌面版界面见[图集](./GALLERY_zh.md)。
 
 斜体版本号表示该行为在对应正式版发布前只在 nightly 里。
 

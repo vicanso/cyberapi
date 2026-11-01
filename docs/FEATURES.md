@@ -4,7 +4,7 @@
 
 What the desktop app and the web version do. Where only one of them does something, it says so. Back to the [README](../README.md).
 
-Longer guides: [checks and runs](./CHECKS.md), [import and export](./IMPORT.md), [sync from a source](./SOURCE.md).
+Longer guides: [checks and runs](./CHECKS.md), [import and export](./IMPORT.md), [sync from a source](./SOURCE.md). Pictures of the desktop app: [gallery](./GALLERY.md).
 
 A version in italics is in nightly builds until that release.
 
