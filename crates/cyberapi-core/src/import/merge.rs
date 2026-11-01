@@ -20,8 +20,21 @@ pub struct Merge {
     /// The project's APIs the import has, each with what updating makes of
     /// its request; none when they are left as they are.
     pub updates: Vec<(ItemId, HttpRequest)>,
+    /// Source sync: APIs whose name follows the document. A request that
+    /// did not change is not in [`Self::updates`].
+    pub renames: Vec<(ItemId, String)>,
     /// How many of the import's APIs the project has already.
     pub matched: usize,
+}
+
+impl Merge {
+    /// APIs whose request or name a source sync would write.
+    pub fn changed(&self) -> usize {
+        let mut ids = std::collections::HashSet::new();
+        ids.extend(self.updates.iter().map(|(id, _)| id));
+        ids.extend(self.renames.iter().map(|(id, _)| id));
+        ids.len()
+    }
 }
 
 impl Merge {
@@ -327,17 +340,236 @@ pub fn updated(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
     }
 }
 
+/// A secret the reader already typed. An empty one takes the document's.
+fn kept_secret(mine: &str, given: &str) -> String {
+    if mine.trim().is_empty() {
+        given.to_string()
+    } else {
+        mine.to_string()
+    }
+}
+
+/// Parameters as the document lists them. A key it no longer has goes.
+/// The reader's value stays; the switch, the description and the key's
+/// spelling are the document's, including a description it leaves empty.
+fn synced_params(
+    existing: &[crate::model::KvParam],
+    imported: &[crate::model::KvParam],
+    ignore_case: bool,
+) -> Vec<crate::model::KvParam> {
+    let same = |a: &str, b: &str| {
+        if ignore_case {
+            a.trim().eq_ignore_ascii_case(b.trim())
+        } else {
+            a.trim() == b.trim()
+        }
+    };
+    imported
+        .iter()
+        .map(|kv| match existing.iter().find(|had| same(&had.key, &kv.key)) {
+            Some(had) => crate::model::KvParam {
+                value: had.value.clone(),
+                ..kv.clone()
+            },
+            None => kv.clone(),
+        })
+        .collect()
+}
+
+/// JSON as the document has it, with the reader's values where the kind
+/// matches. An array follows the document's length, one index at a time.
+fn synced_json(had: &serde_json::Value, given: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match (had, given) {
+        (Value::Object(had), Value::Object(given)) => Value::Object(
+            given
+                .iter()
+                .map(|(key, value)| {
+                    let value = match had.get(key) {
+                        Some(mine) => synced_json(mine, value),
+                        None => value.clone(),
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        (Value::Array(had), Value::Array(given)) => Value::Array(
+            given
+                .iter()
+                .enumerate()
+                .map(|(index, value)| match had.get(index) {
+                    Some(mine) => synced_json(mine, value),
+                    None => value.clone(),
+                })
+                .collect(),
+        ),
+        _ if same_kind(had, given) => had.clone(),
+        _ => given.clone(),
+    }
+}
+
+/// The body a source sync writes. Form fields keep values as parameters
+/// do. JSON keeps values inside the document's fields. Any other body is
+/// the document's.
+fn synced_body(existing: &HttpRequest, imported: &HttpRequest) -> String {
+    if existing.content_type.is_key_value() && imported.content_type.is_key_value() {
+        let fields = crate::send::form_fields(&imported.body);
+        let kept = synced_params(&crate::send::form_fields(&existing.body), &fields, false);
+        return if kept == fields {
+            imported.body.clone()
+        } else {
+            serde_json::to_string(&kept).unwrap_or_else(|_| imported.body.clone())
+        };
+    }
+    if existing.content_type != imported.content_type || existing.body.trim().is_empty() {
+        return imported.body.clone();
+    }
+    if imported.content_type != crate::model::ContentType::Json {
+        return imported.body.clone();
+    }
+    match (
+        serde_json::from_str::<serde_json::Value>(&existing.body),
+        serde_json::from_str::<serde_json::Value>(&imported.body),
+    ) {
+        (Ok(had), Ok(given)) => {
+            let merged = synced_json(&had, &given);
+            if merged == had {
+                existing.body.clone()
+            } else {
+                crate::format::json(&merged)
+            }
+        }
+        _ => imported.body.clone(),
+    }
+}
+
+/// The document's way of signing in. A secret the reader filled in stays
+/// when the kind is the same one.
+fn synced_auth(existing: &crate::auth::Auth, imported: &crate::auth::Auth) -> crate::auth::Auth {
+    use crate::auth::Auth;
+    if existing.kind() != imported.kind() {
+        return imported.clone();
+    }
+    match (existing, imported) {
+        (
+            Auth::Basic { username, password },
+            Auth::Basic {
+                username: given_user,
+                password: given_password,
+            },
+        ) => Auth::Basic {
+            username: kept_secret(username, given_user),
+            password: kept_secret(password, given_password),
+        },
+        (
+            Auth::Digest { username, password },
+            Auth::Digest {
+                username: given_user,
+                password: given_password,
+            },
+        ) => Auth::Digest {
+            username: kept_secret(username, given_user),
+            password: kept_secret(password, given_password),
+        },
+        (Auth::Bearer { token }, Auth::Bearer { token: given }) => Auth::Bearer {
+            token: kept_secret(token, given),
+        },
+        (
+            Auth::ApiKey { value, .. },
+            Auth::ApiKey {
+                name,
+                value: given,
+                place,
+            },
+        ) => Auth::ApiKey {
+            name: name.clone(),
+            value: kept_secret(value, given),
+            place: *place,
+        },
+        (Auth::OAuth2(mine), Auth::OAuth2(given)) => Auth::from(crate::oauth::OAuth2 {
+            grant: given.grant,
+            token_url: given.token_url.clone(),
+            authorization_url: given.authorization_url.clone(),
+            redirect_port: given.redirect_port,
+            client_id: kept_secret(&mine.client_id, &given.client_id),
+            client_secret: kept_secret(&mine.client_secret, &given.client_secret),
+            username: kept_secret(&mine.username, &given.username),
+            password: kept_secret(&mine.password, &given.password),
+            scope: given.scope.clone(),
+            audience: given.audience.clone(),
+            resource: given.resource.clone(),
+            client_auth: given.client_auth,
+        }),
+        _ => imported.clone(),
+    }
+}
+
+/// Assertions the reader wrote stay. Ones the document imported replace
+/// the ones a previous sync imported.
+fn synced_assertions(existing: &[Assertion], imported: &[Assertion]) -> Vec<Assertion> {
+    let mut kept: Vec<Assertion> = existing
+        .iter()
+        .filter(|assertion| !assertion.imported)
+        .cloned()
+        .collect();
+    kept.extend(imported.iter().filter(|assertion| assertion.imported).cloned());
+    kept
+}
+
+/// The document's examples, then examples the reader named that the
+/// document does not have. The same name is the document's example.
+fn synced_examples(
+    existing: &[crate::model::Example],
+    imported: &[crate::model::Example],
+) -> Vec<crate::model::Example> {
+    let names: std::collections::HashSet<&str> = imported.iter().map(|example| example.name.trim()).collect();
+    let mut kept = imported.to_vec();
+    kept.extend(
+        existing
+            .iter()
+            .filter(|example| !names.contains(example.name.trim()))
+            .cloned(),
+    );
+    kept
+}
+
+/// What a bound source writes over `existing`. Parameter values stay, and
+/// so does a secret the reader filled in for the same way of signing in.
+/// The name is applied by the caller. Assertions, extractions, examples
+/// and request settings the reader added stay; examples and schemas the
+/// document brings are the document's.
+pub fn synced(existing: &HttpRequest, imported: &HttpRequest) -> HttpRequest {
+    HttpRequest {
+        method: imported.method,
+        uri: imported.uri.clone(),
+        content_type: imported.content_type,
+        body: synced_body(existing, imported),
+        query: synced_params(&existing.query, &imported.query, false),
+        headers: synced_params(&existing.headers, &imported.headers, true),
+        variables: synced_params(&existing.variables, &imported.variables, false),
+        description: imported.description.clone(),
+        auth: synced_auth(&existing.auth, &imported.auth),
+        assertions: synced_assertions(&existing.assertions, &imported.assertions),
+        examples: synced_examples(&existing.examples, &imported.examples),
+        request_schema: imported.request_schema.clone(),
+        settings: existing.settings,
+        extractions: existing.extractions.clone(),
+        extra: existing.extra.clone(),
+    }
+}
+
 /// What importing `items` into `parent` of `tree` again does; `update`
-/// says whether the APIs it has already are updated.
+/// says whether the APIs it has already are updated. This is a source
+/// sync: the request is [`synced`], and the API's name follows the import.
 pub fn merge(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem], update: bool) -> Merge {
-    merge_with_vars(tree, parent, items, update, false, &[], &[])
+    walk_merge(tree, parent, items, false, &[], &[], write_matched(update, true))
 }
 
 /// B9: what syncing `items` into `folder` from that folder's own source does:
 /// only APIs inside `folder` (at any depth) are matched, so another folder's
 /// APIs at the same path stay untouched.
 pub fn merge_folder(tree: &TreeData, folder: &ItemId, items: &[ImportItem], update: bool) -> Merge {
-    merge_with_vars(tree, Some(folder), items, update, true, &[], &[])
+    walk_merge(tree, Some(folder), items, true, &[], &[], write_matched(update, true))
 }
 
 /// #84: merges `items` into `parent` of `tree`, also checking that resolved
@@ -350,6 +582,46 @@ pub fn merge_with_vars(
     within_parent: bool,
     existing_vars: &[(String, String)],
     imported_vars: &[(String, String)],
+) -> Merge {
+    walk_merge(
+        tree,
+        parent,
+        items,
+        within_parent,
+        existing_vars,
+        imported_vars,
+        write_matched(update, false),
+    )
+}
+
+/// How a matched API is written.
+enum Write {
+    /// The caller asked not to update.
+    Leave,
+    /// A manual import again: [`updated`], and the name stays.
+    Import,
+    /// A bound source: [`synced`], and the name follows the document.
+    Source,
+}
+
+fn write_matched(update: bool, from_source: bool) -> Write {
+    if !update {
+        Write::Leave
+    } else if from_source {
+        Write::Source
+    } else {
+        Write::Import
+    }
+}
+
+fn walk_merge(
+    tree: &TreeData,
+    parent: Option<&ItemId>,
+    items: &[ImportItem],
+    within_parent: bool,
+    existing_vars: &[(String, String)],
+    imported_vars: &[(String, String)],
+    write: Write,
 ) -> Merge {
     let within = within_parent
         .then_some(parent)
@@ -370,7 +642,7 @@ pub fn merge_with_vars(
         known: &known,
         existing_vars,
         imported_vars,
-        update,
+        write,
         merge: &mut merge,
     };
     walk.at_place(parent, items);
@@ -591,7 +863,11 @@ pub fn preview_folder(tree: &TreeData, folder: &ItemId, items: &[ImportItem]) ->
 }
 
 fn preview_scoped(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem], within_parent: bool) -> Preview {
-    let merge = merge_with_vars(tree, parent, items, true, within_parent, &[], &[]);
+    let merge = match (within_parent, parent) {
+        (true, Some(folder)) => merge_folder(tree, folder, items, true),
+        _ => merge(tree, parent, items, true),
+    };
+    let changed = merge.changed();
     let mut keys = std::collections::HashSet::new();
     let mut stack: Vec<&ImportItem> = items.iter().collect();
     while let Some(item) = stack.pop() {
@@ -654,8 +930,8 @@ fn preview_scoped(tree: &TreeData, parent: Option<&ItemId>, items: &[ImportItem]
     }
     Preview {
         added: merge.added(),
-        updated: merge.updates.len(),
-        same: had.saturating_sub(merge.updates.len()),
+        updated: changed,
+        same: had.saturating_sub(changed),
         missing,
         breaking,
     }
@@ -666,7 +942,7 @@ struct Walk<'a> {
     known: &'a HashMap<(HttpMethod, String), Vec<&'a crate::model::ApiSetting>>,
     existing_vars: &'a [(String, String)],
     imported_vars: &'a [(String, String)],
-    update: bool,
+    write: Write,
     merge: &'a mut Merge,
 }
 
@@ -705,7 +981,7 @@ impl Walk<'_> {
 
     /// Whether the project has the API already; counted, and updated when
     /// asked.
-    fn known(&mut self, request: &HttpRequest) -> bool {
+    fn known(&mut self, name: &str, request: &HttpRequest) -> bool {
         let Some(candidates) = key(request).and_then(|key| self.known.get(&key)) else {
             return false;
         };
@@ -719,10 +995,20 @@ impl Walk<'_> {
         self.merge.matched += 1;
         // Once each: the first of the import's that has it; none when the
         // import would leave it as it is.
-        if self.update && !self.merge.updates.iter().any(|(id, _)| id == &found.id) {
-            let request = updated(&found.request, request);
-            if request != found.request {
-                self.merge.updates.push((found.id.clone(), request));
+        let handled = self.merge.updates.iter().any(|(id, _)| id == &found.id)
+            || self.merge.renames.iter().any(|(id, _)| id == &found.id);
+        if !handled {
+            let next = match self.write {
+                Write::Leave => None,
+                Write::Source => Some(synced(&found.request, request)),
+                Write::Import => Some(updated(&found.request, request)),
+            };
+            if let Some(next) = next.filter(|next| next != &found.request) {
+                self.merge.updates.push((found.id.clone(), next));
+            }
+            let name = name.trim();
+            if matches!(self.write, Write::Source) && !name.is_empty() && name != found.name.trim() {
+                self.merge.renames.push((found.id.clone(), name.to_string()));
             }
         }
         true
@@ -734,8 +1020,8 @@ impl Walk<'_> {
         let mut adding = Vec::new();
         for item in items {
             match item {
-                ImportItem::Api { request, .. } => {
-                    if !self.known(request) {
+                ImportItem::Api { name, request } => {
+                    if !self.known(name, request) {
                         adding.push(item.clone());
                     }
                 }
@@ -778,8 +1064,8 @@ impl Walk<'_> {
         let mut kept = Vec::new();
         for item in items {
             match item {
-                ImportItem::Api { request, .. } => {
-                    if !self.known(request) {
+                ImportItem::Api { name, request } => {
+                    if !self.known(name, request) {
                         kept.push(item.clone());
                     }
                 }
@@ -1028,8 +1314,14 @@ mod tests {
         let list = &merge.updates[0].1;
         assert_eq!(list.uri, "{{API}}/users?page=1");
         assert!(list.headers.is_empty(), "the import's headers");
-        assert_eq!(list.auth, Auth::Bearer { token: "t".into() });
-        assert_eq!(list.assertions.len(), 1);
+        assert_eq!(list.auth, Auth::Inherit, "the document does not sign in");
+        assert_eq!(list.assertions.len(), 1, "an assertion the reader wrote stays");
+        assert!(
+            merge
+                .renames
+                .iter()
+                .any(|(id, name)| id.as_str() == "a-list" && name == "list")
+        );
     }
 
     #[test]
@@ -1054,7 +1346,154 @@ mod tests {
         let items = vec![imported_api("login", HttpMethod::Post, "{{HOST}}/login")];
         let merge = merge(&project(), None, &items, true);
         assert_eq!(merge.matched, 1);
-        assert!(merge.updates.is_empty(), "nothing to write");
+        assert!(merge.updates.is_empty(), "the request is already the document's");
+        assert_eq!(merge.renames, vec![("a-login".into(), "login".into())]);
+    }
+
+    /// A bound source keeps parameter values and filled-in secrets. The
+    /// document supplies everything else, including an empty description
+    /// and a switch. Assertions, extractions, examples and settings the
+    /// reader added stay.
+    #[test]
+    fn syncing_keeps_parameter_values_and_follows_the_document() {
+        let kv = |key: &str, value: &str, enabled: bool, desc: &str| {
+            KvParam {
+                key: key.into(),
+                value: value.into(),
+                enabled,
+                ..Default::default()
+            }
+            .with_description(desc)
+        };
+        let mut existing = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "{{HOST}}/users/{id}".into(),
+            content_type: crate::model::ContentType::Json,
+            body: r#"{"name":"mine","tags":["a","b"],"note":"keep"}"#.into(),
+            description: "Old summary".into(),
+            query: vec![kv("page", "7", false, "Mine")],
+            headers: vec![kv("x-trace", "mine", false, "Mine")],
+            variables: vec![kv("id", "42", false, "Mine"), kv("token", "t", true, "Mine")],
+            auth: Auth::Basic {
+                username: "ada".into(),
+                password: "secret".into(),
+            },
+            assertions: vec![Assertion {
+                expected: "200".into(),
+                ..Default::default()
+            }],
+            extractions: vec![crate::assertions::Extraction {
+                name: "id".into(),
+                ..Default::default()
+            }],
+            examples: vec![
+                crate::model::Example {
+                    name: "saved".into(),
+                    status: 200,
+                    body: "mine".into(),
+                    ..Default::default()
+                },
+                crate::model::Example {
+                    name: "200".into(),
+                    status: 200,
+                    body: "old".into(),
+                    ..Default::default()
+                },
+            ],
+            request_schema: Some(r#"{"type":"object"}"#.into()),
+            settings: crate::prefs::RequestSettings {
+                follow_redirects: Some(false),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        existing
+            .assertions
+            .push(Assertion::imported_schema(&serde_json::json!({"type": "array"})));
+        let imported = HttpRequest {
+            method: HttpMethod::Put,
+            uri: "{{API}}/users/{id}".into(),
+            content_type: crate::model::ContentType::Json,
+            body: r#"{"name":"string","tags":["string"],"email":"a@b"}"#.into(),
+            description: String::new(),
+            query: vec![kv("page", "1", true, ""), kv("size", "20", true, "Items")],
+            headers: vec![kv("X-Trace", "", true, "Trace")],
+            variables: vec![kv("id", "", true, "User id")],
+            auth: Auth::Basic {
+                username: String::new(),
+                password: String::new(),
+            },
+            assertions: vec![Assertion::imported_schema(&serde_json::json!({"type": "object"}))],
+            examples: vec![crate::model::Example {
+                name: "200".into(),
+                status: 201,
+                body: "doc".into(),
+                ..Default::default()
+            }],
+            request_schema: None,
+            settings: crate::prefs::RequestSettings {
+                follow_redirects: Some(true),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let merged = synced(&existing, &imported);
+        assert_eq!(merged.method, HttpMethod::Put);
+        assert_eq!(merged.description, "");
+        assert_eq!(merged.request_schema, None);
+        assert_eq!(
+            merged.query,
+            [kv("page", "7", true, ""), kv("size", "20", true, "Items")],
+            "the value stays; the switch and the description are the document's"
+        );
+        assert_eq!(merged.headers, [kv("X-Trace", "mine", true, "Trace")]);
+        assert_eq!(merged.variables, [kv("id", "42", true, "User id")]);
+        assert_eq!(
+            merged.auth,
+            Auth::Basic {
+                username: "ada".into(),
+                password: "secret".into(),
+            }
+        );
+        assert_eq!(merged.settings, existing.settings);
+        assert_eq!(merged.extractions, existing.extractions);
+        assert_eq!(merged.examples[0].name, "200");
+        assert_eq!(merged.examples[0].body, "doc");
+        assert_eq!(merged.examples[1].name, "saved");
+        let body: serde_json::Value = serde_json::from_str(&merged.body).expect("JSON");
+        assert_eq!(body, serde_json::json!({"name": "mine", "tags": ["a"], "email": "a@b"}));
+        assert!(merged.assertions.iter().any(|assertion| !assertion.imported));
+        assert!(
+            merged
+                .assertions
+                .iter()
+                .any(|assertion| assertion.imported && assertion.expected.contains("object"))
+        );
+        assert!(
+            !merged
+                .assertions
+                .iter()
+                .any(|assertion| assertion.expected.contains("array"))
+        );
+
+        let bearer = HttpRequest {
+            auth: Auth::Bearer { token: "doc".into() },
+            ..imported.clone()
+        };
+        assert_eq!(synced(&existing, &bearer).auth, Auth::Bearer { token: "doc".into() });
+
+        let text = HttpRequest {
+            content_type: crate::model::ContentType::Plain,
+            body: "document".into(),
+            ..imported.clone()
+        };
+        let had_text = HttpRequest {
+            content_type: crate::model::ContentType::Plain,
+            body: "mine".into(),
+            ..existing.clone()
+        };
+        assert_eq!(synced(&had_text, &text).body, "document");
+        assert_eq!(synced(&merged, &imported), merged, "a second sync changes nothing");
     }
 
     #[test]
@@ -1077,8 +1516,10 @@ mod tests {
             preview(&tree, None, &items),
             Preview {
                 added: (1, 0),
-                updated: 1,
-                same: 2,
+                // `list` and `login` differ only by name; `one` also by address.
+                // A source sync follows the document's names, so all three change.
+                updated: 3,
+                same: 0,
                 missing: vec!["a-mine".into()],
                 breaking: Vec::new(),
             }

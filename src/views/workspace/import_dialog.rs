@@ -244,7 +244,9 @@ struct ImportView {
     /// B3: the text is an address, to fetch what to import from.
     address: Option<String>,
     /// B3: the project imported into; how many of the text's APIs it has
-    /// already; which ones (#84); whether those are updated.
+    /// already; which ones (#84); whether those are updated. Updating is
+    /// the default, so a later import follows added and removed fields
+    /// and descriptions the source now gives.
     into: Option<Arc<MergeInto>>,
     known: usize,
     matched_uris: Vec<String>,
@@ -294,7 +296,7 @@ impl ImportView {
             into,
             known: 0,
             matched_uris: Vec::new(),
-            update: false,
+            update: true,
             fetching: None,
             fetched_from: None,
             fetched_shown: None,
@@ -774,8 +776,8 @@ mod tests {
     }
 
     /// B3: going into a project, the dialog counts the APIs it has already
-    /// — the same method to the same path — and they are left unless the
-    /// reader picks updating them.
+    /// — the same method to the same path — and updates them unless the
+    /// reader picks adding only the new ones.
     #[gpui_kit::test]
     async fn the_apis_a_project_has_are_counted(cx: &mut TestAppContext) {
         let (window, _) = opened(cx);
@@ -810,7 +812,7 @@ mod tests {
         .expect("the window is open");
         cx.run_until_parked();
         let (known, update) = cx.read(|cx| (view.read(cx).known, view.read(cx).update));
-        assert_eq!((known, update), (0, false), "another path");
+        assert_eq!((known, update), (0, true), "another path; updating stays the default");
         let text = big_collection(1).replace(&"x".repeat(80), "");
         cx.update_window(window, |_, window, cx| {
             view.update(cx, |view, cx| view.fill(text, window, cx))
@@ -818,7 +820,11 @@ mod tests {
         .expect("the window is open");
         cx.run_until_parked();
         let (known, update) = cx.read(|cx| (view.read(cx).known, view.read(cx).update));
-        assert_eq!((known, update), (1, false), "the same path; left unless picked");
+        assert_eq!(
+            (known, update),
+            (1, true),
+            "the same path; updated unless add-only is picked"
+        );
 
         // #84: when the project's variable resolves to a different host than
         // the imported `.http` file's `@host`, it is not counted as known.

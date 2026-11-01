@@ -1385,6 +1385,15 @@ async fn merge_bundle_into_storage(
             *found = saved;
         }
     }
+    for (id, name) in merge.renames {
+        storage
+            .tree()
+            .rename(collection.clone(), id.clone(), name.clone())
+            .await?;
+        if let Some(found) = data.apis.iter_mut().find(|api| api.id == id) {
+            found.name = name.trim().to_string();
+        }
+    }
     for (place, items) in merge.additions {
         let imported = storage.tree().import(collection.clone(), place, items).await?;
         data.folders.extend(imported.folders);

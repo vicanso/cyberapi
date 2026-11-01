@@ -2725,7 +2725,8 @@ impl WorkspaceState {
         let source = source_of(bundle.source, &parent);
         self.import_settings(bundle.auth, bundle.environments, source, cx);
         let (apis, folders) = merge.added();
-        let again = Some((merge.updates.len(), merge.matched - merge.updates.len()));
+        let changed = merge.changed();
+        let again = Some((changed, merge.matched.saturating_sub(changed)));
         let known: Vec<&str> = self.environment.iter().map(|variable| variable.name.as_str()).collect();
         let environment: Vec<(String, String)> = bundle
             .environment
@@ -2734,7 +2735,7 @@ impl WorkspaceState {
             .filter(|(name, _)| !known.contains(&name.as_str()))
             .collect();
         self.add_environment(environment, cx);
-        let calls = merge.updates.len() + merge.additions.len();
+        let calls = merge.updates.len() + merge.additions.len() + merge.renames.len();
         if calls == 0 {
             cx.emit(WorkspaceEvent::Imported { apis, folders, again });
             return;
@@ -2760,6 +2761,26 @@ impl WorkspaceState {
                             this.start_again(&id, cx);
                             this.sync_api(cx);
                         }
+                    }
+                    Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+                }
+                if done {
+                    cx.emit(WorkspaceEvent::Imported { apis, folders, again });
+                }
+                cx.notify();
+            });
+        }
+        for (id, name) in merge.renames {
+            let done = said();
+            let call = tree.rename(collection.clone(), id.clone(), name.clone());
+            run_serial(cx, &self.gate, call, move |this, result, cx| {
+                match result {
+                    Ok(()) => {
+                        let name = name.trim().to_string();
+                        if let Some(api) = this.data.apis.iter_mut().find(|api| api.id == id) {
+                            api.name = name;
+                        }
+                        this.build_tree();
                     }
                     Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
                 }
@@ -3242,7 +3263,7 @@ impl WorkspaceState {
             Some(id) => cyberapi_core::import::merge::merge_folder(&data, id, &bundle.items, true),
             None => cyberapi_core::import::merge::merge(&data, target_parent.as_ref(), &bundle.items, true),
         };
-        if merge.updates.is_empty() && merge.additions.is_empty() {
+        if merge.updates.is_empty() && merge.additions.is_empty() && merge.renames.is_empty() {
             return;
         }
         if folder.is_none() {
@@ -3258,11 +3279,14 @@ impl WorkspaceState {
             .collect();
         self.add_environment(environment, cx);
 
-        let tree = self.sender.storage.tree();
         let collection = self.collection.id.clone();
         for (id, request) in merge.updates {
             let base_req = open.get(&id).cloned();
-            let call = tree.save_request(collection.clone(), id.clone(), request);
+            let call = self
+                .sender
+                .storage
+                .tree()
+                .save_request(collection.clone(), id.clone(), request);
             run_serial(cx, &self.gate, call, move |this, result, cx| match result {
                 Ok(setting) => {
                     let updated_req = setting.request.clone();
@@ -3280,8 +3304,15 @@ impl WorkspaceState {
                 Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
             });
         }
+        for (id, name) in merge.renames {
+            self.rename(id, name, cx);
+        }
         for (place, items) in merge.additions {
-            let call = tree.import(collection.clone(), place.clone(), items);
+            let call = self
+                .sender
+                .storage
+                .tree()
+                .import(collection.clone(), place.clone(), items);
             run_serial(cx, &self.gate, call, move |this, result, cx| match result {
                 Ok(imported) => {
                     this.data.folders.extend(imported.folders);
@@ -5014,7 +5045,9 @@ mod tests {
             assert_eq!(updated_order.request.query.len(), 2);
             assert_eq!(updated_order.request.query[0].key, "dryRun");
             assert_eq!(updated_order.request.query[0].value, "true", "reader value preserved");
-            assert!(!updated_order.request.query[0].enabled, "reader switch preserved");
+            assert!(updated_order.request.query[0].enabled, "the document's switch");
+            assert_eq!(updated_order.request.query[0].description, "Upstream dry run");
+            assert_eq!(updated_order.name, "POST /v1/orders");
             assert_eq!(updated_order.request.query[1].key, "region");
             assert!(
                 updated_order.request.body.contains("magazine") && updated_order.request.body.contains("qty"),
