@@ -34,8 +34,8 @@
 
 - ⚡ **Native and instant** — macOS, Windows and Linux; no Electron, no web view.
 - 🧩 **Every kind of API** — REST; GraphQL with schema completion; gRPC from server reflection or `.proto` files; WebSocket; event streams shown as they arrive.
-- 🔍 **See what really happened** — DNS, TCP, TLS and server time; the request exactly as it went out; JSON as a tree or narrowed by JSONPath; a history for every API.
-- 🔗 **Less copy and paste** — switch environments beside the project's name, let folders pass their auth down, and chain responses with `{{g(api, data.token)}}`.
+- 🔍 **See what really happened** — DNS, TCP, TLS and server time; the request as it went out; JSON as a tree or JSONPath; history, and the same checks from the app or `cyberapi-cli` in CI.
+- 🔗 **Less copy and paste** — switch environments beside the project's name, inherit auth from a folder, chain a response with `{{g(api, data.token)}}`, and follow an OpenAPI source while the values and secrets you typed stay.
 - 👥 **Built for teams** — a self-hosted web version from the same code; the desktop app signs in, works offline and syncs when you choose.
 - 🤖 **Ready for AI assistants** — Claude Code, Cursor and other MCP clients read your APIs, secrets masked, and send them when you allow.
 
