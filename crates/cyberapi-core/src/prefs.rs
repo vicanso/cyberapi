@@ -494,6 +494,22 @@ pub struct Scratch {
     pub request: HttpRequest,
 }
 
+/// B10: the periodic source sync / poll intervals offered in the UI, in minutes.
+pub const SOURCE_SYNC_INTERVALS: [u32; 4] = [5, 15, 30, 60];
+
+/// B10: the default periodic source sync / poll interval, in minutes.
+pub const DEFAULT_SOURCE_SYNC_MINUTES: u32 = 15;
+
+/// Clamps `minutes` to one of [`SOURCE_SYNC_INTERVALS`], falling back to
+/// [`DEFAULT_SOURCE_SYNC_MINUTES`].
+pub fn clamp_source_sync_minutes(minutes: u32) -> u32 {
+    if SOURCE_SYNC_INTERVALS.contains(&minutes) {
+        minutes
+    } else {
+        DEFAULT_SOURCE_SYNC_MINUTES
+    }
+}
+
 /// One reader's state of one project's workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -532,6 +548,14 @@ pub struct WorkspacePrefs {
     /// never fetched without opting in again (Q-1).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub auto_fetch_sources: Vec<String>,
+    /// B10: exact `http(s)` source URLs this reader opted in to auto-sync
+    /// periodically into the project on this device, mapped to their sync
+    /// interval in minutes (`5`, `15`, `30`, or `60`; default `15`). Kept per
+    /// reader (not synced in the project) and matched by exact URL so an
+    /// address changed by another editor is never fetched or merged without
+    /// opting in again (Q-1).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub auto_sync_sources: BTreeMap<String, u32>,
 }
 
 /// The request editor's tabs (F4.12).
@@ -1062,5 +1086,26 @@ mod tests {
                 read: 300
             }
         );
+    }
+
+    #[test]
+    fn source_sync_intervals_clamp_and_round_trip() {
+        for mins in SOURCE_SYNC_INTERVALS {
+            assert_eq!(clamp_source_sync_minutes(mins), mins);
+        }
+        assert_eq!(clamp_source_sync_minutes(0), DEFAULT_SOURCE_SYNC_MINUTES);
+        assert_eq!(clamp_source_sync_minutes(7), DEFAULT_SOURCE_SYNC_MINUTES);
+        assert_eq!(clamp_source_sync_minutes(999), DEFAULT_SOURCE_SYNC_MINUTES);
+
+        let prefs = WorkspacePrefs {
+            auto_sync_sources: [("https://api.example.com/openapi.json".into(), 30)]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&prefs).expect("serialize");
+        assert!(json.contains("autoSyncSources"), "{json}");
+        let back: WorkspacePrefs = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, prefs);
     }
 }

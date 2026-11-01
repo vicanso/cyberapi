@@ -15,6 +15,7 @@ use crate::views::name_dialog::ok_button;
 use cyberapi_core::ItemId;
 use cyberapi_core::import::merge::{self, Preview};
 use cyberapi_core::import::{self, ImportBundle};
+use cyberapi_core::prefs::{DEFAULT_SOURCE_SYNC_MINUTES, SOURCE_SYNC_INTERVALS};
 use cyberapi_core::schema_docs::SchemaBreakingChange;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -90,6 +91,9 @@ struct SourceView {
     kept_url: Option<String>,
     /// B10: pending auto-fetch choice for a newly typed address before Save / Sync.
     want_auto_fetch: Option<bool>,
+    /// B10: pending periodic auto-sync choice and interval (minutes) for a newly typed address before Save / Sync.
+    want_auto_sync: Option<bool>,
+    want_sync_interval: Option<u32>,
     /// The address being fetched, and the fetch: dropped, it stops.
     fetching: Option<(String, Task<()>)>,
     fetched: Option<Fetched>,
@@ -124,14 +128,16 @@ impl SourceView {
                     // a fetch of another stops (BUG-13).
                     InputEvent::Change => {
                         let typed = this.typed(cx);
+                        this.want_auto_fetch = None;
+                        this.want_auto_sync = None;
+                        this.want_sync_interval = None;
                         if this.fetched.as_ref().is_some_and(|fetched| fetched.url != typed) {
                             this.fetched = None;
-                            cx.notify();
                         }
                         if this.fetching.as_ref().is_some_and(|(url, _)| *url != typed) {
                             this.fetching = None;
-                            cx.notify();
                         }
+                        cx.notify();
                     }
                     _ => {}
                 }
@@ -146,6 +152,8 @@ impl SourceView {
             url,
             kept_url: kept,
             want_auto_fetch: None,
+            want_auto_sync: None,
+            want_sync_interval: None,
             fetching: None,
             fetched: None,
             error: None,
@@ -243,17 +251,24 @@ impl SourceView {
             }
             return false;
         };
+        self.kept_url = Some(fetched.url.clone());
+        let auto_fetch = self.want_auto_fetch.take();
+        let auto_sync = self.want_auto_sync.take();
+        let want_interval = self.want_sync_interval.take();
         if let Some(workspace) = self.workspace.upgrade() {
             let folder = self.folder.clone();
-            let auto_fetch = self.want_auto_fetch;
             let synced_url = fetched.url.clone();
+            let sync_interval = want_interval.unwrap_or_else(|| workspace.read(cx).source_sync_interval(&synced_url));
             workspace.update(cx, |workspace, cx| {
                 match folder {
                     Some(folder) => workspace.sync_folder_source(folder, fetched.url, fetched.bundle, cx),
                     None => workspace.sync_from_source(fetched.url, fetched.bundle, cx),
                 }
                 if let Some(enabled) = auto_fetch {
-                    workspace.set_auto_fetch_source(synced_url, enabled, cx);
+                    workspace.set_auto_fetch_source(synced_url.clone(), enabled, cx);
+                }
+                if let Some(enabled) = auto_sync {
+                    workspace.set_auto_sync_source_after_sync(synced_url, enabled, sync_interval, cx);
                 }
             });
         }
@@ -267,16 +282,23 @@ impl SourceView {
             cx.notify();
             return;
         };
+        self.kept_url = Some(url.clone());
+        let auto_fetch = self.want_auto_fetch.take();
+        let auto_sync = self.want_auto_sync.take();
+        let want_interval = self.want_sync_interval.take();
         if let Some(workspace) = self.workspace.upgrade() {
             let folder = self.folder.clone();
-            let auto_fetch = self.want_auto_fetch;
+            let sync_interval = want_interval.unwrap_or_else(|| workspace.read(cx).source_sync_interval(&url));
             workspace.update(cx, |workspace, cx| {
                 match folder {
                     Some(folder) => workspace.set_folder_source(folder, Some(url.clone()), cx),
                     None => workspace.set_source_url(url.clone(), cx),
                 }
                 if let Some(enabled) = auto_fetch {
-                    workspace.set_auto_fetch_source(url, enabled, cx);
+                    workspace.set_auto_fetch_source(url.clone(), enabled, cx);
+                }
+                if let Some(enabled) = auto_sync {
+                    workspace.set_auto_sync_source(url, enabled, sync_interval, cx);
                 }
             });
         }
@@ -392,24 +414,33 @@ impl Render for SourceView {
         let local = valid_url.is_some_and(import::local_address);
         let idle = self.fetching.is_none() && self.fetched.is_none() && self.error.is_none();
         let can_save_only = valid_url.is_some_and(|url| Some(url) != self.kept_url.as_deref());
-        let (auto_fetch_on, cached_updates) = self
+        let (editable, auto_sync_on, sync_interval, auto_fetch_on, cached_updates) = self
             .workspace
             .upgrade()
             .map(|workspace| {
                 let workspace = workspace.read(cx);
-                let checked = match valid_url {
-                    Some(url) if Some(url) == self.kept_url.as_deref() => workspace.auto_fetches_source(url),
-                    Some(url) => self
-                        .want_auto_fetch
-                        .unwrap_or_else(|| workspace.auto_fetches_source(url)),
-                    None => false,
+                let editable = workspace.editable();
+                let (sync_on, interval, fetch_on) = match valid_url {
+                    Some(url) if Some(url) == self.kept_url.as_deref() => (
+                        workspace.auto_syncs_source(url),
+                        workspace.source_sync_interval(url),
+                        workspace.auto_fetches_source(url),
+                    ),
+                    Some(url) => (
+                        self.want_auto_sync.unwrap_or_else(|| workspace.auto_syncs_source(url)),
+                        self.want_sync_interval
+                            .unwrap_or_else(|| workspace.source_sync_interval(url)),
+                        self.want_auto_fetch
+                            .unwrap_or_else(|| workspace.auto_fetches_source(url)),
+                    ),
+                    None => (false, DEFAULT_SOURCE_SYNC_MINUTES, false),
                 };
                 let updates = (Some(typed.as_str()) == self.kept_url.as_deref())
                     .then(|| workspace.source_updates(self.folder.as_ref()))
                     .flatten();
-                (checked, updates)
+                (editable, sync_on, interval, fetch_on, updates)
             })
-            .unwrap_or((false, None));
+            .unwrap_or((false, false, DEFAULT_SOURCE_SYNC_MINUTES, false, None));
         let about = if self.folder.is_some() {
             t!("source.folder_about").to_string()
         } else {
@@ -433,23 +464,128 @@ impl Render for SourceView {
                     ),
             )
             .when_some(valid_url.map(str::to_string), |this, url| {
+                let url_for_sync = url.clone();
+                let url_for_fetch = url.clone();
                 this.child(
-                    Checkbox::new("source-auto-fetch")
-                        .checked(auto_fetch_on)
-                        .label(t!("source.auto_fetch").to_string())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let next = !auto_fetch_on;
-                            if Some(url.as_str()) == this.kept_url.as_deref() {
-                                if let Some(workspace) = this.workspace.upgrade() {
-                                    workspace.update(cx, |workspace, cx| {
-                                        workspace.set_auto_fetch_source(url.clone(), next, cx);
-                                    });
-                                }
-                            } else {
-                                this.want_auto_fetch = Some(next);
-                                cx.notify();
-                            }
-                        })),
+                    v_flex()
+                        .gap_1p5()
+                        .when(editable, |col| {
+                            col.child(
+                                Checkbox::new("source-auto-sync")
+                                    .checked(auto_sync_on)
+                                    .label(t!("source.auto_sync").to_string())
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let next = !auto_sync_on;
+                                        let preview_open = this.fetched.is_some();
+                                        if Some(url_for_sync.as_str()) == this.kept_url.as_deref() {
+                                            if let Some(workspace) = this.workspace.upgrade() {
+                                                workspace.update(cx, |workspace, cx| {
+                                                    if preview_open {
+                                                        workspace.set_auto_sync_source_after_sync(
+                                                            url_for_sync.clone(),
+                                                            next,
+                                                            sync_interval,
+                                                            cx,
+                                                        );
+                                                    } else {
+                                                        workspace.set_auto_sync_source(
+                                                            url_for_sync.clone(),
+                                                            next,
+                                                            sync_interval,
+                                                            cx,
+                                                        );
+                                                    }
+                                                });
+                                            }
+                                        } else {
+                                            this.want_auto_sync = Some(next);
+                                            if next {
+                                                this.want_auto_fetch = Some(false);
+                                            }
+                                            if this.want_sync_interval.is_none() {
+                                                this.want_sync_interval = Some(sync_interval);
+                                            }
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                            .when(auto_sync_on, |col| {
+                                col.child(
+                                    h_flex()
+                                        .gap_1p5()
+                                        .items_center()
+                                        .pl_6()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .child(t!("source.sync_interval").to_string()),
+                                        )
+                                        .children(SOURCE_SYNC_INTERVALS.into_iter().map(|mins| {
+                                            let url = url.clone();
+                                            let chosen = sync_interval == mins;
+                                            let label = t!("source.interval_minutes", minutes = mins).to_string();
+                                            Button::new(("source-interval", mins as usize))
+                                                .xsmall()
+                                                .when(chosen, |b| b.primary())
+                                                .when(!chosen, |b| b.outline())
+                                                .label(label)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    let preview_open = this.fetched.is_some();
+                                                    if Some(url.as_str()) == this.kept_url.as_deref() {
+                                                        if let Some(workspace) = this.workspace.upgrade() {
+                                                            workspace.update(cx, |workspace, cx| {
+                                                                if preview_open {
+                                                                    workspace.set_auto_sync_source_after_sync(
+                                                                        url.clone(),
+                                                                        true,
+                                                                        mins,
+                                                                        cx,
+                                                                    );
+                                                                } else {
+                                                                    workspace.set_auto_sync_source(
+                                                                        url.clone(),
+                                                                        true,
+                                                                        mins,
+                                                                        cx,
+                                                                    );
+                                                                }
+                                                            });
+                                                        }
+                                                    } else {
+                                                        this.want_auto_sync = Some(true);
+                                                        this.want_auto_fetch = Some(false);
+                                                        this.want_sync_interval = Some(mins);
+                                                        cx.notify();
+                                                    }
+                                                }))
+                                        })),
+                                )
+                            })
+                        })
+                        .when(!auto_sync_on, |col| {
+                            col.child(
+                                Checkbox::new("source-auto-fetch")
+                                    .checked(auto_fetch_on)
+                                    .label(t!("source.auto_fetch").to_string())
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let next = !auto_fetch_on;
+                                        if Some(url_for_fetch.as_str()) == this.kept_url.as_deref() {
+                                            if let Some(workspace) = this.workspace.upgrade() {
+                                                workspace.update(cx, |workspace, cx| {
+                                                    workspace.set_auto_fetch_source(url_for_fetch.clone(), next, cx);
+                                                });
+                                            }
+                                        } else {
+                                            this.want_auto_fetch = Some(next);
+                                            if next {
+                                                this.want_auto_sync = Some(false);
+                                            }
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                        }),
                 )
             })
             .when(local, |this| {
@@ -628,5 +764,28 @@ mod tests {
         .expect("the window is open");
         cx.run_until_parked();
         assert_eq!(sent.load(Ordering::Relaxed), 1, "fetched once asked");
+
+        // Typing a new URL, choosing periodic auto-sync + 30m interval, and
+        // saving address only stores both the URL and the schedule.
+        cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.url.update(cx, |url, cx| {
+                    url.set_value("https://api.example.com/v2/openapi.json", window, cx);
+                });
+                view.want_auto_sync = Some(true);
+                view.want_sync_interval = Some(30);
+                view.save_only(window, cx);
+            });
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        workspace.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.source().map(|s| s.url.as_str()),
+                Some("https://api.example.com/v2/openapi.json")
+            );
+            assert!(ws.auto_syncs_source("https://api.example.com/v2/openapi.json"));
+            assert_eq!(ws.source_sync_interval("https://api.example.com/v2/openapi.json"), 30);
+        });
     }
 }

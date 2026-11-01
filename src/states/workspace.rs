@@ -31,7 +31,9 @@ use cyberapi_core::model::{
     ApiSetting, Collection, Environment, Folder, FolderSettings, HttpMethod, HttpRequest, ImportSource,
     ProjectSettings, Variable, VariableCategory,
 };
-use cyberapi_core::prefs::{RequestTab, Scratch, WorkspacePrefs};
+use cyberapi_core::prefs::{
+    DEFAULT_SOURCE_SYNC_MINUTES, RequestTab, Scratch, WorkspacePrefs, clamp_source_sync_minutes,
+};
 use cyberapi_core::response::{HttpResponse, RECENT_LIMIT};
 use cyberapi_core::secrets::{self, SecretValues};
 use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, ProjectVersion, Step};
@@ -297,6 +299,7 @@ pub struct WorkspaceState {
     #[allow(clippy::type_complexity)]
     source_updates_cache: RefCell<HashMap<Option<ItemId>, Option<(usize, usize)>>>,
     fetching_sources: HashSet<String>,
+    source_poll_elapsed: HashMap<String, u32>,
     sources_booted: bool,
     _source_poll: Option<Task<()>>,
     _local_mcp: Option<gpui_kit::Subscription>,
@@ -422,6 +425,7 @@ impl WorkspaceState {
             cached_requests: HashMap::new(),
             source_updates_cache: RefCell::new(HashMap::new()),
             fetching_sources: HashSet::new(),
+            source_poll_elapsed: HashMap::new(),
             sources_booted: false,
             _source_poll: None,
             _local_mcp: local_mcp,
@@ -2470,11 +2474,24 @@ impl WorkspaceState {
 
     /// #66: what a folder sets for the APIs in it.
     pub fn set_folder_settings(&mut self, id: ItemId, settings: FolderSettings, cx: &mut Context<Self>) {
-        let call = self
-            .sender
-            .storage
-            .tree()
-            .set_folder_settings(self.collection.id.clone(), id, settings);
+        let before = self
+            .data
+            .folders
+            .iter_mut()
+            .find(|found| found.id == id)
+            .map(|found| std::mem::replace(&mut found.settings, settings.clone()));
+        if settings.source.is_none()
+            && let Some(had) = before.as_ref().and_then(|prev| prev.source.as_deref())
+        {
+            self.prune_unused_source(had, Some(&id), false, cx);
+        }
+        self.source_updates_cache.borrow_mut().clear();
+        cx.notify();
+        let call =
+            self.sender
+                .storage
+                .tree()
+                .set_folder_settings(self.collection.id.clone(), id.clone(), settings.clone());
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(folder) => {
                 if let Some(found) = this.data.folders.iter_mut().find(|found| found.id == folder.id) {
@@ -2483,7 +2500,17 @@ impl WorkspaceState {
                 this.source_updates_cache.borrow_mut().clear();
                 cx.notify();
             }
-            Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+            Err(error) => {
+                if let Some(before) = before
+                    && let Some(found) = this.data.folders.iter_mut().find(|found| found.id == id)
+                    && found.settings == settings
+                {
+                    found.settings = before;
+                    this.source_updates_cache.borrow_mut().clear();
+                    cx.notify();
+                }
+                cx.emit(WorkspaceEvent::Failed(error));
+            }
         });
     }
 
@@ -2881,8 +2908,12 @@ impl WorkspaceState {
             self.cached_bundles.remove(url);
             self.cached_requests.remove(url);
             self.source_updates_cache.borrow_mut().clear();
-            if self.auto_fetches_source(url) {
+            let had_fetch = self.auto_fetches_source(url);
+            let had_sync = self.auto_syncs_source(url);
+            if had_fetch || had_sync {
                 self.prefs.auto_fetch_sources.retain(|kept| kept != url);
+                self.prefs.auto_sync_sources.remove(url);
+                self.source_poll_elapsed.remove(url);
                 self.save_prefs(cx);
                 self.ensure_source_poll(cx);
             }
@@ -2913,27 +2944,111 @@ impl WorkspaceState {
             return;
         }
         if enabled {
-            self.prefs.auto_fetch_sources.push(url);
+            self.prefs.auto_sync_sources.remove(&url);
+            self.prefs.auto_fetch_sources.push(url.clone());
         } else {
             self.prefs.auto_fetch_sources.retain(|kept| kept != &url);
+            self.source_poll_elapsed.remove(&url);
         }
         self.save_prefs(cx);
         self.ensure_source_poll(cx);
+        if enabled && self.active_opted_in_sources().iter().any(|active| active == &url) {
+            self.source_poll_elapsed.insert(url.clone(), 0);
+            self.fetch_opted_in_urls(vec![url], cx);
+        }
+        cx.notify();
+    }
+
+    /// B10: whether this reader opted in to periodically auto-sync `url` into
+    /// the project or folder on this device.
+    pub fn auto_syncs_source(&self, url: &str) -> bool {
+        let url = url.trim();
+        !url.is_empty() && self.prefs.auto_sync_sources.contains_key(url)
+    }
+
+    /// B10: the periodic sync interval in minutes (`5`, `15`, `30`, or `60`)
+    /// configured for `url` on this device, or [`DEFAULT_SOURCE_SYNC_MINUTES`].
+    pub fn source_sync_interval(&self, url: &str) -> u32 {
+        self.prefs
+            .auto_sync_sources
+            .get(url.trim())
+            .copied()
+            .map(clamp_source_sync_minutes)
+            .unwrap_or(DEFAULT_SOURCE_SYNC_MINUTES)
+    }
+
+    /// B10: opts `url` in or out of periodic auto-sync on this device with
+    /// `interval_minutes` (`5`, `15`, `30`, or `60`), immediately fetching and
+    /// merging when newly enabled.
+    pub fn set_auto_sync_source(&mut self, url: String, enabled: bool, interval_minutes: u32, cx: &mut Context<Self>) {
+        self.set_auto_sync_source_inner(url, enabled, interval_minutes, true, cx);
+    }
+
+    /// B10: records the periodic auto-sync preference after an explicit manual
+    /// sync just merged the fetched bundle, without firing a duplicate fetch.
+    pub fn set_auto_sync_source_after_sync(
+        &mut self,
+        url: String,
+        enabled: bool,
+        interval_minutes: u32,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_auto_sync_source_inner(url, enabled, interval_minutes, false, cx);
+    }
+
+    fn set_auto_sync_source_inner(
+        &mut self,
+        url: String,
+        enabled: bool,
+        interval_minutes: u32,
+        refresh_now: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let url = url.trim().to_string();
+        if url.is_empty() {
+            return;
+        }
+        let interval = clamp_source_sync_minutes(interval_minutes);
+        let was_enabled = self.prefs.auto_sync_sources.contains_key(&url);
+        let unchanged = if enabled {
+            self.prefs.auto_sync_sources.get(&url) == Some(&interval)
+        } else {
+            !was_enabled
+        };
+        if unchanged {
+            return;
+        }
         if enabled {
-            self.refresh_opted_in_sources(cx);
+            self.prefs.auto_fetch_sources.retain(|kept| kept != &url);
+            self.prefs.auto_sync_sources.insert(url.clone(), interval);
+        } else {
+            self.prefs.auto_sync_sources.remove(&url);
+            self.source_poll_elapsed.remove(&url);
+        }
+        self.save_prefs(cx);
+        self.ensure_source_poll(cx);
+        if enabled && self.active_opted_in_sources().iter().any(|active| active == &url) {
+            let elapsed = self.source_poll_elapsed.get(&url).copied().unwrap_or(0);
+            if (!was_enabled && refresh_now) || (was_enabled && elapsed >= interval) {
+                self.source_poll_elapsed.insert(url.clone(), 0);
+                self.fetch_opted_in_urls(vec![url], cx);
+            }
         }
         cx.notify();
     }
 
     fn active_opted_in_sources(&self) -> Vec<String> {
-        if self.load != Load::Loaded || !self.prefs_read || self.prefs.auto_fetch_sources.is_empty() {
+        if self.load != Load::Loaded
+            || !self.prefs_read
+            || (self.prefs.auto_fetch_sources.is_empty() && self.prefs.auto_sync_sources.is_empty())
+        {
             return Vec::new();
         }
         let mut urls = Vec::new();
         let mut consider = |url: &str| {
             let url = url.trim();
             if !url.is_empty()
-                && self.prefs.auto_fetch_sources.iter().any(|kept| kept == url)
+                && (self.auto_fetches_source(url) || self.auto_syncs_source(url))
                 && !urls.iter().any(|seen| seen == url)
             {
                 urls.push(url.to_string());
@@ -2951,8 +3066,9 @@ impl WorkspaceState {
     }
 
     fn ensure_source_poll(&mut self, cx: &mut Context<Self>) {
-        if self.prefs.auto_fetch_sources.is_empty() {
+        if self.prefs.auto_fetch_sources.is_empty() && self.prefs.auto_sync_sources.is_empty() {
             self._source_poll = None;
+            self.source_poll_elapsed.clear();
             return;
         }
         if self._source_poll.is_none() {
@@ -2964,7 +3080,7 @@ impl WorkspaceState {
                     if pacing::page_hidden() && !beats.is_multiple_of(pacing::HIDDEN_EVERY) {
                         continue;
                     }
-                    if this.update(cx, |this, cx| this.refresh_opted_in_sources(cx)).is_err() {
+                    if this.update(cx, |this, cx| this.tick_source_poll(cx)).is_err() {
                         return;
                     }
                 }
@@ -2972,13 +3088,47 @@ impl WorkspaceState {
         }
     }
 
+    /// B10: advances elapsed minutes for each active opted-in source URL and
+    /// fetches those that have reached their configured interval.
+    pub fn tick_source_poll(&mut self, cx: &mut Context<Self>) {
+        let active = self.active_opted_in_sources();
+        if active.is_empty() {
+            return;
+        }
+        let mut due = Vec::new();
+        for url in active {
+            let interval = if self.auto_syncs_source(&url) {
+                self.source_sync_interval(&url)
+            } else {
+                DEFAULT_SOURCE_SYNC_MINUTES
+            };
+            let elapsed = self.source_poll_elapsed.entry(url.clone()).or_insert(0);
+            *elapsed = elapsed.saturating_add(1);
+            if *elapsed >= interval {
+                *elapsed = 0;
+                due.push(url);
+            }
+        }
+        if !due.is_empty() {
+            self.fetch_opted_in_urls(due, cx);
+        }
+    }
+
     /// B10: fetches any bound source URLs that this reader explicitly opted in
-    /// to poll, keeping the parsed bundle in memory without mutating the store.
+    /// to poll or auto-sync, caching the parsed bundle in memory and merging
+    /// additions / updates into the project or folder when auto-sync is enabled.
     pub fn refresh_opted_in_sources(&mut self, cx: &mut Context<Self>) {
         let urls = self.active_opted_in_sources();
         if urls.is_empty() {
             return;
         }
+        for url in &urls {
+            self.source_poll_elapsed.insert(url.clone(), 0);
+        }
+        self.fetch_opted_in_urls(urls, cx);
+    }
+
+    fn fetch_opted_in_urls(&mut self, urls: Vec<String>, cx: &mut Context<Self>) {
         let Some(store) = cx.try_global::<AppStore>() else {
             return;
         };
@@ -3000,12 +3150,150 @@ impl WorkspaceState {
                 };
                 let _ = this.update(cx, |this, cx| {
                     this.fetching_sources.remove(&url);
+                    if !this.active_opted_in_sources().iter().any(|active| active == &url) {
+                        return;
+                    }
                     if let Some(bundle) = parsed {
-                        this.cache_source(url, bundle, cx);
+                        this.cache_source(url.clone(), bundle, cx);
+                        if this.editable() && this.auto_syncs_source(&url) {
+                            run_serial(cx, &this.gate, Box::pin(async { Ok(()) }), move |this, _, cx| {
+                                this.auto_sync_cached_source(&url, cx);
+                            });
+                        }
                     }
                 });
             })
             .detach();
+        }
+    }
+
+    fn auto_sync_cached_source(&mut self, url: &str, cx: &mut Context<Self>) {
+        if !self.editable() || !self.auto_syncs_source(url) {
+            return;
+        }
+        let has_project_source = self.source().is_some_and(|source| source.url.trim() == url);
+        let project_folder = self.source_folder();
+        let folders: Vec<ItemId> = self
+            .data
+            .folders
+            .iter()
+            .filter(|folder| folder.settings.source.as_deref().map(str::trim) == Some(url))
+            .map(|folder| folder.id.clone())
+            .collect();
+        let mut targets: std::collections::VecDeque<Option<ItemId>> = std::collections::VecDeque::new();
+        if has_project_source {
+            if project_folder.as_ref().is_none_or(|pf| !folders.contains(pf)) {
+                targets.push_back(None);
+            } else if let Some(bundle) = self.cached_bundles.get(url).cloned() {
+                self.import_settings(bundle.auth, bundle.environments, None, cx);
+            }
+        }
+        for folder in folders {
+            targets.push_back(Some(folder));
+        }
+        self.auto_sync_targets(url.to_string(), targets, cx);
+    }
+
+    fn auto_sync_targets(
+        &mut self,
+        url: String,
+        mut targets: std::collections::VecDeque<Option<ItemId>>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.editable() || !self.auto_syncs_source(&url) {
+            return;
+        }
+        let Some(target) = targets.pop_front() else {
+            return;
+        };
+        let Some(bundle) = self.cached_bundles.get(&url).cloned() else {
+            return;
+        };
+        self.auto_sync_target(target, &bundle, cx);
+        if !targets.is_empty() {
+            run_serial(cx, &self.gate, Box::pin(async { Ok(()) }), move |this, _, cx| {
+                this.auto_sync_targets(url, targets, cx);
+            });
+        }
+    }
+
+    fn auto_sync_target(&mut self, folder: Option<ItemId>, bundle: &ImportBundle, cx: &mut Context<Self>) {
+        let open: HashMap<ItemId, HttpRequest> = self
+            .kept
+            .values()
+            .map(|api| {
+                let api = api.read(cx);
+                (api.api().clone(), api.request().clone())
+            })
+            .collect();
+        let mut data = std::borrow::Cow::Borrowed(&self.data);
+        for (id, request) in &open {
+            if data.apis.iter().any(|api| &api.id == id && &api.request != request)
+                && let Some(api) = data.to_mut().apis.iter_mut().find(|api| &api.id == id)
+            {
+                api.request = request.clone();
+            }
+        }
+        let target_parent = match &folder {
+            Some(id) => Some(id.clone()),
+            None => self.source_folder(),
+        };
+        let merge = match &folder {
+            Some(id) => cyberapi_core::import::merge::merge_folder(&data, id, &bundle.items, true),
+            None => cyberapi_core::import::merge::merge(&data, target_parent.as_ref(), &bundle.items, true),
+        };
+        if merge.updates.is_empty() && merge.additions.is_empty() {
+            return;
+        }
+        if folder.is_none() {
+            self.import_settings(bundle.auth.clone(), bundle.environments.clone(), None, cx);
+        }
+        let known: Vec<&str> = self.environment.iter().map(|variable| variable.name.as_str()).collect();
+        let environment: Vec<(String, String)> = bundle
+            .environment
+            .iter()
+            .filter(|(name, value)| !name.trim().is_empty() || !value.trim().is_empty())
+            .filter(|(name, _)| !known.contains(&name.as_str()))
+            .cloned()
+            .collect();
+        self.add_environment(environment, cx);
+
+        let tree = self.sender.storage.tree();
+        let collection = self.collection.id.clone();
+        for (id, request) in merge.updates {
+            let base_req = open.get(&id).cloned();
+            let call = tree.save_request(collection.clone(), id.clone(), request);
+            run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+                Ok(setting) => {
+                    let updated_req = setting.request.clone();
+                    this.api_saved(setting, cx);
+                    if let Some(api) = this.kept.get(&id).cloned() {
+                        let unchanged_since_merge = match &base_req {
+                            Some(base) => api.read(cx).request() == base,
+                            None => !api.read(cx).has_unsaved(),
+                        };
+                        if unchanged_since_merge {
+                            api.update(cx, |api, cx| api.set_stored_request(updated_req, cx));
+                        }
+                    }
+                }
+                Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+            });
+        }
+        for (place, items) in merge.additions {
+            let call = tree.import(collection.clone(), place.clone(), items);
+            run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+                Ok(imported) => {
+                    this.data.folders.extend(imported.folders);
+                    this.data.apis.extend(imported.apis);
+                    this.data.apply(&imported.change);
+                    this.build_tree();
+                    this.open_folder(place.as_ref());
+                    this.save_prefs(cx);
+                    cx.notify();
+                }
+                Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
+            });
         }
     }
 
@@ -3142,7 +3430,22 @@ impl WorkspaceState {
         }
         let (storage, collection) = (self.sender.storage.clone(), self.collection.id.clone());
         cx.spawn(async move |this, cx| {
+            let mut seen: Vec<String> = cx
+                .background_spawn(
+                    storage
+                        .variables()
+                        .list(collection.clone(), VariableCategory::Environment),
+                )
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|variable| variable.name)
+                .collect();
             for (name, value) in variables {
+                if seen.contains(&name) {
+                    continue;
+                }
+                seen.push(name.clone());
                 let call = storage.variables().create(cyberapi_store::NewVariable {
                     collection: collection.clone(),
                     category: VariableCategory::Environment,
@@ -4546,6 +4849,330 @@ mod tests {
             calls.load(std::sync::atomic::Ordering::Relaxed),
             1,
             "changed URL is never fetched without explicit opt-in"
+        );
+    }
+
+    /// B10: periodic auto-sync automatically merges new and updated APIs from
+    /// an opted-in source at the configured interval, preserves reader values
+    /// and open-tab edits, never deletes missing APIs, writes nothing when
+    /// upstream is unchanged, and stops if the source URL is changed.
+    #[gpui_kit::test]
+    async fn periodic_auto_sync_merges_updates_and_respects_interval_without_redundant_writes(cx: &mut TestAppContext) {
+        struct DynamicEngine {
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+            spec: Arc<std::sync::Mutex<String>>,
+        }
+        impl cyberapi_http::HttpEngine for DynamicEngine {
+            fn send(&self, _: cyberapi_http::PreparedRequest) -> cyberapi_http::SendFuture {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let body = self.spec.lock().expect("spec").as_bytes().to_vec();
+                Box::pin(async move {
+                    Ok(cyberapi_core::response::Exchange {
+                        status: 200,
+                        body,
+                        ..Default::default()
+                    })
+                })
+            }
+        }
+
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        storage
+            .tree()
+            .set_project_settings(
+                collection.id.clone(),
+                ProjectSettings {
+                    source: Some(ImportSource {
+                        url: "https://api.test/openapi.json".into(),
+                        folder: None,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("project source");
+
+        let order_api = storage
+            .tree()
+            .create_api(collection.id.clone(), None, "createOrder".into())
+            .await
+            .expect("order api")
+            .item
+            .id;
+        let initial_order_req = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "{{HOST}}/v1/orders".into(),
+            query: vec![cyberapi_core::model::KvParam {
+                key: "dryRun".into(),
+                value: "true".into(),
+                description: "Custom reader note".into(),
+                enabled: false,
+            }],
+            content_type: cyberapi_core::model::ContentType::Json,
+            body: r#"{"sku": "book"}"#.into(),
+            ..Default::default()
+        };
+        storage
+            .tree()
+            .save_request(collection.id.clone(), order_api.clone(), initial_order_req)
+            .await
+            .expect("save order api");
+
+        let legacy_api = storage
+            .tree()
+            .create_api(collection.id.clone(), None, "legacyPing".into())
+            .await
+            .expect("legacy api")
+            .item
+            .id;
+        storage
+            .tree()
+            .save_request(
+                collection.id.clone(),
+                legacy_api.clone(),
+                HttpRequest {
+                    method: HttpMethod::Get,
+                    uri: "{{HOST}}/v1/ping".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("save legacy api");
+
+        let spec_v1 = r#"{"openapi": "3.0.3", "paths": {
+            "/v1/orders": {"post": {
+                "parameters": [
+                    {"name": "dryRun", "in": "query", "description": "Upstream dry run"},
+                    {"name": "region", "in": "query", "description": "Target region"}
+                ],
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "type": "object",
+                    "required": ["sku"],
+                    "properties": {
+                        "sku": {"type": "string", "description": "Item SKU"},
+                        "qty": {"type": "integer", "description": "Quantity"}
+                    }
+                }}}}
+            }},
+            "/v1/orders/{id}": {"get": {
+                "summary": "Get order"
+            }}
+        }}"#
+        .to_string();
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let spec = Arc::new(std::sync::Mutex::new(spec_v1));
+        let engine = Arc::new(DynamicEngine {
+            calls: calls.clone(),
+            spec: spec.clone(),
+        });
+        let storage_for_app = storage.clone();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            AppStore::init(
+                storage_for_app,
+                engine,
+                cyberapi_core::prefs::AppPrefs::default(),
+                crate::Extras::default(),
+                cx,
+            );
+        });
+
+        let state = open(&storage, collection.clone(), cx);
+        // Open `order_api` and make an unsaved edit to its JSON body in the active tab.
+        state.update(cx, |state, cx| {
+            state.select(&order_api, cx);
+            if let Some(api) = state.api().cloned() {
+                api.update(cx, |api, cx| {
+                    api.set_body(r#"{"sku": "magazine"}"#.into(), cx);
+                });
+            }
+        });
+
+        // Opt in to periodic auto-sync with a 5-minute interval.
+        state.update(cx, |state, cx| {
+            state.set_auto_sync_source("https://api.test/openapi.json".into(), true, 5, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        state.read_with(cx, |state, cx| {
+            assert!(state.auto_syncs_source("https://api.test/openapi.json"));
+            assert_eq!(state.source_sync_interval("https://api.test/openapi.json"), 5);
+            assert_eq!(
+                state.tree_data().apis.len(),
+                3,
+                "existing 2 APIs (legacyPing kept) + 1 newly added GET /v1/orders/{{id}}"
+            );
+            let updated_order = state
+                .tree_data()
+                .apis
+                .iter()
+                .find(|a| a.id == order_api)
+                .expect("order api");
+            assert_eq!(updated_order.request.query.len(), 2);
+            assert_eq!(updated_order.request.query[0].key, "dryRun");
+            assert_eq!(updated_order.request.query[0].value, "true", "reader value preserved");
+            assert!(!updated_order.request.query[0].enabled, "reader switch preserved");
+            assert_eq!(updated_order.request.query[1].key, "region");
+            assert!(
+                updated_order.request.body.contains("magazine") && updated_order.request.body.contains("qty"),
+                "unsaved open-tab body value preserved and new schema field merged: {}",
+                updated_order.request.body
+            );
+            let open_api = state.api().expect("open tab").read(cx);
+            assert_eq!(open_api.request().query.len(), 2);
+            assert!(open_api.request().body.contains("magazine"));
+        });
+
+        let rev_after_first_sync = storage
+            .collections()
+            .get(collection.id.clone())
+            .await
+            .expect("collection")
+            .revision;
+
+        // Ticking 4 minutes (< 5-minute interval) does not fetch again.
+        for _ in 0..4 {
+            state.update(cx, |state, cx| state.tick_source_poll(cx));
+        }
+        cx.run_until_parked();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        // 5th minute tick triggers a background fetch; since spec is unchanged,
+        // no store writes occur and revision stays identical.
+        state.update(cx, |state, cx| state.tick_source_poll(cx));
+        cx.run_until_parked();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        let rev_after_noop_poll = storage
+            .collections()
+            .get(collection.id.clone())
+            .await
+            .expect("collection")
+            .revision;
+        assert_eq!(
+            rev_after_noop_poll, rev_after_first_sync,
+            "unchanged upstream spec must not write or bump revision"
+        );
+
+        // Upstream adds a new DELETE endpoint; after 5 more minute ticks it is
+        // automatically merged into the project.
+        *spec.lock().expect("spec") = r#"{"openapi": "3.0.3", "paths": {
+            "/v1/orders": {"post": {
+                "parameters": [
+                    {"name": "dryRun", "in": "query", "description": "Upstream dry run"},
+                    {"name": "region", "in": "query", "description": "Target region"}
+                ]
+            }},
+            "/v1/orders/{id}": {
+                "get": {"summary": "Get order"},
+                "delete": {"summary": "Cancel order"}
+            }
+        }}"#
+        .to_string();
+        for _ in 0..5 {
+            state.update(cx, |state, cx| state.tick_source_poll(cx));
+        }
+        cx.run_until_parked();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.tree_data().apis.len(), 4, "DELETE /v1/orders/{{id}} auto-added");
+            assert!(
+                state
+                    .tree_data()
+                    .apis
+                    .iter()
+                    .any(|a| a.request.method == HttpMethod::Delete)
+            );
+        });
+
+        // Changing the interval on an already-enabled source while elapsed == 0
+        // does not fire a redundant network fetch.
+        state.update(cx, |state, cx| {
+            state.set_auto_sync_source("https://api.test/openapi.json".into(), true, 15, cx);
+            state.set_auto_sync_source("https://api.test/openapi.json".into(), true, 5, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            3,
+            "changing interval on an active source must not fire a redundant fetch"
+        );
+
+        // When the same source URL is bound to both the project's target folder
+        // and that folder's own source setting, a periodic sync must not import
+        // duplicate APIs into the folder.
+        let sub_folder = storage
+            .tree()
+            .create_folder(collection.id.clone(), None, "orders_group".into())
+            .await
+            .expect("subfolder")
+            .item
+            .id;
+        state.update(cx, |state, cx| {
+            state.reload(cx);
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            state.set_project_settings(
+                ProjectSettings {
+                    source: Some(ImportSource {
+                        url: "https://api.test/openapi.json".into(),
+                        folder: Some(sub_folder.clone()),
+                    }),
+                    ..state.project_settings().clone()
+                },
+                cx,
+            );
+            state.set_folder_source(sub_folder.clone(), Some("https://api.test/openapi.json".into()), cx);
+        });
+        cx.run_until_parked();
+        *spec.lock().expect("spec") = r#"{"openapi": "3.0.3", "paths": {
+            "/v1/orders": {"post": {
+                "parameters": [
+                    {"name": "dryRun", "in": "query", "description": "Upstream dry run"},
+                    {"name": "region", "in": "query", "description": "Target region"}
+                ]
+            }},
+            "/v1/orders/{id}": {
+                "get": {"summary": "Get order"},
+                "delete": {"summary": "Cancel order"},
+                "patch": {"summary": "Update order"}
+            }
+        }}"#
+        .to_string();
+        for _ in 0..5 {
+            state.update(cx, |state, cx| state.tick_source_poll(cx));
+        }
+        cx.run_until_parked();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 4);
+        state.read_with(cx, |state, _| {
+            let patch_count = state
+                .tree_data()
+                .apis
+                .iter()
+                .filter(|a| a.request.method == HttpMethod::Patch)
+                .count();
+            assert_eq!(
+                patch_count, 1,
+                "PATCH /v1/orders/{{id}} imported once even when project source and folder source share the same URL and folder"
+            );
+        });
+
+        // Changing the project and folder source URL invalidates auto-sync until opted in again.
+        state.update(cx, |state, cx| {
+            state.set_source_url("http://10.0.0.9/openapi.json".into(), cx);
+            state.set_folder_source(sub_folder.clone(), Some("http://10.0.0.9/openapi.json".into()), cx);
+        });
+        for _ in 0..5 {
+            state.update(cx, |state, cx| state.tick_source_poll(cx));
+        }
+        cx.run_until_parked();
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            4,
+            "changed source URL is never auto-synced without explicit opt-in"
         );
     }
 

@@ -1451,8 +1451,9 @@ async fn workspace_prefs_are_per_collection(storage: &Storage) {
         tabs: [(login.item.id, "headers".to_string())].into_iter().collect(),
         // The reader's environment (#61).
         environment: Some(EnvironmentId::from("e1")),
-        // B10: opted-in read-only source URLs.
+        // B10: opted-in read-only and auto-sync source URLs.
         auto_fetch_sources: vec!["https://api.test/openapi.json".into()],
+        auto_sync_sources: [("https://api.test/sync.json".into(), 30)].into_iter().collect(),
     };
     storage
         .prefs()
