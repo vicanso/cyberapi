@@ -111,8 +111,47 @@ pub fn backup_error(failure: &BackupFailure) -> String {
 /// `count` of something, as the locale says one (`{key}_one`) or more
 /// (`{key}_other`, given `count`): "1 API", "3 APIs".
 pub fn counted(key: &str, count: usize) -> String {
+    counted_in(&rust_i18n::locale(), key, count)
+}
+
+fn counted_in(locale: &str, key: &str, count: usize) -> String {
     let key = format!("{key}_{}", if count == 1 { "one" } else { "other" });
-    t!(key.as_str(), count = count).into()
+    t!(key.as_str(), locale = locale, count = count).into()
+}
+
+/// The import toast (#90). `import.done` has no final stop; one is added
+/// after the optional "updated" and "left as they were" clauses, so a
+/// clause never follows a period.
+pub fn imported_notice(apis: usize, folders: usize, again: Option<(usize, usize)>) -> String {
+    imported_notice_in(&rust_i18n::locale(), apis, folders, again)
+}
+
+fn imported_notice_in(locale: &str, apis: usize, folders: usize, again: Option<(usize, usize)>) -> String {
+    let mut text = t!(
+        "import.done",
+        locale = locale,
+        apis = counted_in(locale, "workspace.api", apis),
+        folders = counted_in(locale, "import.folder", folders)
+    )
+    .to_string();
+    if let Some((updated, left)) = again {
+        if updated > 0 {
+            text += &t!(
+                "import.done_updated",
+                locale = locale,
+                apis = counted_in(locale, "workspace.api", updated)
+            );
+        }
+        if left > 0 {
+            text += &t!(
+                "import.done_left",
+                locale = locale,
+                apis = counted_in(locale, "workspace.api", left)
+            );
+        }
+    }
+    text += &t!("import.done_stop", locale = locale);
+    text
 }
 
 /// Why a text cannot be imported (F10.2), after "Cannot import:". The JSON
@@ -195,5 +234,30 @@ mod tests {
         assert!(lone.is_empty(), "a form without its pair: {lone:?}");
         assert_eq!(t!("workspace.api_one", locale = "en"), "1 API");
         assert_eq!(t!("workspace.api_other", locale = "en", count = 3), "3 APIs");
+    }
+
+    /// #90: the import toast has one stop, after the optional clauses.
+    #[test]
+    fn an_import_notice_stops_once() {
+        assert_eq!(
+            super::imported_notice_in("en", 1, 0, Some((0, 2))),
+            "Imported 1 API and 0 folders; left 2 APIs it had as they were."
+        );
+        assert_eq!(
+            super::imported_notice_in("en", 2, 1, Some((1, 3))),
+            "Imported 2 APIs and 1 folder; updated 1 API it had; left 3 APIs it had as they were."
+        );
+        assert_eq!(
+            super::imported_notice_in("en", 1, 2, None),
+            "Imported 1 API and 2 folders."
+        );
+        assert_eq!(
+            super::imported_notice_in("zh-CN", 1, 0, Some((0, 2))),
+            "已导入 1 个接口、0 个目录；已有的 2 个接口没有改动。"
+        );
+        assert_eq!(
+            super::imported_notice_in("zh-CN", 1, 2, None),
+            "已导入 1 个接口、2 个目录。"
+        );
     }
 }

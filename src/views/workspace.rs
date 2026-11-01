@@ -493,22 +493,10 @@ impl WorkspaceView {
             }),
             cx.subscribe_in(&state, window, |this, this_state, event, window, cx| match event {
                 WorkspaceEvent::Imported { apis, folders, again } => {
-                    let mut text = t!(
-                        "import.done",
-                        apis = i18n::counted("workspace.api", *apis),
-                        folders = i18n::counted("import.folder", *folders)
-                    )
-                    .to_string();
-                    // B3: what became of the APIs the project had.
-                    if let Some((updated, left)) = again {
-                        if *updated > 0 {
-                            text += &t!("import.done_updated", apis = i18n::counted("workspace.api", *updated));
-                        }
-                        if *left > 0 {
-                            text += &t!("import.done_left", apis = i18n::counted("workspace.api", *left));
-                        }
-                    }
-                    window.push_notification(Notification::success(text), cx);
+                    window.push_notification(
+                        Notification::success(i18n::imported_notice(*apis, *folders, *again)),
+                        cx,
+                    );
                 }
                 WorkspaceEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);
@@ -837,8 +825,7 @@ impl WorkspaceView {
         self.editor_resized(&columns, window, cx);
     }
 
-    /// F12.2: the pin with this number (from 0), if there is one, opened
-    /// with the tree left as it is.
+    /// ⌘/Ctrl-F: the tree's search, its text selected to type over.
     fn find_api(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tree.update(cx, |tree, cx| tree.focus_search(window, cx));
     }
@@ -852,6 +839,8 @@ impl WorkspaceView {
         }
     }
 
+    /// F12.2: the pin with this number (from 0), if there is one. The tree
+    /// selects that API too (#92).
     fn select_pin(&mut self, index: usize, cx: &mut Context<Self>) {
         let id = self.state.read(cx).pinned().get(index).map(|api| api.id.clone());
         if let Some(id) = id {

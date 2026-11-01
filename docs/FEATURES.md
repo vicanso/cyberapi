@@ -18,7 +18,7 @@ A version in italics is in nightly builds until that release.
 
 - Search by name or pinyin. Drag to reorder, duplicate, move into a folder, or copy an API's config.
 - Find and replace across a project or a folder — URIs, query parameters, headers and bodies. Preview the matches, then replace. Undo from the notice for 10 seconds.
-- Pin the APIs you use most (⌘/Ctrl-1…9). Pins sit in the title bar and are not repeated in the tab bar.
+- Pin the APIs you use most (⌘/Ctrl-1…9). Pins sit in the title bar and are not repeated in the tab bar. Opening a pin selects that API in the tree.
 - Each unpinned API you open stays as a tab across the request and the response, up to 16. Edits, responses and a request still on its way are there when you come back. Close one with its button, a middle click or ⌘/Ctrl-W (the others, or all, from its menu). Ctrl-Tab / Ctrl-Shift-Tab switches. The tabs are open again next time. Hide that bar under Editor in the settings (*0.3.1*); the pins stay.
 - On the desktop, **Open in a new window** (*0.4.1*) puts that API's request and response side by side, with its own environment switcher, so you can send against another environment without changing the main window. Its tab stays and says where it went. Closing the window (or ⌘W) brings it back. Closing the tab or leaving the project closes the window.
 - **New scratch request** (project menu or command palette) opens a tab on this project's variables and environment. It stays in your own settings across a restart and is dropped when you close the tab. **Save to project…** picks a folder and it becomes an API there (*0.3.1*).

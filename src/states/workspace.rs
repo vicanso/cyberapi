@@ -234,8 +234,9 @@ pub struct WorkspaceState {
     /// F1: the open tabs in the order they were shown, the latest last:
     /// past `MAX_TABS`, the one shown longest ago closes.
     shown: Vec<ItemId>,
-    /// A pin opened over the tree's selection (F12.2): the editor shows it
-    /// while the tree keeps its row. This session's only.
+    /// A pin shown without becoming the tree's row. `open_pin` selects the
+    /// row instead (#92), so this stays empty; `select` still clears it.
+    /// This session's only.
     pin_open: Option<ItemId>,
     /// The API the reader just made, until its editor is up: its URI is
     /// what they type next.
@@ -2242,15 +2243,11 @@ impl WorkspaceState {
         }
     }
 
-    /// F12.2: a pin's API in the editor. The tree keeps its selection and
-    /// its folders: a pin is for the APIs used beside the one at hand.
+    /// F12.2: a pin's API in the editor, and the tree's row follows it (#92).
+    /// The strong highlight, and rename or delete from the tree, are that
+    /// API. Its folders open so the row is on screen.
     pub fn open_pin(&mut self, id: &ItemId, cx: &mut Context<Self>) {
-        let pin = Some(id.clone()).filter(|id| self.prefs.selected.as_ref() != Some(id));
-        if pin != self.pin_open {
-            self.pin_open = pin;
-            self.sync_api(cx);
-            cx.notify();
-        }
+        self.select(id, cx);
     }
 
     /// F12.1 / F12.3. Only this project's APIs, once each. Closing the pin
@@ -5656,11 +5653,11 @@ mod tests {
         assert_eq!(row_names(&again, cx), ["users", "  login"]);
     }
 
-    /// F12.2: a pin opens its API in the editor and leaves the tree as it
-    /// was, its selection and its folders. The tree's row, chosen again,
-    /// takes the editor back; so does closing the pin.
+    /// F12.2 / #92: a pin opens its API and selects that row, so the strong
+    /// highlight is the API in the editor. Its folder opens so the row
+    /// shows. Unpinning it keeps it open, now as an ordinary tab.
     #[gpui_kit::test]
-    async fn a_pin_opens_its_api_and_leaves_the_tree_alone(cx: &mut TestAppContext) {
+    async fn a_pin_opens_its_api_and_selects_its_row(cx: &mut TestAppContext) {
         let storage = MemoryStore::new().storage();
         let collection = project(&storage).await;
         let state = open(&storage, collection, cx);
@@ -5689,7 +5686,7 @@ mod tests {
         editor_login.update(cx, |api, cx| api.set_uri("{{BASE}}/v1/login".into(), cx));
         cx.run_until_parked();
         state.read_with(cx, |state, _| {
-            assert_eq!(state.selected(), Some(&ping), "the tree keeps its row");
+            assert_eq!(state.selected(), Some(&login), "the tree follows the pin");
             assert_eq!(state.opened(), Some(&login));
             assert!(
                 state.tabs().iter().all(|tab| tab.id != login),
@@ -5702,17 +5699,22 @@ mod tests {
             );
         });
         assert_eq!(editing(&state, cx), Some(login.clone()));
-        assert_eq!(row_names(&state, cx), ["ping", "users"], "its folder stays shut");
+        assert_eq!(row_names(&state, cx), ["ping", "users", "  login"], "its folder opens");
 
-        // The tree's row takes the editor back.
+        // Another row takes the editor, and the highlight, with it.
         state.update(cx, |state, cx| state.select(&ping, cx));
         assert_eq!(editing(&state, cx), Some(ping.clone()));
 
-        // So does closing the pin that is open.
+        // Unpinning the open pin keeps it: the tree already followed it,
+        // so it becomes an ordinary tab.
         state.update(cx, |state, cx| state.open_pin(&login, cx));
         assert_eq!(editing(&state, cx), Some(login.clone()));
         state.update(cx, |state, cx| state.set_pinned(&login, false, cx));
-        assert_eq!(editing(&state, cx), Some(ping));
+        assert_eq!(editing(&state, cx), Some(login.clone()));
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.selected(), Some(&login));
+            assert!(state.tabs().iter().any(|tab| tab.id == login));
+        });
 
         // Unpinned and selected again, it appears in open tabs with its folder and path.
         state.update(cx, |state, cx| state.select(&login, cx));
