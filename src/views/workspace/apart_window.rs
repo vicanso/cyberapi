@@ -202,6 +202,14 @@ impl ApartView {
             .into_iter()
             .find(|tab| tab.id == self.id)
             .map(|tab| tab.name)
+            .or_else(|| {
+                workspace
+                    .tree_data()
+                    .apis
+                    .iter()
+                    .find(|api| api.id == self.id)
+                    .map(|api| api.name.clone())
+            })
             .unwrap_or_default();
         let title = format!("{APP_NAME} - {name}");
         if title != self.title {
@@ -454,6 +462,19 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(windows(cx), 0, "the tab closed, its window with it");
         assert!(cx.read(|cx| cx.try_global::<Open>().is_none_or(|open| open.0.is_empty())));
+
+        // A pinned API is not in `tabs()`, yet opens in its own window with its title.
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_pinned(&a, true, cx);
+            workspace.part(&a, cx);
+        });
+        cx.update(|cx| open_apart(workspace.clone(), a.clone(), None, cx));
+        cx.run_until_parked();
+        assert_eq!(windows(cx), 1);
+        assert!(workspace.read_with(cx, |workspace, _| workspace.tabs().is_empty()));
+        cx.update(|cx| close_apart(&a, cx));
+        cx.run_until_parked();
+        assert_eq!(windows(cx), 0);
     }
 
     /// What was typed in the window goes with it when it closes — unless

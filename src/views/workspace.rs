@@ -1728,6 +1728,14 @@ mod tests {
         let opened = |cx: &mut TestAppContext| cx.read(|cx| view.read(cx).state.read(cx).opened().cloned());
         assert!(opened(cx).is_some(), "the new API is open");
         assert!(
+            !painted(cx, ("close-api-tab", 0)),
+            "a pinned API is not repeated in the open-tabs bar"
+        );
+        assert!(painted(cx, ("unpin", 0)), "the pin shows in the title bar");
+
+        state.update(cx, |state, cx| state.create_api(None, "pong".into(), cx));
+        cx.run_until_parked();
+        assert!(
             painted(cx, ("close-api-tab", 0)),
             "the open APIs show unless the setting says otherwise"
         );

@@ -1635,8 +1635,9 @@ impl WorkspaceState {
     }
 
     /// The opened API's editor, and its tab (F1): one kept from before,
-    /// or a new one beside the tab shown till now. Tabs of APIs that are
-    /// gone close; a scratch request stays, it is not in the tree. Past
+    /// or a new one beside the tab shown till now. Pinned APIs live in the
+    /// title bar and are not repeated in the open-tabs bar. Tabs of APIs that
+    /// are gone close; a scratch request stays, it is not in the tree. Past
     /// `MAX_TABS`, the one shown longest ago does.
     fn sync_api(&mut self, cx: &mut Context<Self>) {
         if self.load == Load::Loaded {
@@ -1647,7 +1648,7 @@ impl WorkspaceState {
                 .prefs
                 .open
                 .iter()
-                .filter(|id| self.tab_lives(id))
+                .filter(|id| self.tab_lives(id) && !self.prefs.pinned.contains(id))
                 .cloned()
                 .collect();
             let kept: HashSet<ItemId> = self.kept.keys().filter(|id| self.tab_lives(id)).cloned().collect();
@@ -1662,10 +1663,13 @@ impl WorkspaceState {
         let selected = self.opened_setting();
         let current = self.api.as_ref().map(|api| api.read(cx).api().clone());
         let Some(api) = selected else {
+            if let Some(left) = &self.api {
+                left.update(cx, |left, cx| left.save_now(cx));
+            }
             self.api = None;
             return;
         };
-        if !self.prefs.open.contains(&api.id) {
+        if !self.prefs.open.contains(&api.id) && !self.prefs.pinned.contains(&api.id) {
             let beside = current
                 .as_ref()
                 .and_then(|current| self.prefs.open.iter().position(|open| open == current))
@@ -1680,21 +1684,23 @@ impl WorkspaceState {
             if let Some(left) = &self.api {
                 left.update(cx, |left, cx| left.save_now(cx));
             }
-            let state = match self.kept.get(&api.id) {
-                Some(kept) => kept.clone(),
-                None => {
-                    let (sender, workspace) = (self.sender.clone(), cx.entity().downgrade());
-                    let editable = self.editable();
-                    let scratch = self.is_scratch(&api.id);
-                    let saves = self.saves.clone();
-                    let state = cx.new(|cx| ApiState::new(sender, workspace, &api, editable, scratch, saves, cx));
-                    self.kept.insert(api.id.clone(), state.clone());
-                    state
-                }
-            };
+            let state = self.ensure_kept(&api, cx);
             self.api = Some(state);
         }
         self.limit_tabs(&api.id, cx);
+    }
+
+    fn ensure_kept(&mut self, api: &ApiSetting, cx: &mut Context<Self>) -> Entity<ApiState> {
+        if let Some(kept) = self.kept.get(&api.id) {
+            return kept.clone();
+        }
+        let (sender, workspace) = (self.sender.clone(), cx.entity().downgrade());
+        let editable = self.editable();
+        let scratch = self.is_scratch(&api.id);
+        let saves = self.saves.clone();
+        let state = cx.new(|cx| ApiState::new(sender, workspace, api, editable, scratch, saves, cx));
+        self.kept.insert(api.id.clone(), state.clone());
+        state
     }
 
     /// An open tab's id still names an API, or a scratch request.
@@ -1706,14 +1712,13 @@ impl WorkspaceState {
         self.prefs.scratches.iter().any(|scratch| &scratch.id == id)
     }
 
-    /// The API in the editor as a record: a tree API, or a scratch request
-    /// worn as one so the editor can open it.
-    fn opened_setting(&self) -> Option<ApiSetting> {
-        let id = self.opened()?.clone();
-        if let Some(api) = self.data.apis.iter().find(|api| api.id == id) {
+    /// The API `id` as a record: a tree API, or a scratch request worn as
+    /// one so the editor can open it.
+    fn api_setting(&self, id: &ItemId) -> Option<ApiSetting> {
+        if let Some(api) = self.data.apis.iter().find(|api| &api.id == id) {
             return Some(api.clone());
         }
-        let scratch = self.prefs.scratches.iter().find(|scratch| scratch.id == id)?;
+        let scratch = self.prefs.scratches.iter().find(|scratch| &scratch.id == id)?;
         Some(ApiSetting {
             id: scratch.id.clone(),
             collection: self.collection.id.clone(),
@@ -1721,6 +1726,13 @@ impl WorkspaceState {
             request: scratch.request.clone(),
             ..Default::default()
         })
+    }
+
+    /// The API in the editor as a record: a tree API, or a scratch request
+    /// worn as one so the editor can open it.
+    fn opened_setting(&self) -> Option<ApiSetting> {
+        let id = self.opened()?;
+        self.api_setting(id)
     }
 
     /// F1: past `MAX_TABS`, the tab shown longest ago closes — one never
@@ -1776,12 +1788,13 @@ impl WorkspaceState {
         }
     }
 
-    /// F1: the open tabs, in order, that still exist. A scratch request is
-    /// one of them and is not in the tree.
+    /// F1: the open tabs, in order, that still exist and are not pinned. A
+    /// scratch request is one of them and is not in the tree.
     pub fn tabs(&self) -> Vec<OpenTab> {
         self.prefs
             .open
             .iter()
+            .filter(|id| !self.prefs.pinned.contains(id))
             .filter_map(|id| {
                 if let Some(api) = self.data.apis.iter().find(|api| &api.id == id) {
                     let mut folders = Vec::new();
@@ -1837,18 +1850,18 @@ impl WorkspaceState {
 
     /// F1: `id`'s tab closed. Closing the one opened opens the one after
     /// it, else the one before; with none left, nothing is.
-    /// F7: the open tab `id` in a window of its own, its editor that
+    /// F7: the open tab or pin `id` in a window of its own, its editor that
     /// window's alone — two editors of one request would each write back
     /// what they hold. The view opens the window (`Parted`).
     pub fn part(&mut self, id: &ItemId, cx: &mut Context<Self>) {
-        if !self.prefs.open.contains(id) {
+        if !self.prefs.open.contains(id) && !self.prefs.pinned.contains(id) {
             return;
         }
         if !self.kept.contains_key(id) {
-            self.select(id, cx);
-        }
-        if !self.kept.contains_key(id) {
-            return;
+            let Some(api) = self.api_setting(id) else {
+                return;
+            };
+            self.ensure_kept(&api, cx);
         }
         self.apart.insert(id.clone());
         cx.emit(WorkspaceEvent::Parted(id.clone()));
@@ -1862,9 +1875,9 @@ impl WorkspaceState {
         }
     }
 
-    /// F7: whether the open tab `id` is in a window of its own.
+    /// F7: whether the open tab or pin `id` is in a window of its own.
     pub fn is_apart(&self, id: &ItemId) -> bool {
-        self.apart.contains(id) && self.prefs.open.contains(id)
+        self.apart.contains(id) && (self.prefs.open.contains(id) || self.prefs.pinned.contains(id))
     }
 
     /// F7: the editor state of the open tab `id`, once it has been shown.
@@ -1874,6 +1887,20 @@ impl WorkspaceState {
 
     pub fn close_tab(&mut self, id: &ItemId, cx: &mut Context<Self>) {
         let Some(at) = self.prefs.open.iter().position(|open| open == id) else {
+            if self.pin_open.as_ref() == Some(id) {
+                self.pin_open = None;
+                if self.prefs.selected.is_none() {
+                    self.prefs.selected = self.prefs.open.last().cloned();
+                }
+                self.sync_api(cx);
+                self.save_prefs(cx);
+                cx.notify();
+            } else if self.prefs.selected.as_ref() == Some(id) && self.prefs.pinned.contains(id) {
+                self.prefs.selected = self.prefs.open.last().cloned();
+                self.sync_api(cx);
+                self.save_prefs(cx);
+                cx.notify();
+            }
             return;
         };
         let opened = self.opened() == Some(id);
@@ -1882,10 +1909,9 @@ impl WorkspaceState {
         if opened {
             self.pin_open = None;
             self.api = None;
-            match next {
-                Some(next) => self.prefs.selected = Some(next),
-                None => self.prefs.selected = None,
-            }
+            self.prefs.selected = next;
+        } else if self.prefs.selected.as_ref() == Some(id) {
+            self.prefs.selected = next;
         }
         self.sync_api(cx);
         self.save_prefs(cx);
@@ -1932,16 +1958,23 @@ impl WorkspaceState {
     /// zero), round the ends.
     pub fn step_tab(&mut self, by: isize, cx: &mut Context<Self>) {
         let count = self.prefs.open.len() as isize;
-        let Some(at) = self
-            .opened()
-            .and_then(|opened| self.prefs.open.iter().position(|open| open == opened))
-        else {
-            return;
-        };
-        if count < 2 {
+        if count == 0 {
             return;
         }
-        let next = (at as isize + by).rem_euclid(count) as usize;
+        let next = match self
+            .opened()
+            .and_then(|opened| self.prefs.open.iter().position(|open| open == opened))
+        {
+            Some(_) if count < 2 => return,
+            Some(at) => (at as isize + by).rem_euclid(count) as usize,
+            None => {
+                if by >= 0 {
+                    0
+                } else {
+                    (count - 1) as usize
+                }
+            }
+        };
         let id = self.prefs.open[next].clone();
         self.select(&id, cx);
     }
@@ -2222,12 +2255,19 @@ impl WorkspaceState {
         let present = self.prefs.pinned.contains(id);
         if pinned && !present && self.data.apis.iter().any(|api| &api.id == id) {
             self.prefs.pinned.push(id.clone());
+            self.prefs.open.retain(|open| open != id);
         } else if !pinned && present {
             self.prefs.pinned.retain(|pin| pin != id);
             if self.pin_open.as_ref() == Some(id) {
                 self.pin_open = None;
-                self.sync_api(cx);
+                if self.prefs.selected.is_none() {
+                    self.prefs.selected = Some(id.clone());
+                }
             }
+            if self.apart.contains(id) && !self.prefs.open.contains(id) {
+                self.prefs.open.push(id.clone());
+            }
+            self.sync_api(cx);
         } else {
             return;
         }
@@ -3259,11 +3299,12 @@ impl WorkspaceState {
                 this.data.apply_removal(&removal);
                 this.build_tree();
                 if this.prefs.selected.as_ref().is_some_and(gone) || beside.is_some() {
-                    this.prefs.selected = beside;
+                    this.prefs.selected = beside.or_else(|| this.prefs.open.iter().rev().find(|id| !gone(id)).cloned());
                 }
                 if this.pin_open.as_ref().is_some_and(gone) {
                     this.pin_open = None;
                 }
+                this.apart.retain(|id| !gone(id));
                 this.prefs.pinned.retain(|id| !gone(id));
                 this.prefs.expanded.retain(|id| !gone(id));
                 this.sync_api(cx);
@@ -3408,7 +3449,6 @@ impl WorkspaceState {
         });
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(data) => {
-                this.set_data(data, cx);
                 for id in undo.pinned.iter().chain(&undo.expanded) {
                     let list = if undo.pinned.contains(id) {
                         &mut this.prefs.pinned
@@ -3419,6 +3459,7 @@ impl WorkspaceState {
                         list.push(id.clone());
                     }
                 }
+                this.set_data(data, cx);
                 this.save_prefs(cx);
                 cx.notify();
             }
@@ -4990,9 +5031,15 @@ mod tests {
         state.read_with(cx, |state, _| {
             assert_eq!(state.selected(), Some(&ping), "the tree keeps its row");
             assert_eq!(state.opened(), Some(&login));
-            let tab_login = state.tabs().into_iter().find(|tab| tab.id == login).expect("tab login");
-            assert_eq!(tab_login.folders, "users");
-            assert_eq!(tab_login.path, "/v1/login");
+            assert!(
+                state.tabs().iter().all(|tab| tab.id != login),
+                "a pinned API is not repeated in open tabs"
+            );
+            assert_eq!(
+                state.kept_api(&login).map(|api| api.entity_id()),
+                Some(editor_login.entity_id()),
+                "its editor state is still kept"
+            );
         });
         assert_eq!(editing(&state, cx), Some(login.clone()));
         assert_eq!(row_names(&state, cx), ["ping", "users"], "its folder stays shut");
@@ -5006,6 +5053,102 @@ mod tests {
         assert_eq!(editing(&state, cx), Some(login.clone()));
         state.update(cx, |state, cx| state.set_pinned(&login, false, cx));
         assert_eq!(editing(&state, cx), Some(ping));
+
+        // Unpinned and selected again, it appears in open tabs with its folder and path.
+        state.update(cx, |state, cx| state.select(&login, cx));
+        state.read_with(cx, |state, _| {
+            let tab_login = state.tabs().into_iter().find(|tab| tab.id == login).expect("tab login");
+            assert_eq!(tab_login.folders, "users");
+            assert_eq!(tab_login.path, "/v1/login");
+        });
+    }
+
+    #[gpui_kit::test]
+    async fn pinned_apis_stay_out_of_open_tabs(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        for name in ["a", "b"] {
+            state.update(cx, |state, cx| state.create_api(None, name.into(), cx));
+            cx.run_until_parked();
+        }
+        let (a, b) = (find(&state, "a", cx), find(&state, "b", cx));
+        let tab_ids = |state: &Entity<WorkspaceState>, cx: &mut TestAppContext| -> Vec<ItemId> {
+            state.read_with(cx, |state, _| state.tabs().into_iter().map(|tab| tab.id).collect())
+        };
+        assert_eq!(tab_ids(&state, cx), vec![a.clone(), b.clone()]);
+
+        // Pinning removes `b` from open tabs while keeping its editor in `kept` and `apart`.
+        let editor_b = editor(&state, cx);
+        state.update(cx, |state, cx| {
+            state.part(&b, cx);
+            state.set_pinned(&b, true, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(tab_ids(&state, cx), vec![a.clone()]);
+        state.read_with(cx, |state, _| {
+            assert!(!state.prefs.open.contains(&b));
+            assert!(state.is_apart(&b), "apart window stays alive when pinned");
+            assert_eq!(
+                state.kept_api(&b).map(|api| api.entity_id()),
+                Some(editor_b.entity_id())
+            );
+        });
+        state.update(cx, |state, cx| state.join(&b, cx));
+
+        // Selecting or opening a pinned API does not put it back into `tabs()`.
+        state.update(cx, |state, cx| state.select(&a, cx));
+        state.update(cx, |state, cx| state.open_pin(&b, cx));
+        assert_eq!(tab_ids(&state, cx), vec![a.clone()]);
+        state.update(cx, |state, cx| state.select(&b, cx));
+        assert_eq!(tab_ids(&state, cx), vec![a.clone()]);
+
+        // Unpinning the currently open API puts it back into `tabs()`.
+        state.update(cx, |state, cx| state.set_pinned(&b, false, cx));
+        cx.run_until_parked();
+        assert_eq!(tab_ids(&state, cx), vec![a.clone(), b.clone()]);
+
+        // Saved `prefs.open` entries that are pinned are cleaned up on load.
+        state.update(cx, |state, cx| state.set_pinned(&a, true, cx));
+        cx.run_until_parked();
+        storage
+            .prefs()
+            .set_workspace(
+                collection.id.clone(),
+                WorkspacePrefs {
+                    open: vec![a.clone(), b.clone()],
+                    selected: Some(b.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("prefs");
+        let reopened = open(&storage, collection, cx);
+        assert_eq!(tab_ids(&reopened, cx), vec![b.clone()]);
+
+        // Parting a pinned API that has never been opened in this session
+        // creates its kept editor without disturbing the main window's open API.
+        reopened.read_with(cx, |state, _| {
+            assert!(state.kept_api(&a).is_none());
+            assert_eq!(state.opened(), Some(&b));
+        });
+        reopened.update(cx, |state, cx| state.part(&a, cx));
+        reopened.read_with(cx, |state, _| {
+            assert!(state.is_apart(&a));
+            assert!(state.kept_api(&a).is_some());
+            assert_eq!(state.opened(), Some(&b), "main window keeps its open API");
+        });
+        reopened.update(cx, |state, cx| state.join(&a, cx));
+
+        // When no tree row is selected and a pin is open, unpinning keeps it open as a tab.
+        reopened.update(cx, |state, cx| {
+            state.close_all_tabs(cx);
+            state.open_pin(&a, cx);
+            state.set_pinned(&a, false, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(tab_ids(&reopened, cx), vec![a.clone()]);
+        reopened.read_with(cx, |state, _| assert_eq!(state.opened(), Some(&a)));
     }
 
     /// F1: each API opened is a tab beside the one before; a tab shown

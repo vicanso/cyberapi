@@ -10,7 +10,7 @@ use super::{KEY_CONTEXT, method_color, method_label, pin_action};
 use crate::states::WorkspaceState;
 use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -65,7 +65,8 @@ impl Render for PinsBar {
         let theme = cx.theme();
         let tags = pinned.into_iter().enumerate().map(|(index, api)| {
             let active = selected.as_ref() == Some(&api.id);
-            let (select_id, unpin_id) = (api.id.clone(), api.id.clone());
+            let (select_id, unpin_id, menu_id) = (api.id.clone(), api.id.clone(), api.id.clone());
+            let menu_state = self.state.downgrade();
             let group = SharedString::from(format!("pin-{index}"));
             // The whole name, and the key that selects it.
             let action = pin_action(index).filter(|_| shortcuts);
@@ -142,6 +143,26 @@ impl Render for PinsBar {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| state.open_pin(&select_id, cx));
                 }))
+                .context_menu(move |menu, _, _| {
+                    // F7: on the desktop, in a window of its own.
+                    let menu = if crate::this_build::opens_windows() {
+                        let (apart, apart_id) = (menu_state.clone(), menu_id.clone());
+                        menu.item(
+                            PopupMenuItem::new(t!("apart.open").to_string()).on_click(move |_, _, cx| {
+                                let _ = apart.update(cx, |state, cx| state.part(&apart_id, cx));
+                            }),
+                        )
+                        .separator()
+                    } else {
+                        menu
+                    };
+                    let (unpin, unpin_id) = (menu_state.clone(), menu_id.clone());
+                    menu.item(
+                        PopupMenuItem::new(t!("workspace.unpin").to_string()).on_click(move |_, _, cx| {
+                            let _ = unpin.update(cx, |state, cx| state.set_pinned(&unpin_id, false, cx));
+                        }),
+                    )
+                })
         });
         let row = h_flex()
             .id("pins")
