@@ -1,4 +1,5 @@
-# Nightly, and only in this directory.
+# Nightly (pinned, so a regression in a fresh upstream nightly does not break
+# CI or Docker builds), and only in this directory.
 #
 # GPUI's browser backend (`gpui-pre-web`) reaches `wasm_thread` and its
 # `#![feature(...)]`, as upstream's own web crates do. The rest of the repo
@@ -7,6 +8,6 @@
 #
 #   cd cyberapi-web && cargo build --target wasm32-unknown-unknown
 [toolchain]
-channel = "nightly"
+channel = "nightly-2026-10-07"
 components = ["rustfmt", "clippy"]
 targets = ["wasm32-unknown-unknown"]
