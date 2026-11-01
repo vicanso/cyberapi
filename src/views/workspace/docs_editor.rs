@@ -16,6 +16,7 @@ use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::text::TextView;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -311,10 +312,11 @@ impl DocsEditor {
         cx: &App,
     ) -> AnyElement {
         let theme = cx.theme();
-        let (border, fg, muted, mono) = (
+        let (border, fg, muted, warning, mono) = (
             theme.border,
             theme.foreground,
             theme.muted_foreground,
+            theme.warning,
             theme.mono_font_family.clone(),
         );
         let own = param.description.trim();
@@ -347,14 +349,50 @@ impl DocsEditor {
             )
             .child(
                 div()
-                    .w(px(110.))
+                    .w(px(72.))
                     .flex_none()
                     .truncate()
                     .text_xs()
-                    .font_family(mono)
+                    .font_family(mono.clone())
                     .text_color(muted)
                     .child(place),
             )
+            .when(matches!(place, "path" | "query" | "header"), |row| {
+                let fact = |slot: u8, text: String, hint: String, color: gpui_kit::Hsla| {
+                    div()
+                        .id(("docs-fact", index * 4 + usize::from(slot)))
+                        .w(px(0.))
+                        .flex_1()
+                        .max_w(px(160.))
+                        .min_w_0()
+                        .overflow_hidden()
+                        .truncate()
+                        .text_xs()
+                        .font_family(mono.clone())
+                        .text_color(color)
+                        .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+                        .child(text)
+                };
+                let mut row = row;
+                if !param.schema_type.is_empty() {
+                    row = row.child(fact(0, param.schema_type.clone(), t!("docs.type").to_string(), muted));
+                }
+                if let Some(required) = param.required {
+                    let (text, color) = if required {
+                        (t!("docs.required").to_string(), warning)
+                    } else {
+                        (t!("docs.optional").to_string(), muted)
+                    };
+                    row = row.child(fact(1, text, t!("docs.required").to_string(), color));
+                }
+                if !param.format.is_empty() {
+                    row = row.child(fact(2, param.format.clone(), t!("docs.format").to_string(), muted));
+                }
+                if !param.schema_enum.is_empty() {
+                    row = row.child(fact(3, param.enum_text(), t!("docs.enum").to_string(), muted));
+                }
+                row
+            })
             .child(
                 h_flex()
                     .flex_1()
@@ -484,9 +522,8 @@ impl DocsEditor {
                 .cloned()
                 .unwrap_or_else(|| KvParam {
                     key: name.clone(),
-                    value: String::new(),
                     enabled: true,
-                    description: String::new(),
+                    ..Default::default()
                 });
             let fallback = matched.and_then(|m| find_source_desc(&m.variables, name, false));
             rows.push(Self::render_flat_param(flat_idx, "path", &kv, fallback, false, cx));

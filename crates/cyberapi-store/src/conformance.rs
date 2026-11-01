@@ -488,6 +488,7 @@ async fn requests_are_saved(storage: &Storage) {
             value: "zh".into(),
             enabled: true,
             description: "UI language".into(),
+            ..Default::default()
         }],
         headers: vec![KvParam {
             key: "X-Trace".into(),
@@ -530,6 +531,7 @@ async fn requests_are_saved(storage: &Storage) {
             value: "acme".into(),
             enabled: false,
             description: "Tenant code".into(),
+            ..Default::default()
         }],
         // F11: its request body's JSON Schema.
         request_schema: Some(
@@ -582,6 +584,7 @@ async fn settings_are_kept(storage: &Storage) {
             value: "users".into(),
             enabled: true,
             description: "Owning team".into(),
+            ..Default::default()
         }],
         // F3: what it is for.
         description: "The team's own.".into(),
@@ -2517,6 +2520,7 @@ pub async fn copies(storage: &Storage, copies: &dyn crate::ServerCopyStore) {
         value: "users".into(),
         enabled: true,
         description: "Owning team".into(),
+        ..Default::default()
     }];
     config.settings.auth = Auth::Bearer { token: "t".into() };
     config.environments.push(cyberapi_core::model::Environment {

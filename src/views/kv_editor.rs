@@ -56,17 +56,57 @@ pub struct KvOptions {
 
 struct Row {
     enabled: bool,
+    /// Type, required, format and enum. The row editors do not show them,
+    /// and writing a value must not drop them.
+    schema_type: String,
+    required: Option<bool>,
+    format: String,
+    schema_enum: Vec<String>,
     key: Entity<InputState>,
     value: Entity<InputState>,
     description: Entity<InputState>,
     _subscriptions: [Subscription; 3],
 }
 
+/// Facts the text editor cannot spell, kept by key the way descriptions are.
+struct KeptSchema {
+    schema_type: String,
+    required: Option<bool>,
+    format: String,
+    schema_enum: Vec<String>,
+}
+
+impl KeptSchema {
+    fn of(kv: &KvParam) -> Self {
+        Self {
+            schema_type: kv.schema_type.clone(),
+            required: kv.required,
+            format: kv.format.clone(),
+            schema_enum: kv.schema_enum.clone(),
+        }
+    }
+
+    fn apply(&self, kv: &mut KvParam) {
+        kv.schema_type = self.schema_type.clone();
+        kv.required = self.required;
+        kv.format = self.format.clone();
+        kv.schema_enum = self.schema_enum.clone();
+    }
+}
+
+fn kept_schemas(list: &[KvParam]) -> HashMap<String, KeptSchema> {
+    list.iter()
+        .filter(|kv| !kv.key.is_empty() && kv.schema_recorded())
+        .map(|kv| (kv.key.clone(), KeptSchema::of(kv)))
+        .collect()
+}
+
 /// The list as text, while it is edited so; parameter descriptions stay with
-/// their keys across the round-trip (F10).
+/// their keys across the round-trip (F10), and so does a recorded schema.
 struct Bulk {
     text: Entity<EditorState>,
     descriptions: HashMap<String, String>,
+    schemas: HashMap<String, KeptSchema>,
     _events: Subscription,
     _hints: Option<[Subscription; 2]>,
 }
@@ -126,6 +166,7 @@ impl KvEditor {
                 .filter(|kv| !kv.key.is_empty() && !kv.description.is_empty())
                 .map(|kv| (kv.key.clone(), kv.description.clone()))
                 .collect();
+            bulk.schemas = kept_schemas(list);
             let text = kv_text(list);
             bulk.text.update(cx, |editor, cx| editor.set_value(text, window, cx));
         }
@@ -200,6 +241,10 @@ impl KvEditor {
         let subscriptions = [watch_key, watch_value, watch_description];
         self.rows.push(Row {
             enabled: kv.enabled,
+            schema_type: kv.schema_type.clone(),
+            required: kv.required,
+            format: kv.format.clone(),
+            schema_enum: kv.schema_enum.clone(),
             key,
             value,
             description,
@@ -216,6 +261,9 @@ impl KvEditor {
                     if let Some(description) = bulk.descriptions.get(&kv.key) {
                         kv.description = description.clone();
                     }
+                    if let Some(schema) = bulk.schemas.get(&kv.key) {
+                        schema.apply(&mut kv);
+                    }
                     kv
                 })
                 .collect();
@@ -227,6 +275,10 @@ impl KvEditor {
                 value: row.value.read(cx).value().to_string(),
                 enabled: row.enabled,
                 description: row.description.read(cx).value().to_string(),
+                schema_type: row.schema_type.clone(),
+                required: row.required,
+                format: row.format.clone(),
+                schema_enum: row.schema_enum.clone(),
             })
             .filter(|kv| !kv.key.is_empty() || !kv.value.is_empty())
             .collect()
@@ -420,6 +472,7 @@ impl KvEditor {
             .filter(|kv| !kv.key.is_empty() && !kv.description.is_empty())
             .map(|kv| (kv.key.clone(), kv.description.clone()))
             .collect();
+        let schemas = kept_schemas(&current);
         let text = kv_text(&current);
         let hints = self.hints.clone();
         let example = match self.options.example {
@@ -448,6 +501,7 @@ impl KvEditor {
         self.bulk = Some(Bulk {
             text,
             descriptions,
+            schemas,
             _events: events,
             _hints: follow,
         });

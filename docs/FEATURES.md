@@ -33,6 +33,7 @@ A version in italics is in nightly builds until that release.
 - Query, headers and a body: JSON, form, multipart, XML or plain text. A query typed into the address moves to the Query table. Any key-value list can be edited in bulk as text.
 - Path parameters appear above Query when the address has `:param` or `{param}`. They are filled in as the request goes out and as code is generated, and they travel with OpenAPI `in: path` parameters and Postman URL variables.
 - Each row of path parameters, query, headers, form bodies and folder variables can carry a description (*0.4.1*). Bulk edit keeps it. OpenAPI, Postman and Insomnia bring it in. Postman, OpenAPI and MCP take it out. What a later import or a source sync does with an empty description is in [Import](./IMPORT.md) and [Sync from a source](./SOURCE.md).
+- OpenAPI and Swagger keep the type, required flag, format and enum of each path, query and header parameter (*0.4.1*). The Docs tab and the online page show them, and they cannot be edited. An empty cell was never recorded. What a later import or a source sync does with the four is in [Import](./IMPORT.md) and [Sync from a source](./SOURCE.md).
 - Auth on the API, or inherited from its folder or the project: Basic, a bearer token, an API key in a header or the query, Digest, or OAuth 2.0 (client credentials or password). Values can be template functions. An audience and a resource go along when the server asks. The token is kept as cookies are — yours, never in the project, its sync or a backup — and is asked for again when it expires or the API answers 401, the refresh token first. The client signs in with a Basic header or in the body.
 - On the desktop, OAuth 2.0 can also be the authorization code with PKCE (*0.3.1*). **Authorize** opens the system browser and listens on `127.0.0.1`, on a random port unless you set one. The web version can save that setup and says the browser step is desktop-only. A run, the command line and an assistant do not open a browser; they say to authorize in the desktop app first.
 - A folder's headers go out with every API in it.
@@ -95,7 +96,7 @@ An event stream (`text/event-stream`) shows as it arrives: time, type, id and da
 
 ## Docs, checks and runs
 
-An API's Docs tab says what it is for, lists its fields, and keeps example responses. Assertions check the answer as you edit them. **Run…** sends a folder or the project in order, and `cyberapi-cli run` does the same in a terminal or in CI. The desktop app can also load-test one API.
+An API's Docs tab says what it is for, lists its fields — path, query and header parameters include type, required, format and enum (*0.4.1*) — and keeps example responses. Assertions check the answer as you edit them. **Run…** sends a folder or the project in order, and `cyberapi-cli run` does the same in a terminal or in CI. The desktop app can also load-test one API.
 
 [Checks, docs and runs](./CHECKS.md) — fields and schemas, assertions, examples, runs, the command line, load tests.
 

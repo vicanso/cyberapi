@@ -43,6 +43,7 @@ Importing again offers **Update those** (the default) or **Add only new ones**.
 An update follows the import's address, parameters, path parameters and body fields. New ones come in. Ones the import dropped go. What you already set stays:
 
 - A parameter's value, and whether it is switched on.
+- The type, required flag, format and enum of a path, query or header parameter. They follow the import, and an empty one clears yours (*0.4.1*).
 - A description the import leaves empty, on a parameter or on the API itself. A description the import does write replaces yours.
 - The values inside a JSON body, where the field is still the same kind of value. A `{{template}}` may stand in for any value. An array you wrote stays whole. A body that is not plain JSON — comments, or a template where a value would be — stays as you wrote it (*0.4.1*). A non-JSON body of the same type stays. An empty body, or a body of another content type, is the import's.
 - Path-parameter values. Your other variables stay, including ones the import does not list.

@@ -287,13 +287,13 @@ mod tests {
             key: "env".into(),
             value: "{{OLD_HOST}}".into(),
             enabled: true,
-            description: String::new(),
+            ..Default::default()
         }];
         me.request.headers = vec![KvParam {
             key: "X-Origin".into(),
             value: "{{OLD_HOST}}".into(),
             enabled: true,
-            description: String::new(),
+            ..Default::default()
         }];
         me.request.content_type = ContentType::Json;
         me.request.body = r#"{"callback": "{{OLD_HOST}}/hook"}"#.into();

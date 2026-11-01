@@ -1039,6 +1039,20 @@ fn card_menu(menu: PopupMenu, actions: &CardActions) -> PopupMenu {
             );
         }
     }
+    if crate::this_build::card_opens_docs() {
+        let id = collection.id.clone();
+        menu = menu.item(
+            PopupMenuItem::new(t!("docs.online_open").to_string())
+                .icon(Icons::BookOpen)
+                .on_click(move |_, window, cx| {
+                    let server = cx.try_global::<AppStore>().and_then(|store| store.server_address(cx));
+                    let url = crate::this_build::bridge_endpoint(server.as_deref(), &format!("v1/docs/{id}"));
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(url.clone()));
+                    window.push_notification(Notification::info(t!("docs.online_copied").to_string()), cx);
+                    cx.open_url(&url);
+                }),
+        );
+    }
     let (grouped, group_view) = (collection.clone(), view.clone());
     menu = menu.item(
         PopupMenuItem::new(t!("dashboard.group").to_string())

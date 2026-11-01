@@ -570,56 +570,110 @@ fn masked_auth_signed(auth: &crate::auth::Auth, query: bool) -> Option<crate::au
     }
 }
 
+struct DocParam {
+    name: String,
+    place: &'static str,
+    value: String,
+    description: String,
+    schema_type: String,
+    required: Option<bool>,
+    format: String,
+    enums: String,
+}
+
+impl DocParam {
+    fn plain(name: String, place: &'static str, value: String, description: String) -> Self {
+        Self {
+            name,
+            place,
+            value,
+            description,
+            schema_type: String::new(),
+            required: None,
+            format: String::new(),
+            enums: String::new(),
+        }
+    }
+
+    /// Path, query and header rows show the four facts. Form and file rows
+    /// do not, even when a row happens to carry them.
+    fn from_kv(name: String, place: &'static str, value: String, kv: &crate::model::KvParam, facts: bool) -> Self {
+        Self {
+            name,
+            place,
+            value,
+            description: kv.description.clone(),
+            schema_type: if facts { kv.schema_type.clone() } else { String::new() },
+            required: if facts { kv.required } else { None },
+            format: if facts { kv.format.clone() } else { String::new() },
+            enums: if facts { kv.enum_text() } else { String::new() },
+        }
+    }
+}
+
+fn required_cell(required: Option<bool>) -> &'static str {
+    match required {
+        Some(true) => "required",
+        Some(false) => "optional",
+        None => "",
+    }
+}
+
 fn render_params_table(data: &TreeData, api: &ApiSetting, out: &mut String) {
     let req = &api.request;
     let inh = inherited(data, &api.id);
     let auth = inh.auth(&req.auth);
     let auth_signed = masked_auth_signed(auth, req.method != HttpMethod::Grpc);
-    let mut rows: Vec<(String, &'static str, String, String)> = Vec::new();
+    let mut rows: Vec<DocParam> = Vec::new();
 
     for name in path_param_names(&req.uri) {
         let found = req.variables.iter().find(|kv| kv.key.trim() == name);
         let value = found.map(|kv| masked(&name, &kv.value)).unwrap_or_default();
-        let desc = found.map(|kv| kv.description.clone()).unwrap_or_default();
-        rows.push((name, "path", value, desc));
+        rows.push(match found {
+            Some(kv) => DocParam::from_kv(name, "path", value, kv, true),
+            None => DocParam::plain(name, "path", value, String::new()),
+        });
     }
     for kv in req.query.iter().filter(|kv| kv.enabled && !kv.key.trim().is_empty()) {
-        rows.push((
+        rows.push(DocParam::from_kv(
             kv.key.trim().to_string(),
             "query",
             masked(&kv.key, &kv.value),
-            kv.description.clone(),
+            kv,
+            true,
         ));
     }
     if let Some(crate::auth::Signed::Query { name, value }) = &auth_signed
         && !req.query.iter().any(|kv| kv.enabled && kv.key.trim() == name)
     {
-        rows.push((name.clone(), "query", value.clone(), String::new()));
+        rows.push(DocParam::plain(name.clone(), "query", value.clone(), String::new()));
     }
     for header in &inh.headers {
         if header.enabled && !header.key.trim().is_empty() {
-            rows.push((
+            rows.push(DocParam::from_kv(
                 header.key.trim().to_string(),
                 "header",
                 masked(&header.key, &header.value),
-                header.description.clone(),
+                header,
+                true,
             ));
         }
     }
     for kv in req.headers.iter().filter(|kv| kv.enabled && !kv.key.trim().is_empty()) {
-        rows.push((
+        rows.push(DocParam::from_kv(
             kv.key.trim().to_string(),
             "header",
             masked(&kv.key, &kv.value),
-            kv.description.clone(),
+            kv,
+            true,
         ));
     }
     if let Some(crate::auth::Signed::Header { name, value }) = &auth_signed
         && !rows
             .iter()
-            .any(|(k, place, _, _)| *place == "header" && k.eq_ignore_ascii_case(name))
+            .any(|row| row.place == "header" && row.name.eq_ignore_ascii_case(name))
     {
-        rows.push((name.clone(), "header", value.clone(), String::new()));
+        rows.push(DocParam::plain(name.clone(), "header", value.clone(), String::new()));
     }
     if req.method.has_body() && matches!(req.content_type, ContentType::Form | ContentType::Multipart) {
         for kv in form_fields(&req.body)
@@ -634,11 +688,12 @@ fn render_params_table(data: &TreeData, api: &ApiSetting, out: &mut String) {
             let shown = crate::send::page_file(&kv.value)
                 .map(|(_, name)| name)
                 .unwrap_or(kv.value.as_str());
-            rows.push((
+            rows.push(DocParam::from_kv(
                 kv.key.trim().to_string(),
                 place,
                 masked(&kv.key, shown),
-                kv.description.clone(),
+                &kv,
+                false,
             ));
         }
     }
@@ -649,16 +704,20 @@ fn render_params_table(data: &TreeData, api: &ApiSetting, out: &mut String) {
     let _ = writeln!(out, "<div class=\"section-title\">Parameters</div>");
     let _ = writeln!(
         out,
-        "<table><thead><tr><th>Name</th><th>In</th><th>Value</th><th>Description</th></tr></thead><tbody>"
+        "<table><thead><tr><th>Name</th><th>In</th><th>Type</th><th>Required</th><th>Format</th><th>Enum</th><th>Value</th><th>Description</th></tr></thead><tbody>"
     );
-    for (name, place, val, desc) in rows {
+    for row in rows {
         let _ = writeln!(
             out,
-            "<tr><td class=\"mono\">{}</td><td class=\"mono\">{}</td><td class=\"mono\">{}</td><td>{}</td></tr>",
-            escape(&name),
-            place,
-            escape(&val),
-            escape(desc.trim())
+            "<tr><td class=\"mono\">{}</td><td class=\"mono\">{}</td><td class=\"mono\">{}</td><td>{}</td><td class=\"mono\">{}</td><td>{}</td><td class=\"mono\">{}</td><td>{}</td></tr>",
+            escape(&row.name),
+            row.place,
+            escape(&row.schema_type),
+            required_cell(row.required),
+            escape(&row.format),
+            escape(&row.enums),
+            escape(&row.value),
+            escape(row.description.trim())
         );
     }
     let _ = writeln!(out, "</tbody></table>");
@@ -999,12 +1058,14 @@ mod tests {
                         value: "ord_123".into(),
                         description: "The order identifier".into(),
                         enabled: true,
+                        ..Default::default()
                     }],
                     headers: vec![KvParam {
                         key: "Authorization".into(),
                         value: "Bearer super-secret-jwt".into(),
                         description: "Auth header".into(),
                         enabled: true,
+                        ..Default::default()
                     }],
                     assertions: vec![Assertion {
                         subject: Subject::Schema,
@@ -1076,12 +1137,14 @@ mod tests {
                 value: "alice".into(),
                 enabled: true,
                 description: "User handle".into(),
+                ..Default::default()
             },
             KvParam {
                 key: "password".into(),
                 value: "s3cr3t!".into(),
                 enabled: true,
                 description: "Secret password".into(),
+                ..Default::default()
             },
         ])
         .expect("form json");
@@ -1113,7 +1176,7 @@ mod tests {
                             key: "redirect uri".into(),
                             value: "a&b=c".into(),
                             enabled: true,
-                            description: String::new(),
+                            ..Default::default()
                         }],
                         body: form_body,
                         ..Default::default()
@@ -1164,5 +1227,76 @@ mod tests {
         assert!(!html.contains("gql-secret-token"));
         assert!(!html.contains("proj-bearer-secret"));
         assert!(html.contains("Bearer ***"));
+    }
+
+    #[test]
+    fn parameter_tables_show_type_required_format_and_enum() {
+        let collection = Collection {
+            id: "01JPROJECT".into(),
+            name: "Shop".into(),
+            ..Default::default()
+        };
+        let data = TreeData {
+            folders: vec![],
+            apis: vec![ApiSetting {
+                id: "01JAPI".into(),
+                name: "List".into(),
+                request: HttpRequest {
+                    method: HttpMethod::Post,
+                    uri: "/pets/{id}".into(),
+                    variables: vec![
+                        KvParam {
+                            key: "id".into(),
+                            enabled: true,
+                            ..Default::default()
+                        }
+                        .with_param_schema("string", Some(true), "uuid", Vec::<String>::new()),
+                    ],
+                    query: vec![
+                        KvParam {
+                            key: "tags".into(),
+                            value: "a".into(),
+                            enabled: true,
+                            ..Default::default()
+                        }
+                        .with_param_schema(
+                            "array<string>",
+                            Some(false),
+                            "date-time",
+                            ["open", "shut"],
+                        ),
+                        KvParam {
+                            key: "note".into(),
+                            value: "x".into(),
+                            enabled: true,
+                            ..Default::default()
+                        },
+                    ],
+                    content_type: ContentType::Form,
+                    body: serde_json::to_string(&[KvParam {
+                        key: "file".into(),
+                        value: "a".into(),
+                        enabled: true,
+                        ..Default::default()
+                    }
+                    .with_param_schema("string", Some(true), "binary", ["no"])])
+                    .expect("form"),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            top_order: vec!["01JAPI".into()],
+            ..Default::default()
+        };
+        let html = render(&collection, &data, &[], &[]);
+        assert!(html.contains("<th>Type</th><th>Required</th><th>Format</th><th>Enum</th>"));
+        assert!(html.contains("array&lt;string&gt;"));
+        assert!(html.contains(">optional<"));
+        assert!(html.contains("date-time"));
+        assert!(html.contains("open | shut"));
+        assert!(html.contains(">required<"));
+        assert!(html.contains("uuid"));
+        assert!(html.contains(">file<"));
+        assert!(!html.contains("binary"), "a form row does not show parameter schema");
     }
 }

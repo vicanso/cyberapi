@@ -54,7 +54,9 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 /// 21: a request body's JSON Schema (F11, `HttpRequest::request_schema`).
 /// 22: a snapshot assertion (A11, `assertions::Subject::Snapshot`): the
 /// answer matches one of the API's examples, ignoring listed JSONPaths.
-pub const MODEL: u32 = 22;
+/// 23: the type, required flag, format and enum of a query, header or path
+/// parameter (`KvParam::schema_type`, `required`, `format`, `schema_enum`).
+pub const MODEL: u32 = 23;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

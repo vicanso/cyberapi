@@ -8,12 +8,13 @@ How an API says what it returns, how a response is checked, and how a folder or 
 
 - The Docs tab is Markdown, with a switch between editing and preview.
 - It lists input and output fields: path parameters, query, headers and form or multipart rows, plus nested fields taken from the request JSON Schema and from a response JSON Schema assertion. Each field shows its type, whether it is required, and its description.
+- Path, query and header rows also show the type, required flag, format and enum recorded from OpenAPI or Swagger (*0.4.1*). A row that never recorded them leaves those blank, and blank is not optional. Form and file rows do not show them. The four cannot be edited.
 - **Request schema…** and **Response schema…** in that tab write a schema, or infer one from the current JSON body or response.
 - The JSON body toolbar has **Sample**, which fills a body from the request schema. When the body does not conform, the toolbar and the moment before send say so. Sending is not blocked.
 - **Keep as example** in the history menu saves the response on screen. Open it in Docs to read the body.
 - A folder's description is in the folder's settings.
 - Descriptions, schemas and examples go with the project: teammates see them, an assistant reads them through MCP, and Postman and OpenAPI exports carry them (the description, the request and response schemas, saved responses and response examples). They come in from Postman (saved responses included), Insomnia and OpenAPI.
-- A server project also has a read-only page at `GET /v1/docs/<project-id>` (**Online documentation** in the project menu). Open it with a session or `?token=cat_…`. It renders the folder tree, descriptions, field tables, examples and code snippets in several languages, with secrets masked.
+- A server project also has a read-only page at `GET /v1/docs/<project-id>` (**Online documentation** in the project menu; on the web, also in the project card's menu, including for a viewer. Desktop project cards do not have it). Open it with a session or `?token=cat_…`. It renders the folder tree, descriptions, field tables, examples and code snippets in several languages, with secrets masked. The parameter table adds Type, Required, Format and Enum (*0.4.1*). Required is `required` or `optional` when it was recorded, and blank when it was not.
 
 ## Assertions
 

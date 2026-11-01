@@ -208,6 +208,90 @@ fn example(root: &Value, schema: &Value, depth: usize) -> Value {
     }
 }
 
+/// Enum values as stored: a string as its text, anything else as JSON text.
+fn enum_list(schema: &Value) -> Vec<String> {
+    schema
+        .get("enum")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| match value {
+                    Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// One line of type, plus format and enum. An array names its item's type
+/// once (`array<string>`, or `array<array>` and no further). A combiner is
+/// the type only when the schema has no single `type`.
+fn schema_facts(root: &Value, schema: &Value) -> (String, String, Vec<String>) {
+    let schema = resolve(root, schema);
+    let declared = text(schema, "type");
+    let mut format = text(schema, "format").to_string();
+    let mut enums = enum_list(schema);
+    if declared == "array" {
+        let items = schema.get("items").map(|items| resolve(root, items));
+        let item_type = items.map(|items| text(items, "type")).unwrap_or("");
+        let nested = if item_type.is_empty() {
+            "array".to_string()
+        } else if item_type == "array" {
+            "array<array>".to_string()
+        } else {
+            format!("array<{item_type}>")
+        };
+        if format.is_empty()
+            && let Some(items) = items
+        {
+            format = text(items, "format").to_string();
+        }
+        if enums.is_empty()
+            && let Some(items) = items
+        {
+            enums = enum_list(items);
+        }
+        return (nested, format, enums);
+    }
+    if !declared.is_empty() {
+        return (declared.to_string(), format, enums);
+    }
+    if let Some(name) = ["oneOf", "anyOf", "allOf"]
+        .into_iter()
+        .find(|name| schema.get(*name).is_some())
+    {
+        return (name.to_string(), format, enums);
+    }
+    (String::new(), format, enums)
+}
+
+/// Type, required, format and enum of a path, query or header parameter.
+/// A missing `required` is required for a path parameter and not for the
+/// others. What the document writes is kept, including `false`.
+fn param_facts(root: &Value, parameter: &Value) -> (String, Option<bool>, String, Vec<String>) {
+    let schema = parameter
+        .get("schema")
+        .map(|schema| resolve(root, schema))
+        .unwrap_or(parameter);
+    let (schema_type, format, schema_enum) = schema_facts(root, schema);
+    let required = parameter
+        .get("required")
+        .and_then(Value::as_bool)
+        .or(match text(parameter, "in") {
+            "path" => Some(true),
+            "query" | "header" => Some(false),
+            _ => None,
+        });
+    (schema_type, required, format, schema_enum)
+}
+
+fn with_param_facts(entry: KvParam, root: &Value, parameter: &Value) -> KvParam {
+    let (schema_type, required, format, schema_enum) = param_facts(root, parameter);
+    entry.with_param_schema(schema_type, required, format, schema_enum)
+}
+
 /// A parameter's value for the query or header list.
 fn parameter_value(root: &Value, parameter: &Value) -> String {
     let value = parameter
@@ -383,19 +467,27 @@ fn operation(
         let desc = text(parameter, "description").trim();
         match text(parameter, "in") {
             "path" => {
-                let entry = kv(name, &parameter_value(json, parameter), true).with_description(desc);
+                let entry = with_param_facts(
+                    kv(name, &parameter_value(json, parameter), true).with_description(desc),
+                    json,
+                    parameter,
+                );
                 if let Some(existing) = request.variables.iter_mut().find(|v| v.key.trim() == name) {
                     *existing = entry;
                 } else {
                     request.variables.push(entry);
                 }
             }
-            "query" => request
-                .query
-                .push(kv(name, &parameter_value(json, parameter), true).with_description(desc)),
-            "header" => request
-                .headers
-                .push(kv(name, &parameter_value(json, parameter), true).with_description(desc)),
+            "query" => request.query.push(with_param_facts(
+                kv(name, &parameter_value(json, parameter), true).with_description(desc),
+                json,
+                parameter,
+            )),
+            "header" => request.headers.push(with_param_facts(
+                kv(name, &parameter_value(json, parameter), true).with_description(desc),
+                json,
+                parameter,
+            )),
             "formData" => {
                 let value = if text(parameter, "type") == "file" {
                     "file://".to_string()
@@ -616,14 +708,94 @@ mod tests {
         assert_eq!(request.content_type, ContentType::Json);
         let body: Value = serde_json::from_str(&request.body).expect("JSON");
         assert_eq!(body, json!({"name": "rex", "tags": [{"id": 0}], "age": 0}));
-        assert_eq!(request.query, [kv("dry", "false", true)]);
+        assert_eq!(
+            request.query,
+            [kv("dry", "false", true).with_param_schema("boolean", Some(false), "", Vec::<String>::new())]
+        );
         let ImportItem::Api { name, request } = &bundle.items[1] else {
             panic!("the untagged one after");
         };
+        assert_eq!(name, "listPets");
         assert_eq!(
-            (name.as_str(), request.headers.clone()),
-            ("listPets", vec![kv("X-Key", "", true)])
+            request.headers,
+            [kv("X-Key", "", true).with_param_schema("string", Some(false), "", Vec::<String>::new())]
         );
+    }
+
+    #[test]
+    fn parameter_schema_is_one_line() {
+        let json: Value = serde_json::from_str(
+            r##"{
+            "openapi": "3.0.3",
+            "paths": {"/pets/{id}": {"get": {"parameters": [
+                {"name": "id", "in": "path", "schema": {"type": "string", "format": "uuid"}},
+                {"name": "draft", "in": "path", "required": false, "type": "string"},
+                {"name": "status", "in": "query", "required": true, "schema": {"type": "string", "enum": ["open", "shut"]}},
+                {"name": "tags", "in": "query", "schema": {"type": "array", "items": {"type": "string", "format": "date-time", "enum": ["a", "b"]}}},
+                {"name": "ids", "in": "query", "schema": {"type": "array", "format": "uuid", "items": {"type": "integer", "format": "int64", "enum": [1]}}},
+                {"name": "box", "in": "query", "schema": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}},
+                {"name": "pet", "in": "query", "schema": {"type": "object", "properties": {"name": {"type": "string"}}}},
+                {"name": "choice", "in": "header", "schema": {"oneOf": [{"type": "string"}, {"type": "integer"}]}},
+                {"name": "flag", "in": "query", "schema": {"type": "boolean", "enum": [true, false]}},
+                {"name": "kind", "in": "header", "schema": {"$ref": "#/components/schemas/Kind"}},
+                {"name": "note", "in": "query", "schema": {"type": "string", "format": "byte", "allOf": [{"type": "integer"}]}},
+                {"name": "session", "in": "cookie", "schema": {"type": "string"}},
+                {"name": "file", "in": "formData", "type": "file"}
+            ]}}},
+            "components": {"schemas": {"Kind": {"type": "string", "enum": ["cat", "dog"]}}}
+        }"##,
+        )
+        .expect("JSON");
+        let bundle = parse(&json);
+        let request = first_api(&bundle.items).clone();
+        let row = |key: &str| {
+            request
+                .query
+                .iter()
+                .chain(&request.headers)
+                .chain(&request.variables)
+                .find(|kv| kv.key == key)
+                .unwrap_or_else(|| panic!("{key}"))
+        };
+        let id = row("id");
+        assert_eq!(
+            (id.schema_type.as_str(), id.required, id.format.as_str(), id.enum_text()),
+            ("string", Some(true), "uuid", String::new())
+        );
+        assert_eq!(row("draft").required, Some(false), "an explicit false stays false");
+        let status = row("status");
+        assert_eq!(status.required, Some(true));
+        assert_eq!(status.enum_text(), "open | shut");
+        let tags = row("tags");
+        assert_eq!(
+            (
+                tags.schema_type.as_str(),
+                tags.required,
+                tags.format.as_str(),
+                tags.enum_text()
+            ),
+            ("array<string>", Some(false), "date-time", "a | b".to_string())
+        );
+        let ids = row("ids");
+        assert_eq!(
+            (ids.schema_type.as_str(), ids.format.as_str(), ids.enum_text()),
+            ("array<integer>", "uuid", "1".to_string())
+        );
+        assert_eq!(row("box").schema_type, "array<array>");
+        assert_eq!(row("pet").schema_type, "object");
+        assert!(row("pet").enum_text().is_empty());
+        assert_eq!(row("choice").schema_type, "oneOf");
+        assert_eq!(row("flag").enum_text(), "true | false");
+        assert_eq!(
+            (row("kind").schema_type.as_str(), row("kind").enum_text()),
+            ("string", "cat | dog".to_string())
+        );
+        let note = row("note");
+        assert_eq!((note.schema_type.as_str(), note.format.as_str()), ("string", "byte"));
+        assert!(request.query.iter().all(|kv| kv.key != "session"));
+        assert!(request.headers.iter().all(|kv| kv.key != "session"));
+        let form = crate::send::form_fields(&request.body);
+        assert!(form.iter().all(|kv| !kv.schema_recorded()), "form rows stay untyped");
     }
 
     #[test]

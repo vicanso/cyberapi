@@ -40,6 +40,7 @@ Follows the document:
 
 - The API's name, when the document's name is not empty.
 - Whether a parameter is on, its description (an empty one clears yours), and the spelling of its key. A parameter the document dropped goes.
+- The type, required flag, format and enum of a path, query or header parameter, including clearing them when the document leaves them empty (*0.4.1*).
 - The API's own description, including clearing it when the document's is empty.
 - How it signs in. A different kind replaces the auth you had. For the same kind, the API key's name and place, and the OAuth grant, client auth, redirect port, token URL, authorization URL, scope, audience and resource, come from the document.
 - Fields. A JSON object's keys follow the document. A value of a different kind is the document's. An array is paired by index: extra elements you had go, extra elements in the document come in. A body that is not JSON, JSON that cannot be read, or a body of another content type, is the document's.

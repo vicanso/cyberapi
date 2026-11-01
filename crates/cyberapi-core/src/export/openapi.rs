@@ -236,6 +236,7 @@ fn parameters(request: &HttpRequest, path: &[String]) -> Vec<Value> {
                 if !kv.description.trim().is_empty() {
                     param["description"] = json!(kv.description.trim());
                 }
+                write_recorded(&mut param, kv);
             }
             param
         })
@@ -257,10 +258,68 @@ fn parameters(request: &HttpRequest, path: &[String]) -> Vec<Value> {
             if !kv.description.trim().is_empty() {
                 param["description"] = json!(kv.description.trim());
             }
+            write_recorded(&mut param, kv);
             out.push(param);
         }
     }
     out
+}
+
+/// A recorded parameter's facts, on top of the schema guessed from its
+/// example. Nothing recorded leaves that guess alone.
+fn write_recorded(param: &mut Value, kv: &crate::model::KvParam) {
+    if !kv.schema_recorded() {
+        return;
+    }
+    if let Some(required) = kv.required {
+        param["required"] = json!(required);
+    }
+    if let Some(schema) = recorded_schema(kv) {
+        param["schema"] = schema;
+    }
+}
+
+/// The schema object for facts that name a type, format or enum.
+fn recorded_schema(kv: &crate::model::KvParam) -> Option<Value> {
+    if kv.schema_type.is_empty() && kv.format.is_empty() && kv.schema_enum.is_empty() {
+        return None;
+    }
+    let mut schema = Map::new();
+    match kv.schema_type.as_str() {
+        "oneOf" | "anyOf" | "allOf" => {
+            schema.insert(kv.schema_type.clone(), json!([{}]));
+        }
+        schema_type if schema_type.starts_with("array<") && schema_type.ends_with('>') => {
+            let item = &schema_type["array<".len()..schema_type.len() - 1];
+            schema.insert("type".into(), json!("array"));
+            if !item.is_empty() {
+                schema.insert("items".into(), json!({"type": item}));
+            }
+        }
+        schema_type if !schema_type.is_empty() => {
+            schema.insert("type".into(), json!(schema_type));
+        }
+        _ => {}
+    }
+    if !kv.format.is_empty() {
+        schema.insert("format".into(), json!(kv.format));
+    }
+    if !kv.schema_enum.is_empty() {
+        schema.insert(
+            "enum".into(),
+            Value::Array(kv.schema_enum.iter().map(|text| enum_value(text)).collect()),
+        );
+    }
+    Some(Value::Object(schema))
+}
+
+/// A stored enum value back as JSON: a number, bool or null when the text
+/// is that JSON, otherwise a string.
+fn enum_value(text: &str) -> Value {
+    match serde_json::from_str::<Value>(text) {
+        Ok(value @ (Value::Bool(_) | Value::Number(_) | Value::Null)) => value,
+        _ => Value::String(text.to_string()),
+    }
 }
 
 /// The JSON Schema of an example, as far as the example tells it.
@@ -625,6 +684,55 @@ mod tests {
             "another server on its path"
         );
         assert!(doc["paths"]["/users/{id}"]["get"]["responses"].get("200").is_some());
+    }
+
+    #[test]
+    fn recorded_parameter_schema_is_written_back() {
+        let data = TreeData {
+            apis: vec![api(
+                "a1",
+                "list",
+                HttpRequest {
+                    method: HttpMethod::Get,
+                    uri: "/pets/{{id}}".into(),
+                    query: vec![
+                        kv("status", "open").with_param_schema(
+                            "array<string>",
+                            Some(true),
+                            "date-time",
+                            ["open", "shut"],
+                        ),
+                        kv("page", "2"),
+                    ],
+                    headers: vec![kv("X-Choice", "").with_param_schema("oneOf", Some(false), "", Vec::<String>::new())],
+                    variables: vec![kv("id", "1").with_param_schema("", Some(false), "", Vec::<String>::new())],
+                    ..Default::default()
+                },
+            )],
+            top_order: vec![ItemId::new("a1")],
+            ..Default::default()
+        };
+        let doc: Value = serde_saphyr::from_str(&openapi(&data, None, "Shop", &[])).expect("YAML");
+        let parameters = doc["paths"]["/pets/{id}"]["get"]["parameters"]
+            .as_array()
+            .expect("parameters");
+        let named = |name: &str| {
+            parameters
+                .iter()
+                .find(|parameter| parameter["name"] == name)
+                .expect(name)
+        };
+        assert_eq!(named("id")["required"], json!(false));
+        assert_eq!(named("id")["schema"], json!({"type": "string"}));
+        assert_eq!(named("status")["required"], json!(true));
+        assert_eq!(
+            named("status")["schema"],
+            json!({"type": "array", "items": {"type": "string"}, "format": "date-time", "enum": ["open", "shut"]})
+        );
+        assert_eq!(named("page")["required"], json!(false));
+        assert_eq!(named("page")["schema"], json!({"type": "integer"}));
+        assert_eq!(named("X-Choice")["required"], json!(false));
+        assert_eq!(named("X-Choice")["schema"], json!({"oneOf": [{}]}));
     }
 
     #[test]

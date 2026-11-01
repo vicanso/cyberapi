@@ -488,4 +488,27 @@ mod tests {
         assert_eq!(request.variables[0].description, "Batch limit");
         assert_eq!(form_fields(&request.body)[0].description, "Attachment");
     }
+
+    #[test]
+    fn parameter_schema_is_not_written() {
+        let data = TreeData {
+            folders: Vec::new(),
+            apis: vec![api(
+                "a1",
+                "list",
+                HttpRequest {
+                    method: HttpMethod::Get,
+                    uri: "/pets".into(),
+                    query: vec![kv("status", "open", true).with_param_schema("string", Some(true), "uuid", ["open"])],
+                    ..Default::default()
+                },
+            )],
+            top_order: vec![ItemId::new("a1")],
+            settings: ProjectSettings::default(),
+        };
+        let text = postman(&data, None, "Shop", &[]);
+        assert!(text.contains("status"));
+        assert!(!text.contains("uuid"));
+        assert!(!text.contains("schema_type"));
+    }
 }

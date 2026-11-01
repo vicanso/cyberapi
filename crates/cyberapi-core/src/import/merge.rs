@@ -200,7 +200,8 @@ fn merged_variables(existing: &HttpRequest, imported: &HttpRequest) -> Vec<crate
                 Some(given) => crate::model::KvParam {
                     description: kept_description(&kv.description, &given.description),
                     ..kv.clone()
-                },
+                }
+                .with_schema_of(given),
                 None => kv.clone(),
             }
         })
@@ -1494,6 +1495,103 @@ mod tests {
         };
         assert_eq!(synced(&had_text, &text).body, "document");
         assert_eq!(synced(&merged, &imported), merged, "a second sync changes nothing");
+    }
+
+    #[test]
+    fn parameter_schema_follows_the_document_and_keeps_the_value() {
+        let row = |key: &str,
+                   value: &str,
+                   enabled: bool,
+                   desc: &str,
+                   schema_type: &str,
+                   required: Option<bool>,
+                   format: &str,
+                   schema_enum: &[&str]| {
+            KvParam {
+                key: key.into(),
+                value: value.into(),
+                enabled,
+                ..Default::default()
+            }
+            .with_description(desc)
+            .with_param_schema(schema_type, required, format, schema_enum.iter().copied())
+        };
+        let existing = HttpRequest {
+            uri: "/pets/{id}".into(),
+            query: vec![row("page", "7", false, "Mine", "string", Some(true), "uuid", &["a"])],
+            headers: vec![row(
+                "X-Trace",
+                "mine",
+                true,
+                "Mine",
+                "integer",
+                Some(true),
+                "int64",
+                &[],
+            )],
+            variables: vec![
+                row("id", "42", true, "Mine", "string", Some(false), "", &[]),
+                row("note", "keep", true, "mine", "string", Some(true), "uuid", &[]),
+            ],
+            ..Default::default()
+        };
+        let imported = HttpRequest {
+            uri: "/pets/{id}".into(),
+            query: vec![row("page", "1", true, "", "integer", Some(false), "int32", &["1", "2"])],
+            headers: vec![row("X-Trace", "", false, "Trace", "", None, "", &[])],
+            variables: vec![row("id", "", false, "", "integer", Some(true), "int64", &[])],
+            ..Default::default()
+        };
+
+        let manual = updated(&existing, &imported);
+        let page = &manual.query[0];
+        assert_eq!(page.value, "7");
+        assert!(!page.enabled, "a manual update keeps the switch");
+        assert_eq!(page.description, "Mine", "an empty import description stays");
+        assert_eq!(
+            (
+                page.schema_type.as_str(),
+                page.required,
+                page.format.as_str(),
+                page.enum_text()
+            ),
+            ("integer", Some(false), "int32", "1 | 2".into())
+        );
+        let header = &manual.headers[0];
+        assert_eq!(header.value, "mine");
+        assert!(header.enabled);
+        assert_eq!(header.description, "Trace");
+        assert!(!header.schema_recorded(), "an empty document clears the four");
+        let id = manual.variables.iter().find(|kv| kv.key == "id").expect("id");
+        assert_eq!(id.value, "42");
+        assert!(id.enabled);
+        assert_eq!(id.description, "Mine");
+        assert_eq!(
+            (id.schema_type.as_str(), id.required, id.format.as_str()),
+            ("integer", Some(true), "int64")
+        );
+        let note = manual.variables.iter().find(|kv| kv.key == "note").expect("note");
+        assert_eq!((note.value.as_str(), note.schema_type.as_str()), ("keep", "string"));
+
+        let followed = synced(&existing, &imported);
+        let page = &followed.query[0];
+        assert_eq!(page.value, "7");
+        assert!(page.enabled, "a source sync takes the document's switch");
+        assert!(page.description.is_empty());
+        assert_eq!(page.schema_type, "integer");
+        let header = &followed.headers[0];
+        assert_eq!(header.value, "mine");
+        assert!(!header.enabled);
+        assert_eq!(header.description, "Trace");
+        assert!(!header.schema_recorded());
+        let id = followed.variables.iter().find(|kv| kv.key == "id").expect("id");
+        assert_eq!(id.value, "42");
+        assert!(!id.enabled);
+        assert!(id.description.is_empty());
+        assert_eq!(id.schema_type, "integer");
+        assert!(followed.variables.iter().all(|kv| kv.key != "note"));
+        assert_eq!(updated(&manual, &imported), manual);
+        assert_eq!(synced(&followed, &imported), followed);
     }
 
     #[test]

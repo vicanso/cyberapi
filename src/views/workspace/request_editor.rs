@@ -94,11 +94,11 @@ pub struct RequestEditor {
     /// F12: URL `:param` and `{param}` path parameters, stored in
     /// `HttpRequest.variables`.
     path_params: Entity<KvEditor>,
-    /// F12 / Q-1: remembers `(value, description)` typed for path parameter
-    /// names while editing the URI so changing `:u` -> `:user_id` or
-    /// temporarily removing a placeholder does not leave ghost variables in
-    /// `HttpRequest.variables` or lose previously entered values.
-    path_drafts: HashMap<String, (String, String)>,
+    /// F12 / Q-1: remembers a path parameter's row while editing the URI so
+    /// changing `:u` -> `:user_id` or temporarily removing a placeholder
+    /// does not leave ghost variables in `HttpRequest.variables` or lose
+    /// the value, description or recorded schema.
+    path_drafts: HashMap<String, cyberapi_core::model::KvParam>,
     query: Entity<KvEditor>,
     headers: Entity<KvEditor>,
     auth: Entity<AuthEditor>,
@@ -309,11 +309,11 @@ impl RequestEditor {
             window,
             cx,
         );
-        let path_drafts: HashMap<String, (String, String)> = request
+        let path_drafts: HashMap<String, cyberapi_core::model::KvParam> = request
             .variables
             .iter()
             .filter(|kv| !kv.key.trim().is_empty())
-            .map(|kv| (kv.key.trim().to_string(), (kv.value.clone(), kv.description.clone())))
+            .map(|kv| (kv.key.trim().to_string(), kv.clone()))
             .collect();
         let path_list = cyberapi_core::model::sync_path_variables(&request.uri, &request.variables);
         let path_params = kv(
@@ -467,8 +467,7 @@ impl RequestEditor {
                 for row in list {
                     let key = row.key.trim();
                     if !key.is_empty() {
-                        this.path_drafts
-                            .insert(key.to_string(), (row.value.clone(), row.description.clone()));
+                        this.path_drafts.insert(key.to_string(), row.clone());
                     }
                 }
                 let uri = this.current_full_uri(cx);
@@ -1085,8 +1084,7 @@ impl RequestEditor {
         for kv in &request.variables {
             let key = kv.key.trim();
             if !key.is_empty() {
-                self.path_drafts
-                    .insert(key.to_string(), (kv.value.clone(), kv.description.clone()));
+                self.path_drafts.insert(key.to_string(), kv.clone());
             }
         }
         let path_list = self.current_path_rows(&request.uri, cx);
@@ -1112,8 +1110,7 @@ impl RequestEditor {
         for row in &path_rows {
             let key = row.key.trim();
             if !key.is_empty() {
-                self.path_drafts
-                    .insert(key.to_string(), (row.value.clone(), row.description.clone()));
+                self.path_drafts.insert(key.to_string(), row.clone());
             }
         }
         let (method, content_type, uri, variables) = {
@@ -1219,19 +1216,17 @@ impl RequestEditor {
                 combined.push(row.clone());
             }
         }
-        for (key, (value, description)) in &self.path_drafts {
+        for (key, draft) in &self.path_drafts {
             if !combined.iter().any(|existing| existing.key.trim() == key) {
                 let enabled = saved_vars
                     .iter()
                     .find(|existing| existing.key.trim() == key)
                     .map(|existing| existing.enabled)
                     .unwrap_or(true);
-                combined.push(cyberapi_core::model::KvParam {
-                    key: key.clone(),
-                    value: value.clone(),
-                    enabled,
-                    description: description.clone(),
-                });
+                let mut kv = draft.clone();
+                kv.key = key.clone();
+                kv.enabled = enabled;
+                combined.push(kv);
             }
         }
         for row in saved_vars {
@@ -1254,18 +1249,15 @@ impl RequestEditor {
         for row in &current_rows {
             let key = row.key.trim();
             if !key.is_empty() {
-                self.path_drafts
-                    .insert(key.to_string(), (row.value.clone(), row.description.clone()));
+                self.path_drafts.insert(key.to_string(), row.clone());
             }
         }
         let next_rows = {
             let saved_vars = &self.api.read(cx).request().variables;
             self.path_rows_from(&uri, &current_rows, saved_vars)
         };
-        let same_keys = current_rows.len() == next_rows.len()
-            && current_rows.iter().zip(&next_rows).all(|(a, b)| {
-                a.key == b.key && a.value == b.value && a.description == b.description && a.enabled == b.enabled
-            });
+        let same_keys =
+            current_rows.len() == next_rows.len() && current_rows.iter().zip(&next_rows).all(|(a, b)| a == b);
         if !same_keys {
             self.path_params
                 .update(cx, |kv, cx| kv.set_list(&next_rows, window, cx));
@@ -1278,8 +1270,7 @@ impl RequestEditor {
         for row in &current_rows {
             let key = row.key.trim();
             if !key.is_empty() {
-                self.path_drafts
-                    .insert(key.to_string(), (row.value.clone(), row.description.clone()));
+                self.path_drafts.insert(key.to_string(), row.clone());
             }
         }
         let next_vars = {

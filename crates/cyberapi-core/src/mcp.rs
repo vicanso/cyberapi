@@ -315,6 +315,7 @@ fn params(value: &Value, what: &str) -> Result<Vec<KvParam>, String> {
                         .unwrap_or_default()
                         .trim()
                         .to_string(),
+                    ..Default::default()
                 })
             })
             .collect(),
@@ -601,13 +602,13 @@ mod tests {
                 key: "username".into(),
                 value: "alice".into(),
                 enabled: true,
-                description: String::new(),
+                ..Default::default()
             },
             KvParam {
                 key: "password".into(),
                 value: "super-secret".into(),
                 enabled: true,
-                description: String::new(),
+                ..Default::default()
             },
         ])
         .expect("json");

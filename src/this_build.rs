@@ -265,6 +265,18 @@ pub fn serves_mocks() -> bool {
     false
 }
 
+/// Whether a project card offers the online documentation page. Only the
+/// web app does: a desktop project opens it from the tree's menu, and a
+/// project that is not on a server has no such page.
+#[cfg(not(target_family = "wasm"))]
+pub fn card_opens_docs() -> bool {
+    false
+}
+#[cfg(target_family = "wasm")]
+pub fn card_opens_docs() -> bool {
+    true
+}
+
 /// H2: whether this build serves a local loopback MCP server.
 #[cfg(not(target_family = "wasm"))]
 pub fn serves_mcp() -> bool {

@@ -4936,6 +4936,7 @@ mod tests {
                 value: "true".into(),
                 description: "Custom reader note".into(),
                 enabled: false,
+                ..Default::default()
             }],
             content_type: cyberapi_core::model::ContentType::Json,
             body: r#"{"sku": "book"}"#.into(),

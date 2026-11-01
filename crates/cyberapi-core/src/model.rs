@@ -327,12 +327,67 @@ pub struct KvParam {
     /// F10: what the parameter, header or field is for.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// Type recorded from an OpenAPI or Swagger parameter: `string`,
+    /// `array<string>`, `array<array>`, `object`, or `oneOf` / `anyOf` /
+    /// `allOf`. Empty means it was never recorded.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub schema_type: String,
+    /// Whether the document says the parameter is required. `None` was
+    /// never recorded, which is not the same as optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    /// The parameter's `format`, kept as written (`date-time`, `int64`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub format: String,
+    /// Enum values. Strings are the original text; numbers and booleans
+    /// are their JSON text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schema_enum: Vec<String>,
 }
 
 impl KvParam {
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = description.into();
         self
+    }
+
+    /// Records the four facts from an OpenAPI or Swagger parameter,
+    /// including clearing them when the document leaves them empty.
+    pub fn with_param_schema(
+        mut self,
+        schema_type: impl Into<String>,
+        required: Option<bool>,
+        format: impl Into<String>,
+        schema_enum: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.schema_type = schema_type.into();
+        self.required = required;
+        self.format = format.into();
+        self.schema_enum = schema_enum.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The four facts as `from` has them, including when it recorded none.
+    pub fn with_schema_of(self, from: &Self) -> Self {
+        self.with_param_schema(
+            from.schema_type.clone(),
+            from.required,
+            from.format.clone(),
+            from.schema_enum.clone(),
+        )
+    }
+
+    /// Whether a type, required flag, format or enum was recorded.
+    pub fn schema_recorded(&self) -> bool {
+        self.required.is_some()
+            || !self.schema_type.is_empty()
+            || !self.format.is_empty()
+            || !self.schema_enum.is_empty()
+    }
+
+    /// Enum values joined for a table cell.
+    pub fn enum_text(&self) -> String {
+        self.schema_enum.join(" | ")
     }
 }
 
@@ -774,9 +829,8 @@ pub fn sync_path_variables(uri: &str, variables: &[KvParam]) -> Vec<KvParam> {
                 .cloned()
                 .unwrap_or_else(|| KvParam {
                     key: name,
-                    value: String::new(),
                     enabled: true,
-                    description: String::new(),
+                    ..Default::default()
                 })
         })
         .collect()
@@ -799,9 +853,8 @@ pub fn merge_path_variables(uri: &str, path_rows: &[KvParam], variables: &[KvPar
                 })
                 .unwrap_or_else(|| KvParam {
                     key: name,
-                    value: String::new(),
                     enabled: true,
-                    description: String::new(),
+                    ..Default::default()
                 })
         })
         .collect()
@@ -1031,20 +1084,36 @@ mod tests {
         let existing = vec![
             KvParam {
                 key: "u".into(),
-                value: "".into(),
                 enabled: true,
-                description: String::new(),
+                ..Default::default()
             },
             KvParam {
                 key: "user_id".into(),
                 value: "7".into(),
                 enabled: true,
                 description: "User ID".into(),
+                ..Default::default()
             },
         ];
         let merged = merge_path_variables("https://api.example.com/users/:user_id", &[], &existing);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].key, "user_id");
         assert_eq!(merged[0].value, "7");
+    }
+
+    #[test]
+    fn an_old_parameter_row_has_no_schema_and_false_stays_false() {
+        let old: KvParam = serde_json::from_str(r#"{"key":"page","value":"1","enabled":true}"#).expect("JSON");
+        assert!(!old.schema_recorded());
+        assert!(old.required.is_none());
+        let recorded = old.with_param_schema("integer", Some(false), "int64", ["1", "2"]);
+        let text = serde_json::to_string(&recorded).expect("JSON");
+        assert!(text.contains("\"required\":false"), "{text}");
+        let back: KvParam = serde_json::from_str(&text).expect("JSON");
+        assert_eq!(back.schema_type, "integer");
+        assert_eq!(back.required, Some(false));
+        assert_eq!(back.format, "int64");
+        assert_eq!(back.enum_text(), "1 | 2");
+        assert!(!back.with_schema_of(&KvParam::default()).schema_recorded());
     }
 }
