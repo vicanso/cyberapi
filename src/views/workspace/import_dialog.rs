@@ -32,7 +32,7 @@ const HELD_SHOWN: usize = 64 * 1024;
 
 /// B3: the text, when it is an address to fetch what to import from: one
 /// http or https URL, nothing around it.
-pub(super) fn address(text: &str) -> Option<&str> {
+pub(crate) fn address(text: &str) -> Option<&str> {
     let trimmed = text.trim();
     let scheme = |prefix: &str| {
         trimmed

@@ -37,6 +37,8 @@ pub use apart_window::is_apart_window;
 #[cfg(not(target_family = "wasm"))]
 pub use apart_window::{close_apart, open_apart};
 
+pub(crate) use import_dialog::address;
+
 use crate::APP_NAME;
 use crate::i18n;
 use crate::states::{ApiState, AppStore, ServerCopy, WorkspaceEvent, WorkspaceState};

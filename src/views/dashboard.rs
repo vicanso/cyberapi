@@ -3,7 +3,7 @@
 //! them and forwards what the reader asks for.
 
 use crate::i18n;
-use crate::states::{AppStore, DashboardEvent, DashboardState, Load, ServerStatus};
+use crate::states::{AppStore, DashboardEvent, DashboardState, Load, ProjectSourceEdit, ServerStatus};
 use crate::views::group_dialog::open_group_dialog;
 use crate::views::marked::marked;
 use crate::views::name_dialog::ok_button;
@@ -15,11 +15,13 @@ use cyberapi_core::collection::{SortOrder, group_names, group_of, grouped};
 use cyberapi_core::directory::Team;
 use cyberapi_core::format::{Ago, ago};
 use cyberapi_core::import::ImportBundle;
-use cyberapi_core::model::Collection;
+use cyberapi_core::model::{Collection, ImportSource};
+use cyberapi_core::prefs::{DEFAULT_SOURCE_SYNC_MINUTES, SOURCE_SYNC_INTERVALS, WorkspacePrefs};
 use cyberapi_core::{CollectionId, TeamId, Timestamp};
 use cyberapi_store::{CollectionEdit, NewCollection};
 use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::empty::{
     Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
@@ -116,6 +118,9 @@ impl DashboardView {
             cx.subscribe_in(&state, window, |_, this_state, event, window, cx| match event {
                 DashboardEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);
+                }
+                DashboardEvent::SourceFailed(why) => {
+                    window.push_notification(Notification::error(why.clone()), cx);
                 }
                 DashboardEvent::Deleted(id) => {
                     let app = AppStore::global(cx).state().clone();
@@ -230,115 +235,31 @@ impl DashboardView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let default_name = match (&existing, &import) {
-            (Some(collection), _) => collection.name.clone(),
-            (None, Some(import)) => import.name.clone().unwrap_or_default(),
-            (None, None) => String::new(),
-        };
-        let name = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("dashboard.name_placeholder").to_string())
-                .default_value(default_name)
-        });
-        let description = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("common.optional").to_string())
-                .default_value(existing.as_ref().map(|c| c.description.clone()).unwrap_or_default())
-        });
         let (title, ok_label) = match (&existing, &import) {
             (Some(_), _) => (t!("dashboard.edit_title"), t!("common.save")),
             (None, Some(_)) => (t!("dashboard.import_title"), t!("common.create")),
             (None, None) => (t!("dashboard.create_title"), t!("common.create")),
         };
-        // What the project will hold, said under its fields.
-        let holds = import.as_ref().map(|import| {
-            let (apis, folders) = import.counts();
-            t!(
-                "dashboard.import_holds",
-                apis = i18n::counted("workspace.api", apis),
-                folders = i18n::counted("import.folder", folders)
-            )
-            .to_string()
-        });
         let (title, ok_label): (SharedString, SharedString) = (title.to_string().into(), ok_label.to_string().into());
         let state = self.state.clone();
-        let name_missing = Rc::new(Cell::new(false));
+        let editor = cx.new(|cx| ProjectEditorView::new(state, existing, import, window, cx));
         let focus_once = Cell::new(true);
-        // The browser build's: the team a new project goes in, the reader's
-        // own space unless chosen.
-        let creating = existing.is_none();
-        let team: Rc<RefCell<Option<TeamId>>> = Rc::default();
 
         window.open_dialog(cx, move |dialog, window, cx| {
             if focus_once.replace(false) {
+                let name = editor.read(cx).name.clone();
                 name.focus_handle(cx).focus(window, cx);
             }
             let on_ok = {
-                let (name, description, state, existing, name_missing, team, import) = (
-                    name.clone(),
-                    description.clone(),
-                    state.clone(),
-                    existing.clone(),
-                    name_missing.clone(),
-                    team.clone(),
-                    import.clone(),
-                );
-                move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
-                    let name_value = name.read(cx).value().trim().to_string();
-                    if name_value.is_empty() {
-                        name_missing.set(true);
-                        window.refresh();
-                        return false;
-                    }
-                    let description_value = description.read(cx).value().trim().to_string();
-                    state.update(cx, |state, cx| match &existing {
-                        Some(collection) => state.update(
-                            collection.id.clone(),
-                            CollectionEdit {
-                                name: name_value,
-                                description: description_value,
-                            },
-                            cx,
-                        ),
-                        None => state.create(
-                            NewCollection {
-                                name: name_value,
-                                description: description_value,
-                                owner: team.borrow().clone(),
-                                id: None,
-                            },
-                            import.clone(),
-                            cx,
-                        ),
-                    });
-                    true
+                let editor = editor.clone();
+                move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
+                    editor.update(cx, |view, cx| view.submit(cx))
                 }
             };
             dialog
                 .title(title.clone())
-                .w(px(440.))
-                .child(crate::views::dialog_body(
-                    v_flex()
-                        .gap_4()
-                        .child(field(
-                            t!("common.name").to_string(),
-                            Input::new(&name),
-                            name_missing.get().then(|| t!("errors.name_required").to_string()),
-                            cx,
-                        ))
-                        .child(field(
-                            t!("common.description").to_string(),
-                            Input::new(&description),
-                            None,
-                            cx,
-                        ))
-                        .when_some(creating.then(|| team_field(&team, cx)).flatten(), |this, field| {
-                            this.child(field)
-                        })
-                        .when_some(holds.clone(), |this, holds| {
-                            this.child(div().text_sm().text_color(cx.theme().muted_foreground).child(holds))
-                        }),
-                ))
+                .w(px(500.))
+                .child(crate::views::dialog_body(editor.clone()))
                 .footer(
                     DialogFooter::new()
                         .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel").to_string())))
@@ -1343,4 +1264,303 @@ fn team_field(team: &Rc<RefCell<Option<TeamId>>>, cx: &App) -> Option<AnyElement
             )))
             .into_any_element(),
     )
+}
+
+/// F2.2 / F2.3 / B7 / B10: form body for creating or editing a project,
+/// including its optional OpenAPI / source URL and periodic auto-sync schedule.
+pub(crate) struct ProjectEditorView {
+    state: Entity<DashboardState>,
+    existing: Option<Collection>,
+    import: Option<ImportBundle>,
+    pub(crate) name: Entity<InputState>,
+    pub(crate) description: Entity<InputState>,
+    name_missing: bool,
+    team: Rc<RefCell<Option<TeamId>>>,
+    pub(crate) source: Entity<InputState>,
+    pub(crate) source_error: Option<String>,
+    source_touched: bool,
+    setting_default_source: bool,
+    existing_source: Option<ImportSource>,
+    existing_prefs: WorkspacePrefs,
+    pub(crate) want_auto_sync: Option<bool>,
+    pub(crate) want_sync_interval: Option<u32>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl ProjectEditorView {
+    pub(crate) fn new(
+        state: Entity<DashboardState>,
+        existing: Option<Collection>,
+        import: Option<ImportBundle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let default_name = match (&existing, &import) {
+            (Some(collection), _) => collection.name.clone(),
+            (None, Some(import)) => import.name.clone().unwrap_or_default(),
+            (None, None) => String::new(),
+        };
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("dashboard.name_placeholder").to_string())
+                .default_value(default_name)
+        });
+        let description = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("common.optional").to_string())
+                .default_value(existing.as_ref().map(|c| c.description.clone()).unwrap_or_default())
+        });
+        let initial_source = import
+            .as_ref()
+            .and_then(|bundle| bundle.source.clone())
+            .unwrap_or_default();
+        let source = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("https://api.example.com/openapi.json")
+                .default_value(initial_source)
+        });
+
+        let subscriptions = vec![
+            cx.subscribe(&name, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) && this.name_missing {
+                    this.name_missing = false;
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&source, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) && !this.setting_default_source {
+                    this.source_touched = true;
+                    this.source_error = None;
+                    let typed = this.source.read(cx).value().trim().to_string();
+                    let matches_existing = this.existing_source.as_ref().is_some_and(|s| s.url == typed);
+                    if !matches_existing {
+                        this.want_auto_sync = None;
+                    }
+                    cx.notify();
+                }
+            }),
+        ];
+
+        if let Some(collection) = &existing {
+            let fut = state.read(cx).load_project_source(&collection.id);
+            cx.spawn_in(window, async move |this, cx| {
+                if let Ok((loaded_source, prefs)) = cx.background_spawn(fut).await {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.existing_source = loaded_source.clone();
+                        this.existing_prefs = prefs;
+                        if !this.source_touched
+                            && let Some(url) = loaded_source.map(|s| s.url)
+                        {
+                            this.setting_default_source = true;
+                            this.source.update(cx, |input, cx| input.set_value(url, window, cx));
+                            this.setting_default_source = false;
+                        }
+                        cx.notify();
+                    });
+                }
+            })
+            .detach();
+        }
+
+        Self {
+            state,
+            existing,
+            import,
+            name,
+            description,
+            name_missing: false,
+            team: Rc::default(),
+            source,
+            source_error: None,
+            source_touched: false,
+            setting_default_source: false,
+            existing_source: None,
+            existing_prefs: WorkspacePrefs::default(),
+            want_auto_sync: None,
+            want_sync_interval: None,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    pub(crate) fn effective_sync(&self, url: &str) -> (bool, u32) {
+        let trimmed = url.trim();
+        let saved_sync = !trimmed.is_empty() && self.existing_prefs.auto_sync_sources.contains_key(trimmed);
+        let saved_interval = self
+            .existing_prefs
+            .auto_sync_sources
+            .get(trimmed)
+            .copied()
+            .map(cyberapi_core::prefs::clamp_source_sync_minutes)
+            .unwrap_or(DEFAULT_SOURCE_SYNC_MINUTES);
+        (
+            self.want_auto_sync.unwrap_or(saved_sync),
+            self.want_sync_interval.unwrap_or(saved_interval),
+        )
+    }
+
+    pub(crate) fn submit(&mut self, cx: &mut Context<Self>) -> bool {
+        let name_value = self.name.read(cx).value().trim().to_string();
+        if name_value.is_empty() {
+            self.name_missing = true;
+            cx.notify();
+            return false;
+        }
+        let description_value = self.description.read(cx).value().trim().to_string();
+        let typed_source = self.source.read(cx).value().trim().to_string();
+        let source_url = if typed_source.is_empty() {
+            None
+        } else {
+            match super::workspace::address(&typed_source) {
+                Some(url) => Some(url.to_string()),
+                None => {
+                    self.source_error = Some(t!("source.not_address").to_string());
+                    cx.notify();
+                    return false;
+                }
+            }
+        };
+        let (auto_sync, interval_minutes) = source_url
+            .as_deref()
+            .map(|url| self.effective_sync(url))
+            .unwrap_or((false, DEFAULT_SOURCE_SYNC_MINUTES));
+        let source_edit = ProjectSourceEdit {
+            url: source_url,
+            auto_sync,
+            interval_minutes,
+        };
+        let existing = self.existing.clone();
+        let import = self.import.clone();
+        let owner = self.team.borrow().clone();
+        self.state.update(cx, |state, cx| match existing {
+            Some(collection) => state.update_with_source(
+                collection.id,
+                CollectionEdit {
+                    name: name_value,
+                    description: description_value,
+                },
+                Some(source_edit),
+                cx,
+            ),
+            None => state.create_with_source(
+                NewCollection {
+                    name: name_value,
+                    description: description_value,
+                    owner,
+                    id: None,
+                },
+                import,
+                Some(source_edit),
+                cx,
+            ),
+        });
+        true
+    }
+}
+
+impl Render for ProjectEditorView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (warning, muted) = (cx.theme().warning, cx.theme().muted_foreground);
+        let creating = self.existing.is_none();
+        let holds = self.import.as_ref().map(|import| {
+            let (apis, folders) = import.counts();
+            t!(
+                "dashboard.import_holds",
+                apis = i18n::counted("workspace.api", apis),
+                folders = i18n::counted("import.folder", folders)
+            )
+            .to_string()
+        });
+        let typed = self.source.read(cx).value().trim().to_string();
+        let valid_url = super::workspace::address(&typed);
+        let local = valid_url.is_some_and(cyberapi_core::import::local_address);
+        let (auto_sync, sync_interval) = valid_url
+            .map(|url| self.effective_sync(url))
+            .unwrap_or((false, DEFAULT_SOURCE_SYNC_MINUTES));
+
+        v_flex()
+            .gap_4()
+            .child(field(
+                t!("common.name").to_string(),
+                Input::new(&self.name),
+                self.name_missing.then(|| t!("errors.name_required").to_string()),
+                cx,
+            ))
+            .child(field(
+                t!("common.description").to_string(),
+                Input::new(&self.description),
+                None,
+                cx,
+            ))
+            .when_some(
+                creating.then(|| team_field(&self.team, cx)).flatten(),
+                |this, team_el| this.child(team_el),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(field(
+                        t!("folder_settings.source_title").to_string(),
+                        Input::new(&self.source),
+                        self.source_error.clone(),
+                        cx,
+                    ))
+                    .when(local, |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(warning)
+                                .child(t!("source.local").to_string()),
+                        )
+                    })
+                    .when(valid_url.is_some(), |this| {
+                        this.child(
+                            v_flex()
+                                .gap_1p5()
+                                .child(
+                                    Checkbox::new("project-source-auto-sync")
+                                        .checked(auto_sync)
+                                        .label(t!("source.auto_sync").to_string())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.want_auto_sync = Some(!auto_sync);
+                                            if this.want_sync_interval.is_none() {
+                                                this.want_sync_interval = Some(sync_interval);
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                                .when(auto_sync, |col| {
+                                    col.child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .pl_6()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(muted)
+                                                    .child(t!("source.sync_interval").to_string()),
+                                            )
+                                            .children(SOURCE_SYNC_INTERVALS.into_iter().map(|mins| {
+                                                let chosen = sync_interval == mins;
+                                                let label = t!("source.interval_minutes", minutes = mins).to_string();
+                                                Button::new(("project-source-interval", mins as usize))
+                                                    .xsmall()
+                                                    .when(chosen, |b| b.primary())
+                                                    .when(!chosen, |b| b.outline())
+                                                    .label(label)
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.want_auto_sync = Some(true);
+                                                        this.want_sync_interval = Some(mins);
+                                                        cx.notify();
+                                                    }))
+                                            })),
+                                    )
+                                }),
+                        )
+                    }),
+            )
+            .when_some(holds, |this, holds| {
+                this.child(div().text_sm().text_color(muted).child(holds))
+            })
+    }
 }

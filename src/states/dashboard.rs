@@ -15,13 +15,17 @@
 use super::copy::{self, Pushed};
 use super::{Load, ServerState, ServerStatus, run_store};
 use crate::drafts_local::{self, Draft};
-use crate::{local_items, pins_local};
-use cyberapi_core::import::ImportBundle;
-use cyberapi_core::model::Collection;
+use crate::{i18n, local_items, pins_local};
+use cyberapi_core::import::{self, ImportBundle};
+use cyberapi_core::model::{Collection, Folder, ImportSource, ProjectSettings, VariableCategory};
+use cyberapi_core::prefs::{WorkspacePrefs, clamp_source_sync_minutes};
 use cyberapi_core::sync::{self, CopyBinding, Moment, ProjectConfig, Step};
 use cyberapi_core::{AccountId, CollectionId, TeamId};
-use cyberapi_store::{CollectionEdit, NewCollection, ServerCopyStore, Storage, StoreError, StoreFuture, rules};
-use gpui_kit::{Context, Entity, EventEmitter, Subscription, Task};
+use cyberapi_store::{
+    CollectionEdit, MemoryStore, NewCollection, NewVariable, ServerCopyStore, Storage, StoreError, StoreFuture, rules,
+};
+use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, Subscription, Task};
+use rust_i18n::t;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -30,11 +34,22 @@ use tracing::warn;
 /// A project just made, and what to import into it.
 type Made = (Collection, Option<Arc<ImportBundle>>);
 
+/// B7 / B10: the OpenAPI / source address and periodic auto-sync choice
+/// configured in the project dialog on the home page.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProjectSourceEdit {
+    pub url: Option<String>,
+    pub auto_sync: bool,
+    pub interval_minutes: u32,
+}
+
 /// What the view should tell the reader about.
 #[derive(Clone, Debug)]
 pub enum DashboardEvent {
     /// A change the reader asked for did not happen.
     Failed(StoreError),
+    /// Fetching or parsing the project's OpenAPI / source URL failed.
+    SourceFailed(String),
     /// A project is gone, and with it the reader's state of it.
     Deleted(CollectionId),
     /// A project the reader made, to be opened — and what to import into
@@ -481,57 +496,372 @@ impl DashboardState {
         cx.notify();
     }
 
+    /// B7 / B10: reads `id`'s stored `ProjectSettings.source` (or its web
+    /// draft's when one is in memory) and `WorkspacePrefs` for the home-page
+    /// project editor dialog.
+    pub fn load_project_source(&self, id: &CollectionId) -> StoreFuture<(Option<ImportSource>, WorkspacePrefs)> {
+        let storage = self.storage.clone();
+        let id = id.clone();
+        let draft_source = self
+            .listed
+            .iter()
+            .find(|collection| collection.id == id)
+            .and_then(|collection| self.draft(collection))
+            .map(|draft| draft.config.settings.source.clone());
+        Box::pin(async move {
+            let prefs = storage.prefs().workspace(id.clone()).await.unwrap_or_default();
+            let source = match draft_source {
+                Some(source) => source,
+                None => storage.tree().load(id).await?.settings.source,
+            };
+            Ok((source, prefs))
+        })
+    }
+
     /// F2.2: on the desktop signed in, a team's project is made on the
     /// server and copied here (server-sync §2); without a team, it is this
     /// machine's. `import` goes into it once it opens (#65).
     pub fn create(&mut self, input: NewCollection, import: Option<ImportBundle>, cx: &mut Context<Self>) {
+        self.create_with_source(input, import, None, cx);
+    }
+
+    /// F2.2 / B7 / B10: creates a new project and optionally binds an OpenAPI
+    /// / source URL and periodic auto-sync schedule, fetching and importing
+    /// the bundle from the source URL when no pre-parsed `import` bundle was
+    /// given.
+    pub fn create_with_source(
+        &mut self,
+        input: NewCollection,
+        mut import: Option<ImportBundle>,
+        source: Option<ProjectSourceEdit>,
+        cx: &mut Context<Self>,
+    ) {
+        let source_edit = source.and_then(|mut s| {
+            s.url = s.url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+            s.url.is_some().then_some(s)
+        });
+        if let (Some(bundle), Some(src)) = (&mut import, &source_edit) {
+            bundle.source = src.url.clone();
+        }
         let import = import.map(Arc::new);
         if let Some(desktop) = self.desktop.clone()
             && input.owner.is_some()
         {
-            let call = desktop.server.collections().create(input);
+            let local = self.storage.clone();
+            let srv_for_create = desktop.server.clone();
+            let src_for_create = source_edit.clone();
+            let call: StoreFuture<Collection> = Box::pin(async move {
+                let made = srv_for_create.collections().create(input).await?;
+                if let Some(src) = &src_for_create
+                    && let Some(url) = &src.url
+                {
+                    let _ = srv_for_create
+                        .tree()
+                        .set_project_settings(
+                            made.id.clone(),
+                            ProjectSettings {
+                                source: Some(ImportSource {
+                                    url: url.clone(),
+                                    folder: None,
+                                }),
+                                ..Default::default()
+                            },
+                        )
+                        .await;
+                    let mut prefs = local.prefs().workspace(made.id.clone()).await.unwrap_or_default();
+                    apply_source_prefs(&mut prefs, None, Some(url), src.auto_sync, src.interval_minutes, &[]);
+                    let _ = local.prefs().set_workspace(made.id.clone(), prefs).await;
+                }
+                srv_for_create.collections().get(made.id).await
+            });
             return run_store(cx, call, move |this, result, cx| match result {
-                Ok(made) => this.pull(desktop, vec![made.clone()], Some((made, import)), cx),
+                Ok(made) => {
+                    if import.is_none()
+                        && let Some(src) = source_edit
+                        && let Some(url) = src.url
+                        && let Some(store) = cx.try_global::<super::AppStore>().cloned()
+                    {
+                        let task = store.fetch_text(url, cx);
+                        cx.spawn(async move |this, cx| {
+                            let parsed = match task.await {
+                                Ok(text) => {
+                                    cx.background_spawn(async move {
+                                        import::parse(&text).map_err(|failure| {
+                                            t!("import.unreadable", why = i18n::import_error(&failure)).to_string()
+                                        })
+                                    })
+                                    .await
+                                }
+                                Err(why) => Err(t!("import.fetch_failed", why = why).to_string()),
+                            };
+                            let mut refreshed = made.clone();
+                            match parsed {
+                                Ok(bundle) => {
+                                    let srv = desktop.server.clone();
+                                    let id = made.id.clone();
+                                    if let Ok(updated) = cx
+                                        .background_spawn(async move {
+                                            let _ = merge_bundle_into_storage(&srv, &id, bundle).await;
+                                            srv.collections().get(id).await
+                                        })
+                                        .await
+                                    {
+                                        refreshed = updated;
+                                    }
+                                }
+                                Err(why) => {
+                                    let _ = this.update(cx, |_, cx| cx.emit(DashboardEvent::SourceFailed(why)));
+                                }
+                            }
+                            let _ = this.update(cx, |this, cx| {
+                                this.pull(desktop, vec![refreshed.clone()], Some((refreshed, None)), cx);
+                            });
+                        })
+                        .detach();
+                    } else {
+                        this.pull(desktop, vec![made.clone()], Some((made, import)), cx);
+                    }
+                }
                 Err(error) => cx.emit(DashboardEvent::Failed(error)),
             });
         }
-        run_store(
-            cx,
-            self.storage.collections().create(input),
-            move |this, result, cx| match result {
-                Ok(collection) => {
-                    this.listed.push(collection.clone());
-                    this.show();
+        let storage = self.storage.clone();
+        let src_for_create = source_edit.clone();
+        let call: StoreFuture<Collection> = Box::pin(async move {
+            let collection = storage.collections().create(input).await?;
+            if let Some(src) = &src_for_create
+                && let Some(url) = &src.url
+            {
+                storage
+                    .tree()
+                    .set_project_settings(
+                        collection.id.clone(),
+                        ProjectSettings {
+                            source: Some(ImportSource {
+                                url: url.clone(),
+                                folder: None,
+                            }),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                let mut prefs = storage
+                    .prefs()
+                    .workspace(collection.id.clone())
+                    .await
+                    .unwrap_or_default();
+                apply_source_prefs(&mut prefs, None, Some(url), src.auto_sync, src.interval_minutes, &[]);
+                storage.prefs().set_workspace(collection.id.clone(), prefs).await?;
+            }
+            Ok(collection)
+        });
+        run_store(cx, call, move |this, result, cx| match result {
+            Ok(collection) => {
+                this.listed.push(collection.clone());
+                this.show();
+                if import.is_none()
+                    && let Some(src) = source_edit
+                    && let Some(url) = src.url
+                    && let Some(store) = cx.try_global::<super::AppStore>().cloned()
+                {
+                    let storage = this.storage.clone();
+                    let task = store.fetch_text(url, cx);
+                    cx.spawn(async move |this, cx| {
+                        let parsed = match task.await {
+                            Ok(text) => {
+                                cx.background_spawn(async move {
+                                    import::parse(&text).map_err(|failure| {
+                                        t!("import.unreadable", why = i18n::import_error(&failure)).to_string()
+                                    })
+                                })
+                                .await
+                            }
+                            Err(why) => Err(t!("import.fetch_failed", why = why).to_string()),
+                        };
+                        let count = match parsed {
+                            Ok(bundle) => {
+                                let id = collection.id.clone();
+                                cx.background_spawn(
+                                    async move { merge_bundle_into_storage(&storage, &id, bundle).await },
+                                )
+                                .await
+                                .ok()
+                            }
+                            Err(why) => {
+                                let _ = this.update(cx, |_, cx| cx.emit(DashboardEvent::SourceFailed(why)));
+                                None
+                            }
+                        };
+                        let _ = this.update(cx, |this, cx| {
+                            if let Some(count) = count {
+                                this.api_counts
+                                    .get_or_insert_with(BTreeMap::new)
+                                    .insert(collection.id.clone(), count);
+                            }
+                            cx.emit(DashboardEvent::Created(collection, None));
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                } else {
                     cx.emit(DashboardEvent::Created(collection, import));
                     cx.notify();
                 }
-                Err(error) => cx.emit(DashboardEvent::Failed(error)),
-            },
-        );
+            }
+            Err(error) => cx.emit(DashboardEvent::Failed(error)),
+        });
     }
 
     /// F2.3. A server project's name and description are part of what
     /// syncs (server-sync §2): the change goes into its draft (made from the
     /// server's content when there is none yet), or the desktop's copy.
     pub fn update(&mut self, id: CollectionId, edit: CollectionEdit, cx: &mut Context<Self>) {
+        self.update_with_source(id, edit, None, cx);
+    }
+
+    /// F2.3 / B7 / B10: updates a project's name and description, and when
+    /// `source` is `Some`, updates its `ProjectSettings.source` and
+    /// `WorkspacePrefs`, fetching and merging the source URL in the background
+    /// when a new/changed URL is set, when periodic auto-sync is newly enabled,
+    /// or when the project currently has 0 APIs.
+    pub fn update_with_source(
+        &mut self,
+        id: CollectionId,
+        edit: CollectionEdit,
+        source: Option<ProjectSourceEdit>,
+        cx: &mut Context<Self>,
+    ) {
         if self.scope.is_some() {
-            return self.update_draft(id, edit, cx);
+            return self.update_draft(id, edit, source, cx);
         }
         let copy = self.desktop.clone().zip(self.mine(&id).cloned());
-        let call = self.storage.collections().update(id, edit);
+        let Some(source_edit) = source else {
+            let call = self.storage.collections().update(id, edit);
+            return run_store(cx, call, move |this, result, cx| match result {
+                Ok(updated) => {
+                    if let Some(found) = this.listed.iter_mut().find(|found| found.id == updated.id) {
+                        *found = updated;
+                    }
+                    if let Some((desktop, binding)) = copy {
+                        this.mark_unsynced(desktop, binding, cx);
+                    }
+                    this.show();
+                    cx.notify();
+                }
+                Err(error) => cx.emit(DashboardEvent::Failed(error)),
+            });
+        };
+        let storage = self.storage.clone();
+        let target_id = id.clone();
+        let edit_clone = source_edit.clone();
+        let call: StoreFuture<(Collection, Option<String>, bool)> = Box::pin(async move {
+            let updated = storage.collections().update(target_id.clone(), edit).await?;
+            let data = storage.tree().load(target_id.clone()).await?;
+            let mut prefs = storage.prefs().workspace(target_id.clone()).await.unwrap_or_default();
+            let had_url = data.settings.source.as_ref().map(|s| s.url.clone());
+            let next_url = edit_clone
+                .url
+                .as_ref()
+                .map(|u| u.trim().to_string())
+                .filter(|u| !u.is_empty());
+            let was_auto_sync = next_url
+                .as_deref()
+                .is_some_and(|url| prefs.auto_sync_sources.contains_key(url));
+            apply_source_prefs(
+                &mut prefs,
+                had_url.as_deref(),
+                next_url.as_deref(),
+                edit_clone.auto_sync,
+                edit_clone.interval_minutes,
+                &data.folders,
+            );
+            storage.prefs().set_workspace(target_id.clone(), prefs).await?;
+            let next_source = next_url.clone().map(|url| {
+                let folder = (had_url.as_deref() == Some(url.as_str()))
+                    .then(|| data.settings.source.as_ref().and_then(|s| s.folder.clone()))
+                    .flatten()
+                    .filter(|f| data.folders.iter().any(|k| &k.id == f));
+                ImportSource { url, folder }
+            });
+            if data.settings.source != next_source {
+                let settings = ProjectSettings {
+                    source: next_source,
+                    ..data.settings
+                };
+                storage.tree().set_project_settings(target_id, settings).await?;
+            }
+            let url_changed = next_url != had_url;
+            let should_fetch = next_url.as_deref().is_some_and(|url| {
+                url_changed
+                    || (!was_auto_sync && edit_clone.auto_sync)
+                    || (data.apis.is_empty() && (!import::local_address(url) || edit_clone.auto_sync))
+            });
+            Ok((updated, next_url, should_fetch))
+        });
         run_store(cx, call, move |this, result, cx| match result {
-            Ok(updated) => {
+            Ok((updated, next_url, should_fetch)) => {
                 if let Some(found) = this.listed.iter_mut().find(|found| found.id == updated.id) {
                     *found = updated;
                 }
-                if let Some((desktop, binding)) = copy {
+                if let Some((desktop, binding)) = copy.clone() {
                     this.mark_unsynced(desktop, binding, cx);
                 }
                 this.show();
                 cx.notify();
+                if should_fetch && let Some(url) = next_url {
+                    this.fetch_and_merge_source(id, url, copy, cx);
+                }
             }
             Err(error) => cx.emit(DashboardEvent::Failed(error)),
         });
+    }
+
+    fn fetch_and_merge_source(
+        &mut self,
+        id: CollectionId,
+        url: String,
+        copy: Option<(Desktop, CopyBinding)>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(store) = cx.try_global::<super::AppStore>().cloned() else {
+            return;
+        };
+        let storage = self.storage.clone();
+        let task = store.fetch_text(url, cx);
+        cx.spawn(async move |this, cx| {
+            let parsed = match task.await {
+                Ok(text) => {
+                    cx.background_spawn(async move {
+                        import::parse(&text)
+                            .map_err(|failure| t!("import.unreadable", why = i18n::import_error(&failure)).to_string())
+                    })
+                    .await
+                }
+                Err(why) => Err(t!("import.fetch_failed", why = why).to_string()),
+            };
+            match parsed {
+                Ok(bundle) => {
+                    let target = id.clone();
+                    let merged = cx
+                        .background_spawn(async move { merge_bundle_into_storage(&storage, &target, bundle).await })
+                        .await;
+                    let _ = this.update(cx, |this, cx| match merged {
+                        Ok(count) => {
+                            this.api_counts.get_or_insert_with(BTreeMap::new).insert(id, count);
+                            if let Some((desktop, binding)) = copy {
+                                this.mark_unsynced(desktop, binding, cx);
+                            }
+                            cx.notify();
+                        }
+                        Err(error) => cx.emit(DashboardEvent::Failed(error)),
+                    });
+                }
+                Err(why) => {
+                    let _ = this.update(cx, |_, cx| cx.emit(DashboardEvent::SourceFailed(why)));
+                }
+            }
+        })
+        .detach();
     }
 
     fn mark_unsynced(&mut self, desktop: Desktop, binding: CopyBinding, cx: &mut Context<Self>) {
@@ -580,7 +910,13 @@ impl DashboardState {
         });
     }
 
-    fn update_draft(&mut self, id: CollectionId, edit: CollectionEdit, cx: &mut Context<Self>) {
+    fn update_draft(
+        &mut self,
+        id: CollectionId,
+        edit: CollectionEdit,
+        source: Option<ProjectSourceEdit>,
+        cx: &mut Context<Self>,
+    ) {
         let name = match rules::required_name(&edit.name) {
             Ok(name) => name,
             Err(error) => return cx.emit(DashboardEvent::Failed(error)),
@@ -589,7 +925,7 @@ impl DashboardState {
         if let Some(mut draft) = self.drafts.get(&id).map(|draft| Draft::clone(draft)) {
             draft.config.name = name;
             draft.config.description = description;
-            return self.keep_draft(id, draft, cx);
+            return self.finish_draft_update(id, draft, source, cx);
         }
         let call = self.storage.tree().config(id.clone());
         run_store(cx, call, move |this, result, cx| match result {
@@ -602,10 +938,127 @@ impl DashboardState {
                         ..at.config
                     },
                 };
-                this.keep_draft(id, draft, cx);
+                this.finish_draft_update(id, draft, source, cx);
             }
             Err(error) => cx.emit(DashboardEvent::Failed(error)),
         });
+    }
+
+    fn finish_draft_update(
+        &mut self,
+        id: CollectionId,
+        mut draft: Draft,
+        source: Option<ProjectSourceEdit>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source_edit) = source else {
+            return self.keep_draft(id, draft, cx);
+        };
+        let had_url = draft.config.settings.source.as_ref().map(|s| s.url.clone());
+        let next_url = source_edit
+            .url
+            .as_ref()
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty());
+        let next_source = next_url.clone().map(|url| {
+            let folder = (had_url.as_deref() == Some(url.as_str()))
+                .then(|| draft.config.settings.source.as_ref().and_then(|s| s.folder.clone()))
+                .flatten()
+                .filter(|f| draft.config.folders.iter().any(|k| &k.id == f));
+            ImportSource { url, folder }
+        });
+        draft.config.settings.source = next_source;
+        let folders = draft.config.folders.clone();
+        let empty_apis = draft.config.apis.is_empty();
+        self.keep_draft(id.clone(), draft.clone(), cx);
+
+        let storage = self.storage.clone();
+        let target_id = id.clone();
+        let edit_clone = source_edit.clone();
+        let had_for_prefs = had_url.clone();
+        let next_for_prefs = next_url.clone();
+        let prefs_call: StoreFuture<bool> = Box::pin(async move {
+            let mut prefs = storage.prefs().workspace(target_id.clone()).await.unwrap_or_default();
+            let was_auto_sync = next_for_prefs
+                .as_deref()
+                .is_some_and(|url| prefs.auto_sync_sources.contains_key(url));
+            apply_source_prefs(
+                &mut prefs,
+                had_for_prefs.as_deref(),
+                next_for_prefs.as_deref(),
+                edit_clone.auto_sync,
+                edit_clone.interval_minutes,
+                &folders,
+            );
+            storage.prefs().set_workspace(target_id, prefs).await?;
+            Ok(was_auto_sync)
+        });
+        run_store(cx, prefs_call, move |this, result, cx| {
+            let was_auto_sync = result.unwrap_or(false);
+            let url_changed = next_url != had_url;
+            let should_fetch = next_url.as_deref().is_some_and(|url| {
+                url_changed
+                    || (!was_auto_sync && source_edit.auto_sync)
+                    || (empty_apis && (!import::local_address(url) || source_edit.auto_sync))
+            });
+            if should_fetch && let Some(url) = next_url {
+                this.fetch_and_merge_draft_source(id, url, cx);
+            }
+        });
+    }
+
+    fn fetch_and_merge_draft_source(&mut self, id: CollectionId, url: String, cx: &mut Context<Self>) {
+        let Some(store) = cx.try_global::<super::AppStore>().cloned() else {
+            return;
+        };
+        let Some(collection) = self.listed.iter().find(|c| c.id == id).cloned() else {
+            return;
+        };
+        let task = store.fetch_text(url, cx);
+        cx.spawn(async move |this, cx| {
+            let parsed = match task.await {
+                Ok(text) => {
+                    cx.background_spawn(async move {
+                        import::parse(&text)
+                            .map_err(|failure| t!("import.unreadable", why = i18n::import_error(&failure)).to_string())
+                    })
+                    .await
+                }
+                Err(why) => Err(t!("import.fetch_failed", why = why).to_string()),
+            };
+            match parsed {
+                Ok(bundle) => {
+                    let current_draft = this
+                        .read_with(cx, |this, _| this.drafts.get(&id).map(|d| Draft::clone(d)))
+                        .ok()
+                        .flatten();
+                    let Some(mut draft) = current_draft else {
+                        return;
+                    };
+                    let col = collection.clone();
+                    let config = draft.config.clone();
+                    let merged = cx
+                        .background_spawn(async move {
+                            let memory = MemoryStore::new();
+                            memory.hold(col.clone(), config)?;
+                            merge_bundle_into_storage(&memory.storage(), &col.id, bundle).await?;
+                            memory.project(&col.id)
+                        })
+                        .await;
+                    let _ = this.update(cx, |this, cx| match merged {
+                        Ok(updated_config) => {
+                            draft.config = updated_config;
+                            this.keep_draft(id, draft, cx);
+                        }
+                        Err(error) => cx.emit(DashboardEvent::Failed(error)),
+                    });
+                }
+                Err(why) => {
+                    let _ = this.update(cx, |_, cx| cx.emit(DashboardEvent::SourceFailed(why)));
+                }
+            }
+        })
+        .detach();
     }
 
     /// Kept in this browser; when it cannot be, it still shows until the
@@ -870,12 +1323,128 @@ fn pull_copies(desktop: Desktop, local: Storage, projects: Vec<Collection>) -> S
     })
 }
 
+/// B10: updates `prefs` for a project's source URL change, pruning `had_url`
+/// when it is no longer used by any folder in `folders`.
+fn apply_source_prefs(
+    prefs: &mut WorkspacePrefs,
+    had_url: Option<&str>,
+    next_url: Option<&str>,
+    auto_sync: bool,
+    interval_minutes: u32,
+    folders: &[Folder],
+) {
+    if let Some(old_url) = had_url
+        && next_url != Some(old_url)
+    {
+        let still_on_folder = folders
+            .iter()
+            .any(|folder| folder.settings.source.as_deref() == Some(old_url));
+        if !still_on_folder {
+            prefs.auto_fetch_sources.retain(|kept| kept != old_url);
+            prefs.auto_sync_sources.remove(old_url);
+        }
+    }
+    if let Some(url) = next_url {
+        let interval = clamp_source_sync_minutes(interval_minutes);
+        if auto_sync {
+            prefs.auto_fetch_sources.retain(|kept| kept != url);
+            prefs.auto_sync_sources.insert(url.to_string(), interval);
+        } else {
+            prefs.auto_sync_sources.remove(url);
+        }
+    }
+}
+
+/// B7 / B10: merges `bundle` into `collection` in `storage` (updating
+/// existing APIs with the same method + path and adding new ones, plus
+/// importing auth and environments), returning the resulting API count.
+async fn merge_bundle_into_storage(
+    storage: &Storage,
+    collection: &CollectionId,
+    bundle: ImportBundle,
+) -> Result<usize, StoreError> {
+    let mut data = storage.tree().load(collection.clone()).await?;
+    let target_parent = data
+        .settings
+        .source
+        .as_ref()
+        .and_then(|s| s.folder.as_ref())
+        .filter(|folder| data.folders.iter().any(|known| &known.id == *folder))
+        .cloned();
+    let merge = cyberapi_core::import::merge::merge(&data, target_parent.as_ref(), &bundle.items, true);
+    if bundle.auth.signs() && !data.settings.auth.signs() {
+        data.settings.auth = bundle.auth;
+        storage
+            .tree()
+            .set_project_settings(collection.clone(), data.settings.clone())
+            .await?;
+    }
+    for (id, request) in merge.updates {
+        let saved = storage.tree().save_request(collection.clone(), id, request).await?;
+        if let Some(found) = data.apis.iter_mut().find(|api| api.id == saved.id) {
+            *found = saved;
+        }
+    }
+    for (place, items) in merge.additions {
+        let imported = storage.tree().import(collection.clone(), place, items).await?;
+        data.folders.extend(imported.folders);
+        data.apis.extend(imported.apis);
+        data.apply(&imported.change);
+    }
+    let existing_vars = storage
+        .variables()
+        .list(collection.clone(), VariableCategory::Environment)
+        .await?;
+    for (name, value) in bundle.environment {
+        if (!name.trim().is_empty() || !value.trim().is_empty())
+            && !existing_vars.iter().any(|v| v.environment.is_none() && v.name == name)
+        {
+            let _ = storage
+                .variables()
+                .create(NewVariable {
+                    collection: collection.clone(),
+                    category: VariableCategory::Environment,
+                    environment: None,
+                    name,
+                    value,
+                    enabled: true,
+                })
+                .await;
+        }
+    }
+    let existing_envs = storage.variables().environments(collection.clone()).await?;
+    for imported_env in bundle.environments {
+        let name = imported_env.name.trim().to_string();
+        if !name.is_empty()
+            && !existing_envs.iter().any(|e| e.name.eq_ignore_ascii_case(&name))
+            && let Ok(created) = storage.variables().create_environment(collection.clone(), name).await
+        {
+            for (var_name, value) in imported_env.variables {
+                if !var_name.trim().is_empty() || !value.trim().is_empty() {
+                    let _ = storage
+                        .variables()
+                        .create(NewVariable {
+                            collection: collection.clone(),
+                            category: VariableCategory::Environment,
+                            environment: Some(created.id.clone()),
+                            name: var_name,
+                            value,
+                            enabled: true,
+                        })
+                        .await;
+                }
+            }
+        }
+    }
+    Ok(data.apis.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use cyberapi_core::access::CollectionRole;
     use cyberapi_store::MemoryStore;
-    use gpui_kit::{AppContext as _, Entity, TestAppContext};
+    use gpui_kit::{Entity, TestAppContext};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1117,5 +1686,191 @@ mod tests {
             "store"
         );
         assert_eq!(state.read_with(cx, |state, _| state.unsynced(&shop.id)), None);
+    }
+
+    struct SpecEngine(String);
+    impl cyberapi_http::HttpEngine for SpecEngine {
+        fn send(&self, _: cyberapi_http::PreparedRequest) -> cyberapi_http::SendFuture {
+            let body = self.0.as_bytes().to_vec();
+            Box::pin(async move {
+                Ok(cyberapi_core::response::Exchange {
+                    status: 200,
+                    body,
+                    ..Default::default()
+                })
+            })
+        }
+    }
+
+    const SAMPLE_OPENAPI: &str = r#"{
+        "openapi": "3.0.0",
+        "info": { "title": "Orders API", "version": "1.0.0" },
+        "paths": {
+            "/v1/orders": {
+                "get": {
+                    "summary": "List orders",
+                    "responses": { "200": { "description": "OK" } }
+                },
+                "post": {
+                    "summary": "Create order",
+                    "responses": { "201": { "description": "Created" } }
+                }
+            }
+        }
+    }"#;
+
+    #[gpui_kit::test]
+    async fn create_with_source_saves_url_prefs_and_imports_bundle(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let engine: Arc<dyn cyberapi_http::HttpEngine> = Arc::new(SpecEngine(SAMPLE_OPENAPI.into()));
+        cx.update(|cx| super::super::AppStore::for_test(storage.clone(), engine, cx));
+
+        let state = cx.new(|cx| DashboardState::new(storage.clone(), None, None, cx));
+        cx.run_until_parked();
+
+        state.update(cx, |state, cx| {
+            state.create_with_source(
+                NewCollection {
+                    name: "Orders".into(),
+                    description: "Order service".into(),
+                    owner: None,
+                    id: None,
+                },
+                None,
+                Some(ProjectSourceEdit {
+                    url: Some("https://api.example.com/openapi.json".into()),
+                    auto_sync: true,
+                    interval_minutes: 30,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let collections = state.read_with(cx, |state, _| state.collections().to_vec());
+        assert_eq!(collections.len(), 1);
+        let id = collections[0].id.clone();
+
+        let (source, prefs) = state
+            .read_with(cx, |state, _| state.load_project_source(&id))
+            .await
+            .expect("load_project_source");
+        assert_eq!(
+            source,
+            Some(ImportSource {
+                url: "https://api.example.com/openapi.json".into(),
+                folder: None,
+            })
+        );
+        assert_eq!(
+            prefs.auto_sync_sources.get("https://api.example.com/openapi.json"),
+            Some(&30)
+        );
+
+        let tree = storage.tree().load(id.clone()).await.expect("tree");
+        assert_eq!(tree.apis.len(), 2);
+        assert_eq!(state.read_with(cx, |state, _| state.api_count(&id)), Some(2));
+    }
+
+    #[gpui_kit::test]
+    async fn update_with_source_fetches_merges_and_prunes_old_prefs(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let engine: Arc<dyn cyberapi_http::HttpEngine> = Arc::new(SpecEngine(SAMPLE_OPENAPI.into()));
+        cx.update(|cx| super::super::AppStore::for_test(storage.clone(), engine, cx));
+
+        let shop = project(&storage, "shop").await;
+        let state = cx.new(|cx| DashboardState::new(storage.clone(), None, None, cx));
+        cx.run_until_parked();
+
+        // Bind an OpenAPI source URL and enable 15m auto-sync on an existing project.
+        state.update(cx, |state, cx| {
+            state.update_with_source(
+                shop.id.clone(),
+                edit("shop-v1"),
+                Some(ProjectSourceEdit {
+                    url: Some("https://api.example.com/v1/openapi.json".into()),
+                    auto_sync: true,
+                    interval_minutes: 15,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let (source, prefs) = state
+            .read_with(cx, |state, _| state.load_project_source(&shop.id))
+            .await
+            .expect("load_project_source");
+        assert_eq!(
+            source.as_ref().map(|s| s.url.as_str()),
+            Some("https://api.example.com/v1/openapi.json")
+        );
+        assert_eq!(
+            prefs.auto_sync_sources.get("https://api.example.com/v1/openapi.json"),
+            Some(&15)
+        );
+        assert_eq!(state.read_with(cx, |state, _| state.api_count(&shop.id)), Some(2));
+
+        // Clear the source URL: old auto-sync entry is pruned.
+        state.update(cx, |state, cx| {
+            state.update_with_source(
+                shop.id.clone(),
+                edit("shop-v2"),
+                Some(ProjectSourceEdit {
+                    url: None,
+                    auto_sync: false,
+                    interval_minutes: 15,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let (source_after, prefs_after) = state
+            .read_with(cx, |state, _| state.load_project_source(&shop.id))
+            .await
+            .expect("load_project_source");
+        assert_eq!(source_after, None);
+        assert!(prefs_after.auto_sync_sources.is_empty());
+    }
+
+    #[gpui_kit::test]
+    async fn web_draft_update_with_source_keeps_source_and_merges_into_draft(cx: &mut TestAppContext) {
+        let server = MemoryStore::new().storage();
+        let engine: Arc<dyn cyberapi_http::HttpEngine> = Arc::new(SpecEngine(SAMPLE_OPENAPI.into()));
+        cx.update(|cx| super::super::AppStore::for_test(server.clone(), engine, cx));
+
+        let shop = project(&server, "shop").await;
+        let state = cx.new(|cx| DashboardState::new(server.clone(), Some(READER.into()), None, cx));
+        cx.run_until_parked();
+
+        state.update(cx, |state, cx| {
+            state.update_with_source(
+                shop.id.clone(),
+                edit("shop-draft"),
+                Some(ProjectSourceEdit {
+                    url: Some("https://api.example.com/openapi.json".into()),
+                    auto_sync: true,
+                    interval_minutes: 60,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        assert_eq!(state.read_with(cx, |state, _| state.unsynced(&shop.id)), Some(false));
+        assert_eq!(state.read_with(cx, |state, _| state.api_count(&shop.id)), Some(2));
+        let (source, prefs) = state
+            .read_with(cx, |state, _| state.load_project_source(&shop.id))
+            .await
+            .expect("load_project_source");
+        assert_eq!(
+            source.as_ref().map(|s| s.url.as_str()),
+            Some("https://api.example.com/openapi.json")
+        );
+        assert_eq!(
+            prefs.auto_sync_sources.get("https://api.example.com/openapi.json"),
+            Some(&60)
+        );
     }
 }

@@ -468,6 +468,7 @@ impl TreePanel {
             .try_global::<AppStore>()
             .is_none_or(|store| store.state().read(cx).prefs().text.show_tabs);
         let height = if show_tabs { px(36.) } else { px(44.) };
+        let for_more = state.clone();
         h_flex()
             .h(height)
             .px_2()
@@ -502,18 +503,18 @@ impl TreePanel {
                 Button::new("tree-new")
                     .ghost()
                     .small()
-                    // A viewer's only choice is exporting.
-                    .icon(if editable { IconName::Plus } else { IconName::Ellipsis })
-                    .tooltip(
-                        if editable {
-                            t!("workspace.new")
-                        } else {
-                            t!("export.project")
-                        }
-                        .to_string(),
-                    )
+                    .icon(IconName::Plus)
+                    .tooltip(t!("workspace.new").to_string())
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| new_menu(menu, &state, editable)),
+            )
+            .child(
+                Button::new("tree-more")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Ellipsis)
+                    .tooltip(t!("workspace.more").to_string())
                     .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
-                        project_menu(menu, &state, editable, window, cx)
+                        project_more_menu(menu, &for_more, editable, window, cx)
                     }),
             )
             .child(
@@ -960,25 +961,10 @@ fn export_menu(
     )
 }
 
-fn project_menu(
-    menu: PopupMenu,
-    state: &WeakEntity<WorkspaceState>,
-    editable: bool,
-    window: &mut Window,
-    cx: &mut Context<PopupMenu>,
-) -> PopupMenu {
+/// Creation and import actions for the `+` (`tree-new`) button in the tree header.
+fn new_menu(menu: PopupMenu, state: &WeakEntity<WorkspaceState>, editable: bool) -> PopupMenu {
     let (for_api, for_folder) = (state.clone(), state.clone());
-    let (for_import, for_export) = (state.clone(), state.clone());
-    let (for_paste, for_source) = (state.clone(), state.clone());
-    let for_replace = state.clone();
-    let has_source_updates = state
-        .upgrade()
-        .is_some_and(|ws| ws.read(cx).source_updates(None).is_some());
-    let source_label = if has_source_updates {
-        t!("source.open_updates").to_string()
-    } else {
-        t!("source.open").to_string()
-    };
+    let (for_paste, for_import) = (state.clone(), state.clone());
     let menu = if editable {
         menu.item(
             PopupMenuItem::new(t!("workspace.new_api").to_string())
@@ -1008,8 +994,43 @@ fn project_menu(
                 .icon(Icons::Import)
                 .on_click(move |_, window, cx| open_import_dialog(for_import.clone(), None, window, cx)),
         )
+        .separator()
+    } else {
+        menu
+    };
+    // F1: a scratch request is the reader's, so a viewer may make one too.
+    let for_scratch = state.clone();
+    menu.item(
+        PopupMenuItem::new(t!("workspace.new_scratch").to_string())
+            .icon(Icons::FilePlus)
+            .on_click(move |_, _, cx| {
+                let _ = for_scratch.update(cx, |state, cx| {
+                    state.new_scratch(t!("workspace.scratch_name").to_string(), cx);
+                });
+            }),
+    )
+}
+
+/// Project-wide operations for the `⋯` (`tree-more`) button in the tree header.
+fn project_more_menu(
+    menu: PopupMenu,
+    state: &WeakEntity<WorkspaceState>,
+    editable: bool,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let (for_source, for_replace, for_export) = (state.clone(), state.clone(), state.clone());
+    let has_source_updates = state
+        .upgrade()
+        .is_some_and(|ws| ws.read(cx).source_updates(None).is_some());
+    let source_label = if has_source_updates {
+        t!("source.open_updates").to_string()
+    } else {
+        t!("source.open").to_string()
+    };
+    let menu = if editable {
         // B7 / B10.
-        .item(
+        menu.item(
             PopupMenuItem::new(source_label)
                 .icon(Icons::RefreshCw)
                 .on_click(move |_, window, cx| {
@@ -1028,20 +1049,10 @@ fn project_menu(
                     }
                 }),
         )
+        .separator()
     } else {
         menu
     };
-    // F1: a scratch request is the reader's, so a viewer may make one too.
-    let for_scratch = state.clone();
-    let menu = menu.item(
-        PopupMenuItem::new(t!("workspace.new_scratch").to_string())
-            .icon(Icons::FilePlus)
-            .on_click(move |_, _, cx| {
-                let _ = for_scratch.update(cx, |state, cx| {
-                    state.new_scratch(t!("workspace.scratch_name").to_string(), cx);
-                });
-            }),
-    );
     // G4: a server project's versions; a viewer reads them.
     let keeps_versions = state.upgrade().is_some_and(|state| state.read(cx).keeps_versions(cx));
     let for_versions = state.clone();
@@ -1113,6 +1124,17 @@ fn project_menu(
     });
     // F11.1: a viewer may export too.
     export_menu(menu, t!("export.project").to_string(), &for_export, None, window, cx)
+}
+
+fn project_menu(
+    menu: PopupMenu,
+    state: &WeakEntity<WorkspaceState>,
+    editable: bool,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let menu = new_menu(menu, state, editable).separator();
+    project_more_menu(menu, state, editable, window, cx)
 }
 
 /// An item's menu (F3.9 / F3.10). A viewer only pins and exports.

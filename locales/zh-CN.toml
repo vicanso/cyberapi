@@ -112,6 +112,7 @@ scratch_hint = "这个请求不在项目里。它留在你自己的设置里，�
 save_scratch = "保存到项目…"
 save_scratch_title = "把“%{name}”保存到项目"
 new = "新建"
+more = "更多操作"
 collapse_all = "全部折叠"
 rename = "重命名"
 pin = "置顶"

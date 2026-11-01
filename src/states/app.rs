@@ -102,6 +102,32 @@ impl AppStore {
         });
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(storage: Storage, engine: Arc<dyn HttpEngine>, cx: &mut App) {
+        let state = cx.new(|_| AppState {
+            route: Route::Dashboard,
+            prefs: AppPrefs::default(),
+            json_view: JsonView::default(),
+            me: None,
+            opening: None,
+            importing: None,
+            selecting: None,
+            save_task: None,
+            saves: Arc::default(),
+            backing_up: None,
+        });
+        cx.set_global(Self {
+            storage,
+            engine,
+            extras: Extras::default(),
+            state,
+            server: None,
+            updates: None,
+            local_mcp: None,
+            tokens: Arc::new(Tokens::stored()),
+        });
+    }
+
     pub fn global(cx: &App) -> &Self {
         cx.global::<Self>()
     }

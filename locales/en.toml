@@ -112,6 +112,7 @@ scratch_hint = "This request is not in the project. It stays in your own setting
 save_scratch = "Save to project…"
 save_scratch_title = "Save “%{name}” to the project"
 new = "New"
+more = "More actions"
 collapse_all = "Collapse all"
 rename = "Rename"
 pin = "Pin"
