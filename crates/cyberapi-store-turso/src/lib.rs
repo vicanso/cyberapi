@@ -27,14 +27,14 @@ use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::secrets::SecretValues;
-use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
+use cyberapi_core::sync::{ApiHead, ConfigAt, CopyBinding, OutlineAt, ProjectChanges, ProjectConfig, ProjectOutline};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
 use cyberapi_store::rules::{environment_name, known_environment, project_config, required_name};
 use cyberapi_store::{
     BackupStore, CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection,
     NewVariable, PrefStore, ServerCopyStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
-    sort_cookies,
+    merge_changes, sort_cookies,
 };
 use rows::{API_COLUMNS, COLLECTION_COLUMNS, ENVIRONMENT_COLUMNS, FOLDER_COLUMNS, VARIABLE_COLUMNS};
 use serde::de::DeserializeOwned;
@@ -200,7 +200,13 @@ async fn touch(conn: &Connection, id: &CollectionId, now: Timestamp) -> Result<(
 
 /// The project's tree in store order: the order rows were inserted, which is
 /// the order the old app read them in.
-async fn tree_data(conn: &Connection, id: &CollectionId) -> Result<TreeData, StoreError> {
+struct TreeFrame {
+    folders: Vec<Folder>,
+    top_order: Vec<ItemId>,
+    settings: ProjectSettings,
+}
+
+async fn tree_frame(conn: &Connection, id: &CollectionId) -> Result<TreeFrame, StoreError> {
     let mut folders = query_all(
         conn,
         &format!("SELECT {FOLDER_COLUMNS} FROM api_folders WHERE collection = ?1 ORDER BY rowid"),
@@ -214,13 +220,6 @@ async fn tree_data(conn: &Connection, id: &CollectionId) -> Result<TreeData, Sto
             folder.settings = own;
         }
     }
-    let apis = query_all(
-        conn,
-        &format!("SELECT {API_COLUMNS} FROM api_settings WHERE collection = ?1 ORDER BY rowid"),
-        (id.as_str(),),
-        rows::api,
-    )
-    .await?;
     let top_order = query_one(
         conn,
         "SELECT items FROM top_orders WHERE collection = ?1",
@@ -237,12 +236,43 @@ async fn tree_data(conn: &Connection, id: &CollectionId) -> Result<TreeData, Sto
     )
     .await?
     .unwrap_or_default();
-    Ok(TreeData {
+    Ok(TreeFrame {
         folders,
-        apis,
         top_order,
         settings,
     })
+}
+
+async fn tree_data(conn: &Connection, id: &CollectionId) -> Result<TreeData, StoreError> {
+    let frame = tree_frame(conn, id).await?;
+    let apis = query_all(
+        conn,
+        &format!("SELECT {API_COLUMNS} FROM api_settings WHERE collection = ?1 ORDER BY rowid"),
+        (id.as_str(),),
+        rows::api,
+    )
+    .await?;
+    Ok(TreeData {
+        folders: frame.folders,
+        apis,
+        top_order: frame.top_order,
+        settings: frame.settings,
+    })
+}
+
+/// Method and URI out of `setting`, not the request document.
+async fn api_heads(conn: &Connection, id: &CollectionId) -> Result<Vec<ApiHead>, StoreError> {
+    query_all(
+        conn,
+        "SELECT id, name, \
+         COALESCE(json_extract(setting, '$.method'), ''), \
+         COALESCE(json_extract(setting, '$.uri'), ''), \
+         updated_at \
+         FROM api_settings WHERE collection = ?1 ORDER BY rowid",
+        (id.as_str(),),
+        rows::api_head,
+    )
+    .await
 }
 
 /// A `settings` column (#66); one that cannot be read is none, as an
@@ -1134,6 +1164,59 @@ impl TreeStore for TursoStore {
             let revision = replace_project(&tx, &collection, config, base, now).await?;
             tx.commit().await.map_err(backend)?;
             Ok(revision)
+        })
+    }
+
+    fn outline(&self, collection: CollectionId) -> StoreFuture<OutlineAt> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            let found = get_collection(&conn, &collection).await?;
+            let frame = tree_frame(&conn, &collection).await?;
+            let apis = api_heads(&conn, &collection).await?;
+            let variables = query_all(
+                &conn,
+                &format!("SELECT {VARIABLE_COLUMNS} FROM variables WHERE collection = ?1 ORDER BY rowid"),
+                (collection.as_str(),),
+                rows::variable,
+            )
+            .await?;
+            let variables = in_environments(variables, &variable_environments(&conn, Some(&collection)).await?);
+            let environments = environments_of(&conn, &collection).await?;
+            Ok(OutlineAt {
+                revision: found.revision,
+                outline: ProjectOutline {
+                    name: found.name,
+                    description: found.description,
+                    folders: frame.folders,
+                    apis,
+                    top_order: frame.top_order,
+                    variables,
+                    settings: frame.settings,
+                    environments,
+                },
+            })
+        })
+    }
+
+    fn api(&self, collection: CollectionId, api: ItemId) -> StoreFuture<ApiSetting> {
+        self.run(move |inner, _| async move {
+            let conn = inner.conn.lock().await;
+            require_collection(&conn, &collection).await?;
+            query_one(
+                &conn,
+                &format!("SELECT {API_COLUMNS} FROM api_settings WHERE id = ?1 AND collection = ?2"),
+                (api.as_str(), collection.as_str()),
+                rows::api,
+            )
+            .await?
+            .ok_or_else(|| StoreError::not_found(Entity::Api, &api))
+        })
+    }
+
+    fn merge(&self, collection: CollectionId, changes: ProjectChanges, base: Option<u64>) -> StoreFuture<u64> {
+        self.run(move |inner, now| async move {
+            let store = TursoStore { inner };
+            merge_changes(&store, collection, changes, base, now).await
         })
     }
 }

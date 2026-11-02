@@ -3,9 +3,10 @@
 //! default, never an error that hides a whole project.
 
 use cyberapi_core::model::{
-    ApiCategory, ApiSetting, Collection, Environment, Folder, HttpRequest, Variable, VariableCategory, legacy,
+    ApiCategory, ApiSetting, Collection, Environment, Folder, HttpMethod, HttpRequest, Variable, VariableCategory,
+    legacy,
 };
-use cyberapi_core::sync::CopyBinding;
+use cyberapi_core::sync::{ApiHead, CopyBinding};
 use cyberapi_core::{AccountId, CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
 use turso::{Row, Value};
 
@@ -96,6 +97,18 @@ pub fn api(row: &Row) -> ApiSetting {
         request: HttpRequest::from_json_lenient(&text(row, 4)),
         created_at: time(row, 5),
         updated_at: time(row, 6),
+    }
+}
+
+/// `id, name, method, uri, updated_at` taken out of `setting` without the rest
+/// of the request. A value that is not JSON reads as GET and an empty URI.
+pub fn api_head(row: &Row) -> ApiHead {
+    ApiHead {
+        id: ItemId::new(text(row, 0)),
+        name: text(row, 1),
+        method: HttpMethod::parse_lenient(&text(row, 2)),
+        uri: text(row, 3),
+        updated_at: time(row, 4),
     }
 }
 

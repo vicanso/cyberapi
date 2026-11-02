@@ -38,7 +38,7 @@ use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HISTORY_SIZES, HttpResponse, RECENT_LIMIT};
 use cyberapi_core::response::{StreamEnd, StreamInfo};
 use cyberapi_core::secrets::SecretValues;
-use cyberapi_core::sync::{ConfigAt, ProjectConfig, ProjectVersion};
+use cyberapi_core::sync::{ConfigAt, OutlineAt, ProjectChanges, ProjectConfig, ProjectVersion};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, EnvironmentId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
 use cyberapi_http::{Exchange, HttpEngine, PreparedRequest, Progress, SendError, SendFuture, Watch};
@@ -194,6 +194,18 @@ pub enum Call {
     TreeReplace {
         collection: CollectionId,
         config: ProjectConfig,
+        base: Option<u64>,
+    },
+    TreeOutline {
+        collection: CollectionId,
+    },
+    TreeApi {
+        collection: CollectionId,
+        api: ItemId,
+    },
+    TreeMerge {
+        collection: CollectionId,
+        changes: ProjectChanges,
         base: Option<u64>,
     },
     VariablesList {
@@ -387,6 +399,7 @@ impl Call {
             | Self::TreeImport { .. }
             | Self::TreeDelete { .. }
             | Self::TreeReplace { .. }
+            | Self::TreeMerge { .. }
             | Self::VariablesCreate { .. }
             | Self::VariablesUpdate { .. }
             | Self::VariablesDelete { .. }
@@ -403,6 +416,8 @@ impl Call {
             | Self::CollectionsApiCounts
             | Self::TreeLoad { .. }
             | Self::TreeConfig { .. }
+            | Self::TreeOutline { .. }
+            | Self::TreeApi { .. }
             | Self::VariablesList { .. }
             | Self::PrefsApp
             | Self::PrefsSetApp { .. }
@@ -525,6 +540,13 @@ pub async fn dispatch(
             config,
             base,
         } => reply(tree.replace(collection, config, base).await),
+        Call::TreeOutline { collection } => reply(tree.outline(collection).await),
+        Call::TreeApi { collection, api } => reply(tree.api(collection, api).await),
+        Call::TreeMerge {
+            collection,
+            changes,
+            base,
+        } => reply(tree.merge(collection, changes, base).await),
         Call::VariablesList { collection, category } => reply(variables.list(collection, category).await),
         Call::VariablesCreate { input } => reply(variables.create(input).await),
         Call::VariablesUpdate { collection, id, edit } => reply(variables.update(collection, id, edit).await),
@@ -864,6 +886,19 @@ impl TreeStore for BridgeStore {
         self.call(Call::TreeReplace {
             collection,
             config,
+            base,
+        })
+    }
+    fn outline(&self, collection: CollectionId) -> StoreFuture<OutlineAt> {
+        self.call(Call::TreeOutline { collection })
+    }
+    fn api(&self, collection: CollectionId, api: ItemId) -> StoreFuture<ApiSetting> {
+        self.call(Call::TreeApi { collection, api })
+    }
+    fn merge(&self, collection: CollectionId, changes: ProjectChanges, base: Option<u64>) -> StoreFuture<u64> {
+        self.call(Call::TreeMerge {
+            collection,
+            changes,
             base,
         })
     }

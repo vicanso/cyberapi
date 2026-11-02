@@ -95,6 +95,10 @@ impl FindReplaceView {
         });
         let replace =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("find_replace.replace_placeholder").to_string()));
+        workspace.update(cx, |workspace, cx| {
+            let ids = workspace.apis_in(folder.as_ref());
+            workspace.with_bodies(ids, Box::new(|_, cx| cx.notify()), cx);
+        });
         let subscriptions = vec![
             cx.subscribe(&find, |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {

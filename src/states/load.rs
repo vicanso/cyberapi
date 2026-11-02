@@ -114,6 +114,24 @@ impl LoadState {
     /// Starts a test of the API as it is now, with what was typed for its
     /// `prompt`s.
     pub fn start(&mut self, plan: Plan, prompts: HashMap<String, String>, cx: &mut Context<Self>) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let api = self.api.clone();
+        if !workspace.read(cx).bodies_present(std::slice::from_ref(&api)) && workspace.read(cx).kept_api(&api).is_none()
+        {
+            let load = cx.entity();
+            workspace.update(cx, |workspace, cx| {
+                workspace.with_bodies(
+                    vec![api],
+                    Box::new(move |_, cx| {
+                        load.update(cx, |load, cx| load.start(plan, prompts, cx));
+                    }),
+                    cx,
+                );
+            });
+            return;
+        }
         let (Some(workspace), Some(request)) = (self.workspace.upgrade(), self.request(cx)) else {
             return;
         };

@@ -6,7 +6,7 @@ use crate::rules::{environment_name, known_environment, project_config, required
 use crate::{
     BackupStore, CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection,
     NewVariable, PrefStore, ServerCopyStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
-    sort_cookies,
+    merge_changes, sort_cookies,
 };
 use chrono::Utc;
 use cyberapi_core::backup::Backup;
@@ -21,7 +21,7 @@ use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::secrets::SecretValues;
-use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig};
+use cyberapi_core::sync::{ApiHead, ConfigAt, CopyBinding, OutlineAt, ProjectChanges, ProjectConfig, ProjectOutline};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{CollectionId, EnvironmentId, ItemId, Timestamp, VariableId};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -139,6 +139,19 @@ impl MemoryStore {
     /// is kept and pushed.
     pub fn project(&self, collection: &CollectionId) -> Result<ProjectConfig, StoreError> {
         Ok(self.lock()?.config_of(collection)?.config)
+    }
+
+    /// Replaces one API the project already has, and does not move the
+    /// revision: a page filling a request it just read, not an edit.
+    pub fn fill_api(&self, api: ApiSetting) -> Result<(), StoreError> {
+        let mut state = self.lock()?;
+        let found = state
+            .apis
+            .iter_mut()
+            .find(|found| found.collection == api.collection && found.id == api.id)
+            .ok_or_else(|| StoreError::not_found(Entity::Api, &api.id))?;
+        *found = api;
+        Ok(())
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>, StoreError> {
@@ -630,6 +643,43 @@ impl TreeStore for MemoryStore {
 
     fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64> {
         self.run(move |state, now| state.replace_project(collection, config, base, now))
+    }
+
+    fn outline(&self, collection: CollectionId) -> StoreFuture<OutlineAt> {
+        self.run(move |state, _| {
+            let at = state.config_of(&collection)?;
+            Ok(OutlineAt {
+                revision: at.revision,
+                outline: ProjectOutline {
+                    name: at.config.name,
+                    description: at.config.description,
+                    folders: at.config.folders,
+                    apis: at.config.apis.iter().map(ApiHead::from_api).collect(),
+                    top_order: at.config.top_order,
+                    variables: at.config.variables,
+                    settings: at.config.settings,
+                    environments: at.config.environments,
+                },
+            })
+        })
+    }
+
+    fn api(&self, collection: CollectionId, api: ItemId) -> StoreFuture<ApiSetting> {
+        self.run(move |state, _| {
+            state.collection(&collection)?;
+            state
+                .apis
+                .iter()
+                .find(|found| found.collection == collection && found.id == api)
+                .cloned()
+                .ok_or_else(|| StoreError::not_found(Entity::Api, &api))
+        })
+    }
+
+    fn merge(&self, collection: CollectionId, changes: ProjectChanges, base: Option<u64>) -> StoreFuture<u64> {
+        let this = self.clone();
+        let now = (self.inner.clock)();
+        Box::pin(async move { merge_changes(&this, collection, changes, base, now).await })
     }
 }
 

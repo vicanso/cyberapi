@@ -319,17 +319,21 @@ fn export(
     state: &WeakEntity<WorkspaceState>,
     folder: Option<ItemId>,
     format: cyberapi_core::export::ExportFormat,
-    window: &mut Window,
+    _window: &mut Window,
     cx: &mut App,
 ) {
     let Some(state) = state.upgrade() else { return };
-    let (name, json) = state.read(cx).export(folder.as_ref(), format);
+    state.update(cx, |state, cx| state.export_ready(folder, format, cx));
+}
+
+/// Writes an export the workspace finished reading.
+fn deliver_export(name: String, text: String, window: &mut Window, cx: &mut App) {
     if !crate::this_build::saves_files() {
-        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(json));
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
         window.push_notification(Notification::success(t!("export.copied").to_string()), cx);
         return;
     }
-    let saving = cx.background_spawn(async move { crate::this_build::save_to_downloads(&name, json.as_bytes()) });
+    let saving = cx.background_spawn(async move { crate::this_build::save_to_downloads(&name, text.as_bytes()) });
     window
         .spawn(cx, async move |cx| {
             let saved = saving.await;
@@ -500,6 +504,13 @@ impl WorkspaceView {
                 }
                 WorkspaceEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);
+                }
+                WorkspaceEvent::ExportReady { name, text } => {
+                    deliver_export(name.clone(), text.clone(), window, cx);
+                }
+                WorkspaceEvent::ApiConfig(config) => {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(config.clone()));
+                    window.push_notification(Notification::success(t!("workspace.config_copied").to_string()), cx);
                 }
                 WorkspaceEvent::Code(target, code) => {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(code.clone()));

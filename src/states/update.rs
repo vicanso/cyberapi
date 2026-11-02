@@ -260,35 +260,47 @@ fn request(url: &str) -> PreparedRequest {
     }
 }
 
+/// The address a failure may name. The query and the fragment stay out: a
+/// download redirect signs them, and they are not the address. Headers are
+/// not part of it either.
+fn logged_address(url: &str) -> &str {
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    &url[..end]
+}
+
 /// `url`'s answer, following redirects: a 2xx, or why there is none.
 async fn fetch(engine: &Arc<dyn HttpEngine>, url: &str) -> Result<Exchange, String> {
     let mut url = url.to_string();
     for _ in 0..=REDIRECTS {
-        let exchange = engine.send(request(&url)).await.map_err(|error| error.to_string())?;
+        let exchange = engine
+            .send(request(&url))
+            .await
+            .map_err(|error| format!("{}: {error}", logged_address(&url)))?;
         if (300..400).contains(&exchange.status) {
             let location = exchange
                 .headers
                 .iter()
                 .find(|(name, _)| name == "location")
                 .map(|(_, value)| value.clone())
-                .ok_or_else(|| format!("{url} redirects nowhere"))?;
-            url = update::redirected(&url, &location).ok_or_else(|| format!("{url} redirects to {location}"))?;
+                .ok_or_else(|| format!("{} redirects nowhere", logged_address(&url)))?;
+            url = update::redirected(&url, &location)
+                .ok_or_else(|| format!("{} redirects to {}", logged_address(&url), logged_address(&location)))?;
             continue;
         }
         if !(200..300).contains(&exchange.status) {
-            return Err(format!("{url} answered {}", exchange.status));
+            return Err(format!("{} answered {}", logged_address(&url), exchange.status));
         }
         if exchange.truncated {
-            return Err(format!("{url} is too large"));
+            return Err(format!("{} is too large", logged_address(&url)));
         }
         return Ok(exchange);
     }
-    Err(format!("{url}: more than {REDIRECTS} redirects"))
+    Err(format!("{}: more than {REDIRECTS} redirects", logged_address(&url)))
 }
 
 async fn json<T: serde::de::DeserializeOwned>(engine: &Arc<dyn HttpEngine>, url: &str) -> Result<T, String> {
     let exchange = fetch(engine, url).await?;
-    serde_json::from_slice(&exchange.body).map_err(|error| format!("{url}: {error}"))
+    serde_json::from_slice(&exchange.body).map_err(|error| format!("{}: {error}", logged_address(url)))
 }
 
 /// The newest release when it is newer than this build, from its manifest,
@@ -617,6 +629,62 @@ mod tests {
             .read_with(cx, |state, _| state.available().cloned())
             .expect("found");
         assert_eq!((found.version.as_str(), found.notes.as_str()), ("99.0.0", ""));
+    }
+
+    /// A failed hop is named by its address. A redirect's signed query, and
+    /// the request's headers, stay out of the text the log records.
+    #[gpui_kit::test]
+    async fn a_failed_fetch_names_the_address_without_its_query(_cx: &mut TestAppContext) {
+        struct FailAfterRedirect;
+        impl HttpEngine for FailAfterRedirect {
+            fn send(&self, request: PreparedRequest) -> SendFuture {
+                let url = request.url;
+                Box::pin(async move {
+                    if url.contains('?') {
+                        return Err(SendError::Tls {
+                            message: "tls handshake eof".into(),
+                        });
+                    }
+                    Ok(Exchange {
+                        status: 302,
+                        headers: vec![(
+                            "location".into(),
+                            "https://objects.example/latest.json?X-Amz-Signature=secret&x=1".into(),
+                        )],
+                        ..Default::default()
+                    })
+                })
+            }
+        }
+
+        let engine: Arc<dyn HttpEngine> = Arc::new(FailAfterRedirect);
+        let error = fetch(
+            &engine,
+            "https://github.com/vicanso/cyberapi/releases/latest/download/latest.json",
+        )
+        .await
+        .expect_err("the signed hop fails");
+        assert_eq!(
+            error,
+            "https://objects.example/latest.json: TLS failed: tls handshake eof"
+        );
+        assert!(
+            !error.contains("X-Amz-Signature") && !error.contains("secret"),
+            "{error}"
+        );
+        assert!(!error.contains("User-Agent") && !error.contains("Accept"), "{error}");
+    }
+
+    #[test]
+    fn a_logged_address_drops_the_query_and_the_fragment() {
+        assert_eq!(
+            logged_address("https://api.github.com/repos/vicanso/cyberapi/releases/latest?token=s#top"),
+            "https://api.github.com/repos/vicanso/cyberapi/releases/latest"
+        );
+        assert_eq!(
+            logged_address("https://github.com/vicanso/cyberapi/releases/latest/download/latest.json"),
+            "https://github.com/vicanso/cyberapi/releases/latest/download/latest.json"
+        );
     }
 
     /// A release made before there was a manifest is found by the API, with

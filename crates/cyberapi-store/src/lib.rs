@@ -21,7 +21,10 @@
 pub mod conformance;
 mod error;
 mod memory;
+mod merge;
 pub mod rules;
+
+pub use merge::merge_changes;
 
 pub use error::{Entity, Refusal, StoreError};
 pub use memory::MemoryStore;
@@ -41,7 +44,7 @@ use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::secrets::SecretValues;
-use cyberapi_core::sync::{ConfigAt, CopyBinding, ProjectConfig, ProjectVersion};
+use cyberapi_core::sync::{ConfigAt, CopyBinding, OutlineAt, ProjectChanges, ProjectConfig, ProjectVersion};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, EnvironmentId, InviteId, ItemId, McpTokenId, TeamId, VariableId};
 use serde::{Deserialize, Serialize};
@@ -196,6 +199,21 @@ pub trait TreeStore: Send + Sync {
     /// new one. Editors and up; the name and description are the managers'
     /// to change, and stay as they are for anyone else.
     fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64>;
+    /// The project's outline, and the revision it is at: folders, API heads
+    /// (id, name, method, URI), variables, environments and settings. Request
+    /// documents are not in it. One API's document is [`Self::api`].
+    fn outline(&self, collection: CollectionId) -> StoreFuture<OutlineAt>;
+    /// One API, whole. Not one of the project's: [`Entity::Api`] not found.
+    fn api(&self, collection: CollectionId, api: ItemId) -> StoreFuture<ApiSetting>;
+    /// Applies `changes` onto the project as it is now, whole, and then
+    /// replaces it at that revision — so a history version is kept first, and
+    /// an API the changes never name stays, body and all. Only when the
+    /// project is still at revision `base`: otherwise nothing is written and
+    /// the answer is [`StoreError::Stale`]. `None` applies onto whatever it
+    /// is at now, and tries again when that moves while the merge is in
+    /// flight. No changes answers the revision it is at and writes nothing.
+    /// Editors and up, as [`Self::replace`] is.
+    fn merge(&self, collection: CollectionId, changes: ProjectChanges, base: Option<u64>) -> StoreFuture<u64>;
 }
 
 /// G4: the versions a project had before each time it was replaced whole —

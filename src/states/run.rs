@@ -144,6 +144,28 @@ impl RunState {
         let Some(workspace) = self.workspace.upgrade() else {
             return Ok(());
         };
+        let folder = self.folder.clone();
+        let missing = {
+            let workspace = workspace.read(cx);
+            !workspace.bodies_present(&workspace.apis_in(folder.as_ref()))
+        };
+        if missing {
+            let data = data.to_string();
+            let run = cx.entity();
+            workspace.update(cx, |workspace, cx| {
+                let ids = workspace.apis_in(folder.as_ref());
+                workspace.with_bodies(
+                    ids,
+                    Box::new(move |_, cx| {
+                        run.update(cx, |run, cx| {
+                            let _ = run.start(&data, prompts, options, cx);
+                        });
+                    }),
+                    cx,
+                );
+            });
+            return Ok(());
+        }
         let (sender, steps) = {
             let workspace = workspace.read(cx);
             let data = workspace.tree_data();

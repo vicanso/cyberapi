@@ -19,7 +19,7 @@ use crate::{i18n, local_items, pins_local};
 use cyberapi_core::import::{self, ImportBundle};
 use cyberapi_core::model::{Collection, Folder, ImportSource, ProjectSettings, VariableCategory};
 use cyberapi_core::prefs::{WorkspacePrefs, clamp_source_sync_minutes};
-use cyberapi_core::sync::{self, CopyBinding, Moment, ProjectConfig, Step};
+use cyberapi_core::sync::{self, CopyBinding, Moment, ProjectChanges, ProjectOp, Step};
 use cyberapi_core::{AccountId, CollectionId, TeamId};
 use cyberapi_store::{
     CollectionEdit, MemoryStore, NewCollection, NewVariable, ServerCopyStore, Storage, StoreError, StoreFuture, rules,
@@ -288,9 +288,10 @@ impl DashboardState {
             .iter()
             .filter_map(|collection| {
                 if let Some(draft) = self.draft(collection) {
+                    let (name, description) = draft_title(draft, collection);
                     return Some(Collection {
-                        name: draft.config.name.clone(),
-                        description: draft.config.description.clone(),
+                        name,
+                        description,
                         ..collection.clone()
                     });
                 }
@@ -370,8 +371,12 @@ impl DashboardState {
     pub fn api_count(&self, id: &CollectionId) -> Option<usize> {
         if let Some(collection) = self.listed.iter().find(|collection| &collection.id == id)
             && let Some(draft) = self.draft(collection)
+            && let Some(config) = &draft.config
         {
-            return Some(draft.config.apis.len());
+            // An older draft holds the project whole, so its count is the
+            // card's. A changes-only draft does not, and the server's count
+            // stands: applying the changes does not drop APIs it never names.
+            return Some(config.apis.len());
         }
         let counts = self.api_counts.as_ref()?;
         Some(counts.get(id).copied().unwrap_or_default())
@@ -507,12 +512,12 @@ impl DashboardState {
             .iter()
             .find(|collection| collection.id == id)
             .and_then(|collection| self.draft(collection))
-            .map(|draft| draft.config.settings.source.clone());
+            .and_then(draft_source);
         Box::pin(async move {
             let prefs = storage.prefs().workspace(id.clone()).await.unwrap_or_default();
             let source = match draft_source {
                 Some(source) => source,
-                None => storage.tree().load(id).await?.settings.source,
+                None => storage.tree().outline(id).await?.outline.settings.source,
             };
             Ok((source, prefs))
         })
@@ -923,24 +928,47 @@ impl DashboardState {
         };
         let description = edit.description;
         if let Some(mut draft) = self.drafts.get(&id).map(|draft| Draft::clone(draft)) {
-            draft.config.name = name;
-            draft.config.description = description;
+            // An older draft is the project whole: the name is one of its
+            // fields. A new one records the name as a change, over the
+            // outline it already cached.
+            if let Some(config) = draft.config.as_mut() {
+                config.name = name;
+                config.description = description;
+            } else {
+                set_draft_describe(&mut draft, name, description);
+            }
             return self.finish_draft_update(id, draft, source, cx);
         }
-        let call = self.storage.tree().config(id.clone());
-        run_store(cx, call, move |this, result, cx| match result {
-            Ok(at) => {
-                let draft = Draft {
-                    base: Some(at.revision),
-                    config: ProjectConfig {
-                        name,
-                        description,
-                        ..at.config
-                    },
-                };
-                this.finish_draft_update(id, draft, source, cx);
-            }
-            Err(error) => cx.emit(DashboardEvent::Failed(error)),
+        // The card's rename does not read every request. The outline is
+        // cached so a refresh offline can show the change; without it the
+        // change is still kept.
+        let listed_base = self
+            .listed
+            .iter()
+            .find(|found| found.id == id)
+            .map(|found| found.revision);
+        let call = self.storage.tree().outline(id.clone());
+        run_store(cx, call, move |this, result, cx| {
+            let (base, outline) = match result {
+                Ok(at) => {
+                    let mut outline = at.outline;
+                    outline.name = name.clone();
+                    outline.description = description.clone();
+                    (Some(at.revision), Some(outline))
+                }
+                Err(error) => {
+                    warn!(%error, "the outline could not be read; the rename is kept without it");
+                    (listed_base, None)
+                }
+            };
+            let draft = Draft::edits(
+                base,
+                ProjectChanges {
+                    ops: vec![ProjectOp::Describe { name, description }],
+                },
+                outline,
+            );
+            this.finish_draft_update(id, draft, source, cx);
         });
     }
 
@@ -954,22 +982,27 @@ impl DashboardState {
         let Some(source_edit) = source else {
             return self.keep_draft(id, draft, cx);
         };
-        let had_url = draft.config.settings.source.as_ref().map(|s| s.url.clone());
+        let had_url = draft_settings(&draft).source.as_ref().map(|source| source.url.clone());
         let next_url = source_edit
             .url
             .as_ref()
             .map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty());
+        let folders = draft_folders(&draft);
         let next_source = next_url.clone().map(|url| {
             let folder = (had_url.as_deref() == Some(url.as_str()))
-                .then(|| draft.config.settings.source.as_ref().and_then(|s| s.folder.clone()))
+                .then(|| {
+                    draft_settings(&draft)
+                        .source
+                        .as_ref()
+                        .and_then(|source| source.folder.clone())
+                })
                 .flatten()
-                .filter(|f| draft.config.folders.iter().any(|k| &k.id == f));
+                .filter(|folder| folders.iter().any(|known| &known.id == folder));
             ImportSource { url, folder }
         });
-        draft.config.settings.source = next_source;
-        let folders = draft.config.folders.clone();
-        let empty_apis = draft.config.apis.is_empty();
+        set_draft_source(&mut draft, next_source);
+        let empty_apis = draft_has_no_apis(&draft);
         self.keep_draft(id.clone(), draft.clone(), cx);
 
         let storage = self.storage.clone();
@@ -1014,6 +1047,7 @@ impl DashboardState {
         let Some(collection) = self.listed.iter().find(|c| c.id == id).cloned() else {
             return;
         };
+        let storage = self.storage.clone();
         let task = store.fetch_text(url, cx);
         cx.spawn(async move |this, cx| {
             let parsed = match task.await {
@@ -1032,13 +1066,28 @@ impl DashboardState {
                         .read_with(cx, |this, _| this.drafts.get(&id).map(|d| Draft::clone(d)))
                         .ok()
                         .flatten();
-                    let Some(mut draft) = current_draft else {
+                    let Some(draft) = current_draft else {
                         return;
                     };
                     let col = collection.clone();
-                    let config = draft.config.clone();
+                    let stored = draft.config.clone();
+                    let changes = draft.changes.clone();
+                    let base = draft.base;
                     let merged = cx
                         .background_spawn(async move {
+                            // A changes-only draft has no bodies. The bundle
+                            // merges onto the server's requests, with the
+                            // changes already applied, and the result is kept
+                            // whole: a later sync replaces, it does not merge
+                            // onto stubs.
+                            let config = match stored {
+                                Some(config) => config,
+                                None => {
+                                    let mut config = storage.tree().config(col.id.clone()).await?.config;
+                                    sync::apply_changes(&mut config, &changes).map_err(StoreError::from)?;
+                                    config
+                                }
+                            };
                             let memory = MemoryStore::new();
                             memory.hold(col.clone(), config)?;
                             merge_bundle_into_storage(&memory.storage(), &col.id, bundle).await?;
@@ -1047,8 +1096,7 @@ impl DashboardState {
                         .await;
                     let _ = this.update(cx, |this, cx| match merged {
                         Ok(updated_config) => {
-                            draft.config = updated_config;
-                            this.keep_draft(id, draft, cx);
+                            this.keep_draft(id, Draft::whole(base, updated_config), cx);
                         }
                         Err(error) => cx.emit(DashboardEvent::Failed(error)),
                     });
@@ -1144,7 +1192,51 @@ impl DashboardState {
         // The reader's own items stay in this browser (server-sync §3.4).
         let scope = self.scope.clone().unwrap_or_default();
         let mut own = local_items::get(&scope, &id);
-        let config = own.syncable(&draft.config);
+        // An older draft still replaces the project. A changes-only one
+        // merges, so an API the reader never opened stays on the server.
+        let Some(config) = draft.config.clone() else {
+            let members = own.members(&draft_folders(&draft));
+            let changes = copy::filter_changes(&draft.changes, &members);
+            let sent = changes.clone();
+            let base = if over { None } else { draft.base };
+            let merging = id.clone();
+            let call: StoreFuture<Pushed> = Box::pin(async move {
+                match server.tree().merge(merging, changes, base).await {
+                    Ok(revision) => Ok(Pushed::Written(revision)),
+                    Err(StoreError::Stale { .. }) => Ok(Pushed::Conflict),
+                    Err(error) => Err(error),
+                }
+            });
+            run_store(cx, call, move |this, result, cx| {
+                this.syncing.remove(&id);
+                match result {
+                    Ok(Pushed::Written(revision)) => {
+                        // Unless it changed in another tab meanwhile.
+                        if let Some(scope) = this.scope.as_deref()
+                            && drafts_local::get(scope, &id).as_ref() == Some(&draft)
+                        {
+                            let mut left = draft;
+                            copy::drain_sent(&mut left.changes, &sent);
+                            let members = local_items::get(scope, &id).members(&draft_folders(&left));
+                            if copy::filter_changes(&left.changes, &members).is_empty() {
+                                drafts_local::remove(scope, &id);
+                            } else {
+                                left.base = Some(revision);
+                                drafts_local::set(scope, &id, &left);
+                            }
+                        }
+                        cx.emit(DashboardEvent::Synced(collection));
+                        this.reload(cx);
+                    }
+                    Ok(Pushed::Conflict) => cx.emit(DashboardEvent::Conflict(collection)),
+                    Err(error) => cx.emit(DashboardEvent::Failed(error)),
+                }
+                cx.notify();
+            });
+            cx.notify();
+            return;
+        };
+        let config = own.syncable(&config);
         let call = if over {
             copy::push_over(server, id.clone(), config.clone())
         } else {
@@ -1323,6 +1415,142 @@ fn pull_copies(desktop: Desktop, local: Storage, projects: Vec<Collection>) -> S
     })
 }
 
+/// The name a card shows for `draft`: the whole draft's, else the last
+/// rename, else the name the server listed.
+fn draft_title(draft: &Draft, listed: &Collection) -> (String, String) {
+    if let Some(config) = &draft.config {
+        return (config.name.clone(), config.description.clone());
+    }
+    for op in draft.changes.ops.iter().rev() {
+        if let ProjectOp::Describe { name, description } = op {
+            return (name.clone(), description.clone());
+        }
+    }
+    (listed.name.clone(), listed.description.clone())
+}
+
+/// The source a draft already decided, when it has: the whole project's,
+/// or the last settings change. `None` when the draft did not touch it, so
+/// the caller reads the outline.
+fn draft_source(draft: &Draft) -> Option<Option<ImportSource>> {
+    if let Some(config) = &draft.config {
+        return Some(config.settings.source.clone());
+    }
+    for op in draft.changes.ops.iter().rev() {
+        if let ProjectOp::ProjectSettings { settings } = op {
+            return Some(settings.source.clone());
+        }
+    }
+    None
+}
+
+/// Settings as the draft has them: the whole project's, else the last
+/// settings change, else the cached outline's.
+fn draft_settings(draft: &Draft) -> ProjectSettings {
+    if let Some(config) = &draft.config {
+        return config.settings.clone();
+    }
+    for op in draft.changes.ops.iter().rev() {
+        if let ProjectOp::ProjectSettings { settings } = op {
+            return settings.clone();
+        }
+    }
+    draft
+        .outline
+        .as_ref()
+        .map(|outline| outline.settings.clone())
+        .unwrap_or_default()
+}
+
+/// Folders the draft knows: the whole project's, or the outline plus
+/// folders a change created.
+fn draft_folders(draft: &Draft) -> Vec<Folder> {
+    let Some(config) = &draft.config else {
+        let mut folders = draft
+            .outline
+            .as_ref()
+            .map(|outline| outline.folders.clone())
+            .unwrap_or_default();
+        for op in &draft.changes.ops {
+            match op {
+                ProjectOp::CreateFolder { folder, .. } => {
+                    if !folders.iter().any(|found| found.id == folder.id) {
+                        folders.push(folder.clone());
+                    }
+                }
+                ProjectOp::Import { folders: more, .. } => {
+                    for folder in more {
+                        if !folders.iter().any(|found| found.id == folder.id) {
+                            folders.push(folder.clone());
+                        }
+                    }
+                }
+                ProjectOp::Delete { item } => folders.retain(|folder| &folder.id != item),
+                _ => {}
+            }
+        }
+        return folders;
+    };
+    config.folders.clone()
+}
+
+/// Whether the draft's project has no API yet: what decides a source URL
+/// is fetched on its own.
+fn draft_has_no_apis(draft: &Draft) -> bool {
+    if let Some(config) = &draft.config {
+        return config.apis.is_empty();
+    }
+    let mut ids: Vec<_> = draft
+        .outline
+        .as_ref()
+        .map(|outline| outline.apis.iter().map(|api| api.id.clone()).collect())
+        .unwrap_or_default();
+    for op in &draft.changes.ops {
+        match op {
+            ProjectOp::CreateApi { api, .. } => ids.push(api.id.clone()),
+            ProjectOp::Import { apis, .. } => ids.extend(apis.iter().map(|api| api.id.clone())),
+            ProjectOp::Delete { item } => ids.retain(|id| id != item),
+            _ => {}
+        }
+    }
+    ids.is_empty()
+}
+
+/// The name and description, as one change. An older whole draft is not
+/// this: its name is a field of the configuration.
+fn set_draft_describe(draft: &mut Draft, name: String, description: String) {
+    draft.changes.ops.retain(|op| !matches!(op, ProjectOp::Describe { .. }));
+    draft.changes.ops.push(ProjectOp::Describe {
+        name: name.clone(),
+        description: description.clone(),
+    });
+    if let Some(outline) = draft.outline.as_mut() {
+        outline.name = name;
+        outline.description = description;
+    }
+}
+
+/// `source` on the draft. A whole draft keeps it on the configuration. A
+/// changes-only one records the settings, other fields as they were.
+fn set_draft_source(draft: &mut Draft, source: Option<ImportSource>) {
+    if let Some(config) = draft.config.as_mut() {
+        config.settings.source = source;
+        return;
+    }
+    let mut settings = draft_settings(draft);
+    settings.source = source;
+    draft
+        .changes
+        .ops
+        .retain(|op| !matches!(op, ProjectOp::ProjectSettings { .. }));
+    draft.changes.ops.push(ProjectOp::ProjectSettings {
+        settings: settings.clone(),
+    });
+    if let Some(outline) = draft.outline.as_mut() {
+        outline.settings = settings;
+    }
+}
+
 /// B10: updates `prefs` for a project's source URL change, pruning `had_url`
 /// when it is no longer used by any folder in `folders`.
 fn apply_source_prefs(
@@ -1452,6 +1680,7 @@ async fn merge_bundle_into_storage(
 mod tests {
     use super::*;
     use cyberapi_core::access::CollectionRole;
+    use cyberapi_core::sync::ProjectConfig;
     use cyberapi_store::MemoryStore;
     use gpui_kit::{Entity, TestAppContext};
     use std::cell::RefCell;
@@ -1566,8 +1795,8 @@ mod tests {
         assert_eq!(state.read_with(cx, |state, _| state.unsynced(&shop.id)), Some(true));
         assert_eq!(
             state.read_with(cx, |state, _| state.api_count(&shop.id)),
-            Some(0),
-            "the draft's"
+            Some(1),
+            "the server's; the draft is only the rename"
         );
 
         // A push at the stale base is a conflict; over it, it is written.
@@ -1612,14 +1841,7 @@ mod tests {
             ..Default::default()
         });
         draft.top_order = vec!["mine".into(), "shared".into()];
-        drafts_local::set(
-            READER,
-            &shop.id,
-            &Draft {
-                base: Some(at.revision),
-                config: draft.clone(),
-            },
-        );
+        drafts_local::set(READER, &shop.id, &Draft::whole(Some(at.revision), draft.clone()));
         let mut own = LocalItems::default();
         own.level_with(&at.config);
         own.mark(&"mine".into());
@@ -1661,13 +1883,13 @@ mod tests {
         drafts_local::set(
             READER,
             &shop.id,
-            &Draft {
-                base: Some(shop.revision),
-                config: ProjectConfig {
+            &Draft::whole(
+                Some(shop.revision),
+                ProjectConfig {
                     name: "mine".into(),
                     ..Default::default()
                 },
-            },
+            ),
         );
         let state = cx.new(|cx| DashboardState::new(server.clone(), Some(READER.into()), None, cx));
         cx.run_until_parked();

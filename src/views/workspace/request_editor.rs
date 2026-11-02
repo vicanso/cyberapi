@@ -247,6 +247,13 @@ fn graphql_fields(
     }
 }
 
+/// Names the address menu can put in front of the URI. Adding a variable
+/// writes a blank row at once (`VariablesState::add`); with no name it
+/// draws as an empty band, and choosing it would write `{{}}`.
+fn prefix_choices(variables: &[(String, String)]) -> Vec<&(String, String)> {
+    variables.iter().filter(|(name, _)| !name.trim().is_empty()).collect()
+}
+
 /// What the address field says while empty: a gRPC call's address is
 /// `host:port` more often than a URL, and it takes no cURL command (#73).
 fn uri_placeholder(method: HttpMethod) -> String {
@@ -1647,15 +1654,16 @@ impl RequestEditor {
                         let _ = clear.update(cx, |this, cx| this.set_environment(None, cx));
                     },
                 ));
-                let menu = if environments.is_empty() {
+                let listed = prefix_choices(&environments);
+                let menu = if listed.is_empty() {
                     menu.separator()
                         .item(PopupMenuItem::new(t!("editor.no_environments").to_string()).disabled(true))
                 } else {
                     menu.separator()
                 };
                 let manage = this.clone();
-                environments
-                    .iter()
+                listed
+                    .into_iter()
                     .fold(menu, |menu, (name, value)| {
                         let (this, chosen) = (this.clone(), name.clone());
                         let (label, address) = (name.clone(), value.clone());
@@ -2500,5 +2508,25 @@ impl Render for RequestEditor {
             .when(scratch, |column| column.child(self.scratch_note(cx)))
             .child(self.render_tabs(tab, cx))
             .child(v_flex().flex_1().min_h_0().child(content))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prefix_choices;
+
+    #[test]
+    fn the_address_menu_skips_a_blank_environment_name() {
+        let variables = vec![
+            (String::new(), String::new()),
+            ("  ".into(), "http://unused".into()),
+            ("financeoperations".into(), "http://me.gf.com.cn:7001".into()),
+            ("host".into(), String::new()),
+        ];
+        let listed: Vec<&str> = prefix_choices(&variables)
+            .into_iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(listed, ["financeoperations", "host"]);
     }
 }

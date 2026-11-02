@@ -16,10 +16,11 @@
 //! `cyberapi_core::sync::step` says, with the server's content or the
 //! draft's.
 
-use super::copy::{self, Kept, Pushed, ServerCopy};
+use super::copy::{self, Kept, PushPlan, Pushed, Resume, ServerCopy};
 use super::{ApiState, AppStore, GrpcDefinitions, Load, MockState, ServerStatus, run_serial, run_store};
 use crate::pacing;
 use async_lock::Mutex;
+use cyberapi_core::Timestamp;
 use cyberapi_core::auth::Auth;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::environments;
@@ -36,7 +37,7 @@ use cyberapi_core::prefs::{
 };
 use cyberapi_core::response::{HttpResponse, RECENT_LIMIT};
 use cyberapi_core::secrets::{self, SecretValues};
-use cyberapi_core::sync::{self, ConfigAt, Moment, ProjectConfig, ProjectVersion, Step};
+use cyberapi_core::sync::{self, ConfigAt, Moment, OutlineAt, ProjectChanges, ProjectConfig, ProjectVersion, Step};
 use cyberapi_core::template::Answers;
 use cyberapi_core::template_hints;
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
@@ -145,6 +146,10 @@ pub enum WorkspaceEvent {
     /// F15 / BUG-7: asks any mounted RequestEditor (main window or apart
     /// window) to flush pending debounced edits into its ApiState at once.
     FlushEditors,
+    /// The project or a folder, once the requests it exports were read.
+    ExportReady { name: String, text: String },
+    /// One API's record, for the clipboard, once its request was read.
+    ApiConfig(String),
 }
 
 /// F6: a delete that can be undone, and what of the reader's own state of
@@ -166,9 +171,47 @@ struct RowsOf {
     expanded: Vec<ItemId>,
 }
 
+/// What opening a copy read from the server. A page reads the outline. The
+/// desktop still reads the whole configuration into its database, and the
+/// workspace then keeps only the outline.
+enum RemoteProject {
+    Config(ConfigAt),
+    Outline(OutlineAt),
+}
+
+impl RemoteProject {
+    fn revision(&self) -> u64 {
+        match self {
+            Self::Config(at) => at.revision,
+            Self::Outline(at) => at.revision,
+        }
+    }
+
+    fn outline(&self) -> Option<cyberapi_core::sync::ProjectOutline> {
+        match self {
+            Self::Outline(at) => Some(at.outline.clone()),
+            Self::Config(_) => None,
+        }
+    }
+}
+
+/// What a sync sent, so the copy can be marked from it.
+enum Sent {
+    Replace(Box<ProjectConfig>),
+    Merge(ProjectChanges),
+}
+
+struct PushDone {
+    pushed: Pushed,
+    landed: u64,
+    /// `sync(true)`: the reader's changes over whatever the server has.
+    over: bool,
+    sent: Sent,
+}
+
 /// What opening a copy found: what this machine kept, and the server's
-/// project and content — or why not.
-type Opened = (Option<Kept>, Result<(Collection, ConfigAt), StoreError>);
+/// project — or why not.
+type Opened = (Option<Kept>, Result<(Collection, RemoteProject), StoreError>);
 
 /// A server project's working copy, as the workspace keeps it.
 struct CopyState {
@@ -195,6 +238,9 @@ struct CopyState {
     draft: Task<()>,
     _news: Task<()>,
 }
+
+/// What to do once the requests a call asked for are in the tree.
+type BodyReady = Box<dyn FnOnce(&mut WorkspaceState, &mut Context<WorkspaceState>) + 'static>;
 
 pub struct WorkspaceState {
     sender: Sender,
@@ -304,6 +350,14 @@ pub struct WorkspaceState {
     sources_booted: bool,
     _source_poll: Option<Task<()>>,
     _local_mcp: Option<gpui_kit::Subscription>,
+    /// APIs whose request document is in `data`, by the `updated_at` it was
+    /// read at. A stub looks like an empty request, so this is what says
+    /// the document was actually read.
+    loaded: HashMap<ItemId, Timestamp>,
+    /// A read of that API's request is already on its way.
+    fetching: HashSet<ItemId>,
+    /// Runs once each of its APIs' requests has been read, or the read failed.
+    body_wait: Vec<(HashSet<ItemId>, BodyReady)>,
 }
 
 impl EventEmitter<WorkspaceEvent> for WorkspaceState {}
@@ -430,6 +484,9 @@ impl WorkspaceState {
             sources_booted: false,
             _source_poll: None,
             _local_mcp: local_mcp,
+            loaded: HashMap::new(),
+            fetching: HashSet::new(),
+            body_wait: Vec::new(),
         };
         state.reload(cx);
         state
@@ -481,10 +538,11 @@ impl WorkspaceState {
         }
         self.collection = collection;
         self.refresh_kept_variables(cx);
-        let call = self.sender.storage.tree().load(self.collection.id.clone());
+        let call = self.sender.storage.tree().outline(self.collection.id.clone());
         run_serial(cx, &self.gate, call, |this, result, cx| match result {
-            Ok(data) => {
-                this.set_data(data, cx);
+            Ok(at) => {
+                let config = at.outline.config(&this.collection.id);
+                this.install_config(config, &HashSet::new(), false, cx);
                 cx.notify();
             }
             Err(error) => warn!(%error, "the project's tree could not be read again"),
@@ -496,6 +554,7 @@ impl WorkspaceState {
     /// its content.
     fn open_copy(&mut self, cx: &mut Context<Self>) {
         let Some(copy) = &self.copy else { return };
+        let page = copy.copy.is_page();
         let (server, id, kept) = (copy.server.clone(), self.collection.id.clone(), copy.copy.kept());
         // A kept copy opens without the server once it has been waited for
         // long enough — at once, the server known to be out of reach — as
@@ -510,9 +569,17 @@ impl WorkspaceState {
         });
         let call: StoreFuture<Opened> = Box::pin(async move {
             let kept = kept.await?;
-            let on_server = Box::pin(async {
+            let on_server = Box::pin(async move {
                 let found = server.collections().get(id.clone()).await?;
-                Ok((found, server.tree().config(id).await?))
+                // A page reads the outline. The desktop still reads the
+                // whole configuration into its database: an old bridge has
+                // no outline call.
+                let project = if page {
+                    RemoteProject::Outline(server.tree().outline(id).await?)
+                } else {
+                    RemoteProject::Config(server.tree().config(id).await?)
+                };
+                Ok((found, project))
             });
             let on_server = match patience {
                 Some((wait, timer)) if kept.is_some() => match futures::future::select(on_server, timer).await {
@@ -538,7 +605,7 @@ impl WorkspaceState {
     fn copy_opened(
         &mut self,
         kept: Option<Kept>,
-        on_server: Result<(Collection, ConfigAt), StoreError>,
+        on_server: Result<(Collection, RemoteProject), StoreError>,
         cx: &mut Context<Self>,
     ) {
         self.heard_from_server(on_server.as_ref().err(), cx);
@@ -557,26 +624,27 @@ impl WorkspaceState {
         let kept = kept.filter(|kept| editable || !kept.unsynced);
         let collection = self.collection.clone();
         let Some(copy) = self.copy.as_mut() else { return };
-        let kept = match (on_server, kept) {
-            (Ok((_, at)), Some(kept)) => {
-                let step = sync::step(Moment::Look, kept.base, at.revision, kept.unsynced);
+        let (kept, fresh) = match (on_server, kept) {
+            (Ok((_, project)), Some(kept)) => {
+                let step = sync::step(Moment::Look, kept.base, project.revision(), kept.unsynced);
                 if step == Step::Pull {
-                    return self.take(at, false, cx);
+                    return self.take_remote(project, false, cx);
                 }
                 if kept.unsynced {
                     copy.behind = step == Step::KeepUnsyncedBehind;
                     copy.told = true;
                     cx.emit(WorkspaceEvent::KeptUnsynced { behind: copy.behind });
                 }
-                kept
+                let fresh = project.outline();
+                (kept, fresh)
             }
-            (Ok((_, at)), None) => return self.take(at, false, cx),
+            (Ok((_, project)), None) => return self.take_remote(project, false, cx),
             // Not reachable, or not the reader's any more: what this
             // machine kept is worked on, as long as there is that.
             (Err(error), Some(kept)) => {
                 copy.told = kept.unsynced;
                 cx.emit(WorkspaceEvent::NotPulled(error));
-                kept
+                (kept, None)
             }
             (Err(error), None) => {
                 self.load = Load::Failed(error);
@@ -587,14 +655,21 @@ impl WorkspaceState {
             self.collection.name = draft.name.clone();
             self.collection.description = draft.description.clone();
         }
-        match copy.copy.resume(collection, kept) {
-            Ok(()) => {
-                let adopt = copy.copy.adopt();
-                run_serial(cx, &self.gate, adopt, |_, result, _| {
-                    if let Err(error) = result {
-                        warn!(%error, "the reader's own items could not be settled");
-                    }
-                });
+        match copy.copy.resume(collection, kept, fresh) {
+            Ok(resume) => {
+                if resume == Resume::Behind
+                    && let Some(copy) = self.copy.as_mut()
+                {
+                    copy.behind = true;
+                }
+                let adopt = self.copy.as_ref().map(|copy| copy.copy.adopt());
+                if let Some(adopt) = adopt {
+                    run_serial(cx, &self.gate, adopt, |_, result, _| {
+                        if let Err(error) = result {
+                            warn!(%error, "the reader's own items could not be settled");
+                        }
+                    });
+                }
                 self.load_all(cx)
             }
             Err(error) => {
@@ -638,13 +713,21 @@ impl WorkspaceState {
             return;
         };
         copy.busy = true;
-        let call = copy.server.tree().config(id);
+        let page = copy.copy.is_page();
+        let server = copy.server.clone();
+        let call: StoreFuture<RemoteProject> = Box::pin(async move {
+            if page {
+                Ok(RemoteProject::Outline(server.tree().outline(id).await?))
+            } else {
+                Ok(RemoteProject::Config(server.tree().config(id).await?))
+            }
+        });
         run_serial(cx, &self.gate, call, |this, result, cx| {
             if let Some(copy) = this.copy.as_mut() {
                 copy.busy = false;
             }
             match result {
-                Ok(at) if !this.keeps_changes(cx) => this.take(at, false, cx),
+                Ok(project) if !this.keeps_changes(cx) => this.take_remote(project, false, cx),
                 Ok(_) => {}
                 Err(error) => {
                     this.heard_from_server(Some(&error), cx);
@@ -659,60 +742,86 @@ impl WorkspaceState {
             || self.kept.values().any(|api| api.read(cx).has_unsaved())
     }
 
-    /// The server's content becomes the copy, level with it.
-    fn take(&mut self, at: ConfigAt, forget: bool, cx: &mut Context<Self>) {
+    /// The server's project becomes the copy, level with it. A page takes
+    /// the outline. The desktop takes the whole configuration into its
+    /// database, and the workspace keeps the outline.
+    fn take_remote(&mut self, project: RemoteProject, forget: bool, cx: &mut Context<Self>) {
+        match project {
+            RemoteProject::Outline(at) => self.take_outline(at, forget, cx),
+            RemoteProject::Config(at) => self.take_config(at, forget, cx),
+        }
+    }
+
+    fn take_outline(&mut self, at: OutlineAt, forget: bool, cx: &mut Context<Self>) {
+        let Some(copy) = self.copy.as_mut() else { return };
+        let collection = Collection {
+            name: at.outline.name.clone(),
+            description: at.outline.description.clone(),
+            ..self.collection.clone()
+        };
+        let call = copy.copy.take_outline(collection, at.outline, at.revision);
+        copy.behind = false;
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(config) => {
+                let bodies = this.copy.as_ref().map(|copy| copy.copy.body_ids()).unwrap_or_default();
+                this.finish_took(config, bodies, forget, cx);
+            }
+            Err(error) => this.take_failed(error, cx),
+        });
+    }
+
+    fn take_config(&mut self, at: ConfigAt, forget: bool, cx: &mut Context<Self>) {
         let Some(copy) = self.copy.as_mut() else { return };
         let collection = Collection {
             name: at.config.name.clone(),
             description: at.config.description.clone(),
             ..self.collection.clone()
         };
-        let call = copy.copy.take(collection, at.config.clone(), at.revision);
+        let call = copy.copy.take(collection, at.config, at.revision);
         copy.behind = false;
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
-            // With the reader's own items back in it.
-            Ok(config) => this.took(
-                ConfigAt {
-                    revision: at.revision,
-                    config,
-                },
-                forget,
-                cx,
-            ),
-            Err(error) => {
-                if this.load != Load::Loaded {
-                    this.load = Load::Failed(error.clone());
-                }
-                cx.emit(WorkspaceEvent::Failed(error));
-                cx.notify();
-            }
+            // The database has every request. The workspace reads the outline.
+            Ok(_) => this.took_outline(forget, cx),
+            Err(error) => this.take_failed(error, cx),
         });
     }
 
-    /// The copy is the server's content now. An open tab's editor starts
-    /// again from it when its request changed — or always, when the reader
-    /// gave their changes up (`forget`).
-    fn took(&mut self, at: ConfigAt, forget: bool, cx: &mut Context<Self>) {
-        let data = at.config.tree();
-        self.collection.name = at.config.name;
-        self.collection.description = at.config.description;
-        let request = |data: &TreeData, id: &ItemId| {
-            data.apis
-                .iter()
-                .find(|api| &api.id == id)
-                .map(|api| api.request.clone())
-        };
-        let stale: Vec<ItemId> = self
-            .kept
-            .keys()
-            .filter(|id| forget || request(&self.data, id) != request(&data, id))
-            .cloned()
-            .collect();
-        for id in &stale {
-            self.start_again(id, cx);
+    fn take_failed(&mut self, error: StoreError, cx: &mut Context<Self>) {
+        if self.load != Load::Loaded {
+            self.load = Load::Failed(error.clone());
         }
+        cx.emit(WorkspaceEvent::Failed(error));
+        cx.notify();
+    }
+
+    /// The desktop's database has the server's content. The workspace keeps
+    /// the outline, and reads a request when its tab opens.
+    fn took_outline(&mut self, forget: bool, cx: &mut Context<Self>) {
+        if self.load != Load::Loaded {
+            self.load_all(cx);
+            if forget {
+                cx.emit(WorkspaceEvent::TookServers);
+            }
+            cx.notify();
+            return;
+        }
+        let id = self.collection.id.clone();
+        let call = self.sender.storage.tree().outline(id);
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(at) => {
+                let config = at.outline.config(&this.collection.id);
+                this.finish_took(config, HashSet::new(), forget, cx);
+            }
+            Err(error) => this.take_failed(error, cx),
+        });
+    }
+
+    /// The copy is the server's outline now. An open tab whose request
+    /// changed is read again — or every open tab, when the reader gave
+    /// their changes up (`forget`).
+    fn finish_took(&mut self, config: ProjectConfig, bodies: HashSet<ItemId>, forget: bool, cx: &mut Context<Self>) {
         if self.load == Load::Loaded {
-            self.set_data(data, cx);
+            self.install_config(config, &bodies, forget, cx);
             self.refresh_kept_variables(cx);
         } else {
             self.load_all(cx);
@@ -853,28 +962,68 @@ impl WorkspaceState {
         };
         let Some(over) = copy.push.take() else { return };
         let (server, snapshot) = (copy.server.clone(), copy.copy.snapshot());
-        let call: StoreFuture<(Pushed, u64, ProjectConfig)> = Box::pin(async move {
-            let (config, base, landed) = snapshot.await?;
-            let pushed = if over {
-                copy::push_over(server, id, config.clone()).await?
-            } else {
-                copy::push(server, id, config.clone(), base).await?
+        let call: StoreFuture<PushDone> = Box::pin(async move {
+            let plan = snapshot.await?;
+            let (pushed, landed, sent) = match plan {
+                PushPlan::Replace { config, base, landed } => {
+                    let pushed = if over {
+                        copy::push_over(server, id, (*config).clone()).await?
+                    } else {
+                        copy::push(server, id, (*config).clone(), base).await?
+                    };
+                    (pushed, landed, Sent::Replace(config))
+                }
+                // The server merges the changes. The page's own copy is an
+                // outline: merging onto it would wipe the requests.
+                PushPlan::Merge { changes, base, landed } => {
+                    let base = if over { None } else { base };
+                    let pushed = match server.tree().merge(id, changes.clone(), base).await {
+                        Ok(revision) => Pushed::Written(revision),
+                        Err(StoreError::Stale { .. }) => Pushed::Conflict,
+                        Err(error) => return Err(error),
+                    };
+                    (pushed, landed, Sent::Merge(changes))
+                }
             };
-            Ok((pushed, landed, config))
+            Ok(PushDone {
+                pushed,
+                landed,
+                over,
+                sent,
+            })
         });
         run_store(cx, call, |this, result, cx| this.pushed(result, cx));
     }
 
-    fn pushed(&mut self, result: Result<(Pushed, u64, ProjectConfig), StoreError>, cx: &mut Context<Self>) {
+    fn pushed(&mut self, result: Result<PushDone, StoreError>, cx: &mut Context<Self>) {
         self.heard_from_server(result.as_ref().err(), cx);
         let Some(copy) = self.copy.as_mut() else { return };
         copy.busy = false;
         match result {
-            Ok((Pushed::Written(revision), landed, config)) => {
-                let keep = copy.copy.pushed(revision, landed, config);
-                cx.background_spawn(async move {
+            Ok(PushDone {
+                pushed: Pushed::Written(revision),
+                landed,
+                over,
+                sent,
+            }) => {
+                let page = copy.copy.is_page();
+                let keep = match sent {
+                    Sent::Replace(config) => copy.copy.pushed(revision, landed, *config),
+                    Sent::Merge(changes) => copy.copy.merged(revision, landed, changes),
+                };
+                // A base-matched sync leaves the outline where it is: pulling
+                // it would drop answers the page is still holding. Overwriting
+                // reads the outline again, so both sides show.
+                cx.spawn(async move |this, cx| {
                     if let Err(error) = keep.await {
                         warn!(%error, "the synced copy could not be marked");
+                    }
+                    if over && page {
+                        let _ = this.update(cx, |this, cx| {
+                            if !this.unsynced() {
+                                this.pull(cx);
+                            }
+                        });
                     }
                 })
                 .detach();
@@ -893,7 +1042,10 @@ impl WorkspaceState {
                 });
                 cx.emit(WorkspaceEvent::Synced);
             }
-            Ok((Pushed::Conflict, ..)) => cx.emit(WorkspaceEvent::Conflict),
+            Ok(PushDone {
+                pushed: Pushed::Conflict,
+                ..
+            }) => cx.emit(WorkspaceEvent::Conflict),
             // Not the reader's to change any more, or not reachable: the
             // changes stay, unsynced.
             Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
@@ -910,14 +1062,22 @@ impl WorkspaceState {
             return;
         };
         copy.busy = true;
-        let call = copy.server.tree().config(id);
+        let page = copy.copy.is_page();
+        let server = copy.server.clone();
+        let call: StoreFuture<RemoteProject> = Box::pin(async move {
+            if page {
+                Ok(RemoteProject::Outline(server.tree().outline(id).await?))
+            } else {
+                Ok(RemoteProject::Config(server.tree().config(id).await?))
+            }
+        });
         run_serial(cx, &self.gate, call, |this, result, cx| {
             if let Some(copy) = this.copy.as_mut() {
                 copy.busy = false;
             }
             this.heard_from_server(result.as_ref().err(), cx);
             match result {
-                Ok(at) => this.take(at, true, cx),
+                Ok(project) => this.take_remote(project, true, cx),
                 Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
             }
             cx.notify();
@@ -1684,6 +1844,16 @@ impl WorkspaceState {
         }
         self.shown.retain(|shown| shown != &api.id);
         self.shown.push(api.id.clone());
+        // A request that has not been read yet is a stub. The editor opens
+        // once the document arrives, not in this same turn.
+        if !self.is_scratch(&api.id) && !self.loaded.contains_key(&api.id) {
+            if current.as_ref() == Some(&api.id) && self.api.is_some() {
+                self.limit_tabs(&api.id, cx);
+                return;
+            }
+            self.fetch_body(api.id.clone(), cx);
+            return;
+        }
         if current.as_ref() != Some(&api.id) {
             // Leaving a tab saves what its editor still waits to.
             if let Some(left) = &self.api {
@@ -1863,6 +2033,11 @@ impl WorkspaceState {
             return;
         }
         if !self.kept.contains_key(id) {
+            if !self.is_scratch(id) && !self.loaded.contains_key(id) {
+                let id = id.clone();
+                self.with_bodies(vec![id.clone()], Box::new(move |this, cx| this.part(&id, cx)), cx);
+                return;
+            }
             let Some(api) = self.api_setting(id) else {
                 return;
             };
@@ -1986,11 +2161,15 @@ impl WorkspaceState {
 
     /// An API's request was saved: the tree's copy follows (its method label).
     pub fn api_saved(&mut self, setting: ApiSetting, cx: &mut Context<Self>) {
+        if !self.data.apis.iter().any(|api| api.id == setting.id) {
+            return;
+        }
+        self.mark_loaded(&setting);
         if let Some(api) = self.data.apis.iter_mut().find(|api| api.id == setting.id) {
             *api = setting;
-            self.build_tree();
-            cx.notify();
         }
+        self.build_tree();
+        cx.notify();
     }
 
     pub fn load(&self) -> &Load {
@@ -2087,20 +2266,11 @@ impl WorkspaceState {
         run_serial(
             cx,
             &self.gate,
-            self.sender.storage.tree().load(id),
+            self.sender.storage.tree().outline(id),
             |this, result, cx| {
-                if let Ok(data) = result {
-                    for setting in &data.apis {
-                        if let Some(api) = this.kept.get(&setting.id).cloned()
-                            && !api.read(cx).has_unsaved()
-                            && api.read(cx).request() != &setting.request
-                        {
-                            let req = setting.request.clone();
-                            api.update(cx, |api, cx| api.set_stored_request(req, cx));
-                        }
-                    }
-                    this.set_data(data, cx);
-                    this.sync_api(cx);
+                if let Ok(at) = result {
+                    let config = at.outline.config(&this.collection.id);
+                    this.install_config(config, &HashSet::new(), false, cx);
                     cx.notify();
                 }
             },
@@ -2119,21 +2289,44 @@ impl WorkspaceState {
     fn load_all(&mut self, cx: &mut Context<Self>) {
         self.refresh_kept_variables(cx);
         let id = self.collection.id.clone();
-        run_store(cx, self.sender.storage.tree().load(id.clone()), |this, result, cx| {
-            match result {
-                Ok(data) => {
-                    // Loaded first: the open tabs are checked against it.
-                    this.load = Load::Loaded;
-                    this.set_data(data, cx);
-                    if let Some(import) = this.waiting_import.take() {
-                        this.import(None, Arc::unwrap_or_clone(import), cx);
+        // A page's working copy is already the outline, with the requests
+        // it has actually read. Anything else is read as an outline.
+        if self.copy.as_ref().is_some_and(|copy| copy.copy.is_page()) {
+            match self.copy.as_ref().map(|copy| copy.copy.held_config()) {
+                Some(Ok(config)) => {
+                    let bodies = self.copy.as_ref().map(|copy| copy.copy.body_ids()).unwrap_or_default();
+                    self.load = Load::Loaded;
+                    self.install_config(config, &bodies, false, cx);
+                    if let Some(import) = self.waiting_import.take() {
+                        self.import(None, Arc::unwrap_or_clone(import), cx);
                     }
-                    this.select_waiting(cx);
+                    self.select_waiting(cx);
                 }
-                Err(error) => this.load = Load::Failed(error),
+                Some(Err(error)) => self.load = Load::Failed(error),
+                None => self.load = Load::Failed(StoreError::backend("the page's copy is gone")),
             }
             cx.notify();
-        });
+        } else {
+            run_store(
+                cx,
+                self.sender.storage.tree().outline(id.clone()),
+                |this, result, cx| {
+                    match result {
+                        Ok(at) => {
+                            let config = at.outline.config(&this.collection.id);
+                            this.load = Load::Loaded;
+                            this.install_config(config, &HashSet::new(), false, cx);
+                            if let Some(import) = this.waiting_import.take() {
+                                this.import(None, Arc::unwrap_or_clone(import), cx);
+                            }
+                            this.select_waiting(cx);
+                        }
+                        Err(error) => this.load = Load::Failed(error),
+                    }
+                    cx.notify();
+                },
+            );
+        }
         run_store(cx, self.sender.storage.prefs().workspace(id), |this, result, cx| {
             match result {
                 Ok(mut prefs) => {
@@ -2187,6 +2380,178 @@ impl WorkspaceState {
         self.data = data;
         self.build_tree();
         self.sync_api(cx);
+    }
+
+    /// The outline `config` becomes the tree. `bodies` are requests the
+    /// copy already holds, and stay. A request read before stays too, when
+    /// its `updated_at` is the outline's. An open tab whose head changed
+    /// is read again. `forget` drops every read request and starts the
+    /// open editors again.
+    fn install_config(
+        &mut self,
+        config: ProjectConfig,
+        bodies: &HashSet<ItemId>,
+        forget: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.collection.name = config.name.clone();
+        self.collection.description = config.description.clone();
+        if forget {
+            let open: Vec<ItemId> = self.kept.keys().cloned().collect();
+            for id in &open {
+                self.start_again(id, cx);
+            }
+            self.loaded.clear();
+        }
+        let previous = self.data.clone();
+        let mut next = config.tree();
+        let mut loaded = if forget { HashMap::new() } else { self.loaded.clone() };
+        let mut refetch = Vec::new();
+        for api in &mut next.apis {
+            if bodies.contains(&api.id) {
+                loaded.insert(api.id.clone(), api.updated_at);
+                continue;
+            }
+            if let Some(stamp) = loaded.get(&api.id).copied()
+                && stamp == api.updated_at
+                && let Some(old) = previous.apis.iter().find(|old| old.id == api.id)
+            {
+                let name = api.name.clone();
+                let method = api.request.method;
+                let uri = api.request.uri.clone();
+                *api = old.clone();
+                api.name = name;
+                api.request.method = method;
+                api.request.uri = uri;
+                continue;
+            }
+            loaded.remove(&api.id);
+            if (self.kept.contains_key(&api.id)
+                || self.prefs.open.contains(&api.id)
+                || self.prefs.pinned.contains(&api.id))
+                && !self.is_scratch(&api.id)
+            {
+                refetch.push(api.id.clone());
+            }
+        }
+        loaded.retain(|id, _| next.apis.iter().any(|api| &api.id == id));
+        self.loaded = loaded;
+        for id in &refetch {
+            self.start_again(id, cx);
+        }
+        self.set_data(next, cx);
+        for id in refetch {
+            self.fetch_body(id, cx);
+        }
+    }
+
+    fn mark_loaded(&mut self, api: &ApiSetting) {
+        self.loaded.insert(api.id.clone(), api.updated_at);
+    }
+
+    /// Whether every API in `ids` that is still in the tree has had its
+    /// request read.
+    pub(crate) fn bodies_present(&self, ids: &[ItemId]) -> bool {
+        ids.iter().all(|id| {
+            self.loaded.contains_key(id) || self.is_scratch(id) || !self.data.apis.iter().any(|api| &api.id == id)
+        })
+    }
+
+    /// The APIs in `root` (`None`: the whole project), or `root` itself
+    /// when it is an API.
+    pub(crate) fn apis_in(&self, root: Option<&ItemId>) -> Vec<ItemId> {
+        let Some(root) = root else {
+            return self.data.apis.iter().map(|api| api.id.clone()).collect();
+        };
+        if self.data.apis.iter().any(|api| &api.id == root) {
+            return vec![root.clone()];
+        }
+        let mut ids = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(id) = stack.pop() {
+            let Some(folder) = self.data.folders.iter().find(|folder| folder.id == id) else {
+                continue;
+            };
+            for child in &folder.children {
+                if self.data.apis.iter().any(|api| &api.id == child) {
+                    ids.push(child.clone());
+                } else {
+                    stack.push(child.clone());
+                }
+            }
+        }
+        ids
+    }
+
+    /// Reads `ids` that are still stubs, then runs `then`. When they are
+    /// already read, `then` runs now.
+    pub(crate) fn with_bodies(&mut self, ids: Vec<ItemId>, then: BodyReady, cx: &mut Context<Self>) {
+        let missing: HashSet<ItemId> = ids
+            .into_iter()
+            .filter(|id| self.data.apis.iter().any(|api| &api.id == id) && !self.loaded.contains_key(id))
+            .collect();
+        if missing.is_empty() {
+            then(self, cx);
+            return;
+        }
+        for id in &missing {
+            self.fetch_body(id.clone(), cx);
+        }
+        self.body_wait.push((missing, then));
+    }
+
+    /// The request `id`, from the server when a page does not have it yet,
+    /// otherwise from this project's store. It is not a change to sync.
+    fn fetch_body(&mut self, id: ItemId, cx: &mut Context<Self>) {
+        if self.loaded.contains_key(&id) || !self.fetching.insert(id.clone()) {
+            return;
+        }
+        let collection = self.collection.id.clone();
+        let call = if let Some(copy) = &self.copy {
+            if copy.copy.is_page() {
+                copy.copy.load_body(&copy.server, id.clone())
+            } else {
+                self.sender.storage.tree().api(collection, id.clone())
+            }
+        } else {
+            self.sender.storage.tree().api(collection, id.clone())
+        };
+        run_store(cx, call, move |this, result, cx| {
+            this.fetching.remove(&id);
+            match result {
+                Ok(setting) => {
+                    if let Some(api) = this.data.apis.iter_mut().find(|api| api.id == setting.id) {
+                        *api = setting.clone();
+                    }
+                    this.mark_loaded(&setting);
+                    this.build_tree();
+                    this.sync_api(cx);
+                }
+                Err(error) => warn!(%error, "an API's request could not be read"),
+            }
+            this.bodies_arrived(cx);
+            cx.notify();
+        });
+    }
+
+    fn bodies_arrived(&mut self, cx: &mut Context<Self>) {
+        let waiting = std::mem::take(&mut self.body_wait);
+        let mut later = Vec::new();
+        let mut ready = Vec::new();
+        for (ids, then) in waiting {
+            let done = ids
+                .iter()
+                .all(|id| self.loaded.contains_key(id) || !self.fetching.contains(id));
+            if done {
+                ready.push(then);
+            } else {
+                later.push((ids, then));
+            }
+        }
+        self.body_wait = later;
+        for then in ready {
+            then(self, cx);
+        }
     }
 
     /// F3.2.
@@ -2340,6 +2705,7 @@ impl WorkspaceState {
                     .save_request(this.collection.id.clone(), new_id.clone(), request);
                 run_serial(cx, &this.gate, call, move |this, result, cx| match result {
                     Ok(setting) => {
+                        this.mark_loaded(&setting);
                         this.data.apis.push(setting);
                         this.data.apply(&change);
                         this.build_tree();
@@ -2393,6 +2759,7 @@ impl WorkspaceState {
             .create_api(self.collection.id.clone(), parent.clone(), name);
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(inserted) => {
+                this.mark_loaded(&inserted.item);
                 this.data.apis.push(inserted.item.clone());
                 this.data.apply(&inserted.change);
                 this.build_tree();
@@ -2570,6 +2937,15 @@ impl WorkspaceState {
     /// selected. Its request is the one in the editor, when the API is the
     /// one open — edits not saved yet go too; its history starts empty.
     pub fn duplicate(&mut self, id: &ItemId, name: String, cx: &mut Context<Self>) {
+        if !self.loaded.contains_key(id) {
+            let (id, name) = (id.clone(), name.clone());
+            self.with_bodies(
+                vec![id.clone()],
+                Box::new(move |this, cx| this.duplicate(&id, name, cx)),
+                cx,
+            );
+            return;
+        }
         let Some(stored) = self.data.apis.iter().find(|api| &api.id == id) else {
             return;
         };
@@ -2591,6 +2967,9 @@ impl WorkspaceState {
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
             Ok(imported) => {
                 let copy = imported.apis.first().map(|api| api.id.clone());
+                for api in &imported.apis {
+                    this.mark_loaded(api);
+                }
                 this.data.apis.extend(imported.apis);
                 this.data.apply(&imported.change);
                 this.build_tree();
@@ -2644,6 +3023,9 @@ impl WorkspaceState {
                     ([api], 0) => Some(api.id.clone()),
                     _ => None,
                 };
+                for api in &imported.apis {
+                    this.mark_loaded(api);
+                }
                 this.data.folders.extend(imported.folders);
                 this.data.apis.extend(imported.apis);
                 this.data.apply(&imported.change);
@@ -2683,6 +3065,19 @@ impl WorkspaceState {
         from_source_sync: bool,
         cx: &mut Context<Self>,
     ) {
+        // Matching and updating read the requests. A stub would drop what
+        // the reader kept on an API the document does not replace.
+        let ids = self.apis_in(None);
+        if !self.bodies_present(&ids) {
+            self.with_bodies(
+                ids,
+                Box::new(move |this, cx| {
+                    this.import_again_scoped(parent, bundle, update, within_folder, from_source_sync, cx);
+                }),
+                cx,
+            );
+            return;
+        }
         // The open tabs as their editors hold them: an edit not saved yet is
         // what updating starts from.
         let open: Vec<(ItemId, HttpRequest)> = self
@@ -2793,6 +3188,9 @@ impl WorkspaceState {
             run_serial(cx, &self.gate, call, move |this, result, cx| {
                 match result {
                     Ok(imported) => {
+                        for api in &imported.apis {
+                            this.mark_loaded(api);
+                        }
                         this.data.folders.extend(imported.folders);
                         this.data.apis.extend(imported.apis);
                         this.data.apply(&imported.change);
@@ -3236,6 +3634,16 @@ impl WorkspaceState {
     }
 
     fn auto_sync_target(&mut self, folder: Option<ItemId>, bundle: &ImportBundle, cx: &mut Context<Self>) {
+        let ids = self.apis_in(folder.as_ref());
+        if !self.bodies_present(&ids) {
+            let bundle = bundle.clone();
+            self.with_bodies(
+                ids,
+                Box::new(move |this, cx| this.auto_sync_target(folder, &bundle, cx)),
+                cx,
+            );
+            return;
+        }
         let open: HashMap<ItemId, HttpRequest> = self
             .kept
             .values()
@@ -3312,6 +3720,9 @@ impl WorkspaceState {
                 .import(collection.clone(), place.clone(), items);
             run_serial(cx, &self.gate, call, move |this, result, cx| match result {
                 Ok(imported) => {
+                    for api in &imported.apis {
+                        this.mark_loaded(api);
+                    }
                     this.data.folders.extend(imported.folders);
                     this.data.apis.extend(imported.apis);
                     this.data.apply(&imported.change);
@@ -3499,6 +3910,19 @@ impl WorkspaceState {
         Some(cyberapi_core::import::api_config(api))
     }
 
+    /// F3.9: `id`'s record, once its request has been read, for the clipboard.
+    pub fn copy_api_config(&mut self, id: ItemId, cx: &mut Context<Self>) {
+        self.with_bodies(
+            vec![id.clone()],
+            Box::new(move |this, cx| {
+                if let Some(text) = this.api_config(&id) {
+                    cx.emit(WorkspaceEvent::ApiConfig(text));
+                }
+            }),
+            cx,
+        );
+    }
+
     /// The method of the API `id`.
     pub fn api_method(&self, id: &ItemId) -> Option<HttpMethod> {
         self.data
@@ -3511,6 +3935,15 @@ impl WorkspaceState {
     /// F3.9 / F7.8 / #69: the API as code, prepared as sending would
     /// prepare its stored request.
     pub fn copy_code(&mut self, id: &ItemId, target: CodeTarget, cx: &mut Context<Self>) {
+        if !self.is_scratch(id) && !self.loaded.contains_key(id) {
+            let id = id.clone();
+            self.with_bodies(
+                vec![id.clone()],
+                Box::new(move |this, cx| this.copy_code(&id, target, cx)),
+                cx,
+            );
+            return;
+        }
         let Some(api) = self.data.apis.iter().find(|api| &api.id == id) else {
             return;
         };
@@ -3539,6 +3972,19 @@ impl WorkspaceState {
     /// in `format`, and the file name it is saved as. A Postman collection
     /// takes the variables every environment shares; an OpenAPI document
     /// reads its servers in the reader's environment.
+    /// Reads the requests the export names, then tells the view.
+    pub fn export_ready(&mut self, folder: Option<ItemId>, format: ExportFormat, cx: &mut Context<Self>) {
+        let ids = self.apis_in(folder.as_ref());
+        self.with_bodies(
+            ids,
+            Box::new(move |this, cx| {
+                let (name, text) = this.export(folder.as_ref(), format);
+                cx.emit(WorkspaceEvent::ExportReady { name, text });
+            }),
+            cx,
+        );
+    }
+
     pub fn export(&self, folder: Option<&ItemId>, format: ExportFormat) -> (String, String) {
         let name = folder
             .and_then(|id| self.tree.get(id))
@@ -3591,6 +4037,12 @@ impl WorkspaceState {
 
     /// Deletes `id`; `told`: the reader is told, and offered to undo it.
     fn delete_told(&mut self, id: ItemId, told: bool, cx: &mut Context<Self>) {
+        // The undo snapshot is this tree. A stub would put an empty request back.
+        let ids = self.apis_in(Some(&id));
+        if !self.bodies_present(&ids) {
+            self.with_bodies(ids, Box::new(move |this, cx| this.delete_told(id, told, cx)), cx);
+            return;
+        }
         // F6: what goes, kept to be put back.
         let deleted = undo::deleted(&self.data, &id).filter(|_| told);
         // BUG-3: the delete drops the marks of the reader's own items in it.
@@ -3660,6 +4112,15 @@ impl WorkspaceState {
         cx: &mut Context<Self>,
     ) {
         if moving && !self.editable() || target.id == self.collection.id {
+            return;
+        }
+        let ids = self.apis_in(Some(&id));
+        if !self.bodies_present(&ids) {
+            self.with_bodies(
+                ids,
+                Box::new(move |this, cx| this.transfer(id, target, folder, moving, cx)),
+                cx,
+            );
             return;
         }
         let Some(item) = cyberapi_core::transfer::item(&self.data, &id) else {
@@ -3740,6 +4201,52 @@ impl WorkspaceState {
             return;
         }
         let Some(undo) = self.undo.take() else { return };
+        // A page puts the snapshot back into its working copy. Replacing
+        // through the copy would mark it unsynced and record nothing, and
+        // holding the project would drop the answers it still has.
+        if let Some(page) = self.copy.as_ref().filter(|copy| copy.copy.is_page()) {
+            let copy = page.copy.clone();
+            let deleted = undo.deleted.clone();
+            let restoring = deleted.clone();
+            let local = undo.local.clone();
+            let call: StoreFuture<ProjectConfig> = Box::pin(async move {
+                let config = copy.restore_deleted(&restoring).await?;
+                if !local.is_empty() {
+                    copy.put_back_local(local).await?;
+                }
+                Ok(config)
+            });
+            run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+                Ok(config) => {
+                    for id in undo.pinned.iter().chain(&undo.expanded) {
+                        let list = if undo.pinned.contains(id) {
+                            &mut this.prefs.pinned
+                        } else {
+                            &mut this.prefs.expanded
+                        };
+                        if !list.contains(id) {
+                            list.push(id.clone());
+                        }
+                    }
+                    let mut bodies = this.copy.as_ref().map(|copy| copy.copy.body_ids()).unwrap_or_default();
+                    for api in &deleted.apis {
+                        bodies.insert(api.id.clone());
+                    }
+                    this.install_config(config, &bodies, false, cx);
+                    this.save_prefs(cx);
+                    cx.notify();
+                }
+                Err(error) => {
+                    if this.undo.is_none() {
+                        let (name, apis, count) = (undo.deleted.name.clone(), undo.deleted.apis.len(), undo.count);
+                        this.undo = Some(undo);
+                        cx.emit(WorkspaceEvent::Deleted { name, apis, count });
+                    }
+                    cx.emit(WorkspaceEvent::Failed(error));
+                }
+            });
+            return;
+        }
         // What the open APIs hold goes in first: the project is written
         // whole as it is read.
         for api in self.kept.values() {
@@ -3754,7 +4261,7 @@ impl WorkspaceState {
             .as_ref()
             .filter(|_| !undo.local.is_empty())
             .map(|copy| copy.copy.put_back_local(undo.local.clone()));
-        let call: StoreFuture<TreeData> = Box::pin(async move {
+        let call: StoreFuture<OutlineAt> = Box::pin(async move {
             let tree = storage.tree();
             // An open API's save landing between the read and the write
             // makes the write stale: read again, once (BUG-10).
@@ -3776,10 +4283,10 @@ impl WorkspaceState {
             if let Some(local) = local {
                 local.await?;
             }
-            tree.load(collection).await
+            tree.outline(collection).await
         });
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
-            Ok(data) => {
+            Ok(at) => {
                 for id in undo.pinned.iter().chain(&undo.expanded) {
                     let list = if undo.pinned.contains(id) {
                         &mut this.prefs.pinned
@@ -3790,7 +4297,8 @@ impl WorkspaceState {
                         list.push(id.clone());
                     }
                 }
-                this.set_data(data, cx);
+                let config = at.outline.config(&this.collection.id);
+                this.install_config(config, &HashSet::new(), false, cx);
                 this.save_prefs(cx);
                 cx.notify();
             }
@@ -3838,10 +4346,15 @@ impl WorkspaceState {
         data
     }
 
-    /// F15: writes a previewed find-and-replace `plan` via `TreeStore::replace`
+    /// F15: writes a previewed find-and-replace `plan`, one request at a time,
     /// and keeps its originals so it can be undone.
     pub fn apply_find_replace(&mut self, plan: cyberapi_core::find_replace::ReplacePlan, cx: &mut Context<Self>) {
         if !self.editable() || plan.hits.is_empty() {
+            return;
+        }
+        let ids = self.apis_in(None);
+        if !self.bodies_present(&ids) {
+            self.with_bodies(ids, Box::new(move |this, cx| this.apply_find_replace(plan, cx)), cx);
             return;
         }
         self.flush_editors(cx);
@@ -3873,34 +4386,24 @@ impl WorkspaceState {
 
         let storage = self.sender.storage.clone();
         let collection = self.collection.id.clone();
-        let call: StoreFuture<TreeData> = Box::pin(async move {
+        let call: StoreFuture<Vec<ApiSetting>> = Box::pin(async move {
             let tree = storage.tree();
-            let mut tries = 2;
-            loop {
-                let at = tree.config(collection.clone()).await?;
-                let mut config = at.config;
-                if !cyberapi_core::find_replace::apply_requests(&mut config, &updates) {
-                    break;
-                }
-                match tree.replace(collection.clone(), config, Some(at.revision)).await {
-                    Ok(_) => break,
-                    Err(StoreError::Stale { .. }) if tries > 1 => tries -= 1,
-                    Err(error) => return Err(error),
-                }
+            let mut saved = Vec::new();
+            for (id, request) in updates {
+                saved.push(tree.save_request(collection.clone(), id, request).await?);
             }
-            tree.load(collection).await
+            Ok(saved)
         });
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
-            Ok(data) => {
-                for id in &touched {
-                    if let Some(api) = this.kept.get(id).cloned()
-                        && let Some(setting) = data.apis.iter().find(|a| &a.id == id)
-                    {
-                        let req = setting.request.clone();
+            Ok(saved) => {
+                for setting in saved {
+                    let id = setting.id.clone();
+                    let req = setting.request.clone();
+                    if let Some(api) = this.kept.get(&id).cloned() {
                         api.update(cx, |api, cx| api.set_stored_request(req, cx));
                     }
+                    this.api_saved(setting, cx);
                 }
-                this.set_data(data, cx);
                 this.sync_api(cx);
                 cx.emit(WorkspaceEvent::Replaced {
                     apis,
@@ -3917,7 +4420,7 @@ impl WorkspaceState {
     }
 
     /// F15: undoes batch find-and-replace `count`, putting the original
-    /// requests back via `TreeStore::replace`.
+    /// requests back, one API at a time.
     pub fn undo_replace(&mut self, count: u64, cx: &mut Context<Self>) {
         if self.replace_undo.as_ref().is_none_or(|(c, _)| *c != count) || !self.editable() {
             return;
@@ -3944,34 +4447,24 @@ impl WorkspaceState {
         }
         let storage = self.sender.storage.clone();
         let collection = self.collection.id.clone();
-        let call: StoreFuture<TreeData> = Box::pin(async move {
+        let call: StoreFuture<Vec<ApiSetting>> = Box::pin(async move {
             let tree = storage.tree();
-            let mut tries = 2;
-            loop {
-                let at = tree.config(collection.clone()).await?;
-                let mut config = at.config;
-                if !cyberapi_core::find_replace::apply_requests(&mut config, &updates) {
-                    break;
-                }
-                match tree.replace(collection.clone(), config, Some(at.revision)).await {
-                    Ok(_) => break,
-                    Err(StoreError::Stale { .. }) if tries > 1 => tries -= 1,
-                    Err(error) => return Err(error),
-                }
+            let mut saved = Vec::new();
+            for (id, request) in updates {
+                saved.push(tree.save_request(collection.clone(), id, request).await?);
             }
-            tree.load(collection).await
+            Ok(saved)
         });
         run_serial(cx, &self.gate, call, move |this, result, cx| match result {
-            Ok(data) => {
-                for id in &touched {
-                    if let Some(api) = this.kept.get(id).cloned()
-                        && let Some(setting) = data.apis.iter().find(|a| &a.id == id)
-                    {
-                        let req = setting.request.clone();
+            Ok(saved) => {
+                for setting in saved {
+                    let id = setting.id.clone();
+                    let req = setting.request.clone();
+                    if let Some(api) = this.kept.get(&id).cloned() {
                         api.update(cx, |api, cx| api.set_stored_request(req, cx));
                     }
+                    this.api_saved(setting, cx);
                 }
-                this.set_data(data, cx);
                 this.sync_api(cx);
                 cx.notify();
             }
@@ -5009,9 +5502,10 @@ mod tests {
         });
 
         let state = open(&storage, collection.clone(), cx);
-        // Open `order_api` and make an unsaved edit to its JSON body in the active tab.
+        // The request loads when the tab opens. The edit waits until it has.
+        state.update(cx, |state, cx| state.select(&order_api, cx));
+        cx.run_until_parked();
         state.update(cx, |state, cx| {
-            state.select(&order_api, cx);
             if let Some(api) = state.api().cloned() {
                 api.update(cx, |api, cx| {
                     api.set_body(r#"{"sku": "magazine"}"#.into(), cx);
@@ -5457,6 +5951,20 @@ mod tests {
         fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64> {
             self.inner.replace(collection, config, base)
         }
+        fn outline(&self, collection: CollectionId) -> StoreFuture<cyberapi_core::sync::OutlineAt> {
+            self.inner.outline(collection)
+        }
+        fn api(&self, collection: CollectionId, api: ItemId) -> StoreFuture<ApiSetting> {
+            self.inner.api(collection, api)
+        }
+        fn merge(
+            &self,
+            collection: CollectionId,
+            changes: cyberapi_core::sync::ProjectChanges,
+            base: Option<u64>,
+        ) -> StoreFuture<u64> {
+            self.inner.merge(collection, changes, base)
+        }
     }
 
     /// BUG-10: an undo whose write a save beats is read again and made;
@@ -5796,6 +6304,7 @@ mod tests {
             assert_eq!(state.opened(), Some(&b));
         });
         reopened.update(cx, |state, cx| state.part(&a, cx));
+        cx.run_until_parked();
         reopened.read_with(cx, |state, _| {
             assert!(state.is_apart(&a));
             assert!(state.kept_api(&a).is_some());
@@ -7425,6 +7934,15 @@ mod tests {
             (state, told)
         }
 
+        fn created_apis(draft: &drafts_local::Draft) -> usize {
+            draft
+                .changes
+                .ops
+                .iter()
+                .filter(|op| matches!(op, cyberapi_core::sync::ProjectOp::CreateApi { .. }))
+                .count()
+        }
+
         fn server_rows(server: &Storage, collection: &Collection) -> Vec<String> {
             let data = pollster::block_on(server.tree().load(collection.id.clone())).expect("load");
             let mut names: Vec<String> = data.apis.into_iter().map(|api| api.name).collect();
@@ -7462,14 +7980,14 @@ mod tests {
             cx.run_until_parked();
             let draft = drafts_local::get(READER, &collection.id).expect("a draft");
             assert_eq!(draft.base, Some(collection.revision));
-            assert_eq!(draft.config.apis.len(), 1);
+            assert_eq!(created_apis(&draft), 1);
             // The page hidden, what waits is written at once.
             state.update(cx, |state, cx| state.create_api(None, "hidden".into(), cx));
             cx.run_until_parked();
             crate::set_page_visible(false);
             crate::set_page_visible(true);
             let draft = drafts_local::get(READER, &collection.id).expect("a draft");
-            assert_eq!(draft.config.apis.len(), 2);
+            assert_eq!(created_apis(&draft), 2);
             // A beat keeps it: the server has not moved.
             beat(cx);
             assert_eq!(row_names(&state, cx), ["hidden", "users", "mine"]);
@@ -7481,7 +7999,7 @@ mod tests {
             // Released as the app next flushes what happened.
             cx.update(|_| {});
             let draft = drafts_local::get(READER, &collection.id).expect("a draft");
-            assert_eq!(draft.config.apis.len(), 3);
+            assert_eq!(created_apis(&draft), 3);
             let (again, told) = open_copy(&server, collection.clone(), cx);
             assert_eq!(row_names(&again, cx), ["closing", "hidden", "users", "mine"]);
             assert_eq!(told.borrow().as_slice(), ["KeptUnsynced { behind: false }"]);
@@ -7660,7 +8178,13 @@ mod tests {
             cx.executor().advance_clock(copy::KEEP_DRAFT_AFTER);
             cx.run_until_parked();
             let draft = drafts_local::get(READER, &collection.id).expect("a draft");
-            assert_eq!(draft.config.apis[0].request.method, HttpMethod::Post);
+            assert!(draft.changes.ops.iter().any(|op| {
+                matches!(
+                    op,
+                    cyberapi_core::sync::ProjectOp::SaveRequest { request, .. }
+                        if request.method == HttpMethod::Post
+                )
+            }));
             let copy = state.read_with(cx, |state, _| state.data.apis[0].request.method);
             assert_eq!(copy, HttpMethod::Post);
         }
@@ -7692,7 +8216,7 @@ mod tests {
             // Mine over the server's.
             state.update(cx, |state, cx| state.sync(true, cx));
             cx.run_until_parked();
-            assert_eq!(server_rows(&server, &collection), ["mine"]);
+            assert_eq!(server_rows(&server, &collection), ["mine", "theirs"]);
             assert!(!unsynced(&state, cx));
             assert!(!state.read_with(cx, |state, _| state.server_moved()));
         }

@@ -1261,15 +1261,8 @@ fn item_menu(
             menu.item(
                 PopupMenuItem::new(t!("workspace.copy_config").to_string())
                     .icon(Icons::Copy)
-                    .on_click(move |_, window, cx| {
-                        let config = config_state
-                            .upgrade()
-                            .and_then(|state| state.read(cx).api_config(&config_id));
-                        if let Some(config) = config {
-                            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(config));
-                            let copied = t!("workspace.config_copied").to_string();
-                            window.push_notification(Notification::success(copied), cx);
-                        }
+                    .on_click(move |_, _, cx| {
+                        let _ = config_state.update(cx, |state, cx| state.copy_api_config(config_id.clone(), cx));
                     }),
             )
             .map(|menu| {

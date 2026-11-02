@@ -22,7 +22,7 @@ use cyberapi_core::oauth::{KeptToken, KeptTokens};
 use cyberapi_core::prefs::{AppPrefs, HttpVersion, RequestSettings, ThemeMode, Timeouts, WorkspacePrefs};
 use cyberapi_core::response::{HISTORY_LIMIT, HttpResponse, HttpStats};
 use cyberapi_core::secrets::SecretValues;
-use cyberapi_core::sync::ProjectConfig;
+use cyberapi_core::sync::{ProjectChanges, ProjectConfig, ProjectOp};
 use cyberapi_core::tree::{Placement, Tree, TreeData, TreeError};
 use cyberapi_core::{CollectionId, EnvironmentId, ItemId, VariableId};
 
@@ -71,6 +71,7 @@ pub async fn run(storage: &Storage, probe: &dyn Probe) {
     configs_are_read_whole(storage).await;
     configs_replace_at_their_base(storage).await;
     configs_keep_their_ids_to_themselves(storage).await;
+    outlines_omit_bodies_and_merges_keep_the_rest(storage).await;
 }
 
 const MISSING: &str = "conformance-missing";
@@ -2622,4 +2623,194 @@ pub async fn copies(storage: &Storage, copies: &dyn crate::ServerCopyStore) {
     copies.bind(binding).await.expect("bound");
     storage.collections().delete(copy.id.clone()).await.expect("deleted");
     assert!(bound(copies.copies().await.expect("copies")).is_empty());
+}
+
+/// An outline names every API and carries no request document. A merge at
+/// the revision it was read at writes the changes and leaves every API they
+/// do not name; a merge at another revision writes nothing. No changes do
+/// not move the revision.
+async fn outlines_omit_bodies_and_merges_keep_the_rest(storage: &Storage) {
+    let collection = new_collection(storage, "outline merge").await;
+    let login = api(storage, &collection, None, "login").await;
+    let health = api(storage, &collection, None, "health").await;
+    let mut request = HttpRequest {
+        method: HttpMethod::Post,
+        uri: "/login".into(),
+        body: "secret-body".into(),
+        ..HttpRequest::default()
+    };
+    storage
+        .tree()
+        .save_request(collection.id.clone(), login.item.id.clone(), request.clone())
+        .await
+        .expect("save");
+    let health_request = HttpRequest {
+        method: HttpMethod::Get,
+        uri: "/health".into(),
+        body: "ok-body".into(),
+        ..HttpRequest::default()
+    };
+    storage
+        .tree()
+        .save_request(collection.id.clone(), health.item.id.clone(), health_request.clone())
+        .await
+        .expect("save health");
+
+    let read = storage.tree().outline(collection.id.clone()).await.expect("outline");
+    let heads: Vec<_> = read.outline.apis.iter().map(|api| api.name.as_str()).collect();
+    assert!(
+        heads.contains(&"login") && heads.contains(&"health"),
+        "every API is named"
+    );
+    let login_head = read
+        .outline
+        .apis
+        .iter()
+        .find(|api| api.id == login.item.id)
+        .expect("login");
+    assert_eq!(
+        (login_head.method, login_head.uri.as_str()),
+        (HttpMethod::Post, "/login")
+    );
+    let whole = storage
+        .tree()
+        .api(collection.id.clone(), login.item.id.clone())
+        .await
+        .expect("one API");
+    assert_eq!(whole.request.body, "secret-body", "one API is read whole");
+    not_found(
+        storage.tree().api(collection.id.clone(), ItemId::new(MISSING)).await,
+        Entity::Api,
+    );
+    assert_eq!(
+        storage
+            .tree()
+            .config(collection.id.clone())
+            .await
+            .expect("config")
+            .config
+            .apis
+            .iter()
+            .find(|api| api.id == health.item.id)
+            .expect("health")
+            .request
+            .body,
+        "ok-body",
+        "the whole configuration still has every body"
+    );
+
+    let at = storage.tree().config(collection.id.clone()).await.expect("base");
+    let stayed = storage
+        .tree()
+        .merge(collection.id.clone(), ProjectChanges::default(), Some(at.revision))
+        .await
+        .expect("nothing to merge");
+    assert_eq!(stayed, at.revision, "no changes do not move the revision");
+
+    request.body = "edited".into();
+    let merged = storage
+        .tree()
+        .merge(
+            collection.id.clone(),
+            ProjectChanges {
+                ops: vec![ProjectOp::SaveRequest {
+                    api: login.item.id.clone(),
+                    request: request.clone(),
+                }],
+            },
+            Some(at.revision),
+        )
+        .await
+        .expect("merge");
+    assert_eq!(merged, at.revision + 1);
+    let after = storage.tree().config(collection.id.clone()).await.expect("after");
+    let body_of = |id: &ItemId| {
+        after
+            .config
+            .apis
+            .iter()
+            .find(|api| &api.id == id)
+            .expect("api")
+            .request
+            .body
+            .clone()
+    };
+    assert_eq!(body_of(&login.item.id), "edited");
+    assert_eq!(
+        body_of(&health.item.id),
+        "ok-body",
+        "a merge does not touch an API it does not name"
+    );
+
+    match storage
+        .tree()
+        .merge(
+            collection.id.clone(),
+            ProjectChanges {
+                ops: vec![ProjectOp::Delete {
+                    item: health.item.id.clone(),
+                }],
+            },
+            Some(at.revision),
+        )
+        .await
+    {
+        Err(StoreError::Stale { base, revision }) => {
+            assert_eq!(base, at.revision);
+            assert_eq!(revision, merged);
+        }
+        other => panic!("expected nothing written, got {other:?}"),
+    }
+    let kept = storage.tree().config(collection.id.clone()).await.expect("kept");
+    assert_eq!(kept.config.apis.len(), 2, "a stale merge deletes nothing");
+    assert_eq!(
+        kept.config
+            .apis
+            .iter()
+            .find(|api| api.id == health.item.id)
+            .expect("health")
+            .request
+            .body,
+        "ok-body"
+    );
+
+    let created = ApiSetting {
+        id: ItemId::new("outline-merge-extra"),
+        collection: collection.id.clone(),
+        name: "extra".into(),
+        request: HttpRequest {
+            uri: "/extra".into(),
+            body: "new-body".into(),
+            ..HttpRequest::default()
+        },
+        ..ApiSetting::default()
+    };
+    storage
+        .tree()
+        .merge(
+            collection.id.clone(),
+            ProjectChanges {
+                ops: vec![ProjectOp::CreateApi {
+                    parent: None,
+                    api: created,
+                }],
+            },
+            Some(kept.revision),
+        )
+        .await
+        .expect("create");
+    let grown = storage.tree().config(collection.id.clone()).await.expect("grown");
+    assert_eq!(grown.config.apis.len(), 3);
+    assert_eq!(
+        grown
+            .config
+            .apis
+            .iter()
+            .find(|api| api.id == login.item.id)
+            .expect("login")
+            .request
+            .body,
+        "edited",
+        "adding an API does not replace the others"
+    );
 }

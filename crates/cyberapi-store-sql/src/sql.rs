@@ -243,6 +243,22 @@ pub const APIS_OF: &str = "SELECT id, collection, name, category, request, creat
     FROM apis WHERE collection = $1 ORDER BY seq";
 pub const API_GET: &str = "SELECT id, collection, name, category, request, created_at, updated_at \
     FROM apis WHERE id = $1 AND collection = $2";
+/// Method and URI out of `request`, not the document. A row that is not JSON
+/// yields empty strings, read as GET and no URI, so one damaged request does
+/// not hide the project. The first `"method"` / `"uri"` is the field: the
+/// body is written after them.
+pub const API_HEADS: Pair = Pair {
+    pg: "SELECT id, name, \
+         COALESCE(substring(request from '\"method\"[[:space:]]*:[[:space:]]*\"([^\"]*)\"'), ''), \
+         COALESCE(substring(request from '\"uri\"[[:space:]]*:[[:space:]]*\"([^\"]*)\"'), ''), \
+         updated_at \
+         FROM apis WHERE collection = $1 ORDER BY seq",
+    my: "SELECT id, name, \
+         COALESCE(JSON_UNQUOTE(JSON_EXTRACT(request, '$.method')), ''), \
+         COALESCE(JSON_UNQUOTE(JSON_EXTRACT(request, '$.uri')), ''), \
+         updated_at \
+         FROM apis WHERE collection = ? ORDER BY seq",
+};
 pub const TOP_ORDER_OF: &str = "SELECT items FROM top_orders WHERE collection = $1";
 pub const TOP_ORDER_UPSERT: Pair = Pair {
     pg: "INSERT INTO top_orders (collection, items) VALUES ($1, $2) \
@@ -579,6 +595,7 @@ mod tests {
             SETUP_CLAIM,
             FOLDER_SETTINGS_UPSERT,
             PROJECT_SETTINGS_UPSERT,
+            API_HEADS,
         ] {
             assert_eq!(placeholders(pair.pg).len(), pair.my.matches('?').count(), "{}", pair.pg);
         }

@@ -1,4 +1,5 @@
 use cyberapi_core::access::{CollectionRole, TeamRole};
+use cyberapi_core::sync::ApplyError;
 use cyberapi_core::tree::TreeError;
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
@@ -51,6 +52,20 @@ impl StoreError {
     pub fn backend(error: impl std::fmt::Display) -> Self {
         Self::Backend {
             message: error.to_string(),
+        }
+    }
+}
+
+/// A merge that cannot be applied is the same refusal a single change would
+/// get: a blank name, a missing item, a folder moved into itself.
+impl From<ApplyError> for StoreError {
+    fn from(error: ApplyError) -> Self {
+        match error {
+            ApplyError::NameRequired => Self::NameRequired,
+            ApplyError::MissingItem { id } => Self::not_found(Entity::Item, id),
+            ApplyError::MissingApi { id } => Self::not_found(Entity::Api, id),
+            ApplyError::MissingFolder { id } => Self::not_found(Entity::Folder, id),
+            ApplyError::Tree(source) => Self::from(source),
         }
     }
 }

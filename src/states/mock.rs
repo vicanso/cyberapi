@@ -119,6 +119,27 @@ impl MockState {
         if self.server.is_some() || self.starting {
             return;
         }
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let missing = {
+            let workspace = workspace.read(cx);
+            !workspace.bodies_present(&workspace.apis_in(None))
+        };
+        if missing {
+            let mock = cx.entity();
+            workspace.update(cx, |workspace, cx| {
+                let ids = workspace.apis_in(None);
+                workspace.with_bodies(
+                    ids,
+                    Box::new(move |_, cx| {
+                        mock.update(cx, |mock, cx| mock.start(cx));
+                    }),
+                    cx,
+                );
+            });
+            return;
+        }
         self.starting = true;
         self.error = None;
         let routes = self.routes(cx);
@@ -163,17 +184,42 @@ impl MockState {
         cx.notify();
     }
 
+    fn rebuild_now(&mut self, cx: &mut Context<Self>) {
+        let routes = self.routes(cx);
+        self.count = routes.count();
+        if let Some(server) = &self.server {
+            server.set_routes(routes);
+        }
+        cx.notify();
+    }
+
     /// The project changed: once it settles, what answers is made again.
     fn rebuild_later(&mut self, cx: &mut Context<Self>) {
         self._rebuild = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REBUILD_DELAY).await;
             let _ = this.update(cx, |this, cx| {
-                let routes = this.routes(cx);
-                this.count = routes.count();
-                if let Some(server) = &this.server {
-                    server.set_routes(routes);
+                let Some(workspace) = this.workspace.upgrade() else {
+                    return;
+                };
+                let missing = {
+                    let workspace = workspace.read(cx);
+                    !workspace.bodies_present(&workspace.apis_in(None))
+                };
+                if missing {
+                    let mock = cx.entity();
+                    workspace.update(cx, |workspace, cx| {
+                        let ids = workspace.apis_in(None);
+                        workspace.with_bodies(
+                            ids,
+                            Box::new(move |_, cx| {
+                                mock.update(cx, |mock, cx| mock.rebuild_now(cx));
+                            }),
+                            cx,
+                        );
+                    });
+                    return;
                 }
-                cx.notify();
+                this.rebuild_now(cx);
             });
         }));
     }

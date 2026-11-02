@@ -33,17 +33,18 @@ pub fn render(
 ) -> String {
     let tree = Tree::build(data);
     let top = tree.top_level_ids();
+    let prefixes = leading_prefixes(data, &tree);
     let mut nav_html = String::new();
     let mut main_html = String::new();
 
-    render_env_section(data, environments, variables, &mut main_html);
+    render_env_section(data, environments, variables, &prefixes, &mut main_html);
     walk_items(
         data,
         &tree,
         &top,
         &[],
-        environments,
         variables,
+        &prefixes,
         &mut nav_html,
         &mut main_html,
     );
@@ -56,6 +57,10 @@ pub fn render(
         format!("<p class=\"project-desc\">{}</p>", escape(desc))
     };
 
+    // The same neutral surfaces, type, and method colors as the app. The
+    // renderer does not know the reader's theme, so the page follows the OS.
+    // Fonts are the bridge's, two levels up from `/v1/docs/{id}` (and from a
+    // `--base-path`); a saved file falls back to the system face.
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -64,207 +69,294 @@ pub fn render(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} — CyberAPI Docs</title>
 <style>
+@font-face {{
+  font-family: "IBM Plex Sans";
+  src: url("../../fonts/IBMPlexSans.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}}
+@font-face {{
+  font-family: "JetBrains Mono";
+  src: url("../../fonts/JetBrainsMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}}
+@font-face {{
+  font-family: "JetBrains Mono";
+  src: url("../../fonts/JetBrainsMono-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}}
 :root {{
-  --bg: #f8fafc;
-  --panel: #ffffff;
-  --fg: #0f172a;
-  --muted: #64748b;
-  --border: #e2e8f0;
-  --code-bg: #f1f5f9;
-  --accent: #2563eb;
-  --get: #0284c7;
-  --post: #16a34a;
-  --delete: #dc2626;
+  color-scheme: light;
+  --bg: #ffffff;
+  --sidebar: #f5f5f5;
+  --panel: #fafafa;
+  --fg: #0a0a0a;
+  --muted: #737373;
+  --line: #e5e5e5;
+  --input: #e5e5e5;
+  --hover: #e5e5e5;
+  --code-bg: #f5f5f5;
+  --tabbar: #f5f5f5;
+  --tab-active: #ffffff;
+  --get: #06b6d4;
+  --post: #22c55e;
+  --delete: #ef4444;
   --grpc: #9333ea;
   --ws: #0891b2;
-  --warn: #d97706;
+  --warn: #eab308;
+  --selection: #bfdbfe;
 }}
 @media (prefers-color-scheme: dark) {{
   :root {{
-    --bg: #0b0f19;
-    --panel: #111827;
-    --fg: #f1f5f9;
-    --muted: #94a3b8;
-    --border: #1e293b;
-    --code-bg: #0f172a;
-    --accent: #3b82f6;
+    color-scheme: dark;
+    --bg: #0a0a0a;
+    --sidebar: #262626;
+    --panel: #171717;
+    --fg: #fafafa;
+    --muted: #a3a3a3;
+    --line: rgba(250, 250, 250, 0.12);
+    --input: #2f2f2f;
+    --hover: #525252;
+    --code-bg: #0a0a0a;
+    --tabbar: #0a0a0a;
+    --tab-active: #171717;
+    --get: #22d3ee;
+    --post: #4ade80;
+    --delete: #f87171;
+    --grpc: #c084fc;
+    --ws: #22d3ee;
+    --warn: #facc15;
+    --selection: #1d4ed8;
   }}
 }}
 * {{ box-sizing: border-box; }}
+html {{ font-size: 14px; }}
 body {{
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  font-size: 14px;
   background: var(--bg);
   color: var(--fg);
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }}
+::selection {{ background: var(--selection); }}
 .layout {{
   display: flex;
+  align-items: flex-start;
   min-height: 100vh;
 }}
 .sidebar {{
   width: 280px;
   flex-shrink: 0;
-  background: var(--panel);
-  border-right: 1px solid var(--border);
-  padding: 16px;
+  background: var(--sidebar);
+  border-right: 1px solid var(--line);
+  padding: 12px;
   position: sticky;
   top: 0;
   height: 100vh;
   overflow-y: auto;
 }}
 .sidebar h1 {{
-  font-size: 16px;
-  margin: 0 0 8px 0;
+  font-size: 14px;
+  font-weight: 600;
+  margin: 2px 4px 10px;
   word-break: break-word;
 }}
 .search {{
   width: 100%;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--input);
   border-radius: 6px;
   background: var(--bg);
   color: var(--fg);
+  font: inherit;
   font-size: 13px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
+}}
+.search::placeholder {{ color: var(--muted); }}
+.search:focus {{
+  outline: none;
+  border-color: var(--muted);
 }}
 .nav-folder {{
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
-  margin: 12px 0 4px 0;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  margin: 14px 8px 4px;
 }}
 .nav-item {{
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
-  padding: 5px 8px;
-  border-radius: 5px;
+  padding: 4px 8px;
+  border-radius: 6px;
   text-decoration: none;
   color: var(--fg);
   font-size: 13px;
+  line-height: 1.35;
 }}
-.nav-item:hover {{ background: var(--code-bg); }}
+.nav-item:hover {{ background: var(--hover); color: var(--fg); }}
+.nav-name {{
+  min-width: 0;
+  text-wrap: pretty;
+  word-break: break-word;
+}}
 .content {{
   flex: 1;
-  max-width: 980px;
-  padding: 28px 36px;
+  max-width: 1080px;
+  padding: 24px 32px 48px;
   min-width: 0;
 }}
 .project-header {{
-  margin-bottom: 24px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
 }}
-.project-header h2 {{ margin: 0 0 6px 0; font-size: 24px; }}
-.project-desc {{ margin: 0; color: var(--muted); white-space: pre-wrap; }}
+.project-header h2 {{ margin: 0 0 4px 0; font-size: 20px; font-weight: 600; }}
+.project-desc {{ margin: 0; color: var(--muted); font-size: 13px; white-space: pre-wrap; }}
+.base-urls {{ margin: 4px 0 8px; }}
+.base-urls .section-title {{ margin-top: 0; }}
+.base-note {{ margin: 10px 0 4px; color: var(--muted); font-size: 13px; }}
+.base-note code {{
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--fg);
+}}
 .folder-heading {{
-  margin: 32px 0 12px 0;
+  margin: 28px 0 12px 0;
   padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
 }}
-.folder-heading h3 {{ margin: 0; font-size: 18px; }}
+.folder-heading h3 {{ margin: 0; font-size: 16px; font-weight: 600; }}
 .folder-desc {{ margin: 4px 0 0 0; color: var(--muted); font-size: 13px; white-space: pre-wrap; }}
 .api-card {{
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 20px;
-  margin-bottom: 20px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
 }}
-.api-head {{
+.api-head {{ margin-bottom: 8px; }}
+.address {{
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
+  gap: 8px;
+  flex: 0 1 auto;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 3px 10px;
+  border: 1px solid var(--input);
+  border-radius: 6px;
+  background: var(--bg);
 }}
-.badge {{
-  display: inline-block;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+.method {{
+  flex: none;
+  width: 4rem;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
   font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 4px;
-  color: #fff;
+  line-height: 1.35;
 }}
-.badge-get {{ background: var(--get); }}
-.badge-post {{ background: var(--post); }}
-.badge-delete {{ background: var(--delete); }}
-.badge-grpc {{ background: var(--grpc); }}
-.badge-ws {{ background: var(--ws); }}
+.method-get {{ color: var(--get); }}
+.method-post {{ color: var(--post); }}
+.method-delete {{ color: var(--delete); }}
+.method-grpc {{ color: var(--grpc); }}
+.method-ws {{ color: var(--ws); }}
 .uri {{
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
-  background: var(--code-bg);
-  padding: 3px 8px;
-  border-radius: 4px;
+  min-width: 0;
   word-break: break-all;
 }}
 .api-title {{
   font-size: 16px;
   font-weight: 600;
-  margin: 0;
+  margin: 0 0 8px 0;
+}}
+.auth {{
+  flex: none;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--get);
+  background: color-mix(in srgb, var(--get) 14%, transparent);
+  border-radius: 6px;
+  padding: 2px 8px;
 }}
 .api-desc {{
   color: var(--muted);
   font-size: 13px;
   white-space: pre-wrap;
-  margin: 8px 0 14px 0;
+  margin: 8px 0 12px 0;
 }}
 .section-title {{
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  margin: 16px 0 8px 0;
+  color: var(--fg);
+  margin: 16px 0 6px 0;
 }}
 table {{
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
-  margin-bottom: 12px;
+  font-size: 12px;
+  margin-bottom: 8px;
 }}
 th, td {{
   text-align: left;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
   vertical-align: top;
 }}
 th {{ color: var(--muted); font-weight: 600; font-size: 12px; }}
-.mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }}
-.req {{ color: var(--warn); font-size: 11px; margin-left: 4px; }}
+.params td.dim, .schema td:nth-child(2) {{ color: var(--muted); }}
+.mono {{ font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }}
+.req {{ color: var(--warn); font-weight: 600; }}
+.schema .req {{ margin-left: 6px; }}
+.opt {{ color: var(--muted); }}
 pre {{
   background: var(--code-bg);
+  border: 1px solid var(--line);
   padding: 12px;
   border-radius: 6px;
   overflow-x: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  margin: 6px 0 12px 0;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0 0 8px 0;
 }}
 .tabs {{
   display: flex;
-  gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
+  width: fit-content;
+  max-width: 100%;
+  gap: 2px;
+  padding: 2px;
+  margin: 0 0 8px 0;
+  background: var(--tabbar);
+  border-radius: 8px;
 }}
 .tab-btn {{
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg);
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
   font-size: 12px;
-  padding: 3px 9px;
-  border-radius: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
   cursor: pointer;
 }}
+.tab-btn:hover {{ color: var(--fg); }}
 .tab-btn.active {{
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
+  background: var(--tab-active);
+  color: var(--fg);
 }}
 .hidden {{ display: none !important; }}
 </style>
@@ -310,43 +402,109 @@ document.querySelectorAll('[data-tab-group]').forEach(function(btn) {{
     )
 }
 
-fn render_env_section(data: &TreeData, environments: &[Environment], variables: &[Variable], out: &mut String) {
-    let env_vars: Vec<&Variable> = variables
-        .iter()
-        .filter(|v| v.category == VariableCategory::Environment && v.enabled && !v.name.trim().is_empty())
-        .collect();
-    if env_vars.is_empty() && environments.is_empty() {
+/// Names of a leading `{{variable}}` on any API, in the order the page walks
+/// the tree. One name is shown as `BASE_URL`; two names each keep their own.
+fn leading_prefixes(data: &TreeData, tree: &Tree) -> Vec<String> {
+    let mut names = Vec::new();
+    fn walk(data: &TreeData, tree: &Tree, ids: &[crate::ItemId], names: &mut Vec<String>) {
+        for id in ids {
+            if let Some(api) = data.apis.iter().find(|api| &api.id == id) {
+                if let Some(name) = split_env_prefix(&api.request.uri).0
+                    && !names.iter().any(|seen| seen == name)
+                {
+                    names.push(name.to_string());
+                }
+            } else if data.folders.iter().any(|folder| &folder.id == id) {
+                let children = tree.get(id).map(|node| node.children().to_vec()).unwrap_or_default();
+                walk(data, tree, &children, names);
+            }
+        }
+    }
+    walk(data, tree, &tree.top_level_ids(), &mut names);
+    names
+}
+
+/// The address a reader sees. The path after a leading prefix is unchanged.
+fn display_uri(uri: &str, prefixes: &[String]) -> String {
+    let (name, rest) = split_env_prefix(uri);
+    match name {
+        Some(name) if prefixes.len() == 1 && prefixes[0] == name => format!("BASE_URL{rest}"),
+        _ => uri.to_string(),
+    }
+}
+
+fn render_env_section(
+    data: &TreeData,
+    environments: &[Environment],
+    variables: &[Variable],
+    prefixes: &[String],
+    out: &mut String,
+) {
+    if prefixes.is_empty() {
+        return;
+    }
+    let one = prefixes.len() == 1;
+    // One prefix with no stored value still reads as BASE_URL in the paths.
+    // An empty table under the project description would not explain it.
+    if one
+        && !variables
+            .iter()
+            .any(|var| var.category == VariableCategory::Environment && var.enabled && var.name == prefixes[0])
+    {
         return;
     }
     let _ = writeln!(
         out,
-        "<section class=\"api-card\"><div class=\"section-title\">Environments &amp; Variables</div>"
+        "<section class=\"base-urls\"><div class=\"section-title\">Base URL</div>"
     );
-    let _ = writeln!(
-        out,
-        "<table><thead><tr><th>Name</th><th>Environment</th><th>Value</th></tr></thead><tbody>"
-    );
-    for var in env_vars {
-        let env_name = var
-            .environment
-            .as_ref()
-            .and_then(|id| environments.iter().find(|e| &e.id == id))
-            .map(|e| e.name.as_str())
-            .unwrap_or("Shared");
-        let val = if data.settings.secret_variables.contains(&var.id) {
-            "***".to_string()
-        } else {
-            masked(&var.name, &var.value)
-        };
+    for name in prefixes {
+        if !one {
+            let _ = writeln!(
+                out,
+                "<p class=\"base-note\">In paths: <code>{{{{{}}}}}</code></p>",
+                escape(name)
+            );
+        }
+        let mut rows: Vec<&Variable> = variables
+            .iter()
+            .filter(|var| var.category == VariableCategory::Environment && var.enabled && var.name == *name)
+            .collect();
+        rows.sort_by_key(|var| match &var.environment {
+            None => (0, 0usize),
+            Some(id) => (
+                1,
+                environments.iter().position(|env| &env.id == id).unwrap_or(usize::MAX),
+            ),
+        });
+        if rows.is_empty() {
+            continue;
+        }
         let _ = writeln!(
             out,
-            "<tr><td class=\"mono\">{}</td><td>{}</td><td class=\"mono\">{}</td></tr>",
-            escape(&var.name),
-            escape(env_name),
-            escape(&val)
+            "<table><thead><tr><th>Environment</th><th>Value</th></tr></thead><tbody>"
         );
+        for var in rows {
+            let env_name = var
+                .environment
+                .as_ref()
+                .and_then(|id| environments.iter().find(|env| &env.id == id))
+                .map(|env| env.name.as_str())
+                .unwrap_or("Shared");
+            let val = if data.settings.secret_variables.contains(&var.id) {
+                "***".to_string()
+            } else {
+                masked(&var.name, &var.value)
+            };
+            let _ = writeln!(
+                out,
+                "<tr><td>{}</td><td class=\"mono\">{}</td></tr>",
+                escape(env_name),
+                escape(&val)
+            );
+        }
+        let _ = writeln!(out, "</tbody></table>");
     }
-    let _ = writeln!(out, "</tbody></table></section>");
+    let _ = writeln!(out, "</section>");
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -355,8 +513,8 @@ fn walk_items(
     tree: &Tree,
     ids: &[crate::ItemId],
     folder_path: &[String],
-    environments: &[Environment],
     variables: &[Variable],
+    prefixes: &[String],
     nav: &mut String,
     main: &mut String,
 ) {
@@ -366,9 +524,9 @@ fn walk_items(
             next_path.push(folder.name.clone());
             render_folder(folder, &next_path, nav, main);
             let children = tree.get(id).map(|node| node.children().to_vec()).unwrap_or_default();
-            walk_items(data, tree, &children, &next_path, environments, variables, nav, main);
+            walk_items(data, tree, &children, &next_path, variables, prefixes, nav, main);
         } else if let Some(api) = data.apis.iter().find(|a| &a.id == id) {
-            render_api(data, api, folder_path, environments, variables, nav, main);
+            render_api(data, api, folder_path, variables, prefixes, nav, main);
         }
     }
 }
@@ -389,12 +547,13 @@ fn render_folder(folder: &Folder, path: &[String], nav: &mut String, main: &mut 
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_api(
     data: &TreeData,
     api: &ApiSetting,
     folder_path: &[String],
-    environments: &[Environment],
     variables: &[Variable],
+    prefixes: &[String],
     nav: &mut String,
     main: &mut String,
 ) {
@@ -406,7 +565,7 @@ fn render_api(
 
     let _ = writeln!(
         nav,
-        "<a class=\"nav-item\" href=\"#{anchor}\" data-search=\"{}\"><span class=\"badge {badge_cls}\">{method_str}</span><span>{}</span></a>",
+        "<a class=\"nav-item\" href=\"#{anchor}\" data-search=\"{}\"><span class=\"method {badge_cls}\">{method_str}</span><span class=\"nav-name\">{}</span></a>",
         escape(&search_key),
         escape(&api.name)
     );
@@ -418,13 +577,13 @@ fn render_api(
     );
     let inh = inherited(data, &api.id);
     let auth_badge = auth_label(inh.auth(&req.auth))
-        .map(|label| format!("<span class=\"badge badge-get\">Auth: {}</span>", escape(&label)))
+        .map(|label| format!("<span class=\"auth\">Auth: {}</span>", escape(&label)))
         .unwrap_or_default();
     let _ = writeln!(
         main,
-        "<div class=\"api-head\"><span class=\"badge {badge_cls}\">{method_str}</span><code class=\"uri\">{}</code><h4 class=\"api-title\">{}</h4>{auth_badge}</div>",
-        escape(&req.uri),
-        escape(&api.name)
+        "<div class=\"api-head\"><h4 class=\"api-title\">{}</h4><div class=\"address\"><span class=\"method {badge_cls}\">{method_str}</span><code class=\"uri\">{}</code>{auth_badge}</div></div>",
+        escape(&api.name),
+        escape(&display_uri(&req.uri, prefixes))
     );
     if !req.description.trim().is_empty() {
         let _ = writeln!(main, "<div class=\"api-desc\">{}</div>", escape(req.description.trim()));
@@ -503,7 +662,7 @@ fn render_api(
     }
 
     // B6: multi-language code snippets.
-    render_code_snippets(data, api, environments, variables, main);
+    render_code_snippets(data, api, variables, prefixes, main);
 
     let _ = writeln!(main, "</article>");
 }
@@ -613,8 +772,8 @@ impl DocParam {
 
 fn required_cell(required: Option<bool>) -> &'static str {
     match required {
-        Some(true) => "required",
-        Some(false) => "optional",
+        Some(true) => "<span class=\"req\">required</span>",
+        Some(false) => "<span class=\"opt\">optional</span>",
         None => "",
     }
 }
@@ -701,24 +860,61 @@ fn render_params_table(data: &TreeData, api: &ApiSetting, out: &mut String) {
     if rows.is_empty() {
         return;
     }
+    // A column that is empty on every row is left out, so a name and a
+    // description do not sit across a run of blank type cells.
+    let show_type = rows.iter().any(|row| !row.schema_type.trim().is_empty());
+    let show_required = rows.iter().any(|row| row.required.is_some());
+    let show_format = rows.iter().any(|row| !row.format.trim().is_empty());
+    let show_enum = rows.iter().any(|row| !row.enums.trim().is_empty());
+    let show_value = rows.iter().any(|row| !row.value.trim().is_empty());
+    let show_desc = rows.iter().any(|row| !row.description.trim().is_empty());
     let _ = writeln!(out, "<div class=\"section-title\">Parameters</div>");
-    let _ = writeln!(
-        out,
-        "<table><thead><tr><th>Name</th><th>In</th><th>Type</th><th>Required</th><th>Format</th><th>Enum</th><th>Value</th><th>Description</th></tr></thead><tbody>"
-    );
-    for row in rows {
-        let _ = writeln!(
+    let _ = write!(out, "<table class=\"params\"><thead><tr><th>Name</th><th>In</th>");
+    if show_type {
+        let _ = write!(out, "<th>Type</th>");
+    }
+    if show_required {
+        let _ = write!(out, "<th>Required</th>");
+    }
+    if show_format {
+        let _ = write!(out, "<th>Format</th>");
+    }
+    if show_enum {
+        let _ = write!(out, "<th>Enum</th>");
+    }
+    if show_value {
+        let _ = write!(out, "<th>Value</th>");
+    }
+    if show_desc {
+        let _ = write!(out, "<th>Description</th>");
+    }
+    let _ = writeln!(out, "</tr></thead><tbody>");
+    for row in &rows {
+        let _ = write!(
             out,
-            "<tr><td class=\"mono\">{}</td><td class=\"mono\">{}</td><td class=\"mono\">{}</td><td>{}</td><td class=\"mono\">{}</td><td>{}</td><td class=\"mono\">{}</td><td>{}</td></tr>",
+            "<tr><td class=\"mono\">{}</td><td class=\"mono dim\">{}</td>",
             escape(&row.name),
-            row.place,
-            escape(&row.schema_type),
-            required_cell(row.required),
-            escape(&row.format),
-            escape(&row.enums),
-            escape(&row.value),
-            escape(row.description.trim())
+            row.place
         );
+        if show_type {
+            let _ = write!(out, "<td class=\"mono dim\">{}</td>", escape(&row.schema_type));
+        }
+        if show_required {
+            let _ = write!(out, "<td>{}</td>", required_cell(row.required));
+        }
+        if show_format {
+            let _ = write!(out, "<td class=\"mono dim\">{}</td>", escape(&row.format));
+        }
+        if show_enum {
+            let _ = write!(out, "<td class=\"dim\">{}</td>", escape(&row.enums));
+        }
+        if show_value {
+            let _ = write!(out, "<td class=\"mono\">{}</td>", escape(&row.value));
+        }
+        if show_desc {
+            let _ = write!(out, "<td>{}</td>", escape(row.description.trim()));
+        }
+        let _ = writeln!(out, "</tr>");
     }
     let _ = writeln!(out, "</tbody></table>");
 }
@@ -727,7 +923,7 @@ fn render_schema_table(title: &str, fields: &[SchemaField], out: &mut String) {
     let _ = writeln!(out, "<div class=\"section-title\">{}</div>", escape(title));
     let _ = writeln!(
         out,
-        "<table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>"
+        "<table class=\"schema\"><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>"
     );
     for field in fields {
         let indent = "&nbsp;&nbsp;".repeat(field.depth.min(8));
@@ -750,15 +946,15 @@ fn render_schema_table(title: &str, fields: &[SchemaField], out: &mut String) {
 fn render_code_snippets(
     data: &TreeData,
     api: &ApiSetting,
-    environments: &[Environment],
     variables: &[Variable],
+    prefixes: &[String],
     out: &mut String,
 ) {
     let req = &api.request;
     if req.method == HttpMethod::WebSocket {
         return;
     }
-    let (prepared, masked_req) = sample_prepared(data, api, environments, variables);
+    let (prepared, masked_req) = sample_prepared(data, api, variables, prefixes);
     let targets: &[CodeTarget] = if req.method == HttpMethod::Grpc {
         &[CodeTarget::Curl]
     } else {
@@ -799,51 +995,25 @@ fn render_code_snippets(
 fn sample_prepared(
     data: &TreeData,
     api: &ApiSetting,
-    environments: &[Environment],
     variables: &[Variable],
+    prefixes: &[String],
 ) -> (PreparedRequest, HttpRequest) {
     let req = &api.request;
-    let (env_name, rest) = split_env_prefix(&req.uri);
-    let first_env_id = environments.first().map(|e| &e.id);
-    let base = env_name
-        .and_then(|name| {
-            let matching = |pred: &dyn Fn(&Variable) -> bool| {
-                variables.iter().find(|v| {
-                    v.category == VariableCategory::Environment
-                        && v.enabled
-                        && v.name == name
-                        && !data.settings.secret_variables.contains(&v.id)
-                        && !v.value.trim().is_empty()
-                        && pred(v)
-                })
-            };
-            matching(&|v| v.environment.is_none())
-                .or_else(|| matching(&|v| first_env_id.is_some() && v.environment.as_ref() == first_env_id))
-                .or_else(|| matching(&|_| true))
-                .map(|v| v.value.trim_end_matches('/').to_string())
-        })
-        .unwrap_or_else(|| {
-            if env_name.is_some() {
-                "https://example.com".to_string()
-            } else {
-                String::new()
-            }
-        });
-    let raw_url = if base.is_empty() {
-        rest.to_string()
-    } else if rest.starts_with('/') || rest.is_empty() {
-        format!("{base}{rest}")
-    } else {
-        format!("{base}/{rest}")
-    };
-    let mut url = replace_path_params(&raw_url, |name| {
+    // The same address the page shows. One leading variable is `BASE_URL`;
+    // two keep `{{name}}`. Path parameters are still filled in.
+    let mut url = replace_path_params(&display_uri(&req.uri, prefixes), |name| {
         req.variables
             .iter()
             .find(|kv| kv.enabled && kv.key.trim() == name)
             .map(|kv| masked(name, &kv.value))
             .filter(|v| !v.is_empty())
     });
-    if req.method == HttpMethod::Grpc && !url.is_empty() && !url.contains("://") {
+    if req.method == HttpMethod::Grpc
+        && !url.is_empty()
+        && !url.contains("://")
+        && !url.starts_with("BASE_URL")
+        && !url.starts_with("{{")
+    {
         url = format!("http://{url}");
     }
 
@@ -1004,13 +1174,15 @@ fn sample_prepared(
     (prepared, masked_req)
 }
 
+/// The tree's method colors: DELETE red, a body method green, gRPC magenta,
+/// WebSocket cyan, and the rest the info cyan.
 fn method_badge_class(method: HttpMethod) -> &'static str {
     match method {
-        HttpMethod::Delete => "badge-delete",
-        HttpMethod::Grpc => "badge-grpc",
-        HttpMethod::WebSocket => "badge-ws",
-        m if m.has_body() => "badge-post",
-        _ => "badge-get",
+        HttpMethod::Delete => "method-delete",
+        HttpMethod::Grpc => "method-grpc",
+        HttpMethod::WebSocket => "method-ws",
+        m if m.has_body() => "method-post",
+        _ => "method-get",
     }
 }
 
@@ -1116,12 +1288,29 @@ mod tests {
         let html = render(&collection, &data, &[], &variables);
         assert!(html.contains("Payments &lt;API&gt;"));
         assert!(html.contains("Get Order"));
+        assert!(html.contains("class=\"method method-get\""));
+        assert!(html.contains("text-wrap: pretty"));
+        assert!(html.contains("../../fonts/IBMPlexSans.ttf"));
+        assert!(html.contains("../../fonts/JetBrainsMono-Bold.ttf"));
+        assert!(!html.contains("badge-get"));
         assert!(html.contains("order_id"));
         assert!(html.contains("The order identifier"));
         assert!(html.contains("Order ID"));
-        assert!(html.contains("https://api.payments.test/orders/ord_123"));
+        let title_at = html.find("api-title\">Get Order").expect("title");
+        let uri_at = html.find("BASE_URL/orders/:order_id").expect("address");
+        assert!(title_at < uri_at, "the name is the heading and the address follows it");
+        assert!(html.contains("BASE_URL/orders/ord_123"));
+        assert!(html.contains(">Base URL<"));
+        assert!(html.contains(">Shared<"));
+        assert!(html.contains("https://api.payments.test"));
+        assert!(!html.contains("{{HOST}}") && !html.contains(">HOST<"), "{html}");
+        assert!(!html.contains("https://api.payments.test/orders"));
         assert!(!html.contains("super-secret-jwt"), "auth header value is masked");
         assert!(!html.contains("live_key_999"), "secret variable value is masked");
+        assert!(
+            !html.contains("MERCHANT_KEY"),
+            "a variable that is not a path prefix is not listed"
+        );
     }
 
     #[test]
@@ -1298,5 +1487,111 @@ mod tests {
         assert!(html.contains("uuid"));
         assert!(html.contains(">file<"));
         assert!(!html.contains("binary"), "a form row does not show parameter schema");
+    }
+
+    #[test]
+    fn parameter_table_omits_a_column_that_is_empty() {
+        let collection = Collection {
+            id: "01JPROJECT".into(),
+            name: "Shop".into(),
+            ..Default::default()
+        };
+        let data = TreeData {
+            folders: vec![],
+            apis: vec![ApiSetting {
+                id: "01JAPI".into(),
+                name: "Token".into(),
+                request: HttpRequest {
+                    method: HttpMethod::Get,
+                    uri: "/session".into(),
+                    query: vec![KvParam {
+                        key: "token".into(),
+                        description: "Setup token".into(),
+                        enabled: true,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            top_order: vec!["01JAPI".into()],
+            ..Default::default()
+        };
+        let html = render(&collection, &data, &[], &[]);
+        assert!(html.contains("<th>Name</th><th>In</th><th>Description</th>"));
+        assert!(!html.contains("<th>Type</th>"));
+        assert!(!html.contains("<th>Required</th>"));
+        assert!(!html.contains("<th>Format</th>"));
+        assert!(!html.contains("<th>Enum</th>"));
+        assert!(!html.contains("<th>Value</th>"));
+        assert!(html.contains("Setup token"));
+    }
+
+    #[test]
+    fn two_leading_variables_keep_their_names() {
+        let collection = Collection {
+            id: "01JPROJECT".into(),
+            name: "Shop".into(),
+            ..Default::default()
+        };
+        let data = TreeData {
+            folders: vec![],
+            apis: vec![
+                ApiSetting {
+                    id: "01JAPI1".into(),
+                    name: "One".into(),
+                    request: HttpRequest {
+                        method: HttpMethod::Get,
+                        uri: "{{HOST}}/a".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ApiSetting {
+                    id: "01JAPI2".into(),
+                    name: "Two".into(),
+                    request: HttpRequest {
+                        method: HttpMethod::Get,
+                        uri: "{{OTHER}}/b".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ],
+            top_order: vec!["01JAPI1".into(), "01JAPI2".into()],
+            ..Default::default()
+        };
+        let variables = vec![
+            Variable {
+                id: "01JHOST".into(),
+                collection: "01JPROJECT".into(),
+                name: "HOST".into(),
+                value: "https://one.test".into(),
+                category: VariableCategory::Environment,
+                enabled: true,
+                environment: None,
+                created_at: Default::default(),
+                updated_at: Default::default(),
+            },
+            Variable {
+                id: "01JOTHER".into(),
+                collection: "01JPROJECT".into(),
+                name: "OTHER".into(),
+                value: "https://two.test".into(),
+                category: VariableCategory::Environment,
+                enabled: true,
+                environment: None,
+                created_at: Default::default(),
+                updated_at: Default::default(),
+            },
+        ];
+        let html = render(&collection, &data, &[], &variables);
+        assert!(html.contains("{{HOST}}/a"));
+        assert!(html.contains("{{OTHER}}/b"));
+        assert!(html.contains("In paths: <code>{{HOST}}</code>"));
+        assert!(html.contains("In paths: <code>{{OTHER}}</code>"));
+        assert!(html.contains("https://one.test"));
+        assert!(html.contains("https://two.test"));
+        assert!(!html.contains("BASE_URL"));
     }
 }

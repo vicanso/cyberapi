@@ -20,13 +20,16 @@ use cyberapi_core::oauth::KeptTokens;
 use cyberapi_core::prefs::{AppPrefs, WorkspacePrefs};
 use cyberapi_core::response::HttpResponse;
 use cyberapi_core::secrets::SecretValues;
-use cyberapi_core::sync::{ConfigAt, KEPT_VERSIONS, ProjectConfig, ProjectVersion};
+use cyberapi_core::sync::{
+    ApiHead, ConfigAt, KEPT_VERSIONS, OutlineAt, ProjectChanges, ProjectConfig, ProjectOutline, ProjectVersion,
+};
 use cyberapi_core::tree::{Placement, Removal, TreeChange, TreeData};
 use cyberapi_core::{AccountId, CollectionId, EnvironmentId, ItemId, TeamId, Timestamp, VariableId};
 use cyberapi_store::rules::{environment_name, known_environment, project_config, required_name};
 use cyberapi_store::{
     CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection, NewVariable,
-    PrefStore, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, VersionStore, sort_cookies,
+    PrefStore, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, VersionStore, merge_changes,
+    sort_cookies,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -217,6 +220,37 @@ impl Scoped {
         })
     }
 
+    async fn outline_of(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+        name: String,
+        description: String,
+    ) -> Result<ProjectOutline, StoreError> {
+        let (folders, top_order, settings) = self.tree_frame(conn, collection).await?;
+        let apis = self.api_heads(conn, collection).await?;
+        let variables = sqlx::query(self.dialect.sql(sql::VARIABLES_ALL_OF))
+            .bind(collection.as_str().to_string())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(db)?
+            .iter()
+            .map(rows::variable)
+            .collect::<Result<Vec<_>, _>>()?;
+        let variables = in_environments(variables, &self.variable_environments(conn, collection).await?);
+        let environments = self.environments_of(conn, collection).await?;
+        Ok(ProjectOutline {
+            name,
+            description,
+            folders,
+            apis,
+            top_order,
+            variables,
+            settings,
+            environments,
+        })
+    }
+
     /// G4: the project as it is, kept as a version before it is replaced
     /// whole, by this account; the oldest beyond `KEPT_VERSIONS` go. An
     /// empty one — a project made to be uploaded into — is not kept.
@@ -267,7 +301,11 @@ impl Scoped {
         Ok(config)
     }
 
-    async fn tree_data(&self, conn: &mut AnyConnection, collection: &CollectionId) -> Result<TreeData, StoreError> {
+    async fn tree_frame(
+        &self,
+        conn: &mut AnyConnection,
+        collection: &CollectionId,
+    ) -> Result<(Vec<Folder>, Vec<ItemId>, ProjectSettings), StoreError> {
         let id = collection.as_str().to_string();
         let mut folders: Vec<Folder> = sqlx::query(self.dialect.sql(sql::FOLDERS_OF))
             .bind(id.clone())
@@ -300,14 +338,6 @@ impl Scoped {
             .transpose()?
             .map(|text| settings_of(&text))
             .unwrap_or_default();
-        let apis = sqlx::query(self.dialect.sql(sql::APIS_OF))
-            .bind(id.clone())
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(db)?
-            .iter()
-            .map(rows::api)
-            .collect::<Result<_, _>>()?;
         let top_order = match sqlx::query(self.dialect.sql(sql::TOP_ORDER_OF))
             .bind(id)
             .fetch_optional(&mut *conn)
@@ -317,12 +347,36 @@ impl Scoped {
             Some(row) => serde_json::from_str(&rows::text(&row, 0)?).unwrap_or_default(),
             None => Vec::new(),
         };
+        Ok((folders, top_order, project))
+    }
+
+    async fn tree_data(&self, conn: &mut AnyConnection, collection: &CollectionId) -> Result<TreeData, StoreError> {
+        let (folders, top_order, settings) = self.tree_frame(conn, collection).await?;
+        let apis = sqlx::query(self.dialect.sql(sql::APIS_OF))
+            .bind(collection.as_str().to_string())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(db)?
+            .iter()
+            .map(rows::api)
+            .collect::<Result<_, _>>()?;
         Ok(TreeData {
             folders,
             apis,
             top_order,
-            settings: project,
+            settings,
         })
+    }
+
+    async fn api_heads(&self, conn: &mut AnyConnection, collection: &CollectionId) -> Result<Vec<ApiHead>, StoreError> {
+        sqlx::query(self.dialect.pick(&sql::API_HEADS))
+            .bind(collection.as_str().to_string())
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(db)?
+            .iter()
+            .map(rows::api_head)
+            .collect()
     }
 
     /// A project's named environments (#61), in its order.
@@ -1025,6 +1079,41 @@ impl TreeStore for Scoped {
                 config,
             })
         })
+    }
+
+    fn outline(&self, collection: CollectionId) -> StoreFuture<OutlineAt> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            let role = this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            let found = this.get_collection(&mut conn, &collection, role).await?;
+            let outline = this
+                .outline_of(&mut conn, &collection, found.name, found.description)
+                .await?;
+            Ok(OutlineAt {
+                revision: found.revision,
+                outline,
+            })
+        })
+    }
+
+    fn api(&self, collection: CollectionId, api: ItemId) -> StoreFuture<ApiSetting> {
+        self.run(|this| async move {
+            let mut conn = this.pool.acquire().await.map_err(db)?;
+            this.require(&mut conn, &collection, CollectionRole::Viewer).await?;
+            sqlx::query(this.dialect.sql(sql::API_GET))
+                .bind(api.as_str().to_string())
+                .bind(collection.as_str().to_string())
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(db)?
+                .map(|row| rows::api(&row))
+                .transpose()?
+                .ok_or_else(|| StoreError::not_found(Entity::Api, &api))
+        })
+    }
+
+    fn merge(&self, collection: CollectionId, changes: ProjectChanges, base: Option<u64>) -> StoreFuture<u64> {
+        self.run(|this| async move { merge_changes(&this, collection, changes, base, now()).await })
     }
 
     fn replace(&self, collection: CollectionId, config: ProjectConfig, base: Option<u64>) -> StoreFuture<u64> {

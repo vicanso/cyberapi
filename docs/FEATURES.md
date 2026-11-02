@@ -126,7 +126,7 @@ On the desktop, back up and restore in the same format as the earlier Tauri app.
 ## Teams
 
 - One binary or one Docker image, at the root or under a sub-path. Accounts come from invitations. Roles on a project are viewer, editor and manager. Share a project with accounts or teams, or move it to another team.
-- The desktop app signs in to the same server. The home page lists the team's projects as they appear. Upload a local project and keep its history. Edit a shared project offline and sync when you choose. If someone else changed it meanwhile, you choose which copy to keep.
+- The desktop app signs in to the same server. The home page lists the team's projects as they appear. Upload a local project and keep its history. Edit a shared project offline and sync when you choose. If someone else changed it meanwhile, you choose which copy to keep. On the web, keeping yours sends the APIs you changed and leaves the ones you never opened.
 - An API or a folder can stay local and out of that sync.
 - The server keeps the last 50 versions of a project, taken before each sync. An editor restores one from **Versions…**. The copy that was replaced is kept too, so a restore can be undone.
 - Compare a version with now, or with the version after it (*0.4.1*): folders and APIs added, removed, renamed, moved or edited, and variables and environments that changed. Open an edited API to see where its request differs.

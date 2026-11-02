@@ -146,8 +146,8 @@ impl PaletteState {
         }
     }
 
-    /// PERF-11: reads the other projects' APIs, the most recently changed
-    /// first, once: they show only for a search, and each is read whole.
+    /// PERF-11: reads the other projects' outlines, the most recently changed
+    /// first, once: they show only for a search. The requests stay unread.
     pub fn read_others(&mut self, cx: &mut Context<Self>) {
         match self.others {
             Others::NotAsked if self.listing => self.others = Others::Wanted,
@@ -167,8 +167,9 @@ impl PaletteState {
             .collect();
         let task = cx.spawn(async move |this, cx| {
             for project in others {
-                let read = cx.background_spawn(storage.tree().load(project.id.clone())).await;
-                if let Ok(data) = read {
+                let read = cx.background_spawn(storage.tree().outline(project.id.clone())).await;
+                if let Ok(at) = read {
+                    let data = at.outline.config(&project.id).tree();
                     let found = cx.background_spawn(async move { found_in(&project, &data) }).await;
                     if this
                         .update(cx, |this, cx| {

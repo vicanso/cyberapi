@@ -1,9 +1,11 @@
 //! Server projects' unsynced changes, kept in this browser
 //! (`docs/server-sync.md` §4).
 //!
-//! A draft is a project's whole configuration as the reader left it, and
-//! the server's revision it was made over. It is there while something is
-//! unsynced: syncing, or giving the changes up, removes it. In a page each
+//! A draft is what the reader changed, and the server's revision it was
+//! made over. A page keeps those changes (`ProjectChanges`) and the outline
+//! they sit on; an older draft that still holds the whole configuration is
+//! read as it was. It is there while something is unsynced: syncing, or
+//! giving the changes up, removes it. In a page each
 //! draft is a `localStorage` entry of its own, under the account and the
 //! project, so a refresh finds it and the tabs of one browser share it —
 //! the later save wins. The desktop keeps none (its server projects are
@@ -11,7 +13,7 @@
 //! the tests.
 
 use cyberapi_core::CollectionId;
-use cyberapi_core::sync::ProjectConfig;
+use cyberapi_core::sync::{ProjectChanges, ProjectConfig, ProjectOutline};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -25,7 +27,39 @@ pub struct Draft {
     /// The server's revision the changes were made over; `None` when the
     /// project was never pulled here.
     pub base: Option<u64>,
-    pub config: ProjectConfig,
+    /// An older draft: the project whole, as the reader left it. A new one
+    /// leaves this out and keeps [`Self::changes`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ProjectConfig>,
+    /// What the reader changed, in order. Empty for an older whole draft.
+    #[serde(skip_serializing_if = "ProjectChanges::is_empty")]
+    pub changes: ProjectChanges,
+    /// The server's outline the changes sit on, so a refresh offline can
+    /// show them. Not sent when the reader syncs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outline: Option<ProjectOutline>,
+}
+
+impl Draft {
+    /// An older draft: the project whole, over `base`.
+    pub fn whole(base: Option<u64>, config: ProjectConfig) -> Self {
+        Self {
+            base,
+            config: Some(config),
+            changes: ProjectChanges::default(),
+            outline: None,
+        }
+    }
+
+    /// A page's draft: `changes` over `base`, and the outline they sit on.
+    pub fn edits(base: Option<u64>, changes: ProjectChanges, outline: Option<ProjectOutline>) -> Self {
+        Self {
+            base,
+            config: None,
+            changes,
+            outline,
+        }
+    }
 }
 
 const PREFIX: &str = "cyberapi.draft.";
@@ -198,13 +232,22 @@ mod tests {
     use super::*;
 
     fn draft(name: &str, base: u64) -> Draft {
-        Draft {
-            base: Some(base),
-            config: ProjectConfig {
+        Draft::whole(
+            Some(base),
+            ProjectConfig {
                 name: name.into(),
                 ..Default::default()
             },
-        }
+        )
+    }
+
+    /// A draft saved before changes were kept on their own still reads.
+    #[test]
+    fn an_old_draft_is_the_whole_project() {
+        let read: Draft = serde_json::from_str(r#"{"base":3,"config":{"name":"shop"}}"#).expect("read");
+        assert_eq!(read, draft("shop", 3));
+        assert!(read.changes.is_empty());
+        assert!(read.outline.is_none());
     }
 
     #[test]
