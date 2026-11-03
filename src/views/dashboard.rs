@@ -633,6 +633,35 @@ impl DashboardView {
                                             .font_semibold()
                                             .child(marked(&collection.name, keyword, cx)),
                                     )
+                                    // UI-6: a project bound to an OpenAPI / source
+                                    // URL shows its sync icon on the card, green
+                                    // when periodic auto-sync is enabled.
+                                    .when_some(
+                                        self.state.read(cx).source_info(&collection.id),
+                                        |this, (url, auto_sync)| {
+                                            let tip = match auto_sync {
+                                                Some(minutes) => {
+                                                    t!("dashboard.source_auto_sync", url = url, minutes = minutes)
+                                                        .to_string()
+                                                }
+                                                None => t!("dashboard.source_bound", url = url).to_string(),
+                                            };
+                                            let color = if auto_sync.is_some() {
+                                                cx.theme().green
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            };
+                                            this.child(
+                                                div()
+                                                    .id(SharedString::from(format!("collection-source-{key}")))
+                                                    .flex_none()
+                                                    .tooltip(move |window, cx| {
+                                                        Tooltip::new(tip.clone()).build(window, cx)
+                                                    })
+                                                    .child(Icon::new(Icons::RefreshCw).xsmall().text_color(color)),
+                                            )
+                                        },
+                                    )
                                     // A server project's copy, among this
                                     // machine's own; crossed out while its
                                     // server cannot be reached.

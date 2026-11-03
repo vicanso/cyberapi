@@ -702,6 +702,8 @@ impl TreePanel {
                 this.child(
                     div()
                         .flex_none()
+                        .ml_1()
+                        .px_1()
                         .text_xs()
                         .text_color(theme.muted_foreground)
                         .child(count.to_string()),
@@ -1053,6 +1055,50 @@ fn project_more_menu(
     } else {
         menu
     };
+    // UI-4: project-wide variables, global headers and authentication right in
+    // the project's own menu, where a reader looks before the app's settings.
+    let menu = [
+        (
+            cyberapi_core::model::VariableCategory::Environment,
+            t!("variables.env_title"),
+            Icons::Globe,
+        ),
+        (
+            cyberapi_core::model::VariableCategory::Custom,
+            t!("variables.custom_title"),
+            Icons::Braces,
+        ),
+        (
+            cyberapi_core::model::VariableCategory::GlobalRequestHeader,
+            t!("variables.headers_title"),
+            Icons::Heading,
+        ),
+    ]
+    .into_iter()
+    .fold(menu, |menu, (category, label, icon)| {
+        let workspace = state.clone();
+        menu.item(
+            PopupMenuItem::new(label.to_string())
+                .icon(icon)
+                .on_click(move |_, window, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        crate::views::open_variables_dialog(&workspace, category, window, cx);
+                    }
+                }),
+        )
+    });
+    let for_auth = state.clone();
+    let menu = menu
+        .item(
+            PopupMenuItem::new(t!("project_auth.menu").to_string())
+                .icon(Icons::KeyRound)
+                .on_click(move |_, window, cx| {
+                    if let Some(workspace) = for_auth.upgrade() {
+                        crate::views::open_project_auth(&workspace, window, cx);
+                    }
+                }),
+        )
+        .separator();
     // G4: a server project's versions; a viewer reads them.
     let keeps_versions = state.upgrade().is_some_and(|state| state.read(cx).keeps_versions(cx));
     let for_versions = state.clone();

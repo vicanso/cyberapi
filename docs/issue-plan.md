@@ -318,3 +318,17 @@ Query、路径参数和请求头的类型、必填、format 和枚举。已完�
 
 2026-10-31 对 0.4.1 之后新增与改动的功能（F8–F16、B9–B11、D8、G2b、G3、H2、A4b、A7b/F7b、A8–A10、PERF-3b、#84）做了一次代码审查与运行验证，结果记在 [review-0.4.2.md](./review-0.4.2.md)：13 条 bug（`BUG-1`…`BUG-13`）、4 条性能问题（`PERF-1`…`PERF-4`）、2 个功能精简与边界取舍建议（`Q-1` 删除请求“设置”标签页重复的接口变量编辑器、`Q-2` 桌面本机 MCP 对服务器项目副本的只读/隔离边界）。后续按该文档顺序逐项修复与优化。
 
+## 0.5.0 之后的界面体验优化建议（2026-11-03 实机巡检）
+
+通过运行桌面版实机截取首页（21 个项目）与大型项目工作区（392 个接口、多固定接口与多打开标签）并对照视图代码，整理出以下 6 项界面与交互优化建议（均不改数据模型）：
+
+| 编号 | 优化项 | 规模 | 位置 | 实机表现与优化方案 | 状态 |
+|---|---|---|---|---|---|
+| UI-1 | 打开标签栏（`TabsBar`）深色分隔对比度与溢出下拉列表 | S | [`views/workspace/tabs.rs`](../src/views/workspace/tabs.rs) | 当打开多个标签且当前选中的是顶部固定接口（Pin）时，`TabsBar` 内所有标签均为非激活态，`theme.secondary` 背景与 `theme.border` 右边框在深色主题下几乎同色，多个标签视觉上连成一串文字；且超出宽度时右侧直接截断。增强标签间分隔对比度（`muted.opacity(0.3)`），并在溢出时于右侧显示 `▾` 下拉菜单（`api-tabs-all`，列出全部打开的标签及同名目录区分，并提供“关闭其他 / 全部关闭”入口） | 已完成 |
+| UI-2 | 参数表格（`KvEditor`）空白新增行与表头的视觉区分 | S | [`views/kv_editor.rs`](../src/views/kv_editor.rs) | `Query` / `Headers` / `Form` 表头为 `Name \| Value \| Description`，而紧贴其下的空白输入行 placeholder 也是完全相同的 `Name \| Value \| Description`，字号与灰度接近，空表时视觉上像重复渲染了两行表头；且空白行左侧勾选框列（`w_8`）完全留空。在空白新增行左侧 `w_8` 单元格显示浅色 `+` 图标，并将可编辑参数名 placeholder 改为 `添加名称…` / `Add name…`（`editor.add_key`），与表头拉开层次 | 已完成 |
+| UI-3 | 地址栏环境前缀胶囊增加下拉指示（`▾`） | S | [`views/workspace/request_editor.rs`](../src/views/workspace/request_editor.rs) | 地址栏左侧 `GET ▾` 有下拉箭头，而中间的环境变量前缀胶囊（`request-env`）无 `▾` 标识。在 `request-env` 胶囊与未设置状态右侧均内嵌小号 `ChevronDown`（`▾`）图标 | 已完成 |
+| UI-4 | 工作区项目级变量、全局请求头与项目认证入口可发现性 | S | [`views/workspace/project_title.rs`](../src/views/workspace/project_title.rs)、[`views/workspace/tree_panel.rs`](../src/views/workspace/tree_panel.rs) | 环境变量、自定义变量、全局请求头与项目认证原先只集中在窗口最右上角的设置齿轮 `⚙️` 菜单中。已在工作区标题栏环境选择器菜单和左侧接口树顶部 `⋯`（`tree-more`）菜单中补充环境变量、自定义变量、全局请求头与项目认证直达入口 | 已完成 |
+| UI-5 | 接口树底部留白与长目录名间距微调 | S | [`views/workspace/tree_panel.rs`](../src/views/workspace/tree_panel.rs) | 接口树列表保留底部内边距（`pb_2`），并为目录右侧接口计数增加左外边距与水平内边距（`ml_1` + `px_1`），避免长驼峰目录名与计数贴合过紧 | 已完成 |
+| UI-6 | 首页项目卡片（`DashboardView`）来源绑定状态标识 | S | [`views/dashboard.rs`](../src/views/dashboard.rs)、[`states/dashboard.rs`](../src/states/dashboard.rs) | `DashboardState` 读取并缓存项目绑定的 OpenAPI / 来源地址与定时自动同步间隔（`source_info`），在首页项目卡片标题行显示同步图标（启用定时自动同步时为绿色，悬停提示绑定地址与自动同步周期） | 已完成 |
+
+

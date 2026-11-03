@@ -1748,20 +1748,26 @@ impl RequestEditor {
                         .child(match &env {
                             // The whole name; a long one is cut, and the
                             // tooltip and the menu still give it all.
-                            Some(name) => div()
-                                .max_w(rems(8.))
-                                .truncate()
+                            // UI-3: a small chevron beside the name shows at a
+                            // glance that the environment prefix is a picker.
+                            Some(name) => h_flex()
+                                .gap_1()
+                                .items_center()
                                 .px_1p5()
                                 .rounded(theme.radius)
                                 .bg(env_color.opacity(0.14))
                                 .text_color(env_color)
                                 .text_xs()
                                 .font_medium()
-                                .child(name.clone()),
-                            None => div()
+                                .child(div().max_w(rems(8.)).truncate().child(name.clone()))
+                                .child(Icon::new(IconName::ChevronDown).xsmall().text_color(env_color)),
+                            None => h_flex()
+                                .gap_1()
+                                .items_center()
                                 .text_xs()
                                 .text_color(muted)
-                                .child(t!("editor.environment").to_string()),
+                                .child(t!("editor.environment").to_string())
+                                .child(Icon::new(IconName::ChevronDown).xsmall().text_color(muted)),
                         })
                         .tooltip(env_tooltip)
                         .dropdown_menu_with_anchor(Anchor::TopLeft, env_menu),

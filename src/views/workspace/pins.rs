@@ -43,12 +43,15 @@ impl PinsBar {
     /// Whether the tags fit is known once they are laid out: checked after
     /// each frame, drawn again only when it changed.
     fn watch_overflow(&self, window: &mut Window, cx: &mut Context<Self>) {
-        cx.on_next_frame(window, |this, _, cx| {
-            let overflowing = this.scroll.max_offset().x > px(0.5);
-            if overflowing != this.overflowing {
-                this.overflowing = overflowing;
-                cx.notify();
-            }
+        let view = cx.entity().downgrade();
+        window.on_next_frame(move |_, cx| {
+            let _ = view.update(cx, |this, cx| {
+                let overflowing = this.scroll.max_offset().x > px(0.5);
+                if overflowing != this.overflowing {
+                    this.overflowing = overflowing;
+                    cx.notify();
+                }
+            });
         });
     }
 }
@@ -74,6 +77,7 @@ impl Render for PinsBar {
             h_flex()
                 .id(("pin", index))
                 .group(group.clone())
+                .relative()
                 .tooltip(move |window, cx| {
                     let tooltip = Tooltip::new(name.clone());
                     match &action {
@@ -85,7 +89,8 @@ impl Render for PinsBar {
                 .flex_none()
                 .max_w(px(200.))
                 .h(px(22.))
-                .pl_2()
+                .pl_2p5()
+                .pr_1()
                 .gap_0p5()
                 .items_center()
                 .rounded(theme.radius)
@@ -127,10 +132,12 @@ impl Render for PinsBar {
                         .when(!active, |close| {
                             close.invisible().group_hover(group, |style| style.visible())
                         })
+                        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
                             Button::new(("unpin", index))
                                 .ghost()
                                 .xsmall()
+                                .compact()
                                 .icon(IconName::Close)
                                 .tooltip(t!("workspace.unpin").to_string())
                                 .on_click(cx.listener(move |this, _, _, cx| {

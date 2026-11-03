@@ -10,7 +10,7 @@
 //! Beside it, the reader's environment (#61), to switch.
 
 use crate::states::WorkspaceState;
-use crate::views::open_variables_dialog;
+use crate::views::{open_project_auth, open_variables_dialog};
 use cyberapi_core::model::VariableCategory;
 use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -110,13 +110,37 @@ impl ProjectTitle {
                         )
                     })
                 };
-                let manage = workspace.clone();
-                menu.separator().item(
-                    PopupMenuItem::new(t!("environments.manage").to_string())
-                        .icon(Icons::Globe)
+                // UI-4: project-wide variables, global headers and auth right
+                // beside the environments they work with.
+                let menu = [
+                    (VariableCategory::Environment, t!("environments.manage"), Icons::Globe),
+                    (VariableCategory::Custom, t!("variables.custom_title"), Icons::Braces),
+                    (
+                        VariableCategory::GlobalRequestHeader,
+                        t!("variables.headers_title"),
+                        Icons::Heading,
+                    ),
+                ]
+                .into_iter()
+                .fold(menu.separator(), |menu, (category, label, icon)| {
+                    let workspace = workspace.clone();
+                    menu.item(
+                        PopupMenuItem::new(label.to_string())
+                            .icon(icon)
+                            .on_click(move |_, window, cx| {
+                                if let Some(workspace) = workspace.upgrade() {
+                                    open_variables_dialog(&workspace, category, window, cx);
+                                }
+                            }),
+                    )
+                });
+                let auth = workspace.clone();
+                menu.item(
+                    PopupMenuItem::new(t!("project_auth.menu").to_string())
+                        .icon(Icons::KeyRound)
                         .on_click(move |_, window, cx| {
-                            if let Some(workspace) = manage.upgrade() {
-                                open_variables_dialog(&workspace, VariableCategory::Environment, window, cx);
+                            if let Some(workspace) = auth.upgrade() {
+                                open_project_auth(&workspace, window, cx);
                             }
                         }),
                 )

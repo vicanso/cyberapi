@@ -18,7 +18,9 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::{ActiveTheme as _, IconName, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, KeyDownEvent,
@@ -201,9 +203,16 @@ impl KvEditor {
 
     fn push_row(&mut self, kv: &KvParam, window: &mut Window, cx: &mut Context<Self>) {
         let (key_label, value_label, description_label) = self.labels();
+        // UI-2: a distinct placeholder on the key field so the blank row at
+        // the bottom does not read as a second copy of the table header.
+        let key_placeholder = if self.options.fixed_keys {
+            key_label
+        } else {
+            t!("editor.add_key").to_string()
+        };
         let key = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(key_label)
+                .placeholder(key_placeholder)
                 .default_value(kv.key.clone())
         });
         let value = cx.new(|cx| {
@@ -694,13 +703,24 @@ impl Render for KvEditor {
                 .items_center()
                 .border_t_1()
                 .border_color(border)
-                .child(div().w_8().flex_none().flex().justify_center().when(!blank, |this| {
-                    this.child(
-                        Checkbox::new(("kv-enabled", index))
-                            .checked(row.enabled)
-                            .on_click(cx.listener(move |this, _, _, cx| this.toggle(index, cx))),
-                    )
-                }))
+                .child(
+                    div()
+                        .w_8()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(!blank, |this| {
+                            this.child(
+                                Checkbox::new(("kv-enabled", index))
+                                    .checked(row.enabled)
+                                    .on_click(cx.listener(move |this, _, _, cx| this.toggle(index, cx))),
+                            )
+                        })
+                        .when(blank, |this| {
+                            this.child(Icon::new(IconName::Plus).xsmall().text_color(muted.opacity(0.6)))
+                        }),
+                )
                 .child(
                     h_flex()
                         .flex_1()

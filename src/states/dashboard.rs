@@ -34,6 +34,10 @@ use tracing::warn;
 /// A project just made, and what to import into it.
 type Made = (Collection, Option<Arc<ImportBundle>>);
 
+/// UI-6: each project's stored OpenAPI / source URL and its workspace
+/// `auto_sync_sources` map.
+type ProjectSources = BTreeMap<CollectionId, (Option<String>, BTreeMap<String, u32>)>;
+
 /// B7 / B10: the OpenAPI / source address and periodic auto-sync choice
 /// configured in the project dialog on the home page.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -93,6 +97,10 @@ pub struct DashboardState {
     /// How many APIs each project holds, for its card; read beside the
     /// list, and `None` until it was.
     api_counts: Option<BTreeMap<CollectionId, usize>>,
+    /// UI-6: each project's stored OpenAPI / source URL and its workspace
+    /// `auto_sync_sources` map, read beside the list so cards can show
+    /// which projects are bound to a source.
+    sources: ProjectSources,
     load: Load,
     /// Whose drafts (`crate::pins_local::scope`); a page's.
     scope: Option<String>,
@@ -148,6 +156,7 @@ impl DashboardState {
             listed: Vec::new(),
             collections: Vec::new(),
             api_counts: None,
+            sources: BTreeMap::new(),
             load: Load::Loading,
             scope,
             drafts: BTreeMap::new(),
@@ -382,6 +391,61 @@ impl DashboardState {
         Some(counts.get(id).copied().unwrap_or_default())
     }
 
+    /// UI-6: `id`'s bound OpenAPI / source URL and its periodic auto-sync
+    /// interval in minutes (`Some(minutes)` when enabled), for the project card.
+    pub fn source_info(&self, id: &CollectionId) -> Option<(String, Option<u32>)> {
+        let draft_url = self
+            .listed
+            .iter()
+            .find(|collection| &collection.id == id)
+            .and_then(|collection| self.draft(collection))
+            .and_then(draft_source);
+        let url = match draft_url {
+            Some(source) => source.map(|s| s.url)?,
+            None => self.sources.get(id).and_then(|(url, _)| url.clone())?,
+        };
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let interval = self
+            .sources
+            .get(id)
+            .and_then(|(_, auto_sync)| auto_sync.get(trimmed).copied())
+            .map(clamp_source_sync_minutes);
+        Some((trimmed.to_string(), interval))
+    }
+
+    fn reload_sources(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<CollectionId> = self.listed.iter().map(|c| c.id.clone()).collect();
+        let storage = self.storage.clone();
+        let call: StoreFuture<ProjectSources> = Box::pin(async move {
+            let mut map = BTreeMap::new();
+            for id in ids {
+                let url = storage
+                    .tree()
+                    .outline(id.clone())
+                    .await
+                    .ok()
+                    .and_then(|at| at.outline.settings.source.map(|s| s.url));
+                let auto_sync = storage
+                    .prefs()
+                    .workspace(id.clone())
+                    .await
+                    .unwrap_or_default()
+                    .auto_sync_sources;
+                map.insert(id, (url, auto_sync));
+            }
+            Ok(map)
+        });
+        run_store(cx, call, |this, result, cx| {
+            if let Ok(sources) = result {
+                this.sources = sources;
+                cx.notify();
+            }
+        });
+    }
+
     /// F2.1; on the desktop signed in, the server's projects after this
     /// machine's.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
@@ -399,6 +463,7 @@ impl DashboardState {
                 Ok(collections) => {
                     this.listed = collections;
                     this.read_drafts();
+                    this.reload_sources(cx);
                     this.load = Load::Loaded;
                     if then_server {
                         this.reload_server(cx);
@@ -664,6 +729,7 @@ impl DashboardState {
             Ok(collection) => {
                 this.listed.push(collection.clone());
                 this.show();
+                this.reload_sources(cx);
                 if import.is_none()
                     && let Some(src) = source_edit
                     && let Some(url) = src.url
@@ -812,6 +878,7 @@ impl DashboardState {
                     this.mark_unsynced(desktop, binding, cx);
                 }
                 this.show();
+                this.reload_sources(cx);
                 cx.notify();
                 if should_fetch && let Some(url) = next_url {
                     this.fetch_and_merge_source(id, url, copy, cx);
@@ -1027,6 +1094,7 @@ impl DashboardState {
             Ok(was_auto_sync)
         });
         run_store(cx, prefs_call, move |this, result, cx| {
+            this.reload_sources(cx);
             let was_auto_sync = result.unwrap_or(false);
             let url_changed = next_url != had_url;
             let should_fetch = next_url.as_deref().is_some_and(|url| {
