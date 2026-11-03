@@ -53,8 +53,20 @@ fn response_schema<'a>(root: &'a Value, op: &'a Value) -> Option<&'a Value> {
 
 /// A6: `schema` standing alone as JSON Schema: its `$ref`s written in, to
 /// [`MAX_DEPTH`] (past it, anything goes), and OpenAPI's ways put JSON
-/// Schema's. `None` past [`SCHEMA_PARTS`].
+/// Schema's. `None` past [`SCHEMA_PARTS`]. A `$ref` already on the ancestor
+/// path stops (`{}`), so `Error.errs[] → Error` does not copy itself out to
+/// the depth limit. A sibling may still use the same definition.
 fn standalone(root: &Value, schema: &Value, depth: usize, parts: &mut usize) -> Option<Value> {
+    standalone_in(root, schema, depth, parts, &mut Vec::new())
+}
+
+fn standalone_in(
+    root: &Value,
+    schema: &Value,
+    depth: usize,
+    parts: &mut usize,
+    stack: &mut Vec<*const Value>,
+) -> Option<Value> {
     *parts += 1;
     if *parts > SCHEMA_PARTS {
         return None;
@@ -69,11 +81,16 @@ fn standalone(root: &Value, schema: &Value, depth: usize, parts: &mut usize) -> 
         .any(|flag| fields.get(*flag) == Some(&Value::Bool(true)));
     let out = if fields.contains_key("$ref") {
         let target = resolve(root, schema);
-        // Too deep, or a `$ref` this document does not hold: anything goes.
-        if depth >= MAX_DEPTH || std::ptr::eq(target, schema) {
+        let ptr = target as *const Value;
+        // Too deep, a `$ref` this document does not hold, or a cycle back to
+        // a schema already being written: anything goes.
+        if depth >= MAX_DEPTH || std::ptr::eq(target, schema) || stack.contains(&ptr) {
             json!({})
         } else {
-            standalone(root, target, depth + 1, parts)?
+            stack.push(ptr);
+            let nested = standalone_in(root, target, depth + 1, parts, stack);
+            stack.pop();
+            nested?
         }
     } else {
         let mut out = Map::new();
@@ -88,17 +105,19 @@ fn standalone(root: &Value, schema: &Value, depth: usize, parts: &mut usize) -> 
                     Value::Object(named) => Value::Object(
                         named
                             .iter()
-                            .map(|(name, schema)| Some((name.clone(), standalone(root, schema, depth, parts)?)))
+                            .map(|(name, schema)| {
+                                Some((name.clone(), standalone_in(root, schema, depth, parts, stack)?))
+                            })
                             .collect::<Option<Map<_, _>>>()?,
                     ),
                     other => other.clone(),
                 },
                 _ => match value {
-                    Value::Object(_) => standalone(root, value, depth, parts)?,
+                    Value::Object(_) => standalone_in(root, value, depth, parts, stack)?,
                     Value::Array(items) => Value::Array(
                         items
                             .iter()
-                            .map(|item| standalone(root, item, depth, parts))
+                            .map(|item| standalone_in(root, item, depth, parts, stack))
                             .collect::<Option<Vec<_>>>()?,
                     ),
                     other => other.clone(),
@@ -154,6 +173,24 @@ fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
+/// The operation's name, and any lines of `summary` after the first. A blank
+/// summary uses `operationId`, then `METHOD /path`.
+fn api_title(summary: &str, operation_id: &str, method: &str, path: &str) -> (String, String) {
+    let summary = summary.trim();
+    let raw = if summary.is_empty() {
+        operation_id.trim()
+    } else {
+        summary
+    };
+    if raw.is_empty() {
+        return (format!("{} {path}", method.to_ascii_uppercase()), String::new());
+    }
+    let mut lines = raw.split('\n').map(str::trim).filter(|line| !line.is_empty());
+    let title = lines.next().unwrap_or(raw).to_string();
+    let extra = lines.collect::<Vec<_>>().join("\n");
+    (title, extra)
+}
+
 /// What `$ref` points to in this document: `#/definitions/User`.
 fn resolve<'a>(root: &'a Value, schema: &'a Value) -> &'a Value {
     match schema
@@ -168,10 +205,20 @@ fn resolve<'a>(root: &'a Value, schema: &'a Value) -> &'a Value {
 
 /// An example value of a schema: its own example, or one made from its type.
 fn example(root: &Value, schema: &Value, depth: usize) -> Value {
+    example_in(root, schema, depth, &mut Vec::new())
+}
+
+/// `stack` is the schemas currently being expanded. A `$ref` back to one of
+/// them is `null`, so a self-referential array does not nest to [`MAX_DEPTH`].
+fn example_in(root: &Value, schema: &Value, depth: usize, stack: &mut Vec<*const Value>) -> Value {
     if depth > MAX_DEPTH {
         return Value::Null;
     }
     let schema = resolve(root, schema);
+    let ptr = schema as *const Value;
+    if stack.contains(&ptr) {
+        return Value::Null;
+    }
     if let Some(example) = schema.get("example") {
         return example.clone();
     }
@@ -182,22 +229,28 @@ fn example(root: &Value, schema: &Value, depth: usize) -> Value {
     {
         return first.clone();
     }
-    match text(schema, "type") {
+    stack.push(ptr);
+    let out = match text(schema, "type") {
         "string" => json!(""),
         "integer" | "number" => json!(0),
         "boolean" => json!(false),
-        "array" => json!([example(root, schema.get("items").unwrap_or(&Value::Null), depth + 1)]),
+        "array" => json!([example_in(
+            root,
+            schema.get("items").unwrap_or(&Value::Null),
+            depth + 1,
+            stack,
+        )]),
         _ => match schema.get("properties").and_then(Value::as_object) {
             Some(properties) => Value::Object(
                 properties
                     .iter()
-                    .map(|(name, property)| (name.clone(), example(root, property, depth + 1)))
+                    .map(|(name, property)| (name.clone(), example_in(root, property, depth + 1, stack)))
                     .collect::<Map<_, _>>(),
             ),
             None if schema.get("allOf").is_some() => {
                 let mut merged = Map::new();
                 for part in schema.get("allOf").and_then(Value::as_array).into_iter().flatten() {
-                    if let Value::Object(fields) = example(root, part, depth + 1) {
+                    if let Value::Object(fields) = example_in(root, part, depth + 1, stack) {
                         merged.extend(fields);
                     }
                 }
@@ -205,7 +258,9 @@ fn example(root: &Value, schema: &Value, depth: usize) -> Value {
             }
             None => json!({}),
         },
-    }
+    };
+    stack.pop();
+    out
 }
 
 /// Enum values as stored: a string as its text, anything else as JSON text.
@@ -444,16 +499,22 @@ fn operation(
     op: &Value,
     shared: &[Value],
 ) -> (String, ImportItem) {
-    let name = [text(op, "summary"), text(op, "operationId")]
-        .into_iter()
-        .find(|name| !name.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{} {path}", method.to_ascii_uppercase()));
+    // A summary that is several lines keeps the first as the name. The rest
+    // join the description, unless that text is already there.
+    let (name, extra) = api_title(text(op, "summary"), text(op, "operationId"), method, path);
+    let mut description = text(op, "description").trim().to_string();
+    if !extra.is_empty() && !description.contains(extra.as_str()) {
+        description = if description.is_empty() {
+            extra
+        } else {
+            format!("{extra}\n\n{description}")
+        };
+    }
     let mut request = HttpRequest {
         method: HttpMethod::parse_lenient(method),
         uri: format!("{prefix}{path}"),
         // F3.
-        description: text(op, "description").trim().to_string(),
+        description,
         ..Default::default()
     };
     let parameters: Vec<&Value> = shared
@@ -1010,5 +1071,97 @@ mod tests {
         assert_eq!(fields[0].name, "email");
         assert!(fields[0].required);
         assert_eq!(fields[0].description, "Sign-in email");
+    }
+
+    /// `Error.errs[]` points at `Error`. The written schema stops at that
+    /// cycle, and a second property may still expand the same definition.
+    #[test]
+    fn a_self_referential_schema_stops_and_a_sibling_ref_still_expands() {
+        let swagger: Value = serde_json::from_str(
+            r##"{
+                "swagger": "2.0",
+                "definitions": {
+                    "Error": {
+                        "type": "object",
+                        "properties": {
+                            "msg": {"type": "string"},
+                            "errs": {"type": "array", "items": {"$ref": "#/definitions/Error"}}
+                        }
+                    },
+                    "User": {"type": "object", "properties": {"email": {"type": "string"}}},
+                    "Pair": {"type": "object", "properties": {
+                        "a": {"$ref": "#/definitions/User"},
+                        "b": {"$ref": "#/definitions/User"}
+                    }}
+                },
+                "paths": {
+                    "/check": {"post": {"summary": "check",
+                        "parameters": [{"in": "body", "name": "body", "schema": {"$ref": "#/definitions/Error"}}],
+                        "responses": {"200": {
+                        "description": "ok", "schema": {"$ref": "#/definitions/Error"}
+                    }}}},
+                    "/pair": {"post": {"summary": "pair", "parameters": [
+                        {"in": "body", "name": "body", "schema": {"$ref": "#/definitions/Pair"}}
+                    ]}}
+                }
+            }"##,
+        )
+        .expect("JSON");
+        let bundle = parse(&swagger);
+        let check = bundle
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ImportItem::Api { name, request } if name == "check" => Some(request.as_ref()),
+                _ => None,
+            })
+            .expect("check");
+        let schema = check.assertions[0].expected.as_str();
+        let fields = crate::schema_docs::fields_of_schema(schema).expect("fields");
+        assert!(fields.len() < 12, "the cycle was copied out: {}", fields.len());
+        assert!(
+            schema.len() < 800,
+            "standalone schema is still recursive: {}",
+            schema.len()
+        );
+        assert!(check.body.len() < 400, "example nested the cycle: {}", check.body);
+
+        let pair = bundle
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ImportItem::Api { name, request } if name == "pair" => Some(request.as_ref()),
+                _ => None,
+            })
+            .expect("pair");
+        let fields =
+            crate::schema_docs::fields_of_schema(pair.request_schema.as_deref().expect("schema")).expect("fields");
+        let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+        assert!(
+            names.contains(&"email"),
+            "both sides of the pair expand User: {names:?}"
+        );
+        assert_eq!(names.iter().filter(|name| **name == "email").count(), 2);
+    }
+
+    #[test]
+    fn a_multiline_summary_keeps_the_first_line_as_the_name() {
+        let swagger: Value = serde_json::from_str(
+            r##"{
+                "swagger": "2.0",
+                "paths": {"/open": {"post": {
+                    "summary": "期权预约开户\n未登录时先取营业厅\n再校验短信",
+                    "description": "已有说明"
+                }}}
+            }"##,
+        )
+        .expect("JSON");
+        let ImportItem::Api { name, request } = &parse(&swagger).items[0] else {
+            panic!("an api");
+        };
+        assert_eq!(name, "期权预约开户");
+        assert!(request.description.contains("未登录时先取营业厅"));
+        assert!(request.description.contains("再校验短信"));
+        assert!(request.description.contains("已有说明"));
     }
 }

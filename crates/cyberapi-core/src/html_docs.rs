@@ -7,8 +7,8 @@ use crate::code::{CodeTarget, code};
 use crate::inherit::inherited;
 use crate::mcp::{masked, masked_body};
 use crate::model::{
-    ApiSetting, Collection, ContentType, Environment, Folder, HttpMethod, HttpRequest, KvParam, Variable,
-    VariableCategory, path_param_names, replace_path_params, split_env_prefix,
+    ApiSetting, Collection, ContentType, Environment, HttpMethod, HttpRequest, KvParam, Variable, VariableCategory,
+    path_param_names, replace_path_params, split_env_prefix,
 };
 use crate::schema_docs::{SchemaField, fields_of_schema};
 use crate::send::{PreparedRequest, form_fields};
@@ -22,6 +22,207 @@ const CODE_TARGETS: [CodeTarget; 5] = [
     CodeTarget::Go,
     CodeTarget::Axios,
 ];
+
+/// Half of the docs `ETag`. Bump it when the page markup changes so a
+/// conditional GET does not keep the previous HTML after a deploy.
+pub const RENDER: &str = "2";
+
+/// A schema table longer than this starts folded to the first rows.
+const SCHEMA_FOLD_AT: usize = 25;
+const SCHEMA_PREVIEW: usize = 20;
+
+/// Page behavior: search, folder visibility, one language for every sample,
+/// environment substitution of `BASE_URL`, copy, schema folding, scroll spy.
+const PAGE_SCRIPT: &str = r##"(function () {
+  var search = document.getElementById('doc-search');
+  var empty = document.getElementById('doc-empty');
+  var count = document.getElementById('doc-count');
+  var lang = document.getElementById('doc-lang');
+  var env = document.getElementById('doc-env');
+  var project = document.body.getAttribute('data-project') || '';
+  var timer = 0;
+  var total = document.querySelectorAll('article.api-card').length;
+
+  function trimBase(value) {
+    return String(value || '').replace(/\/+$/, '');
+  }
+  function selectedBase() {
+    return env && env.value ? trimBase(env.value) : '';
+  }
+  function applySearch() {
+    var q = ((search && search.value) || '').toLowerCase().trim();
+    var matched = 0;
+    document.querySelectorAll('article.api-card').forEach(function (card) {
+      var show = !q || (card.getAttribute('data-search') || '').indexOf(q) !== -1;
+      card.classList.toggle('hidden', !show);
+      var link = document.querySelector('.nav-item[href="#' + card.id + '"]');
+      if (link) link.classList.toggle('hidden', !show);
+      if (show) matched += 1;
+    });
+    document.querySelectorAll('.folder-section').forEach(function (section) {
+      var visible = section.querySelector('article.api-card:not(.hidden)');
+      section.classList.toggle('hidden', !!q && !visible);
+    });
+    document.querySelectorAll('#doc-nav details.nav-group').forEach(function (group) {
+      var visible = group.querySelector('a.nav-item:not(.hidden)');
+      group.classList.toggle('hidden', !!q && !visible);
+      if (q && visible) group.open = true;
+    });
+    if (empty) empty.classList.toggle('hidden', !q || matched !== 0);
+    if (count) count.textContent = q ? (matched + ' matching') : (total + ' APIs');
+  }
+  function sampleText(box, index) {
+    var node = box.querySelector('.sample-json');
+    var data = [];
+    try { data = JSON.parse((node && node.textContent) || '[]'); } catch (err) { data = []; }
+    return data[index] || data[0] || '';
+  }
+  function renderSamples() {
+    var index = lang ? (parseInt(lang.value, 10) || 0) : 0;
+    var base = selectedBase();
+    document.querySelectorAll('.samples').forEach(function (box) {
+      var text = sampleText(box, index);
+      if (base) text = text.split('BASE_URL').join(base);
+      var code = box.querySelector('code');
+      if (code) code.textContent = text;
+    });
+    document.querySelectorAll('.uri-prefix').forEach(function (node) {
+      node.textContent = base || node.getAttribute('data-placeholder') || 'BASE_URL';
+    });
+  }
+  function flash(button) {
+    var previous = button.getAttribute('data-label') || button.textContent;
+    button.setAttribute('data-label', previous);
+    button.textContent = 'Copied';
+    window.setTimeout(function () { button.textContent = button.getAttribute('data-label') || previous; }, 1200);
+  }
+  function writeText(button, text) {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+    navigator.clipboard.writeText(text).then(function () { flash(button); }, function () { flash(button); });
+  }
+  var foldAll = document.getElementById('nav-fold');
+  var unfoldAll = document.getElementById('nav-unfold');
+  if (foldAll) foldAll.addEventListener('click', function () {
+    document.querySelectorAll('#doc-nav details').forEach(function (item) { item.open = false; });
+  });
+  if (unfoldAll) unfoldAll.addEventListener('click', function () {
+    document.querySelectorAll('#doc-nav details').forEach(function (item) { item.open = true; });
+  });
+  if (search) search.addEventListener('input', function () {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(applySearch, 100);
+  });
+  document.addEventListener('keydown', function (event) {
+    var tag = (event.target && event.target.tagName) || '';
+    var typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    if (event.key === '/' && !typing && search) {
+      event.preventDefault();
+      search.focus();
+    }
+    if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'K') && search) {
+      event.preventDefault();
+      search.focus();
+    }
+    if (event.key === 'Escape' && event.target === search) {
+      search.value = '';
+      applySearch();
+      search.blur();
+    }
+  });
+  if (lang) {
+    var savedLang = '';
+    try { savedLang = localStorage.getItem('cyberapi-docs-lang') || ''; } catch (err) { savedLang = ''; }
+    if (savedLang && lang.querySelector('option[value="' + savedLang + '"]')) lang.value = savedLang;
+    lang.addEventListener('change', function () {
+      try { localStorage.setItem('cyberapi-docs-lang', lang.value); } catch (err) {}
+      renderSamples();
+    });
+  }
+  if (env) {
+    var savedEnv = '';
+    try { savedEnv = localStorage.getItem('cyberapi-docs-env:' + project) || ''; } catch (err) { savedEnv = ''; }
+    Array.prototype.forEach.call(env.options, function (option) {
+      if (option.value && option.value === savedEnv) env.value = option.value;
+    });
+    env.addEventListener('change', function () {
+      try { localStorage.setItem('cyberapi-docs-env:' + project, env.value); } catch (err) {}
+      renderSamples();
+    });
+  }
+  document.addEventListener('click', function (event) {
+    var copy = event.target.closest && event.target.closest('.copy');
+    if (copy) {
+      var card = copy.closest('article.api-card');
+      var kind = copy.getAttribute('data-copy');
+      if (kind === 'code') {
+        var code = copy.parentNode.querySelector('code');
+        writeText(copy, code ? code.textContent : '');
+      } else if (card && kind === 'path') {
+        var path = card.querySelector('.uri-path');
+        writeText(copy, path ? path.textContent : '');
+      } else if (card && kind === 'url') {
+        var prefix = card.querySelector('.uri-prefix');
+        var pathNode = card.querySelector('.uri-path');
+        var pathText = pathNode ? pathNode.textContent : '';
+        var head = prefix ? prefix.textContent : '';
+        writeText(copy, head ? (trimBase(head) + pathText) : pathText);
+      }
+      return;
+    }
+    var link = event.target.closest && event.target.closest('a.permalink');
+    if (link && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(new URL(link.getAttribute('href'), location.href).href);
+    }
+    var fold = event.target.closest && event.target.closest('.fold');
+    if (fold) {
+      var row = fold.closest('tr');
+      var depth = parseInt(row.getAttribute('data-depth') || '0', 10);
+      var collapsed = row.classList.toggle('collapsed');
+      fold.textContent = collapsed ? '\u25b8' : '\u25be';
+      var next = row.nextElementSibling;
+      while (next && next.getAttribute('data-depth') !== null && parseInt(next.getAttribute('data-depth'), 10) > depth) {
+        next.classList.toggle('folded', collapsed);
+        next = next.nextElementSibling;
+      }
+      return;
+    }
+    var more = event.target.closest && event.target.closest('.show-fields');
+    if (more) {
+      var wrap = more.closest('.schema-wrap');
+      var closed = wrap.classList.toggle('collapsed');
+      var n = more.getAttribute('data-count') || '';
+      more.textContent = closed ? ('Show all ' + n + ' fields') : 'Show fewer fields';
+      return;
+    }
+    var bodyTab = event.target.closest && event.target.closest('[data-body]');
+    if (!bodyTab) return;
+    var box = bodyTab.closest('.body-switch');
+    if (!box) return;
+    var which = bodyTab.getAttribute('data-body');
+    box.querySelectorAll('[data-body]').forEach(function (button) {
+      button.classList.toggle('active', button === bodyTab);
+    });
+    box.querySelectorAll('[data-body-pane]').forEach(function (pane) {
+      pane.classList.toggle('hidden', pane.getAttribute('data-body-pane') !== which);
+    });
+  });
+  if ('IntersectionObserver' in window) {
+    var current = null;
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        if (current) current.classList.remove('active');
+        var item = document.querySelector('.nav-item[href="#' + entry.target.id + '"]');
+        if (!item) return;
+        item.classList.add('active');
+        current = item;
+      });
+    }, { rootMargin: '-15% 0px -70% 0px', threshold: 0 });
+    document.querySelectorAll('article.api-card').forEach(function (card) { observer.observe(card); });
+  }
+  applySearch();
+  if ((lang && lang.value !== '0') || selectedBase()) renderSamples();
+})();"##;
 
 /// Renders `collection` and its `data`, `environments` and `variables` into a
 /// standalone HTML5 document with secrets masked.
@@ -50,6 +251,13 @@ pub fn render(
     );
 
     let title = escape(&collection.name);
+    let project_id = escape(collection.id.as_str());
+    let api_count = data.apis.len();
+    let lang_options: String = CODE_TARGETS
+        .iter()
+        .enumerate()
+        .map(|(index, target)| format!("<option value=\"{index}\">{}</option>", escape(target.label())))
+        .collect();
     let desc = collection.description.trim();
     let desc_html = if desc.is_empty() {
         String::new()
@@ -105,6 +313,8 @@ pub fn render(
   --tab-active: #ffffff;
   --get: #06b6d4;
   --post: #22c55e;
+  --put: #f59e0b;
+  --patch: #6366f1;
   --delete: #ef4444;
   --grpc: #9333ea;
   --ws: #0891b2;
@@ -127,6 +337,8 @@ pub fn render(
     --tab-active: #171717;
     --get: #22d3ee;
     --post: #4ade80;
+    --put: #fbbf24;
+    --patch: #818cf8;
     --delete: #f87171;
     --grpc: #c084fc;
     --ws: #22d3ee;
@@ -242,11 +454,14 @@ body {{
   border-radius: 8px;
   padding: 16px 18px;
   margin-bottom: 16px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
 }}
 .api-head {{ margin-bottom: 8px; }}
 .address {{
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   flex: 0 1 auto;
   width: fit-content;
@@ -268,7 +483,13 @@ body {{
 }}
 .method-get {{ color: var(--get); }}
 .method-post {{ color: var(--post); }}
+.method-put {{ color: var(--put); }}
+.method-patch {{ color: var(--patch); }}
 .method-delete {{ color: var(--delete); }}
+.nav-item .method {{
+  width: 3.4rem;
+  font-size: 11px;
+}}
 .method-grpc {{ color: var(--grpc); }}
 .method-ws {{ color: var(--ws); }}
 .uri {{
@@ -359,13 +580,120 @@ pre {{
   color: var(--fg);
 }}
 .hidden {{ display: none !important; }}
+.nav-tools {{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+}}
+.nav-tools button, .copy, .show-fields, .fold {{
+  border: 1px solid var(--input);
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+}}
+.nav-tools button:hover, .copy:hover, .show-fields:hover {{ color: var(--fg); }}
+#doc-count {{ margin-left: auto; color: var(--muted); font-size: 12px; }}
+.lang-switch, .env-switch {{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}}
+.lang-switch select, .env-switch select {{
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--input);
+  border-radius: 6px;
+  padding: 3px 8px;
+  max-width: 100%;
+}}
+.nav-group {{ margin: 2px 0; }}
+.nav-group > summary {{
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  list-style: none;
+  cursor: pointer;
+}}
+.nav-group > summary::-webkit-details-marker {{ display: none; }}
+.nav-folder {{
+  margin: 8px 4px 2px;
+}}
+.nav-folder-name {{
+  color: inherit;
+  text-decoration: none;
+  min-width: 0;
+}}
+.nav-folder-name:hover {{ color: var(--fg); }}
+.nav-count {{
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}}
+.nav-items {{ margin-left: 8px; }}
+.nav-item.active {{ background: var(--hover); }}
+.permalink {{
+  opacity: 0;
+  margin-right: 6px;
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 600;
+}}
+.api-title:hover .permalink, .permalink:focus {{ opacity: 1; }}
+.code-block {{ position: relative; }}
+.code-block .copy {{ position: absolute; top: 6px; right: 6px; }}
+.code-block pre {{ padding-right: 72px; }}
+.guide {{
+  display: inline-block;
+  width: calc(var(--d) * 12px);
+  height: 0.85em;
+  border-left: 1px solid var(--line);
+  margin-right: 6px;
+  vertical-align: -0.05em;
+}}
+.fold {{
+  border: 0;
+  background: transparent;
+  padding: 0 4px 0 0;
+}}
+tr.folded {{ display: none; }}
+.schema-wrap.collapsed .schema-extra {{ display: none; }}
+.schema-wrap.collapsed {{ position: relative; }}
+.schema-wrap.collapsed::after {{
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 28px;
+  height: 40px;
+  background: linear-gradient(transparent, var(--panel));
+  pointer-events: none;
+}}
+.show-fields {{ border: 0; background: transparent; color: var(--get); padding: 4px 0 8px; }}
+.empty {{ color: var(--muted); font-size: 13px; margin: 12px 0; }}
 </style>
 </head>
-<body>
+<body data-project="{project_id}">
 <div class="layout">
   <aside class="sidebar">
     <h1>{title}</h1>
-    <input id="doc-search" class="search" type="search" placeholder="Filter APIs…">
+    <input id="doc-search" class="search" type="search" placeholder="Filter APIs…" aria-label="Filter APIs">
+    <div class="nav-tools">
+      <button type="button" id="nav-fold">Collapse</button>
+      <button type="button" id="nav-unfold">Expand</button>
+      <span id="doc-count">{api_count} APIs</span>
+    </div>
+    <label class="lang-switch">Language <select id="doc-lang">{lang_options}</select></label>
     <nav id="doc-nav">{nav_html}</nav>
   </aside>
   <main class="content">
@@ -373,32 +701,16 @@ pre {{
       <h2>{title}</h2>
       {desc_html}
     </header>
+    <p id="doc-empty" class="empty hidden">No matching APIs found</p>
     {main_html}
   </main>
 </div>
 <script>
-document.getElementById('doc-search')?.addEventListener('input', function(e) {{
-  var q = (e.target.value || '').toLowerCase().trim();
-  document.querySelectorAll('[data-search]').forEach(function(el) {{
-    var match = !q || el.getAttribute('data-search').indexOf(q) !== -1;
-    el.classList.toggle('hidden', !match);
-  }});
-}});
-document.querySelectorAll('[data-tab-group]').forEach(function(btn) {{
-  btn.addEventListener('click', function() {{
-    var g = btn.getAttribute('data-tab-group');
-    var t = btn.getAttribute('data-tab-target');
-    document.querySelectorAll('[data-tab-group="' + g + '"]').forEach(function(b) {{
-      b.classList.toggle('active', b === btn);
-    }});
-    document.querySelectorAll('[data-tab-pane="' + g + '"]').forEach(function(p) {{
-      p.classList.toggle('hidden', p.id !== t);
-    }});
-  }});
-}});
+{script}
 </script>
 </body>
-</html>"#
+</html>"#,
+        script = PAGE_SCRIPT
     )
 }
 
@@ -425,11 +737,49 @@ fn leading_prefixes(data: &TreeData, tree: &Tree) -> Vec<String> {
 }
 
 /// The address a reader sees. The path after a leading prefix is unchanged.
-fn display_uri(uri: &str, prefixes: &[String]) -> String {
+/// One shared prefix is the placeholder `BASE_URL` plus the path; anything
+/// else stays the stored URI.
+fn display_uri_parts(uri: &str, prefixes: &[String]) -> (Option<String>, String) {
     let (name, rest) = split_env_prefix(uri);
     match name {
-        Some(name) if prefixes.len() == 1 && prefixes[0] == name => format!("BASE_URL{rest}"),
-        _ => uri.to_string(),
+        Some(name) if prefixes.len() == 1 && prefixes[0] == name => (Some("BASE_URL".into()), rest.to_string()),
+        _ => (None, uri.to_string()),
+    }
+}
+
+fn display_uri(uri: &str, prefixes: &[String]) -> String {
+    let (prefix, rest) = display_uri_parts(uri, prefixes);
+    match prefix {
+        Some(prefix) => format!("{prefix}{rest}"),
+        None => rest,
+    }
+}
+
+/// First non-empty line is the title. Further lines belong with the description.
+fn displayed_name(name: &str) -> (String, String) {
+    let mut lines = name.split('\n').map(str::trim).filter(|line| !line.is_empty());
+    let title = lines.next().unwrap_or("").to_string();
+    (title, lines.collect::<Vec<_>>().join("\n"))
+}
+
+fn search_blob(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .flat_map(|part| part.split_whitespace())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn joined_description(extra: &str, description: &str) -> String {
+    let description = description.trim();
+    let extra = extra.trim();
+    if extra.is_empty() || description.contains(extra) {
+        description.to_string()
+    } else if description.is_empty() {
+        extra.to_string()
+    } else {
+        format!("{extra}\n\n{description}")
     }
 }
 
@@ -457,6 +807,40 @@ fn render_env_section(
         out,
         "<section class=\"base-urls\"><div class=\"section-title\">Base URL</div>"
     );
+    if prefixes.len() == 1 {
+        let mut options = String::new();
+        for var in variables
+            .iter()
+            .filter(|var| var.category == VariableCategory::Environment && var.enabled && var.name == prefixes[0])
+        {
+            let val = if data.settings.secret_variables.contains(&var.id) {
+                crate::mcp::MASK.to_string()
+            } else {
+                masked(&var.name, &var.value)
+            };
+            if val.is_empty() || val.contains(crate::mcp::MASK) {
+                continue;
+            }
+            let env_name = var
+                .environment
+                .as_ref()
+                .and_then(|id| environments.iter().find(|env| &env.id == id))
+                .map(|env| env.name.as_str())
+                .unwrap_or("Shared");
+            let _ = write!(
+                options,
+                "<option value=\"{}\">{}</option>",
+                escape(&val),
+                escape(env_name)
+            );
+        }
+        if !options.is_empty() {
+            let _ = writeln!(
+                out,
+                "<label class=\"env-switch\">Environment <select id=\"doc-env\"><option value=\"\">Placeholder (BASE_URL)</option>{options}</select></label>"
+            );
+        }
+    }
     for name in prefixes {
         if !one {
             let _ = writeln!(
@@ -522,29 +906,47 @@ fn walk_items(
         if let Some(folder) = data.folders.iter().find(|f| &f.id == id) {
             let mut next_path = folder_path.to_vec();
             next_path.push(folder.name.clone());
-            render_folder(folder, &next_path, nav, main);
+            let anchor = format!("folder-{}", folder.id);
+            let count = api_descendant_count(data, tree, id);
+            let joined = next_path.join(" / ");
+            let desc = folder.settings.description.trim();
+            let desc_html = if desc.is_empty() {
+                String::new()
+            } else {
+                format!("<p class=\"folder-desc\">{}</p>", escape(desc))
+            };
+            let _ = writeln!(
+                nav,
+                "<details class=\"nav-group\" open><summary class=\"nav-folder\"><a class=\"nav-folder-name\" href=\"#{anchor}\">{}</a><span class=\"nav-count\">{count}</span></summary><div class=\"nav-items\">",
+                escape(&folder.name)
+            );
+            let _ = writeln!(
+                main,
+                "<section class=\"folder-section\" id=\"{anchor}\"><div class=\"folder-heading\"><h3>{}</h3>{desc_html}</div>",
+                escape(&joined)
+            );
             let children = tree.get(id).map(|node| node.children().to_vec()).unwrap_or_default();
             walk_items(data, tree, &children, &next_path, variables, prefixes, nav, main);
+            let _ = writeln!(nav, "</div></details>");
+            let _ = writeln!(main, "</section>");
         } else if let Some(api) = data.apis.iter().find(|a| &a.id == id) {
             render_api(data, api, folder_path, variables, prefixes, nav, main);
         }
     }
 }
 
-fn render_folder(folder: &Folder, path: &[String], nav: &mut String, main: &mut String) {
-    let joined = path.join(" / ");
-    let _ = writeln!(nav, "<div class=\"nav-folder\">{}</div>", escape(&joined));
-    let desc = folder.settings.description.trim();
-    let desc_html = if desc.is_empty() {
-        String::new()
-    } else {
-        format!("<p class=\"folder-desc\">{}</p>", escape(desc))
-    };
-    let _ = writeln!(
-        main,
-        "<div class=\"folder-heading\"><h3>{}</h3>{desc_html}</div>",
-        escape(&joined)
-    );
+fn api_descendant_count(data: &TreeData, tree: &Tree, id: &crate::ItemId) -> usize {
+    let children = tree.get(id).map(|node| node.children().to_vec()).unwrap_or_default();
+    children
+        .iter()
+        .map(|child| {
+            if data.apis.iter().any(|api| &api.id == child) {
+                1
+            } else {
+                api_descendant_count(data, tree, child)
+            }
+        })
+        .sum()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -560,14 +962,25 @@ fn render_api(
     let req = &api.request;
     let badge_cls = method_badge_class(req.method);
     let method_str = req.method.as_str();
-    let search_key = format!("{} {} {} {}", folder_path.join("/"), api.name, method_str, req.uri).to_lowercase();
+    let (title, extra) = displayed_name(&api.name);
+    let description = joined_description(&extra, &req.description);
+    let folder = folder_path.join("/");
+    let search_key = search_blob(&[
+        folder.as_str(),
+        title.as_str(),
+        extra.as_str(),
+        description.as_str(),
+        method_str,
+        req.uri.as_str(),
+    ]);
     let anchor = format!("api-{}", api.id);
 
     let _ = writeln!(
         nav,
-        "<a class=\"nav-item\" href=\"#{anchor}\" data-search=\"{}\"><span class=\"method {badge_cls}\">{method_str}</span><span class=\"nav-name\">{}</span></a>",
+        "<a class=\"nav-item\" href=\"#{anchor}\" data-search=\"{}\"><span class=\"method {badge_cls}\">{method_str}</span><span class=\"nav-name\" title=\"{}\">{}</span></a>",
         escape(&search_key),
-        escape(&api.name)
+        escape(&title),
+        escape(&title)
     );
 
     let _ = writeln!(
@@ -579,28 +992,42 @@ fn render_api(
     let auth_badge = auth_label(inh.auth(&req.auth))
         .map(|label| format!("<span class=\"auth\">Auth: {}</span>", escape(&label)))
         .unwrap_or_default();
+    let (prefix, path) = display_uri_parts(&req.uri, prefixes);
+    let prefix_html = prefix
+        .as_ref()
+        .map(|text| {
+            format!(
+                "<span class=\"uri-prefix\" data-placeholder=\"{}\">{}</span>",
+                escape(text),
+                escape(text)
+            )
+        })
+        .unwrap_or_default();
     let _ = writeln!(
         main,
-        "<div class=\"api-head\"><h4 class=\"api-title\">{}</h4><div class=\"address\"><span class=\"method {badge_cls}\">{method_str}</span><code class=\"uri\">{}</code>{auth_badge}</div></div>",
-        escape(&api.name),
-        escape(&display_uri(&req.uri, prefixes))
+        "<div class=\"api-head\"><h4 class=\"api-title\"><a class=\"permalink\" href=\"#{anchor}\">#</a>{}</h4><div class=\"address\"><span class=\"method {badge_cls}\">{method_str}</span><code class=\"uri\">{prefix_html}<span class=\"uri-path\">{}</span></code>{auth_badge}<button type=\"button\" class=\"copy\" data-copy=\"path\">Copy path</button><button type=\"button\" class=\"copy\" data-copy=\"url\">Copy URL</button></div></div>",
+        escape(&title),
+        escape(&path)
     );
-    if !req.description.trim().is_empty() {
-        let _ = writeln!(main, "<div class=\"api-desc\">{}</div>", escape(req.description.trim()));
+    if !description.is_empty() {
+        let _ = writeln!(main, "<div class=\"api-desc\">{}</div>", escape(&description));
     }
 
     // Input parameters: path, query, headers (inherited + own), form/multipart fields.
     render_params_table(data, api, main);
 
     // F11: request body JSON Schema fields.
+    let mut request_schema = String::new();
     if let Some(schema_text) = req.request_schema.as_deref().map(str::trim).filter(|s| !s.is_empty())
         && let Ok(fields) = fields_of_schema(schema_text)
         && !fields.is_empty()
     {
-        render_schema_table("Request Body Schema", &fields, main);
+        render_schema_table("Request Body Schema", &fields, &mut request_schema);
     }
 
-    // Request body sample/raw if present.
+    // Request body sample/raw if present. A JSON sample sits beside its schema
+    // on two tabs when both exist, so the card is not two long blocks.
+    let mut request_sample = String::new();
     if req.method == HttpMethod::Grpc {
         let grpc = crate::grpc::GrpcBody::read(&req.body);
         let call = format!("{}/{}", grpc.service.trim(), grpc.method.trim());
@@ -629,8 +1056,21 @@ fn render_api(
         && !matches!(req.content_type, ContentType::Form | ContentType::Multipart)
         && !req.body.trim().is_empty()
     {
-        let _ = writeln!(main, "<div class=\"section-title\">Request Body</div>");
-        let _ = writeln!(main, "<pre><code>{}</code></pre>", escape(&masked_body(&req.body)));
+        let _ = writeln!(request_sample, "<div class=\"section-title\">Request Body</div>");
+        let _ = writeln!(
+            request_sample,
+            "<pre><code>{}</code></pre>",
+            escape(&masked_body(&req.body))
+        );
+    }
+    if !request_schema.is_empty() && !request_sample.is_empty() {
+        let _ = writeln!(
+            main,
+            "<div class=\"body-switch\"><div class=\"tabs\"><button type=\"button\" class=\"tab-btn active\" data-body=\"schema\">Schema</button><button type=\"button\" class=\"tab-btn\" data-body=\"sample\">Sample</button></div><div data-body-pane=\"schema\">{request_schema}</div><div data-body-pane=\"sample\" class=\"hidden\">{request_sample}</div></div>"
+        );
+    } else {
+        main.push_str(&request_schema);
+        main.push_str(&request_sample);
     }
 
     // F11: response body JSON Schema assertion fields.
@@ -920,13 +1360,30 @@ fn render_params_table(data: &TreeData, api: &ApiSetting, out: &mut String) {
 }
 
 fn render_schema_table(title: &str, fields: &[SchemaField], out: &mut String) {
+    let fold = fields.len() > SCHEMA_FOLD_AT;
     let _ = writeln!(out, "<div class=\"section-title\">{}</div>", escape(title));
+    let _ = writeln!(
+        out,
+        "<div class=\"schema-wrap{}\">",
+        if fold { " collapsed" } else { "" }
+    );
     let _ = writeln!(
         out,
         "<table class=\"schema\"><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>"
     );
-    for field in fields {
-        let indent = "&nbsp;&nbsp;".repeat(field.depth.min(8));
+    for (index, field) in fields.iter().enumerate() {
+        let depth = field.depth.min(12);
+        let extra = if fold && index >= SCHEMA_PREVIEW {
+            " class=\"schema-extra\""
+        } else {
+            ""
+        };
+        let has_children = fields.get(index + 1).is_some_and(|next| next.depth > field.depth);
+        let toggle = if has_children {
+            "<button type=\"button\" class=\"fold\" aria-label=\"Collapse\">\u{25be}</button>"
+        } else {
+            ""
+        };
         let req_badge = if field.required {
             "<span class=\"req\">required</span>"
         } else {
@@ -934,13 +1391,22 @@ fn render_schema_table(title: &str, fields: &[SchemaField], out: &mut String) {
         };
         let _ = writeln!(
             out,
-            "<tr><td class=\"mono\">{indent}{}{req_badge}</td><td class=\"mono\">{}</td><td>{}</td></tr>",
+            "<tr data-depth=\"{depth}\"{extra}><td class=\"mono\"><span class=\"guide\" style=\"--d:{depth}\"></span>{toggle}{}{req_badge}</td><td class=\"mono\">{}</td><td>{}</td></tr>",
             escape(&field.name),
             escape(&field.kind),
             escape(field.description.trim())
         );
     }
     let _ = writeln!(out, "</tbody></table>");
+    if fold {
+        let _ = writeln!(
+            out,
+            "<button type=\"button\" class=\"show-fields\" data-count=\"{}\">Show all {} fields</button>",
+            fields.len(),
+            fields.len()
+        );
+    }
+    let _ = writeln!(out, "</div>");
 }
 
 fn render_code_snippets(
@@ -960,36 +1426,29 @@ fn render_code_snippets(
     } else {
         &CODE_TARGETS
     };
-    let group = format!("code-{}", api.id);
+    // One visible sample. The other languages stay in JSON and are not five
+    // more `<pre>` nodes. They are still `code()`, not a second generator.
+    let snippets: Vec<String> = targets
+        .iter()
+        .map(|target| code(*target, &prepared, &masked_req, true))
+        .collect();
+    let json = serde_json::to_string(&snippets)
+        .unwrap_or_else(|_| "[]".into())
+        .replace('<', "\\u003c");
+    let shown = snippets.first().map(String::as_str).unwrap_or("");
     let _ = writeln!(
         out,
-        "<div class=\"section-title\">Code Examples</div><div class=\"tabs\">"
+        "<div class=\"section-title\">Code Examples</div><div class=\"samples\">"
     );
-    for (idx, target) in targets.iter().enumerate() {
-        let active = if idx == 0 { " active" } else { "" };
-        let pane_id = format!("{group}-{idx}");
-        let label = if req.method == HttpMethod::Grpc {
-            "grpcurl"
-        } else {
-            target.label()
-        };
-        let _ = writeln!(
-            out,
-            "<button type=\"button\" class=\"tab-btn{active}\" data-tab-group=\"{group}\" data-tab-target=\"{pane_id}\">{}</button>",
-            escape(label)
-        );
-    }
-    let _ = writeln!(out, "</div>");
-    for (idx, target) in targets.iter().enumerate() {
-        let hidden = if idx == 0 { "" } else { " class=\"hidden\"" };
-        let pane_id = format!("{group}-{idx}");
-        let snippet = code(*target, &prepared, &masked_req, true);
-        let _ = writeln!(
-            out,
-            "<pre id=\"{pane_id}\" data-tab-pane=\"{group}\"{hidden}><code>{}</code></pre>",
-            escape(&snippet)
-        );
-    }
+    let _ = writeln!(
+        out,
+        "<div class=\"code-block\"><button type=\"button\" class=\"copy\" data-copy=\"code\">Copy</button><pre class=\"sample\"><code>{}</code></pre></div>",
+        escape(shown)
+    );
+    let _ = writeln!(
+        out,
+        "<script type=\"application/json\" class=\"sample-json\">{json}</script></div>"
+    );
 }
 
 fn sample_prepared(
@@ -1021,10 +1480,14 @@ fn sample_prepared(
     let auth = inh.auth(&req.auth);
     let auth_signed = masked_auth_signed(auth, req.method != HttpMethod::Grpc);
 
+    // An empty optional query parameter is not part of a real call. A required
+    // one stays, even when its sample value is blank.
     let mut query_pairs: Vec<String> = req
         .query
         .iter()
-        .filter(|kv| kv.enabled && !kv.key.trim().is_empty())
+        .filter(|kv| {
+            kv.enabled && !kv.key.trim().is_empty() && (kv.required == Some(true) || !kv.value.trim().is_empty())
+        })
         .map(|kv| {
             format!(
                 "{}={}",
@@ -1174,14 +1637,16 @@ fn sample_prepared(
     (prepared, masked_req)
 }
 
-/// The tree's method colors: DELETE red, a body method green, gRPC magenta,
-/// WebSocket cyan, and the rest the info cyan.
+/// DELETE red, POST green, PUT amber, PATCH indigo, gRPC magenta, WebSocket
+/// cyan, and the rest the info cyan.
 fn method_badge_class(method: HttpMethod) -> &'static str {
     match method {
         HttpMethod::Delete => "method-delete",
+        HttpMethod::Post => "method-post",
+        HttpMethod::Put => "method-put",
+        HttpMethod::Patch => "method-patch",
         HttpMethod::Grpc => "method-grpc",
         HttpMethod::WebSocket => "method-ws",
-        m if m.has_body() => "method-post",
         _ => "method-get",
     }
 }
@@ -1290,16 +1755,19 @@ mod tests {
         assert!(html.contains("Get Order"));
         assert!(html.contains("class=\"method method-get\""));
         assert!(html.contains("text-wrap: pretty"));
+        assert!(html.contains("content-visibility: auto"));
         assert!(html.contains("../../fonts/IBMPlexSans.ttf"));
         assert!(html.contains("../../fonts/JetBrainsMono-Bold.ttf"));
         assert!(!html.contains("badge-get"));
         assert!(html.contains("order_id"));
         assert!(html.contains("The order identifier"));
         assert!(html.contains("Order ID"));
-        let title_at = html.find("api-title\">Get Order").expect("title");
-        let uri_at = html.find("BASE_URL/orders/:order_id").expect("address");
+        let title_at = html.find(">Get Order</h4>").expect("title");
+        let uri_at = html.find("uri-path\">/orders/:order_id").expect("address");
         assert!(title_at < uri_at, "the name is the heading and the address follows it");
+        assert!(html.contains(">BASE_URL</span>"));
         assert!(html.contains("BASE_URL/orders/ord_123"));
+        assert!(html.contains("id=\"doc-env\""));
         assert!(html.contains(">Base URL<"));
         assert!(html.contains(">Shared<"));
         assert!(html.contains("https://api.payments.test"));
@@ -1592,6 +2060,142 @@ mod tests {
         assert!(html.contains("In paths: <code>{{OTHER}}</code>"));
         assert!(html.contains("https://one.test"));
         assert!(html.contains("https://two.test"));
-        assert!(!html.contains("BASE_URL"));
+        // The page script always names the placeholder. The addresses themselves
+        // keep both variables and do not grow a switcher.
+        assert!(!html.contains(">BASE_URL</span>"));
+        assert!(!html.contains("class=\"uri-prefix\""));
+        assert!(!html.contains("id=\"doc-env\""), "two prefixes are not one switcher");
+    }
+
+    #[test]
+    fn a_multiline_name_is_one_title_and_search_has_no_newline() {
+        let collection = Collection {
+            id: "01JPROJECT".into(),
+            name: "Shop".into(),
+            ..Default::default()
+        };
+        let data = TreeData {
+            folders: vec![],
+            apis: vec![ApiSetting {
+                id: "01JAPI".into(),
+                name: "期权预约开户\n未登录时先取营业厅".into(),
+                request: HttpRequest {
+                    method: HttpMethod::Post,
+                    uri: "/open".into(),
+                    description: "已有说明".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            top_order: vec!["01JAPI".into()],
+            ..Default::default()
+        };
+        let html = render(&collection, &data, &[], &[]);
+        assert!(html.contains(">期权预约开户</h4>"));
+        assert!(html.contains("未登录时先取营业厅"));
+        assert!(html.contains("已有说明"));
+        let search = html.find("data-search=\"").expect("search");
+        let end = html[search..].find('>').expect("end");
+        assert!(!html[search..search + end].contains('\n'));
+    }
+
+    #[test]
+    fn an_empty_optional_query_is_left_out_of_the_sample() {
+        let collection = Collection {
+            id: "01JPROJECT".into(),
+            name: "Shop".into(),
+            ..Default::default()
+        };
+        let data = TreeData {
+            folders: vec![],
+            apis: vec![ApiSetting {
+                id: "01JAPI".into(),
+                name: "List".into(),
+                request: HttpRequest {
+                    method: HttpMethod::Get,
+                    uri: "/banks".into(),
+                    query: vec![
+                        KvParam {
+                            key: "limit".into(),
+                            value: String::new(),
+                            enabled: true,
+                            required: Some(false),
+                            ..Default::default()
+                        },
+                        KvParam {
+                            key: "offset".into(),
+                            value: String::new(),
+                            enabled: true,
+                            required: Some(true),
+                            ..Default::default()
+                        },
+                        KvParam {
+                            key: "keyword".into(),
+                            value: "fund".into(),
+                            enabled: true,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            top_order: vec!["01JAPI".into()],
+            ..Default::default()
+        };
+        let html = render(&collection, &data, &[], &[]);
+        assert!(html.contains("offset="));
+        assert!(html.contains("keyword=fund"));
+        assert!(!html.contains("limit="));
+        assert!(html.contains(">limit<"), "the parameter table still lists it");
+    }
+
+    #[test]
+    fn a_long_schema_starts_folded_and_a_folder_wraps_its_apis() {
+        let mut properties = String::from("{\"type\":\"object\",\"properties\":{");
+        for index in 0..30 {
+            if index > 0 {
+                properties.push(',');
+            }
+            properties.push_str(&format!("\"field{index}\":{{\"type\":\"string\"}}"));
+        }
+        properties.push_str("}}");
+        let collection = Collection {
+            id: "01JPROJECT".into(),
+            name: "Shop".into(),
+            ..Default::default()
+        };
+        let data = TreeData {
+            folders: vec![crate::model::Folder {
+                id: "01JFOLDER".into(),
+                name: "accounts".into(),
+                ..Default::default()
+            }],
+            apis: vec![ApiSetting {
+                id: "01JAPI".into(),
+                name: "List".into(),
+                request: HttpRequest {
+                    method: HttpMethod::Put,
+                    uri: "/accounts".into(),
+                    request_schema: Some(properties),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            top_order: vec!["01JFOLDER".into()],
+            ..Default::default()
+        };
+        // The folder's children live on the tree built from top_order only when
+        // the folder records them. Tree::build reads folder children.
+        let mut data = data;
+        data.folders[0].children = vec!["01JAPI".into()];
+        let html = render(&collection, &data, &[], &[]);
+        assert!(html.contains("<details class=\"nav-group\" open>"));
+        assert!(html.contains("class=\"folder-section\""));
+        assert!(html.contains("class=\"nav-count\">1"));
+        assert!(html.contains("method-put"));
+        assert!(html.contains("schema-extra"));
+        assert!(html.contains("Show all 30 fields"));
+        assert!(!html.contains("&nbsp;&nbsp;"));
     }
 }

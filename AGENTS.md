@@ -180,3 +180,17 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 - 不要臆造 API：以 `~/.cargo/registry/src/*/gpui-kit-0.8.1`、`gpui-component-0.8.1`、`gpui-pre-0.3.10` 的源码为准。桌面版的 `gpui-fast` 是 0.1.12，和这份 gpui-pre 是同一套上游快照。`KeyBinding::new` 只接受显式的 `cmd-` / `ctrl-`；`secondary-` 用 `KeyBinding::load(..., cx)`（`views::secondary_binding`）。
 - 需要 `#[derive(IntoElement)]` 等派生宏时，在 `src/lib.rs` 加 `extern crate gpui_kit as gpui;`，宏展开出的 `gpui::…` 路径才能解析。
 - 布局的最小宽度来自内容：`min_w_0` / `overflow_hidden` 只让元素自己能收缩，不改变它算进父级最小宽度的内容宽度。父级不肯收缩时（组件库的 `TitleBar` 内层是 `flex_shrink_0`），一行里能裁剪的部分要给 `.w(px(0.))` 再 `flex_1`，否则内容多了会把整行撑出窗口（`root.rs` 标题栏左侧：七个置顶就把设置菜单挤了出去）。
+
+## 如何保证 UI 效果
+
+改布局、配色、空态、卡片、列表或弹窗时，看代码不够。要打开真窗口，截图，对着图核对，确认后再删掉临时钩子。只改绘制时，点击、保存、发送、拖拽和菜单行为保持原样。用户只要求改某一种 hover 颜色时，只改那个颜色。眼睛分不出来的改动不算做完。
+
+- 桌面用 `make dev`（或已编好的 `/Users/tree/cargo-target/debug/cyberapi`）。`CYBERAPI_DATA_DIR` 指到临时目录，不写用户正在用的库，也不写 `~/Library/Application Support/CyberAPI/`。debug 构建本来打开的是同目录里的 `cyberapi-dev.db`。用户已经开着 Cyber API 时，不要再对同一数据目录起第二个实例，也不要杀掉那个进程。自己拉起来的进程看完就退出。重新编译前先停掉上次留在后台的 cargo，避免抢 `/Users/tree/cargo-target` 的锁。
+- 截图截系统窗口，不用浏览器去点这块 GPUI 画布。按窗口标题 `Cyber API`、进程名 `cyberapi` 取出 CGWindow 编号，再用 `/usr/sbin/screencapture -l <id> -o` 去掉窗口阴影。至少四张：空态和有内容且选中的状态，各拍浅色、深色（`root.rs` 的 `apply_theme`）。空态是首页还没有项目，或工作区还没选接口；选中态是打开一个项目、选中一条接口，请求和响应都在画面里。改的是弹窗或设置窗口，就截打开后的那一层，并带上它盖住的那一页。样例只放进这次的临时数据目录，或只在当次进程的内存里注入，用来把选中态画出来。不登录用户的服务器，不发真实请求，不改系统代理或系统设置。
+- 对着图看这三件事：
+  - 对齐。工作区树、请求、响应三栏的头固定 44px，底边在一条线上。标题栏里能裁的一段是 `.w(px(0.)).flex_1()`，内容多了不能把设置菜单顶出窗口。卡片、列表行、弹窗边和代码框的内边距一致，文字不被边框切掉。
+  - 对比。深色里 `theme.muted` 和 `theme.border` 几乎同色，muted 表面上的细线要更亮（前景色加低透明度）。不要拿组件库默认中性主题里挤在一起的 `secondary` / `muted` / `accent`，或一块纯黑，直接铺满。浅色 accent 是 neutral-200（`#e5e5e5`），深色是 neutral-600（`#525252`）；Ghost 按钮的 hover 读这个 accent，深色再乘 0.5。菜单和列表高亮用同一个 token。不要改 registry 里的 gpui-component。GPUI 只在组件设了 `.hover()` 时画 hover。方法徽章和状态色在图上要能分开。
+  - 层次。首页卡片贴近页面（`card_surface()`：深色 `background.lighten(1.0)`，浅色 `background.darken(0.02)`，边框用 `theme.border`），不要做成一块高对比的 muted 板。画布、栏、列表、选中行、卡片、代码框要能分层。边框和色块在图上要看得清；几乎看不出的一圈线不算层次。
+- 一张静止图不够。把这次改到的路径点一遍，包括空、有数据、选中，以及碰得到的出错或禁用。网页版同样要看真页面：有头的 gstack 测试不要设 viewport（DPR 不一致，gpui 点击坐标偏一半）；截图用 `screencapture -R`，按窗口自己的尺寸。`make lint` 仍要通过。改过带 target 条件编译的文件时，再单独跑 `make check-web`，不要和 lint 同时构建。
+- 用户正看着窗口时，把要核对的状态摆到前面。只在后台对一张图做像素分析、窗口本身毫无变化，看起来像没在做。
+- 图上确认对齐、对比和层次之后，删掉临时截图钩子（强制主题、注入假数据、写死截图路径的代码），也删掉落在仓库里的临时截图。结束前确认没有留下自己启动的 `cyberapi` 进程。
