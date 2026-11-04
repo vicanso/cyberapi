@@ -10,21 +10,11 @@
 
 一次 GET、查询参数的值、两条通过的检查，以及 JSON 正文。
 
-## 发送
+## 发送、事件流、从来源同步
 
-<img src="./images/send.gif" alt="发送创建订单，读到 201" width="720">
+https://github.com/user-attachments/assets/47018134-b823-40e1-93f5-a2047711a9c2
 
-## 事件流
-
-<img src="./images/events.gif" alt="订单事件在实时流里逐条到达" width="720">
-
-事件边到边出现。停止会结束这条流，已经收到的留下。
-
-## 从来源同步
-
-<img src="./images/sync.gif" alt="从来源同步后树里多了 Get a product，查询参数的值仍在" width="720">
-
-按项目的 OpenAPI 文档同步。树里多了 Get a product，原先填好的查询参数值还在。
+发送创建订单，读到 201。事件边到边出现。停止会结束这条流，已经收到的留下。按项目的 OpenAPI 文档同步后，树里多了 Get a product，原先填好的查询参数值还在。
 
 ## GraphQL
 

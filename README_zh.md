@@ -17,6 +17,10 @@
   <a href="https://hub.docker.com/r/vicanso/cyberapi-web"><img src="https://img.shields.io/docker/pulls/vicanso/cyberapi-web" alt="Docker pulls"></a>
 </p>
 
+https://github.com/user-attachments/assets/47018134-b823-40e1-93f5-a2047711a9c2
+
+---
+
 <p align="center">
   <a href="#功能">功能</a> ·
   <a href="#安装">安装</a> ·
@@ -41,12 +45,6 @@
 
 <p align="center">
   <img src="./docs/images/workspace.png" alt="列出商品：200 响应、两条检查通过，以及 JSON 正文" width="880">
-</p>
-
-<p align="center">
-  <img src="./docs/images/send.gif" alt="发送创建订单，读到 201" width="720"><br>
-  <img src="./docs/images/events.gif" alt="订单事件在实时流里逐条到达" width="720"><br>
-  <img src="./docs/images/sync.gif" alt="从来源同步后树里多了 Get a product，查询参数的值仍在" width="720">
 </p>
 
 发送一次请求、事件流边到边显示，以及把一份 OpenAPI 文档同步进项目树。GraphQL、JSON 树，以及 DNS / TCP / TLS 各段耗时见[图集](./docs/GALLERY_zh.md)。

@@ -17,6 +17,10 @@
   <a href="https://hub.docker.com/r/vicanso/cyberapi-web"><img src="https://img.shields.io/docker/pulls/vicanso/cyberapi-web" alt="Docker pulls"></a>
 </p>
 
+https://github.com/user-attachments/assets/47018134-b823-40e1-93f5-a2047711a9c2
+
+---
+
 <p align="center">
   <a href="#features">Features</a> ·
   <a href="#install">Install</a> ·
@@ -41,12 +45,6 @@
 
 <p align="center">
   <img src="./docs/images/workspace.png" alt="List products: a 200 response, two passing checks, and the JSON" width="880">
-</p>
-
-<p align="center">
-  <img src="./docs/images/send.gif" alt="Send Create order and read the 201" width="720"><br>
-  <img src="./docs/images/events.gif" alt="Order events arriving on a live stream" width="720"><br>
-  <img src="./docs/images/sync.gif" alt="Sync from source adds Get a product; the query value stays" width="720">
 </p>
 
 Sending a request, an event stream as it arrives, and syncing an OpenAPI document into the tree. GraphQL, the JSON tree, and the DNS / TCP / TLS timings are in the [gallery](./docs/GALLERY.md).

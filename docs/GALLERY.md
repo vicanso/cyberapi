@@ -10,21 +10,11 @@ The desktop app, in English. The same pictures are on the [README](../README.md)
 
 A GET, the query value, two checks that passed, and the JSON body.
 
-## Sending
+## Sending, events, and sync
 
-<img src="./images/send.gif" alt="Send Create order and read the 201" width="720">
+https://github.com/user-attachments/assets/47018134-b823-40e1-93f5-a2047711a9c2
 
-## Event stream
-
-<img src="./images/events.gif" alt="Order events arriving on a live stream" width="720">
-
-Events show up as they arrive. Stop ends the stream and keeps what already came.
-
-## Sync from a source
-
-<img src="./images/sync.gif" alt="Sync from source adds Get a product; the query value stays" width="720">
-
-Sync from the project's OpenAPI document. The tree gains Get a product, and the query value that was already filled in stays.
+Send Create order and read the 201. Events show up as they arrive. Stop ends the stream and keeps what already came. Sync from the project's OpenAPI document adds Get a product, and the query value that was already filled in stays.
 
 ## GraphQL
 
