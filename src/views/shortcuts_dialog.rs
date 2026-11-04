@@ -5,8 +5,8 @@
 use super::dashboard::{FocusSearch, KEY_CONTEXT as DASHBOARD};
 use super::workspace::{
     CloseTab, FindApi, FocusUrl, KEY_CONTEXT as WORKSPACE, NewApi, NewFolder, NextTab, OpenPalette, PasteCurl, Pin1,
-    Pin9, PreviousTab, ROOT_CONTEXT, Send as SendAction, TREE_CONTEXT as TREE, TreeClose, TreeDuplicate, TreeNext,
-    TreeOpen, TreePrevious, TreeRemove, TreeRename, TreeToggle,
+    Pin9, PreviousTab, ROOT_CONTEXT, Send as SendAction, TREE_CONTEXT as TREE, ToggleComment, TreeClose, TreeDuplicate,
+    TreeNext, TreeOpen, TreePrevious, TreeRemove, TreeRename, TreeToggle,
 };
 use crate::this_build;
 use gpui_kit::component::kbd::Kbd;
@@ -42,6 +42,10 @@ fn shortcuts(window: &mut Window, cx: &mut App) -> impl IntoElement {
     }
     workspace.push((t!("import.paste_curl").to_string(), keys(&PasteCurl, WORKSPACE, window)));
     workspace.push((t!("shortcuts.send").to_string(), keys(&SendAction, WORKSPACE, window)));
+    workspace.push((
+        t!("shortcuts.toggle_comment").to_string(),
+        keys(&ToggleComment, "Workspace > Input", window),
+    ));
     workspace.push((t!("shortcuts.find_api").to_string(), keys(&FindApi, WORKSPACE, window)));
     let browser_keys = this_build::takes_browser_keys();
     if browser_keys {

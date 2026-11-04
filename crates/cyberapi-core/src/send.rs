@@ -349,17 +349,17 @@ fn templated_texts<'a>(
     let mut texts: Vec<std::borrow::Cow<'a, str>> = Vec::new();
     let grpc = request.method == HttpMethod::Grpc;
     if grpc {
-        texts.push(GrpcBody::read(&request.body).message.into());
+        texts.push(strip_json_comments(&GrpcBody::read(&request.body).message).into());
     } else if request.content_type == ContentType::GraphQl {
         // A GET sends it too, as parameters.
         let graphql = GraphQlBody::read(&request.body);
         texts.push(graphql.query.into());
-        texts.push(graphql.variables.into());
+        texts.push(strip_json_comments(&graphql.variables).into());
     } else if request.method.has_body() {
         if request.content_type.is_key_value() {
             texts.extend(form_fields(&request.body).into_iter().map(|kv| kv.value.into()));
         } else {
-            texts.push(request.body.as_str().into());
+            texts.push(strip_json_comments(&request.body).into());
         }
     }
     // A gRPC call sends no query.
@@ -459,22 +459,203 @@ pub fn encode_uri_bytes(bytes: &[u8]) -> String {
     percent_encoding::percent_encode(bytes, URI_COMPONENT).to_string()
 }
 
+/// Whether non-comment line `at` ends with a `,` that only trails because
+/// every non-blank line between it and the closing `}` or `]` after it is a
+/// `//` comment.
+fn has_commented_trailing_comma(lines: &[&str], at: usize) -> bool {
+    if !lines[at].trim_end().ends_with(',') {
+        return false;
+    }
+    let mut saw_comment = false;
+    for &next in &lines[at + 1..] {
+        let trimmed = next.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("//") {
+            saw_comment = true;
+            continue;
+        }
+        return saw_comment && (trimmed.starts_with('}') || trimmed.starts_with(']'));
+    }
+    false
+}
+
 /// The text a JSON-looking body is sent as: lines starting with `//` are
-/// comments and go (4.3).
+/// comments and go (4.3), along with a trailing comma left before `}` or `]`
+/// when the final entry after it is commented out.
 pub fn strip_json_comments(body: &str) -> String {
-    let trimmed = body.trim();
-    let looks_json = trimmed.len() >= 2
-        && matches!(
-            (trimmed.as_bytes()[0], trimmed.as_bytes()[trimmed.len() - 1]),
-            (b'{', b'}') | (b'[', b']')
-        );
+    let lines: Vec<&str> = body.split('\n').collect();
+    let kept: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect();
+    let first = kept.iter().find_map(|line| line.trim().bytes().next());
+    let last = kept.iter().rev().find_map(|line| line.trim().bytes().next_back());
+    let looks_json = matches!((first, last), (Some(b'{'), Some(b'}')) | (Some(b'['), Some(b']')));
     if !looks_json {
         return body.to_string();
     }
-    body.split('\n')
-        .filter(|line| !line.trim().starts_with("//"))
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .map(|(i, &line)| {
+            if has_commented_trailing_comma(&lines, i) {
+                let trimmed = line.trim_end_matches([' ', '\t', '\r']);
+                let prefix = trimmed.strip_suffix(',').unwrap_or(trimmed);
+                format!("{prefix}{}", &line[trimmed.len()..])
+            } else {
+                line.to_string()
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Toggles `marker` (`"//"` for JSON, `"#"` for GraphQL) line comments across
+/// the lines covered by `selected` in `text`, returning
+/// `(replace_range, replacement, new_selection)`.
+pub fn toggle_line_comment(
+    text: &str,
+    selected: std::ops::Range<usize>,
+    marker: &str,
+) -> (std::ops::Range<usize>, String, std::ops::Range<usize>) {
+    struct Line<'a> {
+        start: usize,
+        end: usize,
+        text: &'a str,
+    }
+
+    let start = selected.start.min(text.len());
+    let end = selected.end.min(text.len()).max(start);
+    let mut lines = Vec::new();
+    let mut pos = 0;
+    for raw in text.split('\n') {
+        let line_end = pos + raw.len();
+        lines.push(Line {
+            start: pos,
+            end: line_end,
+            text: raw,
+        });
+        pos = line_end + 1;
+    }
+    if lines.is_empty() {
+        lines.push(Line {
+            start: 0,
+            end: 0,
+            text: "",
+        });
+    }
+
+    let start_row = lines
+        .iter()
+        .position(|line| start <= line.end)
+        .unwrap_or(lines.len() - 1);
+    let mut end_row = lines.iter().position(|line| end <= line.end).unwrap_or(lines.len() - 1);
+    let ended_at_next_line_start = end > start && end_row > start_row && end == lines[end_row].start;
+    if ended_at_next_line_start {
+        end_row -= 1;
+    }
+
+    let target = &lines[start_row..=end_row];
+    let replace_range = target.first().map(|l| l.start).unwrap_or(0)..target.last().map(|l| l.end).unwrap_or(0);
+    let has_non_blank = target.iter().any(|l| !l.text.trim().is_empty());
+    let uncomment = has_non_blank
+        && target
+            .iter()
+            .filter(|l| !l.text.trim().is_empty())
+            .all(|l| l.text.trim_start().starts_with(marker));
+    let min_indent = if !uncomment && has_non_blank {
+        target
+            .iter()
+            .filter(|l| !l.text.trim().is_empty())
+            .map(|l| l.text.len() - l.text.trim_start_matches([' ', '\t']).len())
+            .min()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let marker_with_space = format!("{marker} ");
+    let insert_len = marker_with_space.len();
+
+    let mut replaced_lines = Vec::with_capacity(target.len());
+    let mut new_start = start;
+    let mut new_end = end;
+    let mut running_offset = replace_range.start;
+
+    for (idx, line) in target.iter().enumerate() {
+        let content_len = line.text.trim_end_matches('\r').len();
+        let cr = &line.text[content_len..];
+        let content = &line.text[..content_len];
+        let (new_line, indent, delta): (String, usize, isize) = if uncomment {
+            let indent = content.len() - content.trim_start_matches([' ', '\t']).len();
+            let after = &content[indent..];
+            let removed = if after.starts_with(&marker_with_space) {
+                marker_with_space.len()
+            } else if after.starts_with(marker) {
+                marker.len()
+            } else {
+                0
+            };
+            (
+                format!("{}{}{cr}", &content[..indent], &content[indent + removed..]),
+                indent,
+                -(removed as isize),
+            )
+        } else if has_non_blank && content.trim().is_empty() {
+            (line.text.to_string(), 0, 0)
+        } else {
+            let indent = if has_non_blank { min_indent } else { content.len() };
+            (
+                format!("{}{marker_with_space}{}{cr}", &content[..indent], &content[indent..]),
+                indent,
+                insert_len as isize,
+            )
+        };
+
+        let map_col = |col: usize| -> usize {
+            if delta >= 0 {
+                let added = delta as usize;
+                if col >= indent { col + added } else { col }
+            } else {
+                let removed = (-delta) as usize;
+                if col <= indent {
+                    col
+                } else if col <= indent + removed {
+                    indent
+                } else {
+                    col - removed
+                }
+            }
+        };
+
+        if idx == 0 {
+            let col = start.saturating_sub(line.start);
+            new_start = running_offset + map_col(col);
+        }
+        if idx + 1 == target.len() && !ended_at_next_line_start {
+            let col = end.saturating_sub(line.start);
+            new_end = running_offset + map_col(col);
+        }
+        running_offset += new_line.len() + 1;
+        replaced_lines.push(new_line);
+    }
+
+    let replacement = replaced_lines.join("\n");
+    if ended_at_next_line_start {
+        new_end = replace_range.start + replacement.len() + 1;
+    }
+    (replace_range, replacement, new_start..new_end.max(new_start))
+}
+
+/// Toggles `//` line comments on the line(s) covered by `selected` in `text`.
+pub fn toggle_json_comment(
+    text: &str,
+    selected: std::ops::Range<usize>,
+) -> (std::ops::Range<usize>, String, std::ops::Range<usize>) {
+    toggle_line_comment(text, selected, "//")
 }
 
 /// A JSON body indented as everywhere ([`crate::format::json`]), as the
@@ -538,9 +719,21 @@ pub fn json_problem(body: &str) -> Option<String> {
         return None;
     }
     // Blanked rather than taken out, so the places stay where they were.
-    let mut text: String = body
-        .split('\n')
-        .map(|line| if line.trim_start().starts_with("//") { "" } else { line })
+    let lines: Vec<&str> = body.split('\n').collect();
+    let mut text: String = lines
+        .iter()
+        .enumerate()
+        .map(|(i, &line)| {
+            if line.trim_start().starts_with("//") {
+                String::new()
+            } else if has_commented_trailing_comma(&lines, i) {
+                let trimmed = line.trim_end_matches([' ', '\t', '\r']);
+                let prefix = trimmed.strip_suffix(',').unwrap_or(trimmed);
+                format!("{prefix} {}", &line[trimmed.len()..])
+            } else {
+                line.to_string()
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let mut from = 0;
@@ -691,7 +884,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
     if request.method == HttpMethod::Grpc {
         let grpc = GrpcBody::read(&request.body);
         let body = grpc
-            .request(&render(&grpc.message)?)
+            .request(&render(&strip_json_comments(&grpc.message))?)
             .map_err(|message| PrepareError::Grpc { message })?;
         let mut call = grpc_call(request, cx, &grpc.path(), body)?;
         call.streams = grpc.server_streams();
@@ -725,7 +918,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
             let stored = GraphQlBody::read(&request.body);
             Ok(GraphQlBody {
                 query: render(&stored.query)?,
-                variables: render(&stored.variables)?,
+                variables: render(&strip_json_comments(&stored.variables))?,
                 operation_name: stored.operation_name,
             })
         })
@@ -1057,6 +1250,43 @@ mod tests {
         let broken = "{\n  // the tenant\n  \"a\": 1\n  \"b\": 2\n}";
         let problem = json_problem(broken).expect("a problem");
         assert!(problem.contains("line 4 column 3"), "{problem}");
+        // Commenting out the final property leaves a comma on the line above,
+        // which both validation and sending strip.
+        let last_commented = "{\n  \"a\": 1,\n  // \"b\": 2\n}";
+        assert_eq!(json_problem(last_commented), None);
+        assert_eq!(strip_json_comments(last_commented), "{\n  \"a\": 1\n}");
+    }
+
+    #[test]
+    fn toggling_json_comments_comments_and_uncomments_lines_while_keeping_selection() {
+        let original = "{\n  \"a\": 1,\n  \"b\": 2\n}";
+        // Caret on `"b"` on line 3 (offset 14..14).
+        let (range, replacement, selection) = toggle_json_comment(original, 14..14);
+        assert_eq!(range, 12..20);
+        assert_eq!(replacement, "  // \"b\": 2");
+        assert_eq!(selection, 17..17);
+
+        let mut commented = original.to_string();
+        commented.replace_range(range, &replacement);
+        assert_eq!(commented, "{\n  \"a\": 1,\n  // \"b\": 2\n}");
+        assert_eq!(strip_json_comments(&commented), "{\n  \"a\": 1\n}");
+        assert_eq!(json_problem(&commented), None);
+
+        // Toggle again at the new caret position restores the original line and caret.
+        let (range, replacement, selection) = toggle_json_comment(&commented, selection);
+        commented.replace_range(range, &replacement);
+        assert_eq!(commented, original);
+        assert_eq!(selection, 14..14);
+
+        // Multi-line selection across both properties comments both at their shared indent.
+        let (range, replacement, selection) = toggle_json_comment(original, 4..18);
+        let mut both = original.to_string();
+        both.replace_range(range, &replacement);
+        assert_eq!(both, "{\n  // \"a\": 1,\n  // \"b\": 2\n}");
+        assert_eq!(strip_json_comments(&both), "{\n}");
+        let (range, replacement, _) = toggle_json_comment(&both, selection);
+        both.replace_range(range, &replacement);
+        assert_eq!(both, original);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 // The action, named apart from the `Send` trait.
 use super::auth_editor::{AuthEditor, AuthFor};
 use super::prompt_dialog::open_prompt_dialog;
-use super::{KEY_CONTEXT, Send as SendAction, method_color};
+use super::{KEY_CONTEXT, Send as SendAction, ToggleComment, method_color};
 use crate::json_view_local::JsonView;
 use crate::states::{ApiEvent, ApiState, AppStore, WorkspaceState};
 use crate::this_build;
@@ -122,6 +122,31 @@ pub struct RequestEditor {
     /// What typing `{{` in the body or a value offers (M6).
     hints: HintSource,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Wraps `state` in a full-bleed pane that handles `Ctrl + /` (`Cmd + /` on
+/// macOS) by toggling line comments (`#` for GraphQL, `//` for JSON/body).
+fn commentable_editor(state: &Entity<EditorState>) -> gpui_kit::Div {
+    let editor = state.clone();
+    div()
+        .absolute()
+        .inset_0()
+        .on_action(move |_: &ToggleComment, window, cx| {
+            editor.update(cx, |editor, cx| {
+                let marker = if editor.language_name().as_ref() == "graphql" {
+                    "#"
+                } else {
+                    "//"
+                };
+                let text = editor.value().to_string();
+                let selected = editor.selected_range();
+                let (range, replacement, next_selection) = send::toggle_line_comment(&text, selected, marker);
+                editor.set_selected_range(range, cx);
+                editor.replace(replacement, window, cx);
+                editor.set_selected_range(next_selection, cx);
+            });
+        })
+        .child(Editor::new(state).w_full().h_full().bordered(false))
 }
 
 /// The body editor for a content type: JSON and XML (in HTML's grammar)
@@ -596,8 +621,23 @@ impl RequestEditor {
     }
 
     fn sync_body_tree(&mut self, cx: &mut Context<Self>) {
-        let text = self.body.read(cx).value().to_string();
+        let text = send::strip_json_comments(&self.body.read(cx).value());
         self.json_tree.update(cx, |tree, cx| tree.set_text(&text, cx));
+    }
+
+    #[cfg(test)]
+    pub(super) fn focus_body_at(&mut self, text: &str, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.api.update(cx, |api, cx| api.set_body(text.to_string(), cx));
+        self.body.update(cx, |body, cx| {
+            body.set_value(text.to_string(), window, cx);
+            body.focus(window, cx);
+            body.set_selected_range(offset..offset, cx);
+        });
+    }
+
+    #[cfg(test)]
+    pub(super) fn shown_body(&self, cx: &App) -> String {
+        self.body.read(cx).value().to_string()
     }
 
     /// Fill the tree from the editor when this body is actually drawn as one.
@@ -958,12 +998,11 @@ impl RequestEditor {
             .min_h_0()
             .child(toolbar)
             .child(
-                div().flex_1().min_h_0().relative().child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .child(Editor::new(&self.grpc_message).w_full().h_full().bordered(false)),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(commentable_editor(&self.grpc_message)),
             )
             .into_any_element()
     }
@@ -1952,12 +1991,7 @@ impl RequestEditor {
     fn render_graphql(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (muted, border) = (theme.muted_foreground, theme.border);
-        let editor = |state: &Entity<EditorState>| {
-            div()
-                .absolute()
-                .inset_0()
-                .child(Editor::new(state).w_full().h_full().bordered(false))
-        };
+        let editor = commentable_editor;
         v_flex()
             .flex_1()
             .min_h_0()
@@ -2172,12 +2206,11 @@ impl RequestEditor {
             .min_h_0()
             .child(toolbar)
             .child(
-                div().flex_1().min_h_0().relative().child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .child(Editor::new(&self.body).w_full().h_full().bordered(false)),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(commentable_editor(&self.body)),
             )
             .into_any_element()
     }
@@ -2358,12 +2391,7 @@ impl RequestEditor {
                 .flex_1()
                 .min_h_0()
                 .relative()
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .child(Editor::new(&self.body).w_full().h_full().bordered(false)),
-                )
+                .child(commentable_editor(&self.body))
                 .into_any_element()
         };
         v_flex()

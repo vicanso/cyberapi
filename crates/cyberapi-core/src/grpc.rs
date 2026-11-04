@@ -249,7 +249,8 @@ impl GrpcBody {
     /// a grpcurl command sends.
     fn sent_message(&self, framed: &[u8]) -> Option<String> {
         if framed.is_empty() || self.descriptors.trim().is_empty() {
-            let trimmed = self.message.trim();
+            let stripped = strip_json_comments(self.message.trim());
+            let trimmed = stripped.trim();
             if trimmed.is_empty() {
                 return None;
             }

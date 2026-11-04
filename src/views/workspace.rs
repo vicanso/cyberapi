@@ -83,7 +83,10 @@ pub(crate) use tree_panel::{
     Previous as TreePrevious, Remove as TreeRemove, Rename as TreeRename, Toggle as TreeToggle,
 };
 
-gpui_kit::actions!(workspace, [NewApi, NewFolder, Send, PasteCurl, FindApi, FocusUrl]);
+gpui_kit::actions!(
+    workspace,
+    [NewApi, NewFolder, Send, PasteCurl, FindApi, FocusUrl, ToggleComment]
+);
 
 // F1: the open tabs from the keyboard.
 gpui_kit::actions!(workspace, [CloseTab, NextTab, PreviousTab]);
@@ -124,6 +127,9 @@ pub fn bind_keys(cx: &mut App) {
         // so it wins over the kit's).
         super::secondary_binding(cx, "secondary-enter", Send, Some(KEY_CONTEXT)),
         super::secondary_binding(cx, "secondary-enter", Send, Some("Workspace > Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("ctrl-/", ToggleComment, Some("Workspace > Input")),
+        super::secondary_binding(cx, "secondary-/", ToggleComment, Some("Workspace > Input")),
         // #64: to the API search, Enter there opening the first found; a
         // field that cannot search hands the same keys on as its `Search`.
         super::secondary_binding(cx, "secondary-f", FindApi, Some(KEY_CONTEXT)),
@@ -182,6 +188,7 @@ pub fn bind_mac_page_keys(cx: &mut App) {
         KeyBinding::new("alt-delete", DeleteToNextWordEnd, INPUT),
         KeyBinding::new("cmd-enter", Send, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-enter", Send, Some("Workspace > Input")),
+        KeyBinding::new("cmd-/", ToggleComment, Some("Workspace > Input")),
         KeyBinding::new("cmd-v", PasteCurl, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-f", Search, INPUT),
         KeyBinding::new("cmd-f", FindApi, Some(KEY_CONTEXT)),
@@ -1905,5 +1912,137 @@ mod tests {
         });
         assert_eq!(query, "host", "typing host after Ctrl/Cmd-F keeps the first letter");
         assert_eq!(matches, 2, "both occurrences of host in the response body are matched");
+    }
+
+    #[gpui_kit::test]
+    async fn json_body_comment_shortcut_toggles_and_filters_on_send(cx: &mut TestAppContext) {
+        struct EchoBody;
+        impl HttpEngine for EchoBody {
+            fn send(&self, request: PreparedRequest) -> SendFuture {
+                Box::pin(async move {
+                    Ok(cyberapi_core::response::Exchange {
+                        status: 200,
+                        headers: vec![("content-type".into(), "application/json".into())],
+                        body: request.body,
+                        ..Default::default()
+                    })
+                })
+            }
+        }
+
+        let store = MemoryStore::new();
+        let collection = pollster::block_on(store.storage().collections().create(NewCollection {
+            name: "p".into(),
+            ..Default::default()
+        }))
+        .expect("create");
+        let sign_out: SignOut = Arc::new(|| Box::pin(async {}));
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            bind_keys(cx);
+            AppStore::init(
+                store.storage(),
+                Arc::new(EchoBody),
+                AppPrefs::default(),
+                Extras {
+                    sign_out: Some(sign_out),
+                    ..Extras::default()
+                },
+                cx,
+            );
+        });
+        let mut view = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(1100.), px(700.)), |window, cx| {
+                let state = cx.new(|cx| {
+                    let sender = AppStore::global(cx).sender(cx);
+                    WorkspaceState::new(sender, collection, cx)
+                });
+                let workspace = cx.new(|cx| WorkspaceView::with_state(state, window, cx));
+                view = Some(workspace.clone());
+                Root::new(workspace, window, cx)
+            })
+            .into();
+        let view = view.expect("built");
+        cx.run_until_parked();
+        let state = cx.read(|cx| view.read(cx).state.clone());
+        state.update(cx, |state, cx| state.create_api(None, "create".into(), cx));
+        cx.run_until_parked();
+        let api = cx.read(|cx| state.read(cx).api().expect("the API is open").clone());
+        api.update(cx, |api, cx| {
+            api.set_method(HttpMethod::Post, cx);
+            api.set_uri("http://a.test/users".into(), cx);
+            api.set_body("{\n  \"a\": 1,\n  \"b\": 2\n}".into(), cx);
+        });
+        cx.run_until_parked();
+
+        // Focus line 3 (`  "b": 2`) and press Ctrl/Cmd-/ (`secondary-/`).
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let editor = view
+                .read(cx)
+                .selected
+                .as_ref()
+                .expect("the panels are open")
+                .editor
+                .clone();
+            editor.update(cx, |editor, cx| {
+                editor.type_uri("http://a.test/users", window, cx);
+                editor.focus_body_at("{\n  \"a\": 1,\n  \"b\": 2\n}", 14, window, cx);
+            });
+            window.render_frame(cx);
+            window.press("secondary-/", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+
+        let commented = cx.read(|cx| {
+            view.read(cx)
+                .selected
+                .as_ref()
+                .expect("the panels are open")
+                .editor
+                .read(cx)
+                .shown_body(cx)
+        });
+        assert_eq!(commented, "{\n  \"a\": 1,\n  // \"b\": 2\n}");
+
+        // Sending strips the commented line and the trailing comma before `}`.
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("secondary-enter", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+
+        let echoed = cx.read(|cx| {
+            view.read(cx)
+                .selected
+                .as_ref()
+                .expect("the panels are open")
+                .response
+                .read(cx)
+                .shown_body(cx)
+        });
+        assert_eq!(echoed, "{\n  \"a\": 1\n}");
+
+        // Pressing Ctrl/Cmd-/ (`secondary-/`) again uncomments the line.
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("secondary-/", cx);
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+
+        let uncommented = cx.read(|cx| {
+            view.read(cx)
+                .selected
+                .as_ref()
+                .expect("the panels are open")
+                .editor
+                .read(cx)
+                .shown_body(cx)
+        });
+        assert_eq!(uncommented, "{\n  \"a\": 1,\n  \"b\": 2\n}");
     }
 }
