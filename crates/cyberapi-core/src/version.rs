@@ -56,7 +56,9 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 /// answer matches one of the API's examples, ignoring listed JSONPaths.
 /// 23: the type, required flag, format and enum of a query, header or path
 /// parameter (`KvParam::schema_type`, `required`, `format`, `schema_enum`).
-pub const MODEL: u32 = 23;
+/// 24: a project can publish its online documentation
+/// (`ProjectSettings::public_docs`).
+pub const MODEL: u32 = 24;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {

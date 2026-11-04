@@ -2878,6 +2878,23 @@ impl WorkspaceState {
         });
     }
 
+    /// Publishes the online documentation, or takes it back. A server
+    /// project that has nothing else waiting is synced now, so the page
+    /// follows the switch. Other unsynced edits stay put until the reader
+    /// syncs them, and the switch goes with that sync.
+    pub fn set_public_docs(&mut self, public: bool, cx: &mut Context<Self>) {
+        if !self.editable() || self.project_settings().public_docs == public {
+            return;
+        }
+        let publish_now = self.copy.is_some() && !self.unsynced();
+        let mut settings = self.project_settings().clone();
+        settings.public_docs = public;
+        self.set_project_settings(settings, cx);
+        if publish_now {
+            self.sync(false, cx);
+        }
+    }
+
     /// #66: what the project sets for its APIs.
     pub fn set_project_settings(&mut self, settings: ProjectSettings, cx: &mut Context<Self>) {
         let call = self

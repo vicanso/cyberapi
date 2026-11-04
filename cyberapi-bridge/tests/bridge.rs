@@ -1203,6 +1203,249 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     );
 }
 
+/// A browser that opens the docs page while signed out is sent to sign in.
+/// The return address is the docs path only. A signed-in navigation is the
+/// document (here, 404: the project is not there), and a page `fetch` stays 401.
+#[tokio::test]
+async fn an_unsigned_browser_opening_docs_is_sent_to_sign_in() {
+    let Some(bridge) = fresh_bridge_at(vec![], "/tools".into()).await else {
+        return;
+    };
+    let router = bridge.router(None);
+    let path = "/tools/v1/docs/proj";
+
+    let (status, _, body) = send(&router, "GET", path, None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(body.contains("Sign in"), "{body}");
+
+    let (status, location) = navigate(&router, path).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location.as_deref(), Some("/tools/?next=%2Ftools%2Fv1%2Fdocs%2Fproj"));
+
+    let (status, location) = navigate(&router, &format!("{path}?token=cat_secret")).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        location.as_deref(),
+        Some("/tools/?next=%2Ftools%2Fv1%2Fdocs%2Fproj"),
+        "a token in the address does not ride along to the sign-in page"
+    );
+
+    let fetch = Request::builder()
+        .uri(path)
+        .header(header::ACCEPT, "text/html")
+        .header("sec-fetch-mode", "cors")
+        .body(Body::empty())
+        .expect("a request");
+    let response = router.clone().oneshot(fetch).await.expect("an answer");
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "the page's own fetch is not sent to sign in"
+    );
+
+    let form = json!({
+        "token": SETUP_TOKEN,
+        "name": "admin",
+        "displayName": "The Admin",
+        "password": "long enough"
+    });
+    let (status, set_cookie, body) = send(&router, "POST", "/tools/v1/setup", None, Some(form)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let cookie = cookie_pair(&set_cookie.expect("a cookie"));
+    let authed = Request::builder()
+        .uri(path)
+        .header(header::COOKIE, cookie)
+        .header("sec-fetch-mode", "navigate")
+        .header("sec-fetch-dest", "document")
+        .body(Body::empty())
+        .expect("a request");
+    let response = router.oneshot(authed).await.expect("an answer");
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "signed in: the missing project, not another sign-in"
+    );
+}
+
+/// A published project is readable with no session. A private one is not,
+/// and a bad token on a published project does not hide the page. Secrets
+/// in the document stay masked.
+#[tokio::test]
+async fn a_published_project_can_be_read_without_signing_in() {
+    use cyberapi_core::model::{HttpRequest, KvParam, ProjectSettings};
+    use cyberapi_store::NewCollection;
+    use cyberapi_store_sql::NewAccount;
+
+    let Some(bridge) = fresh_bridge().await else {
+        return;
+    };
+    let store = bridge.store().clone();
+    let ann = store
+        .create_account(NewAccount {
+            name: "ann".into(),
+            display_name: "Ann".into(),
+            password_hash: "unused".into(),
+            admin: false,
+        })
+        .await
+        .expect("ann");
+    let storage = store.scoped(ann);
+    let project = storage
+        .collections()
+        .create(NewCollection {
+            name: "Harbor".into(),
+            description: "Docs".into(),
+            owner: None,
+            id: None,
+        })
+        .await
+        .expect("a project");
+    let api = storage
+        .tree()
+        .create_api(project.id.clone(), None, "ping".into())
+        .await
+        .expect("an API")
+        .item;
+    storage
+        .tree()
+        .save_request(
+            project.id.clone(),
+            api.id,
+            HttpRequest {
+                uri: "/ping".into(),
+                body: r#"{"password":"hunter2"}"#.into(),
+                auth: Auth::Basic {
+                    username: "ann".into(),
+                    password: "hunter2".into(),
+                },
+                headers: vec![KvParam {
+                    key: "Authorization".into(),
+                    value: "Bearer s3cret".into(),
+                    enabled: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the request");
+    let path = format!("/v1/docs/{}", project.id);
+    let router = bridge.router(None);
+
+    let (status, _, body) = send(&router, "GET", &path, None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "private until published: {body}");
+    let (status, location) = navigate(&router, &path).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let expected = format!("/?next=%2Fv1%2Fdocs%2F{}", project.id);
+    assert_eq!(location.as_deref(), Some(expected.as_str()));
+
+    storage
+        .tree()
+        .set_project_settings(
+            project.id.clone(),
+            ProjectSettings {
+                public_docs: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("publish");
+    let (status, _, body) = send(&router, "GET", &path, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Harbor") && body.contains("<!DOCTYPE html>"), "{body}");
+    assert!(!body.contains("hunter2") && !body.contains("s3cret"), "{body}");
+    let (status, _, body) = send(&router, "GET", &format!("{path}?token=cat_nope"), None, None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a bad token does not hide a published page: {body}"
+    );
+    let shown = router
+        .clone()
+        .oneshot(Request::builder().uri(&path).body(Body::empty()).expect("a request"))
+        .await
+        .expect("an answer");
+    assert_eq!(shown.status(), StatusCode::OK);
+    assert_eq!(
+        shown
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("private, no-cache")
+    );
+    let etag = shown
+        .headers()
+        .get(header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .expect("an etag")
+        .to_string();
+    let fresh = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&path)
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .expect("a request"),
+        )
+        .await
+        .expect("an answer");
+    assert_eq!(fresh.status(), StatusCode::NOT_MODIFIED);
+
+    storage
+        .tree()
+        .set_project_settings(project.id.clone(), ProjectSettings::default())
+        .await
+        .expect("unpublish");
+    let stale = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&path)
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .expect("a request"),
+        )
+        .await
+        .expect("an answer");
+    assert_eq!(
+        stale.status(),
+        StatusCode::UNAUTHORIZED,
+        "a remembered validator does not keep a page that is private again"
+    );
+    let (status, location) = navigate(&router, &path).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(location.as_deref().is_some_and(|to| to.starts_with("/?next=")));
+    assert!(
+        !location.unwrap_or_default().contains("cat_"),
+        "the token is not copied"
+    );
+}
+
+/// A document navigation to `path`: status and `Location`.
+async fn navigate(router: &Router, path: &str) -> (StatusCode, Option<String>) {
+    let request = Request::builder()
+        .uri(path)
+        .header(header::ACCEPT, "text/html,application/xhtml+xml")
+        .header("sec-fetch-mode", "navigate")
+        .header("sec-fetch-dest", "document")
+        .body(Body::empty())
+        .expect("a request");
+    let response = router.clone().oneshot(request).await.expect("an answer");
+    let cache = response
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    assert_eq!(cache.as_deref(), Some("no-store"), "the sign-in redirect is not cached");
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    (response.status(), location)
+}
+
 /// A POST of an empty store call with a bearer token.
 async fn send_bearer(router: &Router, path: &str, token: &str) -> (StatusCode, Option<String>, String) {
     let request = Request::builder()

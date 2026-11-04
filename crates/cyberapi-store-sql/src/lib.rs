@@ -23,6 +23,8 @@ use cyberapi_core::{AccountId, CollectionId, TeamId, Timestamp};
 use cyberapi_store::{DirectoryStore, Refusal, Storage, StoreError, VersionStore};
 use directory::NoPasswords;
 use scoped::Scoped;
+
+pub use scoped::PublishedDocs;
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
 
 use sqlx::migrate::MigrateError;
@@ -232,6 +234,12 @@ impl SqlStore {
     /// G4: one account's view of the projects' versions.
     pub fn versions(&self, account: AccountId) -> Arc<dyn VersionStore> {
         Arc::new(Scoped::new(self.clone(), account))
+    }
+
+    /// The project's online documentation when it is published. `None`
+    /// when it is missing or still private.
+    pub async fn published_docs(&self, id: &CollectionId) -> Result<Option<PublishedDocs>, StoreError> {
+        scoped::published_docs(self, id).await
     }
 
     /// Creates an account with its personal space (§9.1), whose only member

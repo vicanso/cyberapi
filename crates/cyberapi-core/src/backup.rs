@@ -475,6 +475,8 @@ mod tests {
                     }),
                     // D6: and which environments are production.
                     protected_environments: vec!["e".into()],
+                    // The online page can be opened without signing in.
+                    public_docs: true,
                 },
             )],
         }

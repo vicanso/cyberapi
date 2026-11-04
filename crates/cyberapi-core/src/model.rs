@@ -103,6 +103,15 @@ pub struct ProjectSettings {
     /// something there is asked about first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub protected_environments: Vec<EnvironmentId>,
+    /// The online documentation page (`GET /v1/docs/{project}`) can be
+    /// opened without signing in. Off until an editor turns it on. Secret
+    /// values stay masked either way.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub public_docs: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl ProjectSettings {
@@ -895,6 +904,27 @@ pub mod legacy {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn documentation_stays_private_until_a_project_publishes_it() {
+        let stored: ProjectSettings = serde_json::from_str("{}").expect("old settings");
+        assert!(!stored.public_docs);
+        assert!(stored.is_empty());
+        let published = ProjectSettings {
+            public_docs: true,
+            ..Default::default()
+        };
+        assert!(!published.is_empty());
+        let text = serde_json::to_string(&published).expect("json");
+        assert!(text.contains("publicDocs"), "{text}");
+        let back: ProjectSettings = serde_json::from_str(&text).expect("back");
+        assert!(back.public_docs);
+        assert!(
+            !serde_json::to_string(&ProjectSettings::default())
+                .expect("empty")
+                .contains("publicDocs")
+        );
+    }
 
     #[test]
     fn key_value_lists_go_to_text_and_back() {

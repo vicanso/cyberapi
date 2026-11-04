@@ -109,6 +109,51 @@
   // path. The wasm builds its own requests and the kit's icon URLs on `root`.
   const root = new URL(".", location.href).href.replace(/\/$/, "");
   const url = (path) => `${root}${path}`;
+
+  // The online docs page is not this shell. A browser that opens
+  // `/v1/docs/{project}` while signed out is sent here as `?next=`. After
+  // sign-in — including single sign-on, which leaves and comes back without
+  // the query — go there instead of starting the app. Only that one page,
+  // on this origin. The query string is dropped: a token that failed to
+  // sign in must not be copied onto this address.
+  const DOCS_RETURN = "cyberapi-docs-return";
+  const docsTarget = (candidate) => {
+    if (!candidate) return null;
+    let target;
+    try {
+      target = new URL(candidate, location.origin);
+    } catch {
+      return null;
+    }
+    if (target.origin !== location.origin) return null;
+    const prefix = new URL("./v1/docs/", location.href).pathname;
+    if (!target.pathname.startsWith(prefix)) return null;
+    let id;
+    try {
+      id = decodeURIComponent(target.pathname.slice(prefix.length));
+    } catch {
+      return null;
+    }
+    if (!id || id.includes("/") || id === "." || id === "..") return null;
+    return target.origin + target.pathname;
+  };
+  // Set once the page knows where to return. Single sign-on leaves this
+  // document, so the click writes it again: the value was taken out of
+  // storage on the way back, and a second try still has to find it.
+  let docsReturn = null;
+  const takeDocsReturn = () => {
+    const fromQuery = docsTarget(new URLSearchParams(location.search).get("next"));
+    let fromStore = null;
+    try {
+      const stored = sessionStorage.getItem(DOCS_RETURN);
+      fromStore = docsTarget(stored);
+      if (fromQuery) sessionStorage.setItem(DOCS_RETURN, fromQuery);
+      else if (stored) sessionStorage.removeItem(DOCS_RETURN);
+    } catch {
+      // Private mode can refuse storage. The query still covers a password sign-in.
+    }
+    return fromQuery || fromStore;
+  };
   const api = (path, init = {}) => fetch(url(path), { credentials: "same-origin", ...init });
   const postJson = (path, body) =>
     api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -217,6 +262,11 @@
         $("login-oidc").disabled = true;
         $(msg).textContent = "";
         try {
+          try {
+            if (docsReturn) sessionStorage.setItem(DOCS_RETURN, docsReturn);
+          } catch {
+            // Storage can be blocked. The sign-in itself still starts.
+          }
           const res = await postJson("/v1/oidc/start", { bearer: false });
           if (!res.ok) {
             $(msg).textContent = await res.text();
@@ -348,40 +398,50 @@
   }
 
   try {
+    const back = (docsReturn = takeDocsReturn());
     const invited = inviteToken ? await acceptInvite(inviteToken) : false;
     if (!invited && (await api("/v1/session")).status === 401) await signIn();
-    // Signed in: the forms go, and the passwords typed into them.
-    for (const id of ["login", "setup", "invite"]) $(id).remove();
-    show("loading");
-    // The UI font rides in with the call: the web text system has no fonts
-    // of its own, and the first frame measures text.
-    const [mod, font, prefs] = await Promise.all([
-      import(url("/wasm/cyberapi_web.js")),
-      fetch(url("/fonts/IBMPlexSans.ttf")).then((r) => {
-        if (!r.ok) throw new Error(`font: HTTP ${r.status}`);
-        return r.arrayBuffer();
-      }),
-      appPrefs(),
-    ]);
-    await mod.default({ module_or_path: url("/wasm/cyberapi_web_bg.wasm") });
-    $("loading").remove();
-    mod.run(root, new Uint8Array(font), JSON.stringify(prefs));
-    // The editors' monospace font comes after the first frame; text drawn
-    // before it lands uses the fallback.
-    Promise.all(
-      ["Regular", "Bold"].map((face) =>
-        fetch(url(`/fonts/JetBrainsMono-${face}.ttf`)).then((r) => {
+    if (back) {
+      try {
+        sessionStorage.removeItem(DOCS_RETURN);
+      } catch {
+        // Storage was only a bridge across single sign-on.
+      }
+      location.replace(back);
+    } else {
+      // Signed in: the forms go, and the passwords typed into them.
+      for (const id of ["login", "setup", "invite"]) $(id).remove();
+      show("loading");
+      // The UI font rides in with the call: the web text system has no fonts
+      // of its own, and the first frame measures text.
+      const [mod, font, prefs] = await Promise.all([
+        import(url("/wasm/cyberapi_web.js")),
+        fetch(url("/fonts/IBMPlexSans.ttf")).then((r) => {
           if (!r.ok) throw new Error(`font: HTTP ${r.status}`);
           return r.arrayBuffer();
         }),
-      ),
-    )
-      .then(([regular, bold]) => mod.add_mono_fonts(new Uint8Array(regular), new Uint8Array(bold)))
-      .catch((error) => console.warn("JetBrains Mono could not be loaded", error));
-    // A background tab polls the bridge less often.
-    const visibility = () => mod.set_page_visible(!document.hidden);
-    document.addEventListener("visibilitychange", visibility);
-    visibility();
+        appPrefs(),
+      ]);
+      await mod.default({ module_or_path: url("/wasm/cyberapi_web_bg.wasm") });
+      $("loading").remove();
+      mod.run(root, new Uint8Array(font), JSON.stringify(prefs));
+      // The editors' monospace font comes after the first frame; text drawn
+      // before it lands uses the fallback.
+      Promise.all(
+        ["Regular", "Bold"].map((face) =>
+          fetch(url(`/fonts/JetBrainsMono-${face}.ttf`)).then((r) => {
+            if (!r.ok) throw new Error(`font: HTTP ${r.status}`);
+            return r.arrayBuffer();
+          }),
+        ),
+      )
+        .then(([regular, bold]) => mod.add_mono_fonts(new Uint8Array(regular), new Uint8Array(bold)))
+        .catch((error) => console.warn("JetBrains Mono could not be loaded", error));
+      // A background tab polls the bridge less often.
+      const visibility = () => mod.set_page_visible(!document.hidden);
+      document.addEventListener("visibilitychange", visibility);
+      visibility();
+    }
   } catch (error) {
     show("loading");
     $("loading").textContent = t("failed", { error });

@@ -1143,6 +1143,12 @@ example_kept = "已存为示例，见“说明”标签页。"
 example_refused = "只有带状态码、响应体是 256 KB 以内文本的响应才能存为示例。"
 online_open = "在线接口文档"
 online_copied = "在线文档地址已复制到剪贴板"
+public_menu = "公开预览…"
+public_title = "公开预览"
+public_switch = "不登录也能查看"
+public_hint = "打开后，知道地址的人不用登录就能看这份在线文档。密钥仍然打码。关掉之后又要登录。"
+public_unsynced = "项目还有没同步的修改。同步之后，服务器上的文档才按这个开关放行。"
+public_syncing = "正在同步…"
 
 [versions]
 open = "历史版本…"

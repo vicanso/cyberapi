@@ -60,7 +60,7 @@ pub use variables_dialog::open_variables_dialog;
 pub use workspace::is_apart_window;
 pub use workspace::{
     OpenPalette, ROOT_CONTEXT, WorkspaceView, bind_keys as bind_workspace_keys, bind_mac_page_keys, bind_palette_keys,
-    bind_palette_mac_page_keys, open_palette, open_project_auth,
+    bind_palette_mac_page_keys, open_docs_share, open_palette, open_project_auth,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use workspace::{close_apart, open_apart};

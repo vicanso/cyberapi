@@ -50,6 +50,62 @@ fn in_environments(variables: Vec<Option<Variable>>, environments: &HashMap<Stri
         .collect()
 }
 
+/// A project's online documentation when an editor has published it.
+/// `None` when the project is missing or still private: those two are not
+/// told apart, so an address does not reveal a private project.
+pub struct PublishedDocs {
+    pub collection: Collection,
+    pub tree: TreeData,
+    pub environments: Vec<Environment>,
+    pub variables: Vec<Variable>,
+}
+
+/// The published page, read without an account. One settings lookup when
+/// the project is private; the tree is read only after the flag is on.
+pub(crate) async fn published_docs(store: &SqlStore, id: &CollectionId) -> Result<Option<PublishedDocs>, StoreError> {
+    let reader = Scoped::new(store.clone(), AccountId::new("published-docs"));
+    let mut conn = reader.pool.acquire().await.map_err(db)?;
+    let settings: ProjectSettings = sqlx::query(reader.dialect.sql(sql::PROJECT_SETTINGS_OF))
+        .bind(id.as_str().to_string())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(db)?
+        .map(|row| rows::text(&row, 0))
+        .transpose()?
+        .map(|text| settings_of(&text))
+        .unwrap_or_default();
+    if !settings.public_docs {
+        return Ok(None);
+    }
+    let Some(row) = sqlx::query(reader.dialect.sql(sql::COLLECTION_GET))
+        .bind(id.as_str().to_string())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(db)?
+    else {
+        return Ok(None);
+    };
+    let mut collection = rows::collection(&row, 0)?;
+    collection.role = CollectionRole::Viewer;
+    let tree = reader.tree_data(&mut conn, id).await?;
+    let found = sqlx::query(reader.dialect.sql(sql::VARIABLES_OF))
+        .bind(id.as_str().to_string())
+        .bind(VariableCategory::Environment.as_str())
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(db)?;
+    let found = found.iter().map(rows::variable).collect::<Result<Vec<_>, _>>()?;
+    let mut variables = in_environments(found, &reader.variable_environments(&mut conn, id).await?);
+    variables.sort_by(|one, other| one.name.cmp(&other.name));
+    let environments = reader.environments_of(&mut conn, id).await?;
+    Ok(Some(PublishedDocs {
+        collection,
+        tree,
+        environments,
+        variables,
+    }))
+}
+
 /// A `settings` column (#66); one that cannot be read is none, as an
 /// unreadable request is an empty one.
 fn settings_of<T: DeserializeOwned + Default>(text: &str) -> T {

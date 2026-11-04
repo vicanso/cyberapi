@@ -20,7 +20,7 @@
 //! | `POST /v1/send/stream` | the same, an event stream's answer told as it comes (NDJSON of `StreamReply`); the page leaving stops it |
 //! | `POST /v1/mcp` | an AI assistant's tools, signed in with an account's MCP token ([`mcp`]) |
 //! | `ANY /v1/mock/{project}`, `ANY /v1/mock/{project}/{*rest}` | a project's mock responses (`G2b`, [`mock`]), signed in by session or MCP token |
-//! | `GET /v1/docs/{project}` | a project's read-only HTML documentation (`G3`, [`docs`]), signed in by session or MCP token |
+//! | `GET /v1/docs/{project}` | a project's read-only HTML documentation (`G3`, [`docs`]); public when the project says so, otherwise a session or MCP token, and a signed-out browser is sent to the sign-in page |
 //! | anything else | the page's files ([`static_files`]) |
 //!
 //! Under `--base-path /prefix` all of it is below the prefix — `/prefix/`,

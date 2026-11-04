@@ -271,7 +271,7 @@ pub use palette::{
     OpenPalette, ROOT_CONTEXT, bind_keys as bind_palette_keys, bind_mac_page_keys as bind_palette_mac_page_keys,
     open_palette,
 };
-pub use settings_dialogs::open_project_auth;
+pub use settings_dialogs::{open_docs_share, open_project_auth};
 
 /// F10.5: the cURL command on the clipboard as a new API in `parent`, opened.
 /// The clipboard is read here, when the reader pastes or picks the menu

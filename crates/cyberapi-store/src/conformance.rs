@@ -620,6 +620,8 @@ async fn settings_are_kept(storage: &Storage) {
         }),
         // D6: and which environments are production.
         protected_environments: vec![cyberapi_core::EnvironmentId::from("e1")],
+        // The online page can be opened without signing in.
+        public_docs: true,
     };
     tree.set_project_settings(collection.id.clone(), project.clone())
         .await
