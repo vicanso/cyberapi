@@ -86,20 +86,41 @@ pub fn key_for(path: &str) -> Option<String> {
     plain.then(|| key.to_string())
 }
 
-/// Whether `Accept-Encoding` takes gzip (and does not refuse it with
-/// `q=0`).
-pub fn accepts_gzip(headers: &HeaderMap) -> bool {
+/// Quality weight for `target` in `Accept-Encoding` (`0.0` when absent or
+/// refused with `q=0`). An explicit match overrides `*`.
+fn encoding_quality(headers: &HeaderMap, target: &str) -> f32 {
     headers
         .get_all(header::ACCEPT_ENCODING)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
-        .any(|part| {
+        .filter_map(|part| {
             let mut pieces = part.split(';');
             let name = pieces.next().unwrap_or_default().trim();
-            let refused = pieces.any(|p| matches!(p.trim().strip_prefix("q="), Some(q) if q.parse::<f32>() == Ok(0.0)));
-            (name.eq_ignore_ascii_case("gzip") || name == "*") && !refused
+            if !name.eq_ignore_ascii_case(target) && name != "*" {
+                return None;
+            }
+            let q = pieces
+                .find_map(|p| p.trim().strip_prefix("q="))
+                .and_then(|q| q.parse::<f32>().ok())
+                .unwrap_or(1.0);
+            Some((name.eq_ignore_ascii_case(target), q))
         })
+        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)))
+        .map(|(_, q)| q)
+        .unwrap_or(0.0)
+}
+
+/// Whether `Accept-Encoding` accepts `zstd` and does not prefer `gzip` over it.
+pub fn prefers_zstd(headers: &HeaderMap) -> bool {
+    let zstd = encoding_quality(headers, "zstd");
+    zstd > 0.0 && zstd >= encoding_quality(headers, "gzip")
+}
+
+/// Whether `Accept-Encoding` takes gzip (and does not refuse it with
+/// `q=0`).
+pub fn accepts_gzip(headers: &HeaderMap) -> bool {
+    encoding_quality(headers, "gzip") > 0.0
 }
 
 pub fn not_found() -> Response {
@@ -111,13 +132,29 @@ pub fn serve(headers: &HeaderMap, path: &str) -> Response {
     let Some(key) = key_for(path) else {
         return not_found();
     };
+    let zstd = format!("{key}.zst");
     let gzip = format!("{key}.gz");
-    let (file, encoding) = match WebBuild::get(&gzip).filter(|_| accepts_gzip(headers)) {
-        Some(file) => (file, Some("gzip")),
-        None => match WebBuild::get(&key) {
+    let (file, encoding) = if prefers_zstd(headers) {
+        match WebBuild::get(&zstd) {
+            Some(file) => (file, Some("zstd")),
+            None => match WebBuild::get(&key) {
+                Some(file) => (file, None),
+                None => return not_found(),
+            },
+        }
+    } else if accepts_gzip(headers) {
+        match WebBuild::get(&gzip) {
+            Some(file) => (file, Some("gzip")),
+            None => match WebBuild::get(&key) {
+                Some(file) => (file, None),
+                None => return not_found(),
+            },
+        }
+    } else {
+        match WebBuild::get(&key) {
             Some(file) => (file, None),
             None => return not_found(),
-        },
+        }
     };
     let etag = format!("\"{}\"", hex::encode(file.metadata.sha256_hash()));
     let fresh = headers
@@ -204,6 +241,22 @@ mod tests {
         assert!(!accepts_gzip(&with("gzip;q=0, br")));
         assert!(!accepts_gzip(&with("identity")));
         assert!(!accepts_gzip(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn zstd_is_preferred_over_gzip_when_accepted() {
+        let with = |value: &'static str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(value));
+            headers
+        };
+        assert!(prefers_zstd(&with("gzip, deflate, br, zstd")));
+        assert!(prefers_zstd(&with("zstd")));
+        assert!(prefers_zstd(&with("*")));
+        assert!(!prefers_zstd(&with("gzip, deflate, br")));
+        assert!(!prefers_zstd(&with("zstd;q=0, gzip")));
+        assert!(!prefers_zstd(&with("gzip;q=1.0, zstd;q=0.5")));
+        assert!(!prefers_zstd(&HeaderMap::new()));
     }
 
     /// The page from the directory a debug build reads: its type, its tag,

@@ -71,6 +71,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use throttle::{Key, Throttle};
+use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate as _};
 use tower_http::services::ServeDir;
 
 /// How long a kept login lasts, in seconds: the page's "keep me signed in",
@@ -218,6 +220,7 @@ impl Bridge {
             .route(&at("/v1/docs/{project}"), get(docs::get))
             .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
             .fallback(move |State(bridge): State<Bridge>, request: Request| page(bridge, request, www.clone()))
+            .layer(compression_layer())
             .with_state(self.clone())
     }
 
@@ -671,4 +674,125 @@ async fn send_request(
         Err(error) => SendReply::Err(error),
     };
     Json(reply).into_response()
+}
+
+/// Compresses bridge answers with `zstd` (preferred) or `gzip`, while leaving
+/// watched NDJSON streams unbuffered.
+fn compression_layer() -> CompressionLayer<impl tower_http::compression::predicate::Predicate> {
+    CompressionLayer::new()
+        .gzip(true)
+        .zstd(true)
+        .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("application/x-ndjson")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt as _;
+    use std::io::Read as _;
+    use tower::ServiceExt as _;
+
+    fn decode_gzip(bytes: &[u8]) -> String {
+        let mut decoder = flate2::read::GzDecoder::new(bytes);
+        let mut out = String::new();
+        decoder.read_to_string(&mut out).expect("valid gzip");
+        out
+    }
+
+    fn decode_zstd(bytes: &[u8]) -> String {
+        let mut decoder = ruzstd::decoding::StreamingDecoder::new(bytes).expect("zstd stream");
+        let mut out = String::new();
+        decoder.read_to_string(&mut out).expect("valid zstd");
+        out
+    }
+
+    #[tokio::test]
+    async fn compression_prefers_zstd_over_gzip_and_skips_ndjson_streams() {
+        let payload = "cyberapi-bridge-response-".repeat(16);
+        let expected_json = serde_json::json!({ "data": payload }).to_string();
+        let router = Router::new()
+            .route(
+                "/v1/store",
+                post({
+                    let payload = payload.clone();
+                    move || async move { Json(serde_json::json!({ "data": payload })) }
+                }),
+            )
+            .route(
+                "/v1/send/stream",
+                post({
+                    let line = format!("{expected_json}\n");
+                    move || async move { ndjson(Body::from(line.clone())) }
+                }),
+            )
+            .fallback(|request: Request| async move { static_files::serve(request.headers(), request.uri().path()) })
+            .layer(compression_layer());
+
+        // When both gzip and zstd are accepted, zstd is preferred for API and static responses.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/store")
+            .header(header::ACCEPT_ENCODING, "gzip, deflate, br, zstd")
+            .body(Body::empty())
+            .expect("request");
+        let resp = router.clone().oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("zstd")
+        );
+        let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+        assert_eq!(decode_zstd(&bytes), expected_json);
+
+        // Static page fallback is also compressed with zstd when accepted.
+        let page_req = Request::builder()
+            .method("GET")
+            .uri("/")
+            .header(header::ACCEPT_ENCODING, "gzip, zstd")
+            .body(Body::empty())
+            .expect("request");
+        let page_resp = router.clone().oneshot(page_req).await.expect("response");
+        assert_eq!(page_resp.status(), StatusCode::OK);
+        assert_eq!(
+            page_resp
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("zstd")
+        );
+        let page_bytes = page_resp.into_body().collect().await.expect("body").to_bytes();
+        assert!(decode_zstd(&page_bytes).contains("<!DOCTYPE html>") || decode_zstd(&page_bytes).contains("<html"));
+
+        // When only gzip is accepted, gzip is used.
+        let gzip_req = Request::builder()
+            .method("POST")
+            .uri("/v1/store")
+            .header(header::ACCEPT_ENCODING, "gzip, deflate")
+            .body(Body::empty())
+            .expect("request");
+        let gzip_resp = router.clone().oneshot(gzip_req).await.expect("response");
+        assert_eq!(gzip_resp.status(), StatusCode::OK);
+        assert_eq!(
+            gzip_resp
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("gzip")
+        );
+        let gzip_bytes = gzip_resp.into_body().collect().await.expect("body").to_bytes();
+        assert_eq!(decode_gzip(&gzip_bytes), expected_json);
+
+        // Streaming NDJSON (`/v1/send/stream`) is not compressed so events flush as they arrive.
+        let stream_req = Request::builder()
+            .method("POST")
+            .uri("/v1/send/stream")
+            .header(header::ACCEPT_ENCODING, "gzip, zstd")
+            .body(Body::empty())
+            .expect("request");
+        let stream_resp = router.oneshot(stream_req).await.expect("response");
+        assert_eq!(stream_resp.status(), StatusCode::OK);
+        assert_eq!(stream_resp.headers().get(header::CONTENT_ENCODING), None);
+    }
 }

@@ -89,9 +89,13 @@ if [ "$mode" = release ]; then
   echo "wasm-opt -Oz: $(mib "$before") -> $(mib "$(size "$wasm")")"
   gzip -9 -k -f "$wasm"
   echo "gzip: $(mib "$(size "$wasm.gz")")"
+  if command -v zstd >/dev/null 2>&1; then
+    zstd -19 -k -f -q "$wasm"
+    echo "zstd: $(mib "$(size "$wasm.zst")")"
+  fi
 else
-  # A gzip left by a release build would be sent in place of this module.
-  rm -f "$wasm.gz"
+  # A pre-compressed module left by a release build would be sent in place of this module.
+  rm -f "$wasm.gz" "$wasm.zst"
 fi
 
 echo "wasm ($mode): $(mib "$(size "$wasm")")"
