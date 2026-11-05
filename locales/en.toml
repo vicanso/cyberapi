@@ -1143,12 +1143,10 @@ example_kept = "Kept as an example, in the Docs tab."
 example_refused = "Only an answer with a status and a text body under 256 KB can be an example."
 online_open = "Online documentation"
 online_copied = "Documentation URL copied to clipboard"
-public_menu = "Public preview…"
 public_title = "Public preview"
 public_switch = "Anyone with the link can view"
 public_hint = "When this is on, anyone with the address can read the online documentation without signing in. Secret values stay masked. Turning it off requires a sign-in again."
-public_unsynced = "This project still has changes that are not on the server. The page follows this switch after you sync."
-public_syncing = "Syncing…"
+public_after_sync = "Saved with the project's other changes. The page follows this switch after the next sync."
 
 [versions]
 open = "Versions…"

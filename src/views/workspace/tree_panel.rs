@@ -1156,12 +1156,10 @@ fn project_more_menu(
             }),
     );
     // G3: read-only HTML documentation hosted on the bridge for a server project.
-    // An editor chooses whether that page is public.
+    // Whether that page is public is chosen in the home page's Edit project dialog.
     let docs_url = state.upgrade().and_then(|state| state.read(cx).server_docs_url(cx));
-    let for_share = state.clone();
     let menu = menu.when_some(docs_url, |menu, url| {
-        let share = url.clone();
-        let menu = menu.item(
+        menu.item(
             PopupMenuItem::new(t!("docs.online_open").to_string())
                 .icon(Icons::BookOpen)
                 .on_click(move |_, window, cx| {
@@ -1169,20 +1167,7 @@ fn project_more_menu(
                     window.push_notification(Notification::info(t!("docs.online_copied").to_string()), cx);
                     cx.open_url(&url);
                 }),
-        );
-        if editable {
-            menu.item(
-                PopupMenuItem::new(t!("docs.public_menu").to_string())
-                    .icon(Icons::Globe)
-                    .on_click(move |_, window, cx| {
-                        if let Some(workspace) = for_share.upgrade() {
-                            crate::views::open_docs_share(&workspace, share.clone(), window, cx);
-                        }
-                    }),
-            )
-        } else {
-            menu
-        }
+        )
     });
     // F11.1: a viewer may export too.
     export_menu(menu, t!("export.project").to_string(), &for_export, None, window, cx)

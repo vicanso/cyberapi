@@ -18,7 +18,6 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
-use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -375,94 +374,6 @@ pub fn open_project_auth(workspace: &Entity<WorkspaceState>, window: &mut Window
                 cx,
             )))
             .footer(footer("project-auth-save", editable, save))
-            .on_ok(|_, _, _| false)
-    });
-}
-
-struct DocsShareView {
-    workspace: gpui_kit::WeakEntity<WorkspaceState>,
-    url: String,
-    _subscriptions: Vec<Subscription>,
-}
-
-impl DocsShareView {
-    fn set_public(&mut self, public: bool, cx: &mut Context<Self>) {
-        if let Some(workspace) = self.workspace.upgrade() {
-            workspace.update(cx, |state, cx| state.set_public_docs(public, cx));
-        }
-    }
-}
-
-impl Render for DocsShareView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (public, syncing, unsynced) = self
-            .workspace
-            .upgrade()
-            .map(|workspace| {
-                let state = workspace.read(cx);
-                (state.project_settings().public_docs, state.syncing(), state.unsynced())
-            })
-            .unwrap_or((false, false, false));
-        let muted = cx.theme().muted_foreground;
-        let note = if syncing {
-            Some(t!("docs.public_syncing").to_string())
-        } else if unsynced {
-            Some(t!("docs.public_unsynced").to_string())
-        } else {
-            None
-        };
-        v_flex()
-            .gap_4()
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(muted)
-                    .child(t!("docs.public_hint").to_string()),
-            )
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_start()
-                    .child(
-                        Switch::new("docs-public")
-                            .checked(public)
-                            .on_click(cx.listener(|this, checked: &bool, _, cx| this.set_public(*checked, cx))),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_0p5()
-                            .child(div().text_sm().child(t!("docs.public_switch").to_string()))
-                            .child(div().text_xs().text_color(muted).child(self.url.clone())),
-                    ),
-            )
-            .when_some(note, |this, note| {
-                this.child(div().text_xs().text_color(muted).child(note))
-            })
-    }
-}
-
-/// Whether this server project's online page can be opened without signing in.
-pub fn open_docs_share(workspace: &Entity<WorkspaceState>, url: String, window: &mut Window, cx: &mut App) {
-    let watched = workspace.clone();
-    let view = cx.new(|cx| {
-        let _subscriptions = vec![cx.observe(&watched, |_: &mut DocsShareView, _, cx| cx.notify())];
-        DocsShareView {
-            workspace: watched.downgrade(),
-            url,
-            _subscriptions,
-        }
-    });
-    window.open_dialog(cx, move |dialog, _, _| {
-        dialog
-            .title(t!("docs.public_title").to_string())
-            .w(px(480.))
-            .child(crate::views::dialog_body(view.clone()))
-            .footer(
-                DialogFooter::new()
-                    .child(DialogClose::new().trigger(|button| button.label(t!("common.close").to_string()))),
-            )
             .on_ok(|_, _, _| false)
     });
 }

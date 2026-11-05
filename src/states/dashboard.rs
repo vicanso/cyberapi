@@ -5,7 +5,8 @@
 //! (§3–4); on the desktop, in its copy in the database, bound to the
 //! signed-in account (§6). A card shows the changes' name and says they are
 //! unsynced, and syncs them or gives them up without opening the project.
-//! A change of name or description is one of those changes.
+//! A change of name, description, or whether the online page is public,
+//! is one of those changes.
 //!
 //! The desktop lists its own projects, and — signed in — the account's
 //! server projects, each copied here when it is first listed and refreshed
@@ -45,6 +46,10 @@ pub struct ProjectSourceEdit {
     pub url: Option<String>,
     pub auto_sync: bool,
     pub interval_minutes: u32,
+    /// `Some` sets whether the online page can be opened without signing
+    /// in. `None` leaves the flag as it is, including on a project that
+    /// has no online page.
+    pub public_docs: Option<bool>,
 }
 
 /// What the view should tell the reader about.
@@ -566,25 +571,26 @@ impl DashboardState {
         cx.notify();
     }
 
-    /// B7 / B10: reads `id`'s stored `ProjectSettings.source` (or its web
-    /// draft's when one is in memory) and `WorkspacePrefs` for the home-page
-    /// project editor dialog.
-    pub fn load_project_source(&self, id: &CollectionId) -> StoreFuture<(Option<ImportSource>, WorkspacePrefs)> {
+    /// B7 / B10: reads `id`'s stored source, whether its online page is
+    /// public, and `WorkspacePrefs` for the home-page project editor. A web
+    /// draft that already decided the settings wins over the outline.
+    pub fn load_project_source(&self, id: &CollectionId) -> StoreFuture<(Option<ImportSource>, WorkspacePrefs, bool)> {
         let storage = self.storage.clone();
         let id = id.clone();
-        let draft_source = self
+        let drafted = self
             .listed
             .iter()
             .find(|collection| collection.id == id)
             .and_then(|collection| self.draft(collection))
-            .and_then(draft_source);
+            .filter(|draft| draft_source(draft).is_some())
+            .map(draft_settings);
         Box::pin(async move {
             let prefs = storage.prefs().workspace(id.clone()).await.unwrap_or_default();
-            let source = match draft_source {
-                Some(source) => source,
-                None => storage.tree().outline(id).await?.outline.settings.source,
+            let settings = match drafted {
+                Some(settings) => settings,
+                None => storage.tree().outline(id).await?.outline.settings,
             };
-            Ok((source, prefs))
+            Ok((settings.source, prefs, settings.public_docs))
         })
     }
 
@@ -606,9 +612,13 @@ impl DashboardState {
         source: Option<ProjectSourceEdit>,
         cx: &mut Context<Self>,
     ) {
-        let source_edit = source.and_then(|mut s| {
-            s.url = s.url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
-            s.url.is_some().then_some(s)
+        let source_edit = source.and_then(|mut source| {
+            source.url = source
+                .url
+                .map(|url| url.trim().to_string())
+                .filter(|url| !url.is_empty());
+            // A public page needs no source address. An empty edit does nothing.
+            (source.url.is_some() || source.public_docs == Some(true)).then_some(source)
         });
         if let (Some(bundle), Some(src)) = (&mut import, &source_edit) {
             bundle.source = src.url.clone();
@@ -622,25 +632,19 @@ impl DashboardState {
             let src_for_create = source_edit.clone();
             let call: StoreFuture<Collection> = Box::pin(async move {
                 let made = srv_for_create.collections().create(input).await?;
-                if let Some(src) = &src_for_create
-                    && let Some(url) = &src.url
-                {
-                    let _ = srv_for_create
-                        .tree()
-                        .set_project_settings(
-                            made.id.clone(),
-                            ProjectSettings {
-                                source: Some(ImportSource {
-                                    url: url.clone(),
-                                    folder: None,
-                                }),
-                                ..Default::default()
-                            },
-                        )
-                        .await;
-                    let mut prefs = local.prefs().workspace(made.id.clone()).await.unwrap_or_default();
-                    apply_source_prefs(&mut prefs, None, Some(url), src.auto_sync, src.interval_minutes, &[]);
-                    let _ = local.prefs().set_workspace(made.id.clone(), prefs).await;
+                if let Some(src) = &src_for_create {
+                    let next_source = src.url.clone().map(|url| ImportSource { url, folder: None });
+                    if let Some(settings) = settings_from_source_edit(&ProjectSettings::default(), src, next_source) {
+                        let _ = srv_for_create
+                            .tree()
+                            .set_project_settings(made.id.clone(), settings)
+                            .await;
+                    }
+                    if let Some(url) = &src.url {
+                        let mut prefs = local.prefs().workspace(made.id.clone()).await.unwrap_or_default();
+                        apply_source_prefs(&mut prefs, None, Some(url), src.auto_sync, src.interval_minutes, &[]);
+                        let _ = local.prefs().set_workspace(made.id.clone(), prefs).await;
+                    }
                 }
                 srv_for_create.collections().get(made.id).await
             });
@@ -699,29 +703,23 @@ impl DashboardState {
         let src_for_create = source_edit.clone();
         let call: StoreFuture<Collection> = Box::pin(async move {
             let collection = storage.collections().create(input).await?;
-            if let Some(src) = &src_for_create
-                && let Some(url) = &src.url
-            {
-                storage
-                    .tree()
-                    .set_project_settings(
-                        collection.id.clone(),
-                        ProjectSettings {
-                            source: Some(ImportSource {
-                                url: url.clone(),
-                                folder: None,
-                            }),
-                            ..Default::default()
-                        },
-                    )
-                    .await?;
-                let mut prefs = storage
-                    .prefs()
-                    .workspace(collection.id.clone())
-                    .await
-                    .unwrap_or_default();
-                apply_source_prefs(&mut prefs, None, Some(url), src.auto_sync, src.interval_minutes, &[]);
-                storage.prefs().set_workspace(collection.id.clone(), prefs).await?;
+            if let Some(src) = &src_for_create {
+                let next_source = src.url.clone().map(|url| ImportSource { url, folder: None });
+                if let Some(settings) = settings_from_source_edit(&ProjectSettings::default(), src, next_source) {
+                    storage
+                        .tree()
+                        .set_project_settings(collection.id.clone(), settings)
+                        .await?;
+                }
+                if let Some(url) = &src.url {
+                    let mut prefs = storage
+                        .prefs()
+                        .workspace(collection.id.clone())
+                        .await
+                        .unwrap_or_default();
+                    apply_source_prefs(&mut prefs, None, Some(url), src.auto_sync, src.interval_minutes, &[]);
+                    storage.prefs().set_workspace(collection.id.clone(), prefs).await?;
+                }
             }
             Ok(collection)
         });
@@ -854,11 +852,7 @@ impl DashboardState {
                     .filter(|f| data.folders.iter().any(|k| &k.id == f));
                 ImportSource { url, folder }
             });
-            if data.settings.source != next_source {
-                let settings = ProjectSettings {
-                    source: next_source,
-                    ..data.settings
-                };
+            if let Some(settings) = settings_from_source_edit(&data.settings, &edit_clone, next_source) {
                 storage.tree().set_project_settings(target_id, settings).await?;
             }
             let url_changed = next_url != had_url;
@@ -1068,7 +1062,7 @@ impl DashboardState {
                 .filter(|folder| folders.iter().any(|known| &known.id == folder));
             ImportSource { url, folder }
         });
-        set_draft_source(&mut draft, next_source);
+        set_draft_source(&mut draft, next_source, source_edit.public_docs);
         let empty_apis = draft_has_no_apis(&draft);
         self.keep_draft(id.clone(), draft.clone(), cx);
 
@@ -1339,6 +1333,17 @@ impl DashboardState {
         self.mine(id).is_some()
     }
 
+    /// Whether the project has an online documentation page. A page's
+    /// projects all do. On the desktop, only a server project's copy does.
+    /// `None` is a project that does not exist yet: a page will host it,
+    /// this machine will not.
+    pub fn serves_docs(&self, id: Option<&CollectionId>) -> bool {
+        if self.scope.is_some() {
+            return true;
+        }
+        id.is_some_and(|id| self.from_server(id))
+    }
+
     /// G1: whether `id` is one of this machine's own projects, which the
     /// signed-in desktop, within reach of its server, may upload.
     pub fn uploads(&self, id: &CollectionId) -> bool {
@@ -1598,15 +1603,22 @@ fn set_draft_describe(draft: &mut Draft, name: String, description: String) {
     }
 }
 
-/// `source` on the draft. A whole draft keeps it on the configuration. A
-/// changes-only one records the settings, other fields as they were.
-fn set_draft_source(draft: &mut Draft, source: Option<ImportSource>) {
+/// `source` on the draft, and whether its online page is public when
+/// `public_docs` is `Some`. A whole draft keeps both on the configuration.
+/// A changes-only one records the settings, other fields as they were.
+fn set_draft_source(draft: &mut Draft, source: Option<ImportSource>, public_docs: Option<bool>) {
     if let Some(config) = draft.config.as_mut() {
         config.settings.source = source;
+        if let Some(public_docs) = public_docs {
+            config.settings.public_docs = public_docs;
+        }
         return;
     }
     let mut settings = draft_settings(draft);
     settings.source = source;
+    if let Some(public_docs) = public_docs {
+        settings.public_docs = public_docs;
+    }
     draft
         .changes
         .ops
@@ -1617,6 +1629,24 @@ fn set_draft_source(draft: &mut Draft, source: Option<ImportSource>) {
     if let Some(outline) = draft.outline.as_mut() {
         outline.settings = settings;
     }
+}
+
+/// Settings to store when the source address or the public page actually
+/// changes. Other fields of `current` stay.
+fn settings_from_source_edit(
+    current: &ProjectSettings,
+    edit: &ProjectSourceEdit,
+    next_source: Option<ImportSource>,
+) -> Option<ProjectSettings> {
+    let public_docs = edit.public_docs.unwrap_or(current.public_docs);
+    if current.source == next_source && current.public_docs == public_docs {
+        return None;
+    }
+    Some(ProjectSettings {
+        source: next_source,
+        public_docs,
+        ..current.clone()
+    })
 }
 
 /// B10: updates `prefs` for a project's source URL change, pruning `had_url`
@@ -2040,6 +2070,7 @@ mod tests {
                     url: Some("https://api.example.com/openapi.json".into()),
                     auto_sync: true,
                     interval_minutes: 30,
+                    public_docs: None,
                 }),
                 cx,
             );
@@ -2050,7 +2081,7 @@ mod tests {
         assert_eq!(collections.len(), 1);
         let id = collections[0].id.clone();
 
-        let (source, prefs) = state
+        let (source, prefs, _) = state
             .read_with(cx, |state, _| state.load_project_source(&id))
             .await
             .expect("load_project_source");
@@ -2090,13 +2121,14 @@ mod tests {
                     url: Some("https://api.example.com/v1/openapi.json".into()),
                     auto_sync: true,
                     interval_minutes: 15,
+                    public_docs: None,
                 }),
                 cx,
             );
         });
         cx.run_until_parked();
 
-        let (source, prefs) = state
+        let (source, prefs, _) = state
             .read_with(cx, |state, _| state.load_project_source(&shop.id))
             .await
             .expect("load_project_source");
@@ -2119,13 +2151,14 @@ mod tests {
                     url: None,
                     auto_sync: false,
                     interval_minutes: 15,
+                    public_docs: None,
                 }),
                 cx,
             );
         });
         cx.run_until_parked();
 
-        let (source_after, prefs_after) = state
+        let (source_after, prefs_after, _) = state
             .read_with(cx, |state, _| state.load_project_source(&shop.id))
             .await
             .expect("load_project_source");
@@ -2151,6 +2184,7 @@ mod tests {
                     url: Some("https://api.example.com/openapi.json".into()),
                     auto_sync: true,
                     interval_minutes: 60,
+                    public_docs: None,
                 }),
                 cx,
             );
@@ -2159,7 +2193,7 @@ mod tests {
 
         assert_eq!(state.read_with(cx, |state, _| state.unsynced(&shop.id)), Some(false));
         assert_eq!(state.read_with(cx, |state, _| state.api_count(&shop.id)), Some(2));
-        let (source, prefs) = state
+        let (source, prefs, _) = state
             .read_with(cx, |state, _| state.load_project_source(&shop.id))
             .await
             .expect("load_project_source");
@@ -2171,5 +2205,165 @@ mod tests {
             prefs.auto_sync_sources.get("https://api.example.com/openapi.json"),
             Some(&60)
         );
+    }
+
+    #[gpui_kit::test]
+    async fn public_docs_follows_the_home_editor(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let shop = project(&storage, "shop").await;
+        storage
+            .tree()
+            .set_project_settings(
+                shop.id.clone(),
+                ProjectSettings {
+                    auth: cyberapi_core::auth::Auth::Bearer { token: "kept".into() },
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("auth");
+        let state = cx.new(|cx| DashboardState::new(storage.clone(), None, None, cx));
+        cx.run_until_parked();
+
+        let publish = |public_docs: Option<bool>, url: Option<&str>| ProjectSourceEdit {
+            url: url.map(str::to_string),
+            auto_sync: false,
+            interval_minutes: 15,
+            public_docs,
+        };
+        state.update(cx, |state, cx| {
+            state.update_with_source(shop.id.clone(), edit("shop"), Some(publish(Some(true), None)), cx);
+        });
+        cx.run_until_parked();
+        let settings = storage
+            .tree()
+            .outline(shop.id.clone())
+            .await
+            .expect("outline")
+            .outline
+            .settings;
+        assert!(settings.public_docs);
+        assert!(matches!(settings.auth, cyberapi_core::auth::Auth::Bearer { .. }));
+
+        // A later edit that does not mention the flag leaves it, and a rename does too.
+        state.update(cx, |state, cx| {
+            state.update_with_source(
+                shop.id.clone(),
+                edit("shop"),
+                Some(publish(None, Some("https://api.example.com/openapi.json"))),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.update(shop.id.clone(), edit("renamed"), cx));
+        cx.run_until_parked();
+        let settings = storage
+            .tree()
+            .outline(shop.id.clone())
+            .await
+            .expect("outline")
+            .outline
+            .settings;
+        assert!(settings.public_docs);
+        assert_eq!(
+            settings.source.as_ref().map(|source| source.url.as_str()),
+            Some("https://api.example.com/openapi.json")
+        );
+        assert!(matches!(settings.auth, cyberapi_core::auth::Auth::Bearer { .. }));
+
+        state.update(cx, |state, cx| {
+            state.update_with_source(
+                shop.id.clone(),
+                edit("renamed"),
+                Some(publish(Some(false), Some("https://api.example.com/openapi.json"))),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let settings = storage
+            .tree()
+            .outline(shop.id.clone())
+            .await
+            .expect("outline")
+            .outline
+            .settings;
+        assert!(!settings.public_docs);
+        assert_eq!(
+            settings.source.as_ref().map(|source| source.url.as_str()),
+            Some("https://api.example.com/openapi.json")
+        );
+        assert!(matches!(settings.auth, cyberapi_core::auth::Auth::Bearer { .. }));
+    }
+
+    #[gpui_kit::test]
+    async fn a_new_project_can_publish_its_page_without_a_source(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let state = cx.new(|cx| DashboardState::new(storage.clone(), None, None, cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            state.create_with_source(
+                NewCollection {
+                    name: "Published".into(),
+                    ..Default::default()
+                },
+                None,
+                Some(ProjectSourceEdit {
+                    url: None,
+                    auto_sync: false,
+                    interval_minutes: 15,
+                    public_docs: Some(true),
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let collections = state.read_with(cx, |state, _| state.collections().to_vec());
+        assert_eq!(collections.len(), 1);
+        let settings = storage
+            .tree()
+            .outline(collections[0].id.clone())
+            .await
+            .expect("outline")
+            .outline
+            .settings;
+        assert!(settings.public_docs);
+        assert!(settings.source.is_none());
+    }
+
+    #[gpui_kit::test]
+    async fn web_draft_keeps_public_docs_off_the_server_until_sync(cx: &mut TestAppContext) {
+        let server = MemoryStore::new().storage();
+        let shop = project(&server, "shop").await;
+        let state = cx.new(|cx| DashboardState::new(server.clone(), Some(READER.into()), None, cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            state.update_with_source(
+                shop.id.clone(),
+                edit("shop-draft"),
+                Some(ProjectSourceEdit {
+                    url: None,
+                    auto_sync: false,
+                    interval_minutes: 15,
+                    public_docs: Some(true),
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let (_, _, public_docs) = state
+            .read_with(cx, |state, _| state.load_project_source(&shop.id))
+            .await
+            .expect("load");
+        assert!(public_docs);
+        assert_eq!(state.read_with(cx, |state, _| state.unsynced(&shop.id)), Some(false));
+        let on_server = server
+            .tree()
+            .outline(shop.id.clone())
+            .await
+            .expect("outline")
+            .outline
+            .settings
+            .public_docs;
+        assert!(!on_server);
     }
 }

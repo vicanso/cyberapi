@@ -1327,6 +1327,13 @@ pub(crate) struct ProjectEditorView {
     existing_prefs: WorkspacePrefs,
     pub(crate) want_auto_sync: Option<bool>,
     pub(crate) want_sync_interval: Option<u32>,
+    /// The project's stored flag, once read. A new project starts private.
+    existing_public_docs: bool,
+    /// The reader's choice, once they move the checkbox.
+    want_public_docs: Option<bool>,
+    /// An existing project's flag has been read. Until then a save does not
+    /// write one, so opening and saving at once cannot turn a public page off.
+    public_loaded: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -1387,10 +1394,12 @@ impl ProjectEditorView {
         if let Some(collection) = &existing {
             let fut = state.read(cx).load_project_source(&collection.id);
             cx.spawn_in(window, async move |this, cx| {
-                if let Ok((loaded_source, prefs)) = cx.background_spawn(fut).await {
+                if let Ok((loaded_source, prefs, public_docs)) = cx.background_spawn(fut).await {
                     let _ = this.update_in(cx, |this, window, cx| {
                         this.existing_source = loaded_source.clone();
                         this.existing_prefs = prefs;
+                        this.existing_public_docs = public_docs;
+                        this.public_loaded = true;
                         if !this.source_touched
                             && let Some(url) = loaded_source.map(|s| s.url)
                         {
@@ -1405,6 +1414,7 @@ impl ProjectEditorView {
             .detach();
         }
 
+        let public_loaded = existing.is_none();
         Self {
             state,
             existing,
@@ -1421,8 +1431,22 @@ impl ProjectEditorView {
             existing_prefs: WorkspacePrefs::default(),
             want_auto_sync: None,
             want_sync_interval: None,
+            existing_public_docs: false,
+            want_public_docs: None,
+            public_loaded,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The online page exists for a server project. A new desktop project
+    /// has one only when it is created on a team, which is what the team
+    /// picker holds.
+    fn offers_public_docs(&self, cx: &App) -> bool {
+        let state = self.state.read(cx);
+        if let Some(collection) = &self.existing {
+            return state.serves_docs(Some(&collection.id));
+        }
+        state.serves_docs(None) || self.team.borrow().is_some()
     }
 
     pub(crate) fn effective_sync(&self, url: &str) -> (bool, u32) {
@@ -1466,10 +1490,16 @@ impl ProjectEditorView {
             .as_deref()
             .map(|url| self.effective_sync(url))
             .unwrap_or((false, DEFAULT_SOURCE_SYNC_MINUTES));
+        let public_docs = if self.offers_public_docs(cx) && (self.public_loaded || self.want_public_docs.is_some()) {
+            Some(self.want_public_docs.unwrap_or(self.existing_public_docs))
+        } else {
+            None
+        };
         let source_edit = ProjectSourceEdit {
             url: source_url,
             auto_sync,
             interval_minutes,
+            public_docs,
         };
         let existing = self.existing.clone();
         let import = self.import.clone();
@@ -1602,6 +1632,38 @@ impl Render for ProjectEditorView {
                         )
                     }),
             )
+            .when(self.offers_public_docs(cx), |this| {
+                let public_docs = self.want_public_docs.unwrap_or(self.existing_public_docs);
+                let editing = self.existing.is_some();
+                this.child(
+                    v_flex()
+                        .gap_1p5()
+                        .child(div().text_sm().font_medium().child(t!("docs.public_title").to_string()))
+                        .child(
+                            Checkbox::new("project-public-docs")
+                                .checked(public_docs)
+                                .label(t!("docs.public_switch").to_string())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.want_public_docs = Some(!public_docs);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(t!("docs.public_hint").to_string()),
+                        )
+                        .when(editing, |column| {
+                            column.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(t!("docs.public_after_sync").to_string()),
+                            )
+                        }),
+                )
+            })
             .when_some(holds, |this, holds| {
                 this.child(div().text_sm().text_color(muted).child(holds))
             })
