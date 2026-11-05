@@ -330,5 +330,35 @@ Query、路径参数和请求头的类型、必填、format 和枚举。已完�
 | UI-4 | 工作区项目级变量、全局请求头与项目认证入口可发现性 | S | [`views/workspace/project_title.rs`](../src/views/workspace/project_title.rs)、[`views/workspace/tree_panel.rs`](../src/views/workspace/tree_panel.rs) | 环境变量、自定义变量、全局请求头与项目认证原先只集中在窗口最右上角的设置齿轮 `⚙️` 菜单中。已在工作区标题栏环境选择器菜单和左侧接口树顶部 `⋯`（`tree-more`）菜单中补充环境变量、自定义变量、全局请求头与项目认证直达入口 | 已完成 |
 | UI-5 | 接口树底部留白与长目录名间距微调 | S | [`views/workspace/tree_panel.rs`](../src/views/workspace/tree_panel.rs) | 接口树列表保留底部内边距（`pb_2`），并为目录右侧接口计数增加左外边距与水平内边距（`ml_1` + `px_1`），避免长驼峰目录名与计数贴合过紧 | 已完成 |
 | UI-6 | 首页项目卡片（`DashboardView`）来源绑定状态标识 | S | [`views/dashboard.rs`](../src/views/dashboard.rs)、[`states/dashboard.rs`](../src/states/dashboard.rs) | `DashboardState` 读取并缓存项目绑定的 OpenAPI / 来源地址与定时自动同步间隔（`source_info`），在首页项目卡片标题行显示同步图标（启用定时自动同步时为绿色，悬停提示绑定地址与自动同步周期） | 已完成 |
+| UI-7 | 请求体编辑器 `Ctrl + /`（macOS `⌘/`）切换行注释与发送自动剥离 | S | [`crates/cyberapi-core/src/send.rs`](../crates/cyberapi-core/src/send.rs)、[`views/workspace/request_editor.rs`](../src/views/workspace/request_editor.rs) | 在请求体编辑器与批量文本编辑器中支持 `Ctrl + /` / `⌘/` 切换 `// ` 行注释；JSON 请求体在校验、同步树视图、模板扫描与发送时自动剥离 `//` 行注释及末尾字段被注释后遗留的尾随逗号 | 已完成（0a97cd8） |
+| PERF-5 | `cyberapi-bridge` 启用 `zstd` 与 `gzip` 响应压缩（优先 `zstd`） | S | [`cyberapi-bridge/src/lib.rs`](../cyberapi-bridge/src/lib.rs)、[`cyberapi-bridge/src/static_files.rs`](../cyberapi-bridge/src/static_files.rs) | 全局启用 `CompressionLayer::new().gzip(true).zstd(true)`，当客户端支持 `zstd` 时优先使用 `zstd`（排除 `/v1/send/stream` 流式 `application/x-ndjson`），`web-bundle.sh --release` 同步预生成 `.wasm.zst` | 已完成（1306f3f） |
+
+## 后续优化建议（2026-11-05 整理）
+
+结合公开在线文档（`0fe7f94`）、Web 端首屏加载链路与高频调试场景，按优先级整理以下后续优化项（均不改数据模型）：
+
+### 一、Web 服务与在线文档优化（高优先级）
+
+| 编号 | 优化项 | 规模 | 位置 | 现状问题与优化方案 | 状态 |
+|---|---|---|---|---|---|
+| PERF-6 | `GET /v1/docs/{project}` 的 `304` 提前短路与渲染缓存 | S–M | [`cyberapi-bridge/src/docs.rs`](../cyberapi-bridge/src/docs.rs)、[`crates/cyberapi-store-sql/src/scoped.rs`](../crates/cyberapi-store-sql/src/scoped.rs) | `0fe7f94` 重构后，`published_docs` 与私有文档分支均先从数据库拉取整棵接口树（`tree_data` / `tree().load()`）、变量与环境，最后才在 `served()` 中比对 `If-None-Match` 返回 `304`；且公开文档多访客访问同一 `revision` 时每次重复查库并执行 `html_docs::render`。改为拿到 `collection.revision` 后立即比对 `If-None-Match` 短路返回 `304`，并参照 `mock::RouteCache` 按 `(CollectionId, revision, html_docs::RENDER)` 缓存渲染后的 HTML | 待做 |
+| PERF-7 | 网页版首屏 WASM 流式并行拉取（消除串行瀑布流） | S | [`cyberapi-web/www/index.html`](../cyberapi-web/www/index.html) | 当前首屏先 `await Promise.all([import("/wasm/cyberapi_web.js"), fetch("/fonts/IBMPlexSans.ttf"), appPrefs()])`，等 `cyberapi_web.js` 加载完才发起 `fetch("/wasm/cyberapi_web_bg.wasm")`。将 `fetch(url("/wasm/cyberapi_web_bg.wasm"))` 放进同一个 `Promise.all` 并直接传给 `mod.default({ module_or_path: wasmPromise })` 流式编译，省去一整个 RTT 等待 | 待做 |
+| PERF-8 | 静态字体与图标缓存策略优化及字体产物补齐 | S | [`cyberapi-bridge/src/static_files.rs`](../cyberapi-bridge/src/static_files.rs)、[`scripts/web-bundle.sh`](../scripts/web-bundle.sh) | `static_files::serve` 对全部静态资源统一设置 `Cache-Control: no-cache`，导致 60+ 个 `/assets/icons/*.svg` 与 `/fonts/*.ttf` 每次打开都触发条件重验证请求；且 `web-bundle.sh` 仅复制了 `JetBrainsMono-*.ttf`，未同步 `IBMPlexSans.ttf`。对 `/fonts/*` 和 `/assets/icons/*` 设置 `Cache-Control: public, max-age=86400`（配合 `ETag`），对 `/index.html` 与 `/wasm/*` 保持 `no-cache`，并在 `web-bundle.sh` 中补齐 `IBMPlexSans.ttf` | 待做 |
+
+### 二、编辑器与日常调试体验打磨
+
+| 编号 | 优化项 | 规模 | 位置 | 现状问题与优化方案 | 状态 |
+|---|---|---|---|---|---|
+| UI-8 | 参数表（`KvEditor`）支持 `Ctrl + /`（`⌘/`）快捷切换行启用态 | S | [`src/views/kv_editor.rs`](../src/views/kv_editor.rs) | JSON Body 已支持 `Ctrl + /` 注释禁用某行参数；在 `Query`、`Headers`、`Form` 键值表中，当焦点位于某行输入框时按 `Ctrl + /`（`⌘/`）直接切换该行的 `enabled` 勾选状态，统一参数快速开关体验 | 待做 |
+| UI-9 | 请求编辑器内快速查看 `{{变量}}` 当前环境解析值 | S–M | [`src/views/workspace/request_editor.rs`](../src/views/workspace/request_editor.rs) | 发送前核对 `{{VAR}}` 在当前命名环境下的实际值需点开变量弹窗查找。支持在地址栏或请求体中悬停 / 快捷预览当前环境下变量的实际值与来源层级（或未定义提示） | 待做 |
+| F17 | 在线接口文档窄屏自适应与桌面/网页一键导出单文件 HTML 文档 | S | [`crates/cyberapi-core/src/html_docs.rs`](../crates/cyberapi-core/src/html_docs.rs)、[`src/views/workspace/export_dialog.rs`](../src/views/workspace/export_dialog.rs) | `html_docs.rs` 左侧 `.sidebar` 固定 `280px`，补充 `@media (max-width: 860px)` 窄屏/分屏折叠样式；同时在项目导出格式中增加“HTML 文档（`.html`）”，直接复用 `html_docs::render` 让桌面版和未部署 `bridge` 的用户也能一键导出单文件离线接口文档 | 待做 |
+
+### 三、存储同步与工程化维护
+
+| 编号 | 优化项 | 规模 | 位置 | 现状问题与优化方案 | 状态 |
+|---|---|---|---|---|---|
+| PERF-9 | `cyberapi-bridge` 请求体解压支持（`RequestDecompressionLayer`） | S | [`cyberapi-bridge/src/lib.rs`](../cyberapi-bridge/src/lib.rs)、[`crates/cyberapi-store-bridge/src/lib.rs`](../crates/cyberapi-store-bridge/src/lib.rs) | 大型项目执行全量替换（`TreeReplace`）、合并（`TreeMerge`）或 OpenAPI 导入时上行 JSON 可达数 MB。在 `cyberapi-bridge` 启用 `RequestDecompressionLayer`（支持 `zstd` / `gzip`），并在客户端上行大请求体时自动压缩 | 待做 |
+| MAINT-1 | 清理 GitHub Dependabot 依赖安全告警 | S | [`Cargo.lock`](../Cargo.lock) | 排查并升级 GitHub Dependabot 报告的 2 个 moderate 级别依赖包版本 | 待做 |
+
 
 
