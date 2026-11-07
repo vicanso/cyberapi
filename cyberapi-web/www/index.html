@@ -400,14 +400,14 @@
   try {
     const back = (docsReturn = takeDocsReturn());
     const invited = inviteToken ? await acceptInvite(inviteToken) : false;
-    if (!invited && (await api("/v1/session")).status === 401) await signIn();
+    if (!invited && (await api("/v1/session")).status !== 200) await signIn();
     if (back) {
       try {
         sessionStorage.removeItem(DOCS_RETURN);
       } catch {
         // Storage was only a bridge across single sign-on.
       }
-      location.replace(back);
+      location.replace(back + (!inviteToken ? location.hash : ""));
     } else {
       // Signed in: the forms go, and the passwords typed into them.
       for (const id of ["login", "setup", "invite"]) $(id).remove();
@@ -437,10 +437,25 @@
       )
         .then(([regular, bold]) => mod.add_mono_fonts(new Uint8Array(regular), new Uint8Array(bold)))
         .catch((error) => console.warn("JetBrains Mono could not be loaded", error));
-      // A background tab polls the bridge less often.
-      const visibility = () => mod.set_page_visible(!document.hidden);
+      // A background tab polls the bridge less often; returning to a tab
+      // whose session ended reloads to the sign-in form.
+      const checkSession = () => {
+        api("/v1/session")
+          .then((r) => {
+            if (r.status === 401) location.reload();
+          })
+          .catch(() => {});
+      };
+      const visibility = () => {
+        const visible = !document.hidden;
+        mod.set_page_visible(visible);
+        if (visible) checkSession();
+      };
       document.addEventListener("visibilitychange", visibility);
-      visibility();
+      window.addEventListener("pageshow", (event) => {
+        if (event.persisted) checkSession();
+      });
+      mod.set_page_visible(!document.hidden);
     }
   } catch (error) {
     show("loading");

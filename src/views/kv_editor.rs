@@ -24,8 +24,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task, Window, div, px,
-    relative,
+    ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, Window, div, px, relative,
 };
 use rust_i18n::t;
 use std::collections::HashMap;
@@ -412,6 +412,16 @@ impl KvEditor {
         }
     }
 
+    fn toggle_required(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(row) = self.rows.get_mut(index) {
+            row.required = match row.required {
+                Some(true) => Some(false),
+                _ => Some(true),
+            };
+            self.report_later(cx);
+        }
+    }
+
     /// F4.10: the first click asks, the second removes.
     fn remove(&mut self, index: usize, cx: &mut Context<Self>) {
         if index + 1 >= self.rows.len() {
@@ -643,7 +653,7 @@ impl Render for KvEditor {
         let (menu, view) = (self.menu.as_ref(), cx.entity().downgrade());
         let files = self.options.files && (this_build::reads_files() || this_build::picks_page_files());
         let theme = cx.theme();
-        let (border, muted) = (theme.border, theme.muted_foreground);
+        let (border, muted, warning) = (theme.border, theme.muted_foreground, theme.warning);
         // A table: the fields sit in its cells without frames of their own,
         // the lines between the cells drawing the grid.
         let cell = move || div().h_full().flex().items_center().border_l_1().border_color(border);
@@ -732,7 +742,56 @@ impl Render for KvEditor {
                                 .w(relative(0.28))
                                 .min_w_0()
                                 .flex_none()
-                                .child(Input::new(&row.key).small().appearance(false).disabled(fixed_keys)),
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(Input::new(&row.key).small().appearance(false).disabled(fixed_keys)),
+                                )
+                                .when(!blank, |this| {
+                                    let is_required = if fixed_keys {
+                                        row.required.unwrap_or(true)
+                                    } else {
+                                        row.required == Some(true)
+                                    };
+                                    let req_label = if is_required {
+                                        t!("docs.required")
+                                    } else {
+                                        t!("docs.optional")
+                                    };
+                                    let tip = if row.schema_type.trim().is_empty() {
+                                        req_label.to_string()
+                                    } else {
+                                        format!("{} · {req_label}", row.schema_type.trim())
+                                    };
+                                    this.child(
+                                        div()
+                                            .id(("kv-required", index))
+                                            .flex_none()
+                                            .px_1p5()
+                                            .text_xs()
+                                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                            .text_color(if is_required { warning } else { muted.opacity(0.35) })
+                                            .when(!fixed_keys, |el| {
+                                                el.cursor_pointer()
+                                                    .hover(|s| {
+                                                        s.text_color(if is_required {
+                                                            warning
+                                                        } else {
+                                                            muted.opacity(0.8)
+                                                        })
+                                                    })
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.toggle_required(index, cx);
+                                                    }))
+                                            })
+                                            .tooltip(move |window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                                    .build(window, cx)
+                                            })
+                                            .child("*"),
+                                    )
+                                }),
                         )
                         .child(
                             cell()

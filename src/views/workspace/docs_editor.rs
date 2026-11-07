@@ -494,17 +494,36 @@ impl DocsEditor {
     }
 
     fn render_inputs(&self, matched: Option<&HttpRequest>, editable: bool, cx: &mut Context<Self>) -> AnyElement {
-        fn find_source_desc<'a>(list: &'a [KvParam], key: &str, ignore_case: bool) -> Option<&'a str> {
-            list.iter()
-                .find(|kv| {
-                    !kv.description.trim().is_empty()
-                        && if ignore_case {
-                            kv.key.trim().eq_ignore_ascii_case(key.trim())
-                        } else {
-                            kv.key.trim() == key.trim()
-                        }
-                })
-                .map(|kv| kv.description.as_str())
+        fn find_source_param<'a>(list: &'a [KvParam], key: &str, ignore_case: bool) -> Option<&'a KvParam> {
+            list.iter().find(|kv| {
+                if ignore_case {
+                    kv.key.trim().eq_ignore_ascii_case(key.trim())
+                } else {
+                    kv.key.trim() == key.trim()
+                }
+            })
+        }
+
+        fn with_source_facts<'a>(own: &KvParam, source: Option<&'a KvParam>) -> (KvParam, Option<&'a str>) {
+            let mut kv = own.clone();
+            if let Some(src) = source {
+                if kv.schema_type.is_empty() {
+                    kv.schema_type = src.schema_type.clone();
+                }
+                if kv.required.is_none() {
+                    kv.required = src.required;
+                }
+                if kv.format.is_empty() {
+                    kv.format = src.format.clone();
+                }
+                if kv.schema_enum.is_empty() {
+                    kv.schema_enum = src.schema_enum.clone();
+                }
+            }
+            let fallback = source
+                .map(|src| src.description.as_str())
+                .filter(|desc| !desc.trim().is_empty());
+            (kv, fallback)
         }
 
         let theme = cx.theme();
@@ -525,20 +544,22 @@ impl DocsEditor {
                     enabled: true,
                     ..Default::default()
                 });
-            let fallback = matched.and_then(|m| find_source_desc(&m.variables, name, false));
+            let source = matched.and_then(|m| find_source_param(&m.variables, name, false));
+            let (kv, fallback) = with_source_facts(&kv, source);
             rows.push(Self::render_flat_param(flat_idx, "path", &kv, fallback, false, cx));
             flat_idx += 1;
         }
         for kv in request.query.iter().filter(|kv| !kv.key.trim().is_empty()) {
-            let fallback = matched.and_then(|m| find_source_desc(&m.query, &kv.key, false));
-            rows.push(Self::render_flat_param(flat_idx, "query", kv, fallback, false, cx));
+            let source = matched.and_then(|m| find_source_param(&m.query, &kv.key, false));
+            let (kv, fallback) = with_source_facts(kv, source);
+            rows.push(Self::render_flat_param(flat_idx, "query", &kv, fallback, false, cx));
             flat_idx += 1;
         }
         if let Some(m) = matched {
             for kv in m
                 .query
                 .iter()
-                .filter(|kv| !kv.key.trim().is_empty() && !kv.description.trim().is_empty())
+                .filter(|kv| !kv.key.trim().is_empty() && (!kv.description.trim().is_empty() || kv.schema_recorded()))
             {
                 if !request.query.iter().any(|own| own.key.trim() == kv.key.trim()) {
                     rows.push(Self::render_flat_param(flat_idx, "query", kv, None, true, cx));
@@ -547,15 +568,16 @@ impl DocsEditor {
             }
         }
         for kv in request.headers.iter().filter(|kv| !kv.key.trim().is_empty()) {
-            let fallback = matched.and_then(|m| find_source_desc(&m.headers, &kv.key, true));
-            rows.push(Self::render_flat_param(flat_idx, "header", kv, fallback, false, cx));
+            let source = matched.and_then(|m| find_source_param(&m.headers, &kv.key, true));
+            let (kv, fallback) = with_source_facts(kv, source);
+            rows.push(Self::render_flat_param(flat_idx, "header", &kv, fallback, false, cx));
             flat_idx += 1;
         }
         if let Some(m) = matched {
             for kv in m
                 .headers
                 .iter()
-                .filter(|kv| !kv.key.trim().is_empty() && !kv.description.trim().is_empty())
+                .filter(|kv| !kv.key.trim().is_empty() && (!kv.description.trim().is_empty() || kv.schema_recorded()))
             {
                 if !request
                     .headers
@@ -580,7 +602,9 @@ impl DocsEditor {
                 } else {
                     "form"
                 };
-                let fallback = find_source_desc(&matched_form, &kv.key, false);
+                let fallback = find_source_param(&matched_form, &kv.key, false)
+                    .map(|src| src.description.as_str())
+                    .filter(|desc| !desc.trim().is_empty());
                 let shown = shown_file(kv);
                 rows.push(Self::render_flat_param(flat_idx, place, &shown, fallback, false, cx));
                 flat_idx += 1;
