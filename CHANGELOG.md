@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.6.1](https://github.com/vicanso/cyberapi/compare/v0.5.0..v0.6.1) - 2026-11-08
+
+### ⛰️  Features
+
+- *(bridge)* Enable zstd and gzip response compression with zstd preferred - ([1306f3f](https://github.com/vicanso/cyberapi/commit/1306f3f4209ab86c4326ecdfa22e497a144659a4))
+- *(directory)* Support marking accounts as demo to disallow password changes - ([1f28db0](https://github.com/vicanso/cyberapi/commit/1f28db0ea594349c3fb5088a24e6db3d91cc7119))
+- *(template)* Resolve bare {{variable}} placeholders and Postman dynamic variables - ([d90644d](https://github.com/vicanso/cyberapi/commit/d90644d00f896676df43ab83c508ee08da3b4bfc))
+- *(update)* Stream download progress, parse release API assets, and auto-relaunch on install - ([247bd27](https://github.com/vicanso/cyberapi/commit/247bd270e64ea9424ca818d7e019e74a5f4e82e9))
+- Show and toggle parameter required status and recheck web session on focus - ([a9f17c3](https://github.com/vicanso/cyberapi/commit/a9f17c3dc304aba5b99406f00e5df2e31b428b63))
+- Set public preview from the home Edit project dialog - ([3ba0d9b](https://github.com/vicanso/cyberapi/commit/3ba0d9b999a9d4e464e755717ca801fc334d8428))
+- Let a project publish its online documentation - ([0fe7f94](https://github.com/vicanso/cyberapi/commit/0fe7f943532288355dbd7ebc595903bc849f8c96))
+- Toggle line comments in request editors and strip commented JSON trailing commas - ([0a97cd8](https://github.com/vicanso/cyberapi/commit/0a97cd82fafecb1af68d060d84b5859e45b184ca))
+- Refine workspace tabs, parameter rows, menus, and card source badges - ([0b4d46e](https://github.com/vicanso/cyberapi/commit/0b4d46e266ab3c8641bd78ac0dd7d6c57ff28135))
+- Make the online docs page searchable and stop recursive schemas - ([556b06a](https://github.com/vicanso/cyberapi/commit/556b06aa339e0cdcc9dc7cd2620c68c83d1bba44))
+- Open a project from its outline and sync the edits - ([1d247ef](https://github.com/vicanso/cyberapi/commit/1d247efc9746bd14ddbe3199b864da965f6415be))
+
+### 🐛 Bug Fixes
+
+- *(web)* Keep wasm name section for wasm-bindgen in web-release and version asset URLs - ([3bea632](https://github.com/vicanso/cyberapi/commit/3bea6325a2dd88db4b4bdf8dafb65baa4039c5d6))
+
+### 📚 Documentation
+
+- Add live web demo link and credentials to README - ([628df45](https://github.com/vicanso/cyberapi/commit/628df457de7fb931e9d6a0093756b249650027a2))
+- Record follow-up optimization plan in issue-plan.md - ([523e1e8](https://github.com/vicanso/cyberapi/commit/523e1e8667f4fd616ede98cc5c18178f2ecc4b7b))
+- Update document - ([4185d88](https://github.com/vicanso/cyberapi/commit/4185d88b38ff9067c00d0a784555ef4faf13dc99))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(package)* Install binaryen version_132 from GitHub releases for web build - ([5c54030](https://github.com/vicanso/cyberapi/commit/5c54030f379e1712aa618087c1aeace5a2e14f5b))
+
 ## [0.6.0](https://github.com/vicanso/cyberapi/compare/v0.5.0..v0.6.0) - 2026-11-08
 
 ### ⛰️  Features
