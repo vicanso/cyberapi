@@ -117,8 +117,6 @@ jobs:
 
   web:
     name: browser build (Linux bridge)
-    # 24.04 for its binaryen (108): 22.04's is too old for the module. The
-    # bridge binary then asks for glibc 2.39.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -127,7 +125,14 @@ jobs:
       - name: system libraries and wasm-opt
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang pkg-config libssl-dev binaryen
+          sudo apt-get install -y --no-install-recommends clang pkg-config libssl-dev
+          # From GitHub, not apt: Ubuntu's binaryen (108) is older than the
+          # wasm a current rustc / wasm-bindgen emits.
+          BINARYEN_VERSION=version_132
+          curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-$(uname -m)-linux.tar.gz" \
+            | sudo tar -xz -C /opt
+          sudo ln -sf "/opt/binaryen-${BINARYEN_VERSION}/bin/wasm-opt" /usr/local/bin/wasm-opt
+          wasm-opt --version
       - name: toolchains
         run: |
           rustup show active-toolchain || rustup toolchain install
