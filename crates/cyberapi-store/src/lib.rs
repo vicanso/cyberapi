@@ -381,6 +381,8 @@ pub struct AccountEdit {
     pub display_name: String,
     pub admin: bool,
     pub disabled: bool,
+    #[serde(default)]
+    pub demo: bool,
 }
 
 /// Accounts, teams and who has which project (`docs/architecture.md` §9.4):

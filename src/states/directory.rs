@@ -318,8 +318,12 @@ impl DirectoryState {
             self.directory.update_account(account, edit),
             |this, result, cx| match result {
                 Ok(updated) => {
+                    let is_me = this.me.as_ref().is_some_and(|me| me.account.id == updated.id);
                     if let Some(found) = this.accounts.iter_mut().find(|found| found.id == updated.id) {
                         *found = updated;
+                    }
+                    if is_me {
+                        this.teams_changed(cx);
                     }
                     cx.notify();
                 }

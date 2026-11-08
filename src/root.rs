@@ -572,6 +572,7 @@ fn discard_item(menu: PopupMenu, workspace: WeakEntity<WorkspaceState>, cx: &App
 fn account_items(menu: PopupMenu, cx: &App) -> PopupMenu {
     let me = AppStore::global(cx).state().read(cx).me().map(|me| me.account.clone());
     let admin = me.as_ref().is_some_and(|me| me.admin);
+    let demo = me.as_ref().is_some_and(|me| me.demo);
     let menu = match &me {
         Some(me) => menu.separator().item(
             PopupMenuItem::new(t!("account.signed_in_as", name = me.label()).to_string())
@@ -602,6 +603,7 @@ fn account_items(menu: PopupMenu, cx: &App) -> PopupMenu {
     .item(
         PopupMenuItem::new(t!("account.change_password").to_string())
             .icon(Icons::KeyRound)
+            .disabled(demo)
             .on_click(|_, window, cx| open_password_dialog(window, cx)),
     )
     .item(

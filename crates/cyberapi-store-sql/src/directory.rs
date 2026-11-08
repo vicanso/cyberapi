@@ -44,7 +44,7 @@ fn flag(row: &AnyRow, index: usize) -> Result<bool, StoreError> {
     Ok(row.try_get::<i32, _>(index).map_err(db)? != 0)
 }
 
-/// `id, name, display_name, admin, disabled` from `start`.
+/// `id, name, display_name, admin, disabled, demo` from `start`.
 fn account_info(row: &AnyRow, start: usize) -> Result<AccountInfo, StoreError> {
     Ok(AccountInfo {
         id: AccountId::new(rows::text(row, start)?),
@@ -52,6 +52,7 @@ fn account_info(row: &AnyRow, start: usize) -> Result<AccountInfo, StoreError> {
         display_name: rows::text(row, start + 2)?,
         admin: flag(row, start + 3)?,
         disabled: flag(row, start + 4)?,
+        demo: flag(row, start + 5)?,
     })
 }
 
@@ -268,7 +269,7 @@ impl DirectoryStore for Scoped {
                 .map(|row| {
                     Ok(Member {
                         account: account_info(row, 0)?,
-                        role: team_role(&rows::text(row, 5)?),
+                        role: team_role(&rows::text(row, 6)?),
                     })
                 })
                 .collect::<Result<Vec<_>, StoreError>>()?;
@@ -505,6 +506,7 @@ impl DirectoryStore for Scoped {
                 .bind(edit.display_name.trim().to_string())
                 .bind(i32::from(edit.admin))
                 .bind(i32::from(edit.disabled))
+                .bind(i32::from(edit.demo))
                 .bind(account.as_str().to_string())
                 .execute(&mut *conn)
                 .await
@@ -558,6 +560,9 @@ impl DirectoryStore for Scoped {
                 .await
                 .map_err(db)?
                 .ok_or_else(|| StoreError::not_found(Entity::Account, &this.account))?;
+            if flag(&row, 1)? {
+                return Err(refused(Refusal::DemoAccount));
+            }
             let stored = rows::text(&row, 0)?;
             let passwords = this.store.passwords.clone();
             let matches = tokio::task::spawn_blocking(move || passwords.verify(&stored, &current))

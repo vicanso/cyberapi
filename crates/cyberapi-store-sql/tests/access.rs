@@ -565,6 +565,7 @@ async fn oidc_links(variable: &str) {
                 display_name: "Ada".into(),
                 admin: false,
                 disabled: true,
+                demo: false,
             },
         )
         .await
@@ -807,6 +808,7 @@ async fn directory(variable: &str) {
         display_name: "Dave".into(),
         admin: false,
         disabled,
+        demo: false,
     };
     refused(
         alice.update_account(dave.id.clone(), edit(true)).await,
@@ -850,6 +852,26 @@ async fn directory(variable: &str) {
         .expect("change");
     let (_, hash) = store.find_login(&dave_name).await.expect("find").expect("dave");
     assert_eq!(hash, "plain:another pass");
+
+    let demo = root
+        .update_account(
+            dave.id.clone(),
+            AccountEdit {
+                display_name: "Dave".into(),
+                admin: false,
+                disabled: false,
+                demo: true,
+            },
+        )
+        .await
+        .expect("mark demo");
+    assert!(demo.demo);
+    refused(
+        dave_directory
+            .change_password("another pass".into(), "blocked pass".into())
+            .await,
+        Refusal::DemoAccount,
+    );
 }
 
 #[tokio::test]

@@ -29,6 +29,10 @@ pub struct AccountInfo {
     pub admin: bool,
     /// Cannot sign in.
     pub disabled: bool,
+    /// A demo account: signs in, but cannot change its own password (an
+    /// administrator can still reset it).
+    #[serde(default)]
+    pub demo: bool,
 }
 
 impl AccountInfo {

@@ -117,11 +117,12 @@ impl AccountsEditor {
         )
     }
 
-    fn edit(&mut self, account: &AccountInfo, admin: bool, disabled: bool, cx: &mut Context<Self>) {
+    fn edit(&mut self, account: &AccountInfo, admin: bool, disabled: bool, demo: bool, cx: &mut Context<Self>) {
         let edit = AccountEdit {
             display_name: account.display_name.clone(),
             admin,
             disabled,
+            demo,
         };
         let id = account.id.clone();
         self.state.update(cx, |state, cx| state.update_account(id, edit, cx));
@@ -142,11 +143,13 @@ impl Render for AccountsEditor {
             .child(div().w(px(180.)).child(t!("accounts.name").to_string()))
             .child(div().flex_1().child(t!("accounts.display_name").to_string()))
             .child(div().w(px(110.)).child(t!("accounts.admin").to_string()))
+            .child(div().w(px(80.)).child(t!("accounts.demo").to_string()))
             .child(div().w(px(80.)).child(t!("accounts.disabled").to_string()))
             .child(div().w(px(130.)));
         let rows = accounts.into_iter().enumerate().map(|(index, account)| {
             let yourself = me.as_ref() == Some(&account.id);
-            let (for_admin, for_disabled, for_reset) = (account.clone(), account.clone(), account.clone());
+            let (for_admin, for_demo, for_disabled, for_reset) =
+                (account.clone(), account.clone(), account.clone(), account.clone());
             h_flex()
                 .id(("account", index))
                 .gap_2()
@@ -169,9 +172,21 @@ impl Render for AccountsEditor {
                             .disabled(yourself)
                             .on_click(cx.listener(move |this, checked: &bool, _, cx| {
                                 let account = for_admin.clone();
-                                this.edit(&account, *checked, account.disabled, cx);
+                                this.edit(&account, *checked, account.disabled, account.demo, cx);
                             })),
                     ),
+                )
+                .child(
+                    div()
+                        .w(px(80.))
+                        .child(
+                            Checkbox::new(("account-demo", index))
+                                .checked(account.demo)
+                                .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                    let account = for_demo.clone();
+                                    this.edit(&account, account.admin, account.disabled, *checked, cx);
+                                })),
+                        ),
                 )
                 .child(
                     div().w(px(80.)).child(
@@ -180,7 +195,7 @@ impl Render for AccountsEditor {
                             .disabled(yourself)
                             .on_click(cx.listener(move |this, checked: &bool, _, cx| {
                                 let account = for_disabled.clone();
-                                this.edit(&account, account.admin, *checked, cx);
+                                this.edit(&account, account.admin, *checked, account.demo, cx);
                             })),
                     ),
                 )

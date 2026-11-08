@@ -49,6 +49,7 @@ impl Bridge {
                 display_name: "Alice".into(),
                 admin: false,
                 disabled: false,
+                demo: false,
             },
             teams: vec![Team {
                 id: TeamId::new("team"),

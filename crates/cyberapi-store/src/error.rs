@@ -125,6 +125,8 @@ pub enum Refusal {
     BadAccountName,
     PasswordTooShort,
     WrongPassword,
+    /// A demo account cannot change its own password.
+    DemoAccount,
     /// An administrator cannot disable or demote themselves.
     NotYourself,
     /// The invitation was used, revoked or ran out — or never was

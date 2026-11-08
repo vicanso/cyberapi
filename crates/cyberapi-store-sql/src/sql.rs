@@ -168,11 +168,12 @@ pub const GRANT_DELETE: &str =
 
 // ---- the directory (§9.4) -----------------------------------------------------
 
-pub const ACCOUNT_INFO: &str = "SELECT id, name, display_name, admin, disabled FROM accounts WHERE id = $1";
-pub const ACCOUNTS_ALL: &str = "SELECT id, name, display_name, admin, disabled FROM accounts";
+pub const ACCOUNT_INFO: &str = "SELECT id, name, display_name, admin, disabled, demo FROM accounts WHERE id = $1";
+pub const ACCOUNTS_ALL: &str = "SELECT id, name, display_name, admin, disabled, demo FROM accounts";
 pub const ACCOUNT_NAME_COUNT: &str = "SELECT COUNT(*) FROM accounts WHERE name = $1";
-pub const ACCOUNT_UPDATE: &str = "UPDATE accounts SET display_name = $1, admin = $2, disabled = $3 WHERE id = $4";
-pub const ACCOUNT_PASSWORD: &str = "SELECT password_hash FROM accounts WHERE id = $1";
+pub const ACCOUNT_UPDATE: &str =
+    "UPDATE accounts SET display_name = $1, admin = $2, disabled = $3, demo = $4 WHERE id = $5";
+pub const ACCOUNT_PASSWORD: &str = "SELECT password_hash, demo FROM accounts WHERE id = $1";
 pub const ACCOUNT_SET_PASSWORD: &str = "UPDATE accounts SET password_hash = $1 WHERE id = $2";
 pub const SESSIONS_OF_DELETE: &str = "DELETE FROM sessions WHERE account = $1";
 pub const INVITE_INSERT: &str = "INSERT INTO invites \
@@ -225,7 +226,7 @@ pub const TEAM_DELETE: &str = "DELETE FROM teams WHERE id = $1";
 pub const TEAM_GRANTS_DELETE: &str = "DELETE FROM collection_grants WHERE grantee_kind = 'team' AND grantee = $1";
 pub const TEAM_PROJECT_COUNT: &str = "SELECT COUNT(*) FROM collections WHERE owner_team = $1";
 pub const TEAM_OWNER_COUNT: &str = "SELECT COUNT(*) FROM team_members WHERE team = $1 AND role = 'owner'";
-pub const TEAM_MEMBERS: &str = "SELECT a.id, a.name, a.display_name, a.admin, a.disabled, tm.role \
+pub const TEAM_MEMBERS: &str = "SELECT a.id, a.name, a.display_name, a.admin, a.disabled, a.demo, tm.role \
     FROM team_members tm JOIN accounts a ON a.id = tm.account WHERE tm.team = $1";
 /// A project's grants, with what each grantee is called.
 pub const GRANTS_OF: &str = "SELECT g.grantee_kind, g.grantee, g.role, a.name, a.display_name, t.name \
