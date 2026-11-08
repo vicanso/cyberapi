@@ -118,7 +118,7 @@ pub fn compare(old: &str, new: &str) -> Compared {
         }
         next = last.old_range().end;
     }
-    let lines = diff.old_slices().len();
+    let lines = diff.old_len();
     if !compared.rows.is_empty() && lines > next {
         compared.rows.push(Row::Folded(lines - next));
     }

@@ -41,7 +41,7 @@ repository = "https://github.com/vicanso/cyberapi"
 # platform (`gpui_kit::platform`, and `gpui_kit::web` on wasm), the component
 # library (`gpui_kit::component`) and its icons (`gpui_kit::assets`). It pins
 # the `gpui-pre-*` family itself, so there is no second version to keep in step.
-gpui-kit = "0.8.1"
+gpui-kit = "0.9.0"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 # The in-tree crates. `crates/*` compile for wasm as well as natively.
@@ -52,7 +52,7 @@ cyberapi-store-sql = { path = "crates/cyberapi-store-sql" }
 cyberapi-store-bridge = { path = "crates/cyberapi-store-bridge" }
 cyberapi-http = { path = "crates/cyberapi-http" }
 cyberapi-service = { path = "crates/cyberapi-service" }
-async-lock = "3.4.2"
+async-lock = "3.5.0"
 base64 = "0.23.1"
 # Parsing and formatting only: what "now" is comes from the caller, so no
 # `clock` feature and nothing that needs a wasm time source.
@@ -83,7 +83,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 # YAML imports (#59): pure Rust, so it builds for a page too, and it does
 # not panic on what it is given; an alias bomb stops at its limits.
-serde-saphyr = "2.0.0"
+serde-saphyr = "2.1.1"
 # The response filter (#63): RFC 9535 JSONPath. Pure Rust; unlike
 # `serde_json_path` it needs no `inventory`, whose constructors a page may
 # not run.
@@ -95,7 +95,7 @@ regex = "1.13.1"
 jsonschema = { version = "0.60.2", default-features = false }
 # D4's comparison of two responses. Pure Rust, already in the tree; given no
 # timeout it reads no clock, which a page has not.
-similar = { version = "2.7.0", default-features = false, features = ["text"] }
+similar = { version = "3.2.1", default-features = false, features = ["text"] }
 sha2 = "0.11.1"
 # D7's sha1() and hmacSha1(): pure Rust, the same family as sha2.
 sha1 = "0.11.0"
@@ -117,7 +117,7 @@ sqlx = { version = "0.9.0", default-features = false, features = [
 sys-locale = "0.3.2"
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time"] }
-toml = "1.1.8"
+toml = "1.2.1"
 # The desktop's database: an in-process engine that reads and writes the
 # SQLite format, so the Tauri app's `my_db.db` opens as it is. Without the
 # default features, which install mimalloc as the process's global allocator.
@@ -125,7 +125,7 @@ turso = { version = "0.8.3", default-features = false }
 url = "2.5.8"
 # The desktop's backups (M13): the old app's zip of JSON tables, deflated.
 # Pure Rust zlib, and none of the other methods.
-zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.4.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # Record ids. In a page `generate` reads the browser's clock and, with
 # getrandom's `wasm_js` (`cyberapi-store`), its crypto.
 ulid = "3.0.0"
