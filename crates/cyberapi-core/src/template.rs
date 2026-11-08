@@ -310,13 +310,34 @@ pub fn parse(text: &str) -> Vec<Expr> {
 }
 
 fn parse_inner(whole: &str, inner: &str) -> Option<Expr> {
-    let open = inner.find('(')?;
+    let Some(open) = inner.find('(') else {
+        return parse_dollar_var(whole, inner.trim());
+    };
     let close = open + 1 + inner[open + 1..].find(')')?;
     let names = format!("{}{}", &inner[..open], &inner[close + 1..]);
     Some(Expr {
         text: whole.to_string(),
         chain: names.split('.').map(str::to_string).collect(),
         params: split_params(&inner[open + 1..close]),
+    })
+}
+
+/// Postman / HTTP client built-in dynamic variables (`{{$guid}}`,
+/// `{{$timestamp}}`, `{{$randomInt}}`, …) mapped to template functions.
+fn parse_dollar_var(whole: &str, trimmed: &str) -> Option<Expr> {
+    let (chain, params) = match trimmed {
+        "$guid" | "$uuid" | "$randomUUID" | "$random.uuid" => (vec!["uuid".into()], vec!["".into()]),
+        "$timestamp" => (vec!["timestamp".into()], vec!["".into()]),
+        "$isoTimestamp" => (vec!["now".into()], vec!["iso".into(), "utc".into()]),
+        "$randomInt" => (vec!["random".into()], vec!["0".into(), "1000".into()]),
+        "$randomAlphaNumeric" => (vec!["randomString".into()], vec!["1".into()]),
+        "$randomString" => (vec!["randomString".into()], vec!["".into()]),
+        _ => return None,
+    };
+    Some(Expr {
+        text: whole.to_string(),
+        chain,
+        params,
     })
 }
 
@@ -424,8 +445,14 @@ impl Value {
     }
 }
 
+const MAX_VAR_DEPTH: usize = 4;
+
 /// Runs one expression.
 pub fn evaluate(expr: &Expr, inputs: &Inputs, files: &dyn FileReader) -> Result<String, TemplateError> {
+    evaluate_depth(expr, inputs, files, 0)
+}
+
+fn evaluate_depth(expr: &Expr, inputs: &Inputs, files: &dyn FileReader, depth: usize) -> Result<String, TemplateError> {
     let mut value = Value::from_params(&expr.params);
     for name in expr.chain.iter().rev() {
         value = match name.as_str() {
@@ -483,7 +510,14 @@ pub fn evaluate(expr: &Expr, inputs: &Inputs, files: &dyn FileReader) -> Result<
             "value" => {
                 let name = value.clone().into_text();
                 match inputs.custom.iter().find(|(custom, _)| *custom == name) {
-                    Some((_, found)) => Value::Text(found.clone()),
+                    Some((_, found)) => {
+                        let resolved = if found.contains("{{") && depth < MAX_VAR_DEPTH {
+                            render_depth(found, inputs, files, depth + 1)?
+                        } else {
+                            found.clone()
+                        };
+                        Value::Text(resolved)
+                    }
                     None => value,
                 }
             }
@@ -715,11 +749,34 @@ pub(crate) fn json_path<'a>(json: &'a Json, path: &str) -> Option<&'a Json> {
 
 /// `text` with each expression replaced by its result.
 pub fn render(text: &str, inputs: &Inputs, files: &dyn FileReader) -> Result<String, TemplateError> {
-    let mut out = text.to_string();
-    for expr in parse(text) {
-        let result = evaluate(&expr, inputs, files)?;
-        out = out.replacen(&expr.text, &result, 1);
+    render_depth(text, inputs, files, 0)
+}
+
+fn render_depth(text: &str, inputs: &Inputs, files: &dyn FileReader, depth: usize) -> Result<String, TemplateError> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.get(1..).and_then(|tail| tail.find("}}")).map(|at| at + 1) else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        let inner = &after[..end];
+        let whole = &rest[start..start + 2 + end + 2];
+        if let Some(expr) = parse_inner(whole, inner) {
+            out.push_str(&evaluate_depth(&expr, inputs, files, depth)?);
+        } else if let Some((_, found)) = inputs.custom.iter().find(|(custom, _)| custom == inner.trim()) {
+            if found.contains("{{") && depth < MAX_VAR_DEPTH {
+                out.push_str(&render_depth(found, inputs, files, depth + 1)?);
+            } else {
+                out.push_str(found);
+            }
+        } else {
+            out.push_str(whole);
+        }
+        rest = &rest[start + 2 + end + 2..];
     }
+    out.push_str(rest);
     Ok(out)
 }
 
@@ -1080,10 +1137,38 @@ mod tests {
         assert!(!has_dynamic("plain text"));
         assert!(!has_dynamic("{{value(token)}} {{md5(abc)}}"));
         assert!(has_dynamic("{{uuid()}}"));
+        assert!(has_dynamic("{{$uuid}}"));
+        assert!(has_dynamic("{{$guid}}"));
+        assert!(has_dynamic("{{$timestamp}}"));
+        assert!(has_dynamic("{{$randomInt}}"));
         assert!(has_dynamic("{{base64.randomString(8)}}"));
         assert!(has_dynamic("{{random(1, 10)}}"));
         assert!(has_dynamic("{{now()}}"));
         assert!(has_dynamic("{{timestamp()}}"));
         assert!(has_dynamic("{{ts()}}"));
+    }
+
+    #[test]
+    fn bare_variables_and_dollar_builtins_resolve() {
+        let mut inp = inputs();
+        inp.custom
+            .push(("SAMPLE_B64".into(), "{{b64.randomString(16)}}".into()));
+        assert_eq!(render("Bearer {{token}}", &inp, &Files).as_deref(), Ok("Bearer t-1"));
+        assert_eq!(
+            render("{{UNKNOWN}} {{token}}", &inp, &Files).as_deref(),
+            Ok("{{UNKNOWN}} t-1")
+        );
+        assert_eq!(render("{{$timestamp}}", &inp, &Files).as_deref(), Ok("1700000000"));
+        assert_eq!(
+            render("{{$isoTimestamp}}", &inp, &Files).as_deref(),
+            Ok("2023-11-14T22:13:20Z")
+        );
+        assert_eq!(
+            render("{{$guid}}", &inputs(), &Files),
+            render("{{uuid()}}", &inputs(), &Files)
+        );
+        let rendered = render("sid={{SAMPLE_B64}}; Path=/", &inp, &Files).expect("render");
+        assert!(rendered.starts_with("sid=") && rendered.ends_with("; Path=/"));
+        assert!(!rendered.contains("{{SAMPLE_B64}}"));
     }
 }

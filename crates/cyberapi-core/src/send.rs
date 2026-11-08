@@ -338,6 +338,20 @@ pub fn fill_values(request: &HttpRequest, variables: &[Variable]) -> HttpRequest
     filled
 }
 
+/// The enabled custom variables, followed by enabled environment variables
+/// whose names are not already listed.
+pub fn custom_and_env_values(variables: &[Variable]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = enabled(variables, VariableCategory::Custom)
+        .map(|v| (v.name.clone(), v.value.clone()))
+        .collect();
+    for v in enabled(variables, VariableCategory::Environment) {
+        if !out.iter().any(|(name, _)| name == &v.name) {
+            out.push((v.name.clone(), v.value.clone()));
+        }
+    }
+    out
+}
+
 /// The texts whose template functions run: the body, or its form values;
 /// query and header values (not keys, not the URI); the global headers,
 /// the folders' and the auth it signs in with (#66).
@@ -383,6 +397,16 @@ fn templated_texts<'a>(
     texts.extend(global_headers(variables).map(|v| v.value.as_str().into()));
     texts.extend(inherited.sent_headers().map(|kv| kv.value.as_str().into()));
     texts.extend(inherited.auth(&request.auth).templates().into_iter().map(Into::into));
+    for v in variables.iter().filter(|v| {
+        v.enabled
+            && matches!(v.category, VariableCategory::Custom | VariableCategory::Environment)
+            && !v.name.is_empty()
+            && v.value.contains("{{")
+    }) {
+        if texts.iter().any(|t| t.contains("{{") && t.contains(&v.name)) {
+            texts.push(v.value.as_str().into());
+        }
+    }
     texts
 }
 

@@ -772,11 +772,7 @@ pub(crate) async fn prepare(
     let seed = getrandom::u64().unwrap_or(since_epoch.as_nanos() as u64);
     let inputs = Inputs {
         now: since_epoch.as_secs() as i64,
-        custom: variables
-            .iter()
-            .filter(|v| v.enabled && v.category == VariableCategory::Custom)
-            .map(|v| (v.name.clone(), v.value.clone()))
-            .collect(),
+        custom: send::custom_and_env_values(&variables),
         responses: responses
             .iter()
             .filter_map(|response| Some((response.api.to_string(), response.body_json()?)))
@@ -917,11 +913,7 @@ pub(crate) async fn prepare_load(
     let seed = getrandom::u64().unwrap_or(since_epoch.as_nanos() as u64);
     let inputs = Inputs {
         now: since_epoch.as_secs() as i64,
-        custom: variables
-            .iter()
-            .filter(|v| v.enabled && v.category == VariableCategory::Custom)
-            .map(|v| (v.name.clone(), v.value.clone()))
-            .collect(),
+        custom: send::custom_and_env_values(&variables),
         responses: responses
             .iter()
             .filter_map(|response| Some((response.api.to_string(), response.body_json()?)))
