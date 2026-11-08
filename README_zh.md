@@ -59,6 +59,8 @@ https://github.com/user-attachments/assets/47018134-b823-40e1-93f5-a2047711a9c2
 
 ## 网页版（自行部署）
 
+在线试用：**[https://cyberapi.pingap.io/](https://cyberapi.pingap.io/)** —— 账号 `cyberapi`，密码 `cyberapi123123`（演示账号，只读且不能修改密码）。
+
 网页版就是同一个应用编译成 WebAssembly，由 `cyberapi-bridge` 提供。这一个程序同时把账号和项目存进 PostgreSQL 或 MySQL，并替页面发送请求。Docker Hub 上有 linux/amd64 和 linux/arm64 的镜像 [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web)（`latest`、各个版本号，以及 `main` 的 `nightly`），每个版本的 Release 里也有压缩包。
 
 <p align="center">

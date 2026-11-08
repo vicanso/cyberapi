@@ -59,6 +59,8 @@ Download for **macOS**, **Windows** or **Linux** from [Releases](https://github.
 
 ## Web version (self-hosted)
 
+Try the live demo at **[https://cyberapi.pingap.io/](https://cyberapi.pingap.io/)** — account `cyberapi`, password `cyberapi123123` (demo account: read-only, password cannot be changed).
+
 The web version is the same app compiled to WebAssembly and served by `cyberapi-bridge`, one binary that also keeps the accounts and projects in PostgreSQL or MySQL and sends the page's requests. It is an image on Docker Hub for linux/amd64 and linux/arm64, [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web) (`latest`, each version, and `nightly` from `main`), and a tarball on each release.
 
 <p align="center">
