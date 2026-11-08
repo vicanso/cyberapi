@@ -107,8 +107,13 @@
 
   // Every address is relative to the page, so it can be served under a base
   // path. The wasm builds its own requests and the kit's icon URLs on `root`.
+  // Filled by the bridge as it serves this page (`static_files::with_asset_map`).
   const root = new URL(".", location.href).href.replace(/\/$/, "");
-  const url = (path) => `${root}${path}`;
+  const ASSET_REV = /*ASSET_REV*/{}/*/ASSET_REV*/;
+  const url = (path) => {
+    const v = ASSET_REV[path.replace(/^\//, "")];
+    return v ? `${root}${path}?v=${v}` : `${root}${path}`;
+  };
 
   // The online docs page is not this shell. A browser that opens
   // `/v1/docs/{project}` while signed out is sent here as `?next=`. After

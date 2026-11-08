@@ -68,12 +68,12 @@ mib() { awk -v b="$1" 'BEGIN { printf "%.1f MiB", b / 1048576 }'; }
 
 if [ "$mode" = release ]; then
   before=$(size "$wasm")
-  # The features wasm-opt may assume, spelled out: cargo's `strip = true`
-  # removes the module's own `target_features` section, so wasm-opt would see
-  # an MVP module and refuse what it then meets. `threads` is there because
+  # The features wasm-opt may assume, spelled out: `threads` is there because
   # gpui-pre-web compiles atomic instructions into the module even though the
   # app runs single-threaded; `simd` because nightly's standard library /
-  # dependencies emit 128-bit SIMD instructions on wasm32.
+  # dependencies emit 128-bit SIMD instructions on wasm32. `--strip-debug`
+  # drops the wasm `name` and DWARF sections now that `wasm-bindgen` has read
+  # them.
   features=(
     --enable-bulk-memory
     --enable-mutable-globals

@@ -271,10 +271,14 @@ opt-level = "s"
 strip = "none"
 
 # The shipped browser bundle (`make web-release`): the release profile with
-# `opt-level = "s"` throughout; `wasm-opt -Oz` runs after it in the script.
+# `opt-level = "s"` throughout. `strip = "none"` keeps the wasm `name`
+# section until `wasm-bindgen` has read it (stripping before `wasm-bindgen`
+# makes it emit broken `__wasm_bindgen_func_elem_*` closure calls); `wasm-opt
+# -Oz --strip-debug --strip-producers` strips the `name` section right after.
 [profile.web-release]
 inherits = "release"
 opt-level = "s"
+strip = "none"
 
 [patch.crates-io]
 # 0.26.3 with AccessKit's fix (#835, released in 0.27.2, which GPUI cannot
