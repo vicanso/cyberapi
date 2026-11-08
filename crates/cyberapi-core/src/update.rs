@@ -37,8 +37,8 @@ pub struct Asset {
 }
 
 /// What GitHub's API says of a release, for a release without a manifest
-/// (one made before there was one) and for the notes.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+/// (or when the manifest's CDN fails) and for the notes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct Release {
     pub tag_name: String,
     #[serde(default)]
@@ -46,7 +46,28 @@ pub struct Release {
     /// The notes, Markdown.
     #[serde(default)]
     pub body: String,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub prerelease: bool,
+    #[serde(default)]
+    pub assets: Vec<ReleaseAsset>,
 }
+
+/// One uploaded file of a release, as GitHub's API lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct ReleaseAsset {
+    pub name: String,
+    pub browser_download_url: String,
+    #[serde(default)]
+    pub size: u64,
+    /// GitHub's `sha256:<hex>` digest on the release asset, when present.
+    #[serde(default)]
+    pub digest: Option<String>,
+}
+
+/// How many releases' notes one update prompt carries, newest first.
+const MAX_NOTES_RELEASES: usize = 10;
 
 /// `v1.2.3` or `1.2.3` as numbers, and whether it is a pre-release
 /// (`1.2.3-beta.1`). `None` for anything else.
@@ -82,6 +103,70 @@ pub fn pick_asset<'a>(assets: &'a [Asset], os: &str, arch: &str, kinds: &[&str])
         .find_map(|kind| assets.iter().find(|a| a.os == os && a.arch == arch && a.kind == *kind))
 }
 
+/// `(os, arch, kind)` of a release asset, from the file name
+/// `scripts/checksums.sh` gives it.
+pub fn describe_asset(name: &str, version: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    let version = version.trim().trim_start_matches('v');
+    if name == format!("cyberapi_{version}_amd64.deb") {
+        return Some(("linux", "x86_64", "deb"));
+    }
+    if name == format!("cyberapi_{version}_arm64.deb") {
+        return Some(("linux", "aarch64", "deb"));
+    }
+    let prefix = format!("cyberapi-{version}-");
+    let rest = name.strip_prefix(&prefix)?;
+    let (triple, kind) = if let Some(t) = rest.strip_suffix(".tar.gz") {
+        (t, "tarball")
+    } else if let Some(t) = rest.strip_suffix(".dmg") {
+        (t, "dmg")
+    } else {
+        (rest.strip_suffix(".zip")?, "zip")
+    };
+    let arch = match triple.split('-').next()? {
+        "aarch64" => "aarch64",
+        "x86_64" => "x86_64",
+        _ => return None,
+    };
+    let os = if triple.ends_with("-apple-darwin") {
+        "macos"
+    } else if triple.contains("-linux-") {
+        "linux"
+    } else if triple.contains("-windows-") {
+        "windows"
+    } else {
+        return None;
+    };
+    Some((os, arch, kind))
+}
+
+/// The API's asset list in the manifest's shape, read off the file names
+/// `scripts/checksums.sh` gives them and GitHub's `sha256:<hex>` digest.
+pub fn assets_from_release(release: &Release) -> Vec<Asset> {
+    let version = release.tag_name.trim().trim_start_matches('v');
+    release
+        .assets
+        .iter()
+        .filter_map(|asset| {
+            let (os, arch, kind) = describe_asset(&asset.name, version)?;
+            let sha256 = asset
+                .digest
+                .as_deref()
+                .and_then(|d| d.trim().strip_prefix("sha256:"))
+                .unwrap_or_default()
+                .to_string();
+            Some(Asset {
+                os: os.to_string(),
+                arch: arch.to_string(),
+                kind: kind.to_string(),
+                name: asset.name.clone(),
+                url: asset.browser_download_url.clone(),
+                sha256,
+                size: asset.size,
+            })
+        })
+        .collect()
+}
+
 /// `bytes`' SHA-256, in lower-case hex, as `SHA256SUMS` writes it.
 pub fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
@@ -110,6 +195,64 @@ pub fn notes_body(notes: &str) -> &str {
         None if notes.starts_with("## ") => "",
         _ => notes,
     }
+}
+
+/// What changed between `current` and `latest`: the notes of every release
+/// newer than `current` and no newer than `latest`, newest first. When only
+/// one release lies between them, its redundant top heading is stripped via
+/// [`notes_body`]; when several do, each keeps its heading so their sections
+/// do not run together. Empty when `releases` does not include `latest`.
+pub fn notes_between(releases: &[Release], current: &str, latest: &str) -> String {
+    struct Entry<'a> {
+        numbers: [u64; 3],
+        pre: bool,
+        version: String,
+        body: &'a str,
+    }
+    let mut found: Vec<Entry<'_>> = releases
+        .iter()
+        .filter(|r| !r.draft && !r.prerelease)
+        .filter_map(|r| {
+            let ver = r.tag_name.trim().trim_start_matches('v');
+            let (numbers, pre) = parse(ver)?;
+            (is_newer(ver, current) && !is_newer(ver, latest)).then_some(Entry {
+                numbers,
+                pre,
+                version: ver.to_string(),
+                body: r.body.trim(),
+            })
+        })
+        .collect();
+    found.sort_by(|a, b| b.numbers.cmp(&a.numbers).then_with(|| a.pre.cmp(&b.pre)));
+    let latest_clean = latest.trim().trim_start_matches('v');
+    if found.first().is_none_or(|entry| entry.version != latest_clean) {
+        return String::new();
+    }
+    let multi = found.len() > 1;
+    found
+        .into_iter()
+        .take(MAX_NOTES_RELEASES)
+        .filter_map(|entry| {
+            let ver = entry.version;
+            let body = entry.body;
+            if !multi {
+                let stripped = notes_body(body).trim();
+                (!stripped.is_empty()).then(|| stripped.to_string())
+            } else {
+                let body = body.trim();
+                if body.is_empty() {
+                    return None;
+                }
+                let has_heading = body.lines().next().is_some_and(|first| first.contains(&ver));
+                Some(if has_heading {
+                    body.to_string()
+                } else {
+                    format!("## {ver}\n\n{body}")
+                })
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Whether the automatic check is due: never made, or made `interval`
@@ -230,5 +373,82 @@ mod tests {
         assert!(!check_due(1_000_000, 1_000_000 + day - 1, day));
         assert!(check_due(1_000_000, 1_000_000 + day, day));
         assert!(check_due(1_000_000, 999_000, day), "a clock set back");
+    }
+
+    #[test]
+    fn api_release_assets_parse_platform_and_sha256_digest() {
+        let release = Release {
+            tag_name: "v0.6.0".into(),
+            html_url: "https://github.com/vicanso/cyberapi/releases/tag/v0.6.0".into(),
+            body: String::new(),
+            draft: false,
+            prerelease: false,
+            assets: vec![
+                ReleaseAsset {
+                    name: "cyberapi-0.6.0-aarch64-apple-darwin.dmg".into(),
+                    browser_download_url: "https://example.test/dmg".into(),
+                    size: 100,
+                    digest: Some("sha256:495e0893".into()),
+                },
+                ReleaseAsset {
+                    name: "cyberapi_0.6.0_amd64.deb".into(),
+                    browser_download_url: "https://example.test/deb".into(),
+                    size: 200,
+                    digest: None,
+                },
+                ReleaseAsset {
+                    name: "cyberapi-cli-0.6.0-aarch64-apple-darwin.tar.gz".into(),
+                    browser_download_url: "https://example.test/cli".into(),
+                    size: 50,
+                    digest: None,
+                },
+            ],
+        };
+        let assets = assets_from_release(&release);
+        assert_eq!(assets.len(), 2);
+        assert_eq!(
+            (
+                assets[0].os.as_str(),
+                assets[0].arch.as_str(),
+                assets[0].kind.as_str(),
+                assets[0].sha256.as_str()
+            ),
+            ("macos", "aarch64", "dmg", "495e0893")
+        );
+        assert_eq!(
+            (
+                assets[1].os.as_str(),
+                assets[1].arch.as_str(),
+                assets[1].kind.as_str(),
+                assets[1].sha256.as_str()
+            ),
+            ("linux", "x86_64", "deb", "")
+        );
+    }
+
+    #[test]
+    fn notes_between_combines_intermediate_releases_newest_first() {
+        let releases = vec![
+            Release {
+                tag_name: "v0.6.0".into(),
+                body: "## [0.6.0] - 2026-11-08\n\n- third".into(),
+                ..Default::default()
+            },
+            Release {
+                tag_name: "v0.5.0".into(),
+                body: "- second".into(),
+                ..Default::default()
+            },
+            Release {
+                tag_name: "v0.4.0".into(),
+                body: "## [0.4.0]\n\n- current".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            notes_between(&releases, "0.4.0", "0.6.0"),
+            "## [0.6.0] - 2026-11-08\n\n- third\n\n## 0.5.0\n\n- second"
+        );
+        assert_eq!(notes_between(&releases, "0.5.0", "0.6.0"), "- third");
     }
 }

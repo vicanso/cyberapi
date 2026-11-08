@@ -13,21 +13,28 @@
 
 use super::AppStore;
 use cyberapi_core::prefs::UpdatePrefs;
-use cyberapi_core::response::Exchange;
+use cyberapi_core::proxy::ProxyPrefs;
+use cyberapi_core::response::{Exchange, StreamEnd};
 use cyberapi_core::send::PreparedRequest;
 use cyberapi_core::update::{self, Asset, Manifest, Release};
-use cyberapi_http::HttpEngine;
+use cyberapi_http::{HttpEngine, Progress, Watch, stop_signal};
+use futures::StreamExt as _;
+use futures::channel::mpsc;
 use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use tracing::{info, warn};
 
 /// Always the newest release's, served by GitHub.
 const MANIFEST_URL: &str = "https://github.com/vicanso/cyberapi/releases/latest/download/latest.json";
-/// The newest release as GitHub's API says: its notes, and its version when
-/// it has no manifest.
+/// The newest release as GitHub's API says: its notes, and its version and
+/// assets when the manifest cannot be reached.
 const RELEASE_API: &str = "https://api.github.com/repos/vicanso/cyberapi/releases/latest";
+/// Recent releases, newest first, so an upgrade across several versions shows
+/// what changed in each of them.
+const RELEASE_LIST_API: &str = "https://api.github.com/repos/vicanso/cyberapi/releases?per_page=15";
 /// Where a release with no package for this machine is had.
 const RELEASES_PAGE: &str = "https://github.com/vicanso/cyberapi/releases/latest";
 /// A `latest.json` elsewhere, for trying the update on this machine: with
@@ -38,6 +45,8 @@ const REDIRECTS: usize = 5;
 /// The check at start waits this long, so it does not compete with the
 /// window opening.
 const START_DELAY: Duration = Duration::from_secs(5);
+/// Per-step read timeout while streaming an installer download (seconds).
+const DOWNLOAD_READ_SECS: u32 = 300;
 
 /// A newer release than the running build.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,6 +109,8 @@ pub struct UpdateState {
     kinds: &'static [&'static str],
     phase: UpdatePhase,
     available: Option<UpdateInfo>,
+    /// `(downloaded, total)` bytes while [`UpdatePhase::Downloading`].
+    progress: Option<(u64, u64)>,
     _start: Option<Task<()>>,
     _task: Option<Task<()>>,
 }
@@ -114,6 +125,7 @@ impl UpdateState {
             kinds,
             phase: UpdatePhase::Idle,
             available: None,
+            progress: None,
             _start: None,
             _task: None,
         }
@@ -126,6 +138,25 @@ impl UpdateState {
     /// The newer release found, while it is not skipped.
     pub fn available(&self) -> Option<&UpdateInfo> {
         self.available.as_ref()
+    }
+
+    /// `(downloaded, total)` bytes while a package is coming down.
+    pub fn download_progress(&self) -> Option<(u64, u64)> {
+        self.progress
+    }
+
+    /// `0..=100` while a package of known size is coming down.
+    pub fn download_percent(&self) -> Option<u8> {
+        let (done, total) = self.progress?;
+        (done * 100).checked_div(total).map(|pct| pct.min(100) as u8)
+    }
+
+    /// Hides the title-bar chip for the rest of this session without
+    /// permanently skipping the version.
+    pub fn dismiss(&mut self, cx: &mut Context<Self>) {
+        if self.phase == UpdatePhase::Idle && self.available.take().is_some() {
+            cx.notify();
+        }
     }
 
     /// The check at start, a moment after it, when it is on and due.
@@ -147,12 +178,13 @@ impl UpdateState {
             return;
         }
         let app = AppStore::global(cx).state().clone();
+        let proxy = app.read(cx).prefs().sending.proxy.clone();
         app.update(cx, |app, cx| app.note_update_check(now(), cx));
         self.phase = UpdatePhase::Checking { manual };
         cx.notify();
         let (engine, kinds) = (self.engine.clone(), self.kinds);
         self._task = Some(cx.spawn(async move |this, cx| {
-            let found = cx.background_spawn(latest(engine, kinds)).await;
+            let found = cx.background_spawn(latest(engine, kinds, proxy)).await;
             let _ = this.update(cx, |this, cx| {
                 this.phase = UpdatePhase::Idle;
                 match found {
@@ -200,14 +232,32 @@ impl UpdateState {
         let Some(asset) = self.available.as_ref().and_then(|info| info.asset.clone()) else {
             return;
         };
+        let proxy = AppStore::global(cx).state().read(cx).prefs().sending.proxy.clone();
+        // Publish 0% synchronously before any await so the dialog and the
+        // title-bar chip switch to progress state on the click itself.
         self.phase = UpdatePhase::Downloading;
+        self.progress = Some((0, asset.size));
         cx.notify();
+
+        let (tx, mut rx) = mpsc::unbounded::<(u64, u64)>();
+        cx.spawn(async move |this, cx| {
+            while let Some(progress) = rx.next().await {
+                let _ = this.update(cx, |this, cx| {
+                    if this.phase == UpdatePhase::Downloading {
+                        this.progress = Some(progress);
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
+
         let (engine, install) = (self.engine.clone(), self.install.clone());
         self._task = Some(cx.spawn(async move |this, cx| {
             let done = cx
                 .background_spawn(async move {
                     info!(name = %asset.name, size = asset.size, "update: downloading");
-                    let exchange = fetch(&engine, &asset.url).await?;
+                    let exchange = fetch_watched(&engine, &asset.url, &proxy, &asset.name, asset.size, tx).await?;
                     if !update::verified(&exchange.body, &asset.sha256) {
                         return Err(format!("{} is not what the release published", asset.name));
                     }
@@ -215,6 +265,7 @@ impl UpdateState {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.progress = None;
                 match done {
                     Ok(Delivery::Replaced) => {
                         this.phase = UpdatePhase::Installed;
@@ -248,14 +299,18 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-fn request(url: &str) -> PreparedRequest {
+fn request(url: &str, proxy: &ProxyPrefs) -> PreparedRequest {
     PreparedRequest {
         url: url.to_string(),
         headers: vec![
             ("User-Agent".into(), crate::this_build::user_agent()),
-            ("Accept".into(), "*/*".into()),
+            (
+                "Accept".into(),
+                "application/vnd.github+json, application/json, */*".into(),
+            ),
         ],
         timeouts: cyberapi_core::prefs::Timeouts::default().effective(),
+        proxy: proxy.clone(),
         ..Default::default()
     }
 }
@@ -269,11 +324,11 @@ fn logged_address(url: &str) -> &str {
 }
 
 /// `url`'s answer, following redirects: a 2xx, or why there is none.
-async fn fetch(engine: &Arc<dyn HttpEngine>, url: &str) -> Result<Exchange, String> {
+async fn fetch(engine: &Arc<dyn HttpEngine>, url: &str, proxy: &ProxyPrefs) -> Result<Exchange, String> {
     let mut url = url.to_string();
     for _ in 0..=REDIRECTS {
         let exchange = engine
-            .send(request(&url))
+            .send(request(&url, proxy))
             .await
             .map_err(|error| format!("{}: {error}", logged_address(&url)))?;
         if (300..400).contains(&exchange.status) {
@@ -298,33 +353,178 @@ async fn fetch(engine: &Arc<dyn HttpEngine>, url: &str) -> Result<Exchange, Stri
     Err(format!("{}: more than {REDIRECTS} redirects", logged_address(&url)))
 }
 
-async fn json<T: serde::de::DeserializeOwned>(engine: &Arc<dyn HttpEngine>, url: &str) -> Result<T, String> {
-    let exchange = fetch(engine, url).await?;
+/// Streams `url` following redirects and reports `(downloaded, total)` bytes
+/// to `tx` on integer percentage ticks.
+async fn fetch_watched(
+    engine: &Arc<dyn HttpEngine>,
+    url: &str,
+    proxy: &ProxyPrefs,
+    name: &str,
+    expected_size: u64,
+    tx: mpsc::UnboundedSender<(u64, u64)>,
+) -> Result<Exchange, String> {
+    let mut url = url.to_string();
+    for _ in 0..=REDIRECTS {
+        let mut req = request(&url, proxy);
+        req.streams = true;
+        req.timeouts.read = DOWNLOAD_READ_SECS;
+        let state = Arc::new(Mutex::new((0u64, expected_size, u8::MAX, u8::MAX)));
+        let step_state = state.clone();
+        let step_tx = tx.clone();
+        let log_name = name.to_string();
+        let (_stop_tx, stop) = stop_signal();
+        let watch = Watch {
+            progress: Arc::new(move |event| {
+                let Ok(mut guard) = step_state.lock() else {
+                    return;
+                };
+                match event {
+                    Progress::Head { status, headers } if (200..300).contains(&status) => {
+                        guard.0 = 0;
+                        if let Some(len) = headers
+                            .iter()
+                            .find(|(k, _)| k == "content-length")
+                            .and_then(|(_, v)| v.trim().parse::<u64>().ok())
+                            .filter(|&n| n > 0)
+                        {
+                            guard.1 = len;
+                        }
+                        let _ = step_tx.unbounded_send((0, guard.1));
+                    }
+                    Progress::Head { .. } => {}
+                    Progress::Body(piece) => {
+                        guard.0 += piece.len() as u64;
+                        let (done, total) = (guard.0, guard.1);
+                        if total == 0 {
+                            let _ = step_tx.unbounded_send((done, 0));
+                            return;
+                        }
+                        let pct = ((done * 100 / total).min(100)) as u8;
+                        if pct == guard.2 {
+                            return;
+                        }
+                        guard.2 = pct;
+                        let decile = pct / 10;
+                        if decile != guard.3 {
+                            guard.3 = decile;
+                            info!(asset = %log_name, pct, done, total, "update: download progress");
+                        }
+                        let _ = step_tx.unbounded_send((done, total));
+                    }
+                }
+            }),
+            stop,
+        };
+        let exchange = engine
+            .send_watched(req, watch)
+            .await
+            .map_err(|error| format!("{}: {error}", logged_address(&url)))?;
+        if (300..400).contains(&exchange.status) {
+            let location = exchange
+                .headers
+                .iter()
+                .find(|(name, _)| name == "location")
+                .map(|(_, value)| value.clone())
+                .ok_or_else(|| format!("{} redirects nowhere", logged_address(&url)))?;
+            url = update::redirected(&url, &location)
+                .ok_or_else(|| format!("{} redirects to {}", logged_address(&url), logged_address(&location)))?;
+            continue;
+        }
+        if !(200..300).contains(&exchange.status) {
+            return Err(format!("{} answered {}", logged_address(&url), exchange.status));
+        }
+        if exchange.truncated {
+            return Err(format!("{} is too large", logged_address(&url)));
+        }
+        if let Some(stream) = &exchange.stream {
+            match &stream.ended {
+                StreamEnd::Closed => {}
+                StreamEnd::Quiet { seconds } => {
+                    return Err(format!("{}: no data within {seconds}s", logged_address(&url)));
+                }
+                StreamEnd::Failed { message } => {
+                    return Err(format!("{}: {message}", logged_address(&url)));
+                }
+                StreamEnd::Cut | StreamEnd::Stopped => {
+                    return Err(format!("{}: download interrupted", logged_address(&url)));
+                }
+            }
+        }
+        return Ok(exchange);
+    }
+    Err(format!("{}: more than {REDIRECTS} redirects", logged_address(&url)))
+}
+
+async fn json<T: serde::de::DeserializeOwned>(
+    engine: &Arc<dyn HttpEngine>,
+    url: &str,
+    proxy: &ProxyPrefs,
+) -> Result<T, String> {
+    let exchange = fetch(engine, url, proxy).await?;
     serde_json::from_slice(&exchange.body).map_err(|error| format!("{}: {error}", logged_address(url)))
 }
 
+/// Best-effort changelog between the running build and `version`: asks the
+/// release list first so an upgrade across several versions shows what each
+/// of them changed, and falls back to `RELEASE_API` when the list is not
+/// available.
+async fn release_notes(engine: &Arc<dyn HttpEngine>, version: &str, proxy: &ProxyPrefs) -> String {
+    if let Ok(releases) = json::<Vec<Release>>(engine, RELEASE_LIST_API, proxy).await {
+        let combined = update::notes_between(&releases, crate::VERSION, version);
+        if !combined.is_empty() {
+            return combined;
+        }
+    }
+    json::<Release>(engine, RELEASE_API, proxy)
+        .await
+        .ok()
+        .filter(|release| release.tag_name.trim_start_matches('v') == version)
+        .map(|release| update::notes_body(&release.body).to_string())
+        .unwrap_or_default()
+}
+
 /// The newest release when it is newer than this build, from its manifest,
-/// or from the API for a release without one.
-async fn latest(engine: Arc<dyn HttpEngine>, kinds: &'static [&'static str]) -> Result<Option<UpdateInfo>, String> {
+/// or from the API when the manifest cannot be reached.
+async fn latest(
+    engine: Arc<dyn HttpEngine>,
+    kinds: &'static [&'static str],
+    proxy: ProxyPrefs,
+) -> Result<Option<UpdateInfo>, String> {
     let custom = std::env::var(MANIFEST_ENV).ok().filter(|url| !url.trim().is_empty());
-    let manifest = json::<Manifest>(&engine, custom.as_deref().unwrap_or(MANIFEST_URL)).await;
+    let manifest = json::<Manifest>(&engine, custom.as_deref().unwrap_or(MANIFEST_URL), &proxy).await;
     let manifest = match (manifest, &custom) {
         (Ok(manifest), _) => manifest,
         (Err(error), Some(_)) => return Err(error),
-        // A release made before there was a manifest: the version and the
-        // page only, nothing to download here.
+        // Manifest unreachable or absent: fall back to GitHub's release API,
+        // which also carries the release's uploaded assets and their SHA-256
+        // digests.
         (Err(error), None) => {
             info!(%error, "update: no manifest, asking the API");
-            let release = json::<Release>(&engine, RELEASE_API).await?;
+            let release = json::<Release>(&engine, RELEASE_API, &proxy).await?;
             let version = release.tag_name.trim_start_matches('v').to_string();
             if !update::is_newer(&version, crate::VERSION) {
                 return Ok(None);
             }
+            let api_assets = update::assets_from_release(&release);
+            let asset = update::pick_asset(&api_assets, std::env::consts::OS, std::env::consts::ARCH, kinds)
+                .cloned()
+                .filter(|a| !a.sha256.is_empty());
+            let notes = json::<Vec<Release>>(&engine, RELEASE_LIST_API, &proxy)
+                .await
+                .ok()
+                .map(|releases| update::notes_between(&releases, crate::VERSION, &version))
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| update::notes_body(&release.body).to_string());
+            let page = if release.html_url.trim().is_empty() {
+                RELEASES_PAGE.to_string()
+            } else {
+                release.html_url
+            };
             return Ok(Some(UpdateInfo {
                 version,
-                page: release.html_url,
-                notes: update::notes_body(&release.body).to_string(),
-                asset: None,
+                page,
+                notes,
+                asset,
             }));
         }
     };
@@ -336,12 +536,7 @@ async fn latest(engine: Arc<dyn HttpEngine>, kinds: &'static [&'static str]) -> 
     // them the page still has them.
     let notes = match custom {
         Some(_) => String::new(),
-        None => json::<Release>(&engine, RELEASE_API)
-            .await
-            .ok()
-            .filter(|release| release.tag_name.trim_start_matches('v') == manifest.version)
-            .map(|release| update::notes_body(&release.body).to_string())
-            .unwrap_or_default(),
+        None => release_notes(&engine, &manifest.version, &proxy).await,
     };
     let page = match manifest.notes.trim() {
         "" => RELEASES_PAGE.to_string(),
@@ -661,6 +856,7 @@ mod tests {
         let error = fetch(
             &engine,
             "https://github.com/vicanso/cyberapi/releases/latest/download/latest.json",
+            &ProxyPrefs::default(),
         )
         .await
         .expect_err("the signed hop fails");
