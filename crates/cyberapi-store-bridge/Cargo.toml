@@ -17,6 +17,9 @@ cyberapi-http = { workspace = true }
 cyberapi-store = { workspace = true }
 # An event stream's answer, read as the bridge streams it.
 futures = { workspace = true }
+# Gzip for a large body posted to the bridge. Pure Rust, so the page can
+# use it too. The bridge accepts zstd as well; this side does not encode it.
+flate2 = "1.1.10"
 serde = { workspace = true }
 serde_json = { workspace = true }
 web-time = "1.1.0"

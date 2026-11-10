@@ -24,7 +24,7 @@ use cyberapi_store::{DirectoryStore, Refusal, Storage, StoreError, VersionStore}
 use directory::NoPasswords;
 use scoped::Scoped;
 
-pub use scoped::PublishedDocs;
+pub use scoped::{PublishedDocs, PublishedFetch};
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
 
 use sqlx::migrate::MigrateError;
@@ -236,10 +236,15 @@ impl SqlStore {
         Arc::new(Scoped::new(self.clone(), account))
     }
 
-    /// The project's online documentation when it is published. `None`
-    /// when it is missing or still private.
-    pub async fn published_docs(&self, id: &CollectionId) -> Result<Option<PublishedDocs>, StoreError> {
-        scoped::published_docs(self, id).await
+    /// The project's online documentation when it is published.
+    /// [`PublishedFetch::NotPublished`] when it is missing or still private.
+    /// `want_body` runs after that check and can skip the tree.
+    pub async fn published_docs(
+        &self,
+        id: &CollectionId,
+        want_body: impl FnOnce(&cyberapi_core::model::Collection) -> bool + Send,
+    ) -> Result<PublishedFetch, StoreError> {
+        scoped::published_docs(self, id, want_body).await
     }
 
     /// Creates an account with its personal space (§9.1), whose only member

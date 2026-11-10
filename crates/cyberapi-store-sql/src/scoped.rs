@@ -60,9 +60,24 @@ pub struct PublishedDocs {
     pub variables: Vec<Variable>,
 }
 
+/// What [`published_docs`] found. A private project and a missing one are
+/// the same answer, so an address does not reveal a private project.
+pub enum PublishedFetch {
+    NotPublished,
+    /// Public, and the caller asked not to read the tree. `revision` is
+    /// enough for a `304` or a rendered page kept from last time.
+    Revision(u64),
+    Ready(Box<PublishedDocs>),
+}
+
 /// The published page, read without an account. One settings lookup when
-/// the project is private; the tree is read only after the flag is on.
-pub(crate) async fn published_docs(store: &SqlStore, id: &CollectionId) -> Result<Option<PublishedDocs>, StoreError> {
+/// the project is private. `want_body` sees the project after that check
+/// and decides whether the tree, variables and environments are read.
+pub(crate) async fn published_docs(
+    store: &SqlStore,
+    id: &CollectionId,
+    want_body: impl FnOnce(&Collection) -> bool + Send,
+) -> Result<PublishedFetch, StoreError> {
     let reader = Scoped::new(store.clone(), AccountId::new("published-docs"));
     let mut conn = reader.pool.acquire().await.map_err(db)?;
     let settings: ProjectSettings = sqlx::query(reader.dialect.sql(sql::PROJECT_SETTINGS_OF))
@@ -75,7 +90,7 @@ pub(crate) async fn published_docs(store: &SqlStore, id: &CollectionId) -> Resul
         .map(|text| settings_of(&text))
         .unwrap_or_default();
     if !settings.public_docs {
-        return Ok(None);
+        return Ok(PublishedFetch::NotPublished);
     }
     let Some(row) = sqlx::query(reader.dialect.sql(sql::COLLECTION_GET))
         .bind(id.as_str().to_string())
@@ -83,10 +98,13 @@ pub(crate) async fn published_docs(store: &SqlStore, id: &CollectionId) -> Resul
         .await
         .map_err(db)?
     else {
-        return Ok(None);
+        return Ok(PublishedFetch::NotPublished);
     };
     let mut collection = rows::collection(&row, 0)?;
     collection.role = CollectionRole::Viewer;
+    if !want_body(&collection) {
+        return Ok(PublishedFetch::Revision(collection.revision));
+    }
     let tree = reader.tree_data(&mut conn, id).await?;
     let found = sqlx::query(reader.dialect.sql(sql::VARIABLES_OF))
         .bind(id.as_str().to_string())
@@ -98,12 +116,12 @@ pub(crate) async fn published_docs(store: &SqlStore, id: &CollectionId) -> Resul
     let mut variables = in_environments(found, &reader.variable_environments(&mut conn, id).await?);
     variables.sort_by(|one, other| one.name.cmp(&other.name));
     let environments = reader.environments_of(&mut conn, id).await?;
-    Ok(Some(PublishedDocs {
+    Ok(PublishedFetch::Ready(Box::new(PublishedDocs {
         collection,
         tree,
         environments,
         variables,
-    }))
+    })))
 }
 
 /// A `settings` column (#66); one that cannot be read is none, as an

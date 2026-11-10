@@ -112,6 +112,8 @@ struct Inner {
     mcp_calls: mcp::Limiter,
     /// Cached mock route tables keyed by `(CollectionId, revision)` (PERF-1).
     mock_routes: mock::RouteCache,
+    /// Rendered online documentation for one revision of a project (PERF-6).
+    docs_html: Arc<docs::HtmlCache>,
     /// OpenID Connect, when the process was given an issuer and a client.
     oidc: Option<oidc::Service>,
 }
@@ -140,6 +142,7 @@ impl Bridge {
                 in_flight: Arc::new(InFlight::new(max_sends)),
                 mcp_calls: mcp::Limiter::default(),
                 mock_routes: mock::RouteCache::default(),
+                docs_html: Arc::new(docs::HtmlCache::default()),
                 oidc: None,
             }),
         }
@@ -220,6 +223,10 @@ impl Bridge {
             .route(&at("/v1/docs/{project}"), get(docs::get))
             .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
             .fallback(move |State(bridge): State<Bridge>, request: Request| page(bridge, request, www.clone()))
+            // Outside the body limit, so the limit counts the bytes after
+            // gzip or zstd is undone. A request with no Content-Encoding
+            // passes through.
+            .layer(request_decompression())
             .layer(compression_layer())
             .with_state(self.clone())
     }
@@ -685,6 +692,16 @@ fn compression_layer() -> CompressionLayer<impl tower_http::compression::predica
         .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("application/x-ndjson")))
 }
 
+/// Undoes `gzip` or `zstd` on a request body before the handler reads it.
+/// Clients send gzip (pure Rust, including the page). zstd is accepted too.
+fn request_decompression() -> tower_http::decompression::RequestDecompressionLayer {
+    tower_http::decompression::RequestDecompressionLayer::new()
+        .gzip(true)
+        .zstd(true)
+        .no_deflate()
+        .no_br()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -794,5 +811,33 @@ mod tests {
         let stream_resp = router.oneshot(stream_req).await.expect("response");
         assert_eq!(stream_resp.status(), StatusCode::OK);
         assert_eq!(stream_resp.headers().get(header::CONTENT_ENCODING), None);
+    }
+
+    #[tokio::test]
+    async fn a_gzip_request_body_reaches_the_handler_as_json() {
+        use std::io::Write as _;
+
+        let json = br#"{"call":"collectionsList"}"#;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(json).expect("gzip");
+        let gzip = encoder.finish().expect("gzip");
+        let router = Router::new()
+            .route("/v1/store", post(|body: axum::body::Bytes| async move { body }))
+            .layer(request_decompression());
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/store")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::CONTENT_ENCODING, "gzip")
+                    .body(Body::from(gzip))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.expect("body").to_bytes();
+        assert_eq!(&bytes[..], json);
     }
 }

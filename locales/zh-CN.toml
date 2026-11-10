@@ -1152,6 +1152,7 @@ public_title = "公开预览"
 public_switch = "不登录也能查看"
 public_hint = "打开后，知道地址的人不用登录就能看这份在线文档。密钥仍然打码。关掉之后又要登录。"
 public_after_sync = "保存后跟项目的其他修改一起同步，同步到服务器之后页面才按这个开关放行。"
+public_loading = "正在读取这个项目是否公开。"
 
 [versions]
 open = "历史版本…"

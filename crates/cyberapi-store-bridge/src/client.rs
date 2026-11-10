@@ -83,12 +83,16 @@ impl Transport for EngineTransport {
         path: &'static str,
         body: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<Response, String>> + Send>> {
+        let (body, encoding) = crate::encoded_body(body);
         let (model, version) = crate::model_header();
         let mut headers = vec![
             ("content-type".to_string(), "application/json".to_string()),
             // Which shape this client keeps projects in (§2.1).
             (model.to_string(), version),
         ];
+        if let Some(encoding) = encoding {
+            headers.push(("content-encoding".to_string(), encoding.to_string()));
+        }
         if let Some(token) = &self.token {
             headers.push(("authorization".to_string(), format!("Bearer {token}")));
         }

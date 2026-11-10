@@ -341,9 +341,9 @@ Query、路径参数和请求头的类型、必填、format 和枚举。已完�
 
 | 编号 | 优化项 | 规模 | 位置 | 现状问题与优化方案 | 状态 |
 |---|---|---|---|---|---|
-| PERF-6 | `GET /v1/docs/{project}` 的 `304` 提前短路与渲染缓存 | S–M | [`cyberapi-bridge/src/docs.rs`](../cyberapi-bridge/src/docs.rs)、[`crates/cyberapi-store-sql/src/scoped.rs`](../crates/cyberapi-store-sql/src/scoped.rs) | `0fe7f94` 重构后，`published_docs` 与私有文档分支均先从数据库拉取整棵接口树（`tree_data` / `tree().load()`）、变量与环境，最后才在 `served()` 中比对 `If-None-Match` 返回 `304`；且公开文档多访客访问同一 `revision` 时每次重复查库并执行 `html_docs::render`。改为拿到 `collection.revision` 后立即比对 `If-None-Match` 短路返回 `304`，并参照 `mock::RouteCache` 按 `(CollectionId, revision, html_docs::RENDER)` 缓存渲染后的 HTML | 待做 |
-| PERF-7 | 网页版首屏 WASM 流式并行拉取（消除串行瀑布流） | S | [`cyberapi-web/www/index.html`](../cyberapi-web/www/index.html) | 当前首屏先 `await Promise.all([import("/wasm/cyberapi_web.js"), fetch("/fonts/IBMPlexSans.ttf"), appPrefs()])`，等 `cyberapi_web.js` 加载完才发起 `fetch("/wasm/cyberapi_web_bg.wasm")`。将 `fetch(url("/wasm/cyberapi_web_bg.wasm"))` 放进同一个 `Promise.all` 并直接传给 `mod.default({ module_or_path: wasmPromise })` 流式编译，省去一整个 RTT 等待 | 待做 |
-| PERF-8 | 静态字体与图标缓存策略优化及字体产物补齐 | S | [`cyberapi-bridge/src/static_files.rs`](../cyberapi-bridge/src/static_files.rs)、[`scripts/web-bundle.sh`](../scripts/web-bundle.sh) | `static_files::serve` 对全部静态资源统一设置 `Cache-Control: no-cache`，导致 60+ 个 `/assets/icons/*.svg` 与 `/fonts/*.ttf` 每次打开都触发条件重验证请求；且 `web-bundle.sh` 仅复制了 `JetBrainsMono-*.ttf`，未同步 `IBMPlexSans.ttf`。对 `/fonts/*` 和 `/assets/icons/*` 设置 `Cache-Control: public, max-age=86400`（配合 `ETag`），对 `/index.html` 与 `/wasm/*` 保持 `no-cache`，并在 `web-bundle.sh` 中补齐 `IBMPlexSans.ttf` | 待做 |
+| PERF-6 | `GET /v1/docs/{project}` 的 `304` 提前短路与渲染缓存 | S–M | [`cyberapi-bridge/src/docs.rs`](../cyberapi-bridge/src/docs.rs)、[`crates/cyberapi-store-sql/src/scoped.rs`](../crates/cyberapi-store-sql/src/scoped.rs) | `0fe7f94` 重构后，`published_docs` 与私有文档分支均先从数据库拉取整棵接口树（`tree_data` / `tree().load()`）、变量与环境，最后才在 `served()` 中比对 `If-None-Match` 返回 `304`；且公开文档多访客访问同一 `revision` 时每次重复查库并执行 `html_docs::render`。改为拿到 `collection.revision` 后立即比对 `If-None-Match` 短路返回 `304`，并参照 `mock::RouteCache` 按 `(CollectionId, revision, html_docs::RENDER)` 缓存渲染后的 HTML。304 仍在确认公开或登录之后 | 已完成 |
+| PERF-7 | 网页版首屏 WASM 流式并行拉取（消除串行瀑布流） | S | [`cyberapi-web/www/index.html`](../cyberapi-web/www/index.html) | 当前首屏先 `await Promise.all([import("/wasm/cyberapi_web.js"), fetch("/fonts/IBMPlexSans.ttf"), appPrefs()])`，等 `cyberapi_web.js` 加载完才发起 `fetch("/wasm/cyberapi_web_bg.wasm")`。将 `fetch(url("/wasm/cyberapi_web_bg.wasm"))` 放进同一个 `Promise.all` 并直接传给 `mod.default({ module_or_path: wasmPromise })` 流式编译，省去一整个 RTT 等待 | 已完成 |
+| PERF-8 | 静态字体与图标缓存策略优化及字体产物补齐 | S | [`cyberapi-bridge/src/static_files.rs`](../cyberapi-bridge/src/static_files.rs)、[`scripts/web-bundle.sh`](../scripts/web-bundle.sh) | `static_files::serve` 对全部静态资源统一设置 `Cache-Control: no-cache`，导致 60+ 个 `/assets/icons/*.svg` 与 `/fonts/*.ttf` 每次打开都触发条件重验证请求；且 `web-bundle.sh` 仅复制了 `JetBrainsMono-*.ttf`，未同步 `IBMPlexSans.ttf`。对 `/fonts/*` 和 `/assets/icons/*` 设置 `Cache-Control: public, max-age=86400`（配合 `ETag`），对 `/index.html` 与 `/wasm/*` 保持 `no-cache`，并在 `web-bundle.sh` 中补齐 `IBMPlexSans.ttf` | 已完成 |
 
 ### 二、编辑器与日常调试体验打磨
 
@@ -357,7 +357,7 @@ Query、路径参数和请求头的类型、必填、format 和枚举。已完�
 
 | 编号 | 优化项 | 规模 | 位置 | 现状问题与优化方案 | 状态 |
 |---|---|---|---|---|---|
-| PERF-9 | `cyberapi-bridge` 请求体解压支持（`RequestDecompressionLayer`） | S | [`cyberapi-bridge/src/lib.rs`](../cyberapi-bridge/src/lib.rs)、[`crates/cyberapi-store-bridge/src/lib.rs`](../crates/cyberapi-store-bridge/src/lib.rs) | 大型项目执行全量替换（`TreeReplace`）、合并（`TreeMerge`）或 OpenAPI 导入时上行 JSON 可达数 MB。在 `cyberapi-bridge` 启用 `RequestDecompressionLayer`（支持 `zstd` / `gzip`），并在客户端上行大请求体时自动压缩 | 待做 |
+| PERF-9 | `cyberapi-bridge` 请求体解压支持（`RequestDecompressionLayer`） | S | [`cyberapi-bridge/src/lib.rs`](../cyberapi-bridge/src/lib.rs)、[`crates/cyberapi-store-bridge/src/lib.rs`](../crates/cyberapi-store-bridge/src/lib.rs) | 大型项目执行全量替换（`TreeReplace`）、合并（`TreeMerge`）或 OpenAPI 导入时上行 JSON 可达数 MB。在 `cyberapi-bridge` 启用 `RequestDecompressionLayer`（支持 `zstd` / `gzip`），并在客户端上行大请求体时自动压缩 | 已完成 |
 | MAINT-1 | 清理 GitHub Dependabot 依赖安全告警 | S | [`Cargo.lock`](../Cargo.lock) | 排查并升级 GitHub Dependabot 报告的 2 个 moderate 级别依赖包版本 | 待做 |
 
 

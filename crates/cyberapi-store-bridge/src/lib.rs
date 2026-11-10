@@ -55,8 +55,10 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+mod body;
 mod client;
 
+pub use body::encoded_body;
 pub use client::{
     BearerSession, EngineTransport, LOGIN_PATH, LOGOUT_PATH, LoginForm, OidcPoll, SignInError, bridge_address,
     oidc_enabled, oidc_poll, oidc_start, session_me, sign_in, sign_out,

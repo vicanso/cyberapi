@@ -34,7 +34,8 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _,
+    h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -1635,6 +1636,9 @@ impl Render for ProjectEditorView {
             .when(self.offers_public_docs(cx), |this| {
                 let public_docs = self.want_public_docs.unwrap_or(self.existing_public_docs);
                 let editing = self.existing.is_some();
+                // The stored flag arrives after the dialog opens. Until then
+                // the box shows the private default, so it cannot be moved.
+                let pending = editing && !self.public_loaded;
                 this.child(
                     v_flex()
                         .gap_1p5()
@@ -1642,6 +1646,7 @@ impl Render for ProjectEditorView {
                         .child(
                             Checkbox::new("project-public-docs")
                                 .checked(public_docs)
+                                .disabled(pending)
                                 .label(t!("docs.public_switch").to_string())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.want_public_docs = Some(!public_docs);
@@ -1654,7 +1659,15 @@ impl Render for ProjectEditorView {
                                 .text_color(muted)
                                 .child(t!("docs.public_hint").to_string()),
                         )
-                        .when(editing, |column| {
+                        .when(pending, |column| {
+                            column.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(t!("docs.public_loading").to_string()),
+                            )
+                        })
+                        .when(editing && !pending, |column| {
                             column.child(
                                 div()
                                     .text_xs()

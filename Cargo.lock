@@ -2160,6 +2160,7 @@ dependencies = [
  "cyberapi-core",
  "cyberapi-http",
  "cyberapi-store",
+ "flate2",
  "futures",
  "serde",
  "serde_json",

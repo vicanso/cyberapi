@@ -8,10 +8,11 @@
 //! so `make web-bundle` refreshes the page with no rebuild. `--www <dir>`
 //! serves a directory instead, in either.
 //!
-//! Every answer carries its content hash as an ETag and asks to be
-//! revalidated: the module keeps its name from build to build. A gzip a
-//! release bundle stores beside a file is sent instead of it to a browser
-//! that accepts gzip.
+//! Every answer carries its content hash as an ETag. The page and the wasm
+//! ask to be revalidated, because the module keeps its name from build to
+//! build. Fonts and icons stay for a day and still revalidate when the
+//! hash changes. A gzip a release bundle stores beside a file is sent
+//! instead of it to a browser that accepts gzip.
 //!
 //! Under `--base-path` the page lives at `/prefix/` and nowhere else
 //! ([`mounted`]): the page addresses everything relative to where it was
@@ -73,6 +74,20 @@ pub fn mounted<'a>(base: &str, path: &'a str) -> Mounted<'a> {
         Some("") => Mounted::NeedsSlash,
         Some(rest) if rest.starts_with('/') => Mounted::File(rest),
         _ => Mounted::Outside,
+    }
+}
+
+/// How long a browser may keep `key` without asking again. The page and
+/// the wasm change under a stable name, so they are revalidated. Fonts
+/// and icons are named for what they are and change rarely; the ETag
+/// still catches a replacement.
+fn cache_control(key: &str) -> &'static str {
+    if key == "index.html" || key.starts_with("wasm/") {
+        "no-cache"
+    } else if key.starts_with("fonts/") || key.starts_with("assets/icons/") {
+        "public, max-age=86400"
+    } else {
+        "no-cache"
     }
 }
 
@@ -217,7 +232,7 @@ pub fn serve(headers: &HeaderMap, path: &str) -> Response {
             }
         };
         set(header::ETAG, &etag);
-        set(header::CACHE_CONTROL, "no-cache");
+        set(header::CACHE_CONTROL, cache_control(&key));
         set(header::VARY, "Accept-Encoding");
         if !fresh {
             set(header::CONTENT_TYPE, "text/html");
@@ -263,7 +278,7 @@ pub fn serve(headers: &HeaderMap, path: &str) -> Response {
         }
     };
     set(header::ETAG, &etag);
-    set(header::CACHE_CONTROL, "no-cache");
+    set(header::CACHE_CONTROL, cache_control(&key));
     set(header::VARY, "Accept-Encoding");
     if !fresh {
         set(header::CONTENT_TYPE, &content_type);
@@ -285,6 +300,14 @@ mod tests {
         assert_eq!(key_for("/../Cargo.toml"), None);
         assert_eq!(key_for("/assets//x.svg"), None);
         assert_eq!(key_for("/a\\b"), None);
+    }
+
+    #[test]
+    fn fonts_and_icons_are_kept_and_the_page_is_revalidated() {
+        assert_eq!(cache_control("index.html"), "no-cache");
+        assert_eq!(cache_control("wasm/cyberapi_web_bg.wasm"), "no-cache");
+        assert_eq!(cache_control("fonts/IBMPlexSans.ttf"), "public, max-age=86400");
+        assert_eq!(cache_control("assets/icons/globe.svg"), "public, max-age=86400");
     }
 
     #[test]

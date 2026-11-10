@@ -1152,6 +1152,7 @@ public_title = "Public preview"
 public_switch = "Anyone with the link can view"
 public_hint = "When this is on, anyone with the address can read the online documentation without signing in. Secret values stay masked. Turning it off requires a sign-in again."
 public_after_sync = "Saved with the project's other changes. The page follows this switch after the next sync."
+public_loading = "Reading whether this page is public."
 
 [versions]
 open = "Versions…"
