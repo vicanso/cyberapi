@@ -634,34 +634,30 @@ pub enum DataError {
     Width { line: usize, found: usize, named: usize },
 }
 
-/// A data file's rows, each its values by name: a JSON array of objects (a
-/// value that is not a string as JSON), or CSV whose first line names the
-/// columns. Blank text has no rows: the run goes once.
+/// A data file's rows, each its values by name: a JSON array of objects, or
+/// one JSON object (a single row). A value that is not a string is written
+/// as JSON. Otherwise CSV, whose first line names the columns. A leading
+/// UTF-8 BOM is ignored. Blank text has no rows: the run goes once.
 pub fn rows(text: &str) -> Result<Vec<Values>, DataError> {
-    let trimmed = text.trim();
+    // Excel's "CSV UTF-8" starts the first header with U+FEFF, which `trim`
+    // keeps, so `value(id)` would miss a column named `\u{feff}id`.
+    let trimmed = text.trim().trim_start_matches('\u{feff}').trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());
     }
-    if trimmed.starts_with('[') {
+    if trimmed.starts_with('[') || trimmed.starts_with('{') {
         let json: Value = serde_json::from_str(trimmed).map_err(|error| DataError::Json {
             message: error.to_string(),
         })?;
-        let Value::Array(items) = json else {
-            return NotRowsSnafu.fail();
+        let items = match json {
+            Value::Array(items) => items,
+            Value::Object(map) => return Ok(vec![json_row(map)]),
+            _ => return NotRowsSnafu.fail(),
         };
         return items
             .into_iter()
             .map(|item| match item {
-                Value::Object(map) => Ok(map
-                    .into_iter()
-                    .map(|(name, value)| {
-                        let value = match value {
-                            Value::String(text) => text,
-                            other => other.to_string(),
-                        };
-                        (name, value)
-                    })
-                    .collect()),
+                Value::Object(map) => Ok(json_row(map)),
                 _ => NotRowsSnafu.fail(),
             })
             .collect();
@@ -683,6 +679,19 @@ pub fn rows(text: &str) -> Result<Vec<Values>, DataError> {
                 .fail();
             }
             Ok(names.iter().cloned().zip(record).collect())
+        })
+        .collect()
+}
+
+/// One JSON object's fields. A string is the text; anything else is JSON.
+fn json_row(map: serde_json::Map<String, Value>) -> Values {
+    map.into_iter()
+        .map(|(name, value)| {
+            let value = match value {
+                Value::String(text) => text,
+                other => other.to_string(),
+            };
+            (name, value)
         })
         .collect()
 }
@@ -960,6 +969,14 @@ mod tests {
         assert!(matches!(rows("[1"), Err(DataError::Json { .. })));
         assert_eq!(rows("  \n"), Ok(Vec::new()));
         assert_eq!(rows("only,names"), Ok(Vec::new()));
+        // #94: Excel's CSV UTF-8 marks the file, and the first name with it.
+        assert_eq!(
+            rows("\u{feff}id,name\r\n5,eve\r\n").expect("bom"),
+            [values(&[("id", "5"), ("name", "eve")])]
+        );
+        // #95: one object is one row, not a CSV whose header is `{`.
+        assert_eq!(rows(r#"{"id":1}"#).expect("object"), [values(&[("id", "1")])]);
+        assert!(matches!(rows("{no"), Err(DataError::Json { .. })));
     }
 
     #[test]

@@ -51,7 +51,7 @@ A row can require the answer to match one example kept on the API: the status an
 - Set a delay between sends, how many times to retry a failure, and whether to stop at the first failure.
 - Each send shows its answer and how its assertions held. The dialog tallies what held and what failed. With no assertions, an error status is a failure.
 - Export the result as JUnit XML or a self-contained HTML report. Pick a send afterwards to open that API there.
-- Give data — a CSV with a header row, or a JSON array of objects — pasted, or picked on the desktop. The APIs run once for each row. A column is `{{value(column)}}`.
+- Give data — a CSV with a header row (a leading UTF-8 BOM is ignored), a JSON array of objects, or one JSON object — pasted, or picked on the desktop. The APIs run once for each row, and once for that one object. A column is `{{value(column)}}`.
 - Under the assertions, **Extract** takes a value from the answer (a JSONPath, a header, the status) for later requests in the same run to read as `{{value(name)}}`. Log in once, then send the token.
 - Those values belong to the run. Nothing is written to the project. What was sent is kept in each API's history, as any send is.
 - In an environment marked as production, the run asks once before it starts.
