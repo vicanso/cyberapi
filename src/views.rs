@@ -1,6 +1,7 @@
 //! The pages and dialogs (L4). Views draw what the states hold and forward
 //! what the reader asks for; they never call a store.
 
+mod about_dialog;
 mod access_dialog;
 mod accounts_dialog;
 mod cookies_dialog;
@@ -28,6 +29,7 @@ mod update_dialog;
 mod variables_dialog;
 mod workspace;
 
+pub use about_dialog::open_about_dialog;
 pub use access_dialog::open_access_dialog;
 
 /// What copying a request as code says: a gRPC call's is grpcurl's

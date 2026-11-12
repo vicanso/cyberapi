@@ -13,17 +13,17 @@ use tracing::warn;
 /// text, has no raw and pretty forms: it is text unless this is the tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum JsonView {
-    /// As the server sent it (#51).
+    /// Indented ([`cyberapi_core::format::json`]). Default per R4.
     #[default]
-    Raw,
-    /// Indented ([`cyberapi_core::format::json`]).
     Pretty,
+    /// As the server sent it (#51).
+    Raw,
     Tree,
 }
 
 impl JsonView {
     /// In the order the switch and the settings offer them.
-    pub const ALL: [Self; 3] = [Self::Raw, Self::Pretty, Self::Tree];
+    pub const ALL: [Self; 3] = [Self::Pretty, Self::Raw, Self::Tree];
 
     fn name(self) -> &'static str {
         match self {
@@ -46,10 +46,10 @@ impl JsonView {
 }
 
 /// The default for this reader. A missing entry, or a file that cannot be
-/// read, is [`JsonView::Raw`].
+/// read, is [`JsonView::Pretty`].
 pub fn get(scope: &str) -> JsonView {
     let Some(file) = storage::read_document() else {
-        return JsonView::Raw;
+        return JsonView::Pretty;
     };
     file.readers
         .get(scope)
@@ -216,11 +216,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_json_view_default_is_pretty() {
+        assert_eq!(JsonView::default(), JsonView::Pretty);
+        assert_eq!(JsonView::ALL, [JsonView::Pretty, JsonView::Raw, JsonView::Tree]);
+        assert_eq!(get("unseen-reader"), JsonView::Pretty);
+    }
+
+    #[test]
     fn a_choice_is_kept_for_its_reader() {
-        assert_eq!(get("alice"), JsonView::Raw, "raw until chosen otherwise");
+        assert_eq!(get("alice"), JsonView::Pretty, "pretty until chosen otherwise");
         assert!(set("alice", JsonView::Tree));
         assert_eq!(get("alice"), JsonView::Tree);
-        assert_eq!(get("bob"), JsonView::Raw, "another reader keeps their own");
+        assert_eq!(get("bob"), JsonView::Pretty, "another reader keeps their own");
+        assert!(set("alice", JsonView::Raw));
+        assert_eq!(get("alice"), JsonView::Raw);
         assert!(set("alice", JsonView::Pretty));
         assert_eq!(get("alice"), JsonView::Pretty);
     }

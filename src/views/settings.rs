@@ -869,6 +869,21 @@ impl SettingsView {
                     cx,
                 ),
                 setting_row(
+                    t!("settings.query_in_url").to_string(),
+                    Some(t!("settings.query_in_url_desc").to_string()),
+                    Switch::new("settings-query-in-url")
+                        .checked(prefs.text.query_in_url)
+                        .on_click(|checked, _, cx| {
+                            let app = AppStore::global(cx).state().clone();
+                            let text = TextPrefs {
+                                query_in_url: *checked,
+                                ..app.read(cx).prefs().text
+                            };
+                            app.update(cx, |app, cx| app.set_text(text, cx));
+                        }),
+                    cx,
+                ),
+                setting_row(
                     t!("settings.json_view").to_string(),
                     Some(t!("settings.json_view_desc").to_string()),
                     Select::new(&self.json_view).small(),
@@ -1202,17 +1217,26 @@ impl SettingsView {
 
     fn render_about(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
-        let mut rows: Vec<(String, SharedString)> = vec![
-            (
-                t!("settings.version").to_string(),
-                cyberapi_core::version::describe().into(),
-            ),
-            (t!("settings.platform").to_string(), this_build::platform().into()),
-        ];
+        let mut rows: Vec<(String, SharedString)> = vec![(
+            t!("settings.version").to_string(),
+            cyberapi_core::version::describe().into(),
+        )];
+        if let Some(commit) = cyberapi_core::version::COMMIT {
+            rows.push((t!("settings.commit").to_string(), commit.into()));
+        }
+        if let Some(build_time) = cyberapi_core::version::BUILD_TIME {
+            rows.push((t!("settings.build_time").to_string(), build_time.into()));
+        }
+        rows.push((
+            t!("settings.model").to_string(),
+            format!("v{}", cyberapi_core::version::MODEL).into(),
+        ));
+        rows.push((t!("settings.platform").to_string(), this_build::platform().into()));
         if let Some(version) = this_build::os_version() {
             rows.push((t!("settings.os_version").to_string(), version.into()));
         }
         rows.push(("User-Agent".to_string(), this_build::user_agent().into()));
+        rows.push((t!("settings.license").to_string(), "Apache-2.0".into()));
         let line = |label: String, value: AnyElement| {
             h_flex()
                 .gap_3()
@@ -1416,9 +1440,19 @@ mod tests {
         };
         assert!(!shown(cx, "settings-wrap"), "the Editor section's, not the first's");
 
-        click(cx, handle, &["settings-editor", "settings-wrap", "settings-tabs"]);
+        click(
+            cx,
+            handle,
+            &[
+                "settings-editor",
+                "settings-wrap",
+                "settings-tabs",
+                "settings-query-in-url",
+            ],
+        );
         assert!(!prefs(cx).text.wrap);
         assert!(!prefs(cx).text.show_tabs);
+        assert!(prefs(cx).text.query_in_url);
         click(
             cx,
             handle,
@@ -1508,5 +1542,23 @@ mod tests {
             Section::Data,
             "on the same section"
         );
+    }
+
+    #[gpui_kit::test]
+    async fn test_web_settings_about_inline_rendering(cx: &mut TestAppContext) {
+        let (handle, view) = open(cx);
+        click(cx, handle, &["settings-about"]);
+        assert_eq!(cx.read(|cx| view.read(cx).section), Section::About);
+        let (has_homepage, has_dialog) = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                (
+                    window.try_find("settings-homepage").is_some(),
+                    window.has_active_dialog(cx),
+                )
+            })
+            .expect("the window is open");
+        assert!(has_homepage, "About section renders inline with homepage link");
+        assert!(!has_dialog, "About section never stacks a second dialog");
     }
 }

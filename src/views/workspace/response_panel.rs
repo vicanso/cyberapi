@@ -258,9 +258,9 @@ pub struct ResponsePanel {
     /// The response the tree was last given, and the filter it was given
     /// through.
     tree_of: Option<(String, Option<String>)>,
-    /// The view picked on the panel, bound to one response. Another response
-    /// opens in the saved default.
-    body_view: Option<(String, JsonView)>,
+    /// The view picked on the panel per response ID; responses without an
+    /// entry open in the saved default (`JsonView::Pretty` by default, R4).
+    body_views: std::collections::HashMap<String, JsonView>,
     /// Whether the body wraps long lines (F14.7).
     wrap: bool,
     /// An event stream's events: the shown response's, or the live one's.
@@ -391,7 +391,7 @@ impl ResponsePanel {
             tab: ResponseTab::Body,
             json_tree,
             tree_of: None,
-            body_view: None,
+            body_views: std::collections::HashMap::new(),
             wrap,
             events,
             stream_raw: None,
@@ -424,10 +424,12 @@ impl ResponsePanel {
 
     /// The view this response was switched to; otherwise the default.
     fn response_view(&self, cx: &App) -> JsonView {
-        match (&self.shown, &self.body_view) {
-            (Some(id), Some((bound, view))) if bound == id => *view,
-            _ => AppStore::global(cx).state().read(cx).json_view(),
+        if let Some(id) = &self.shown
+            && let Some(&view) = self.body_views.get(id)
+        {
+            return view;
         }
+        AppStore::global(cx).state().read(cx).json_view()
     }
 
     fn response_shows_tree(&self, cx: &App) -> bool {
@@ -953,7 +955,7 @@ impl ResponsePanel {
                                     ) else {
                                         return;
                                     };
-                                    this.body_view = Some((id, *view));
+                                    this.body_views.insert(id, *view);
                                     this.sync(window, cx);
                                     this.sync_response_tree(cx);
                                     cx.notify();
@@ -2569,7 +2571,8 @@ impl Render for ResponsePanel {
 #[cfg(test)]
 mod tests {
     use super::editor_text;
-    use cyberapi_core::response::HttpResponse;
+    use crate::json_view_local::JsonView;
+    use cyberapi_core::response::{HttpResponse, TREE_LIMIT, WRAP_LINE_LIMIT, unwrappable_line};
 
     /// Text stops at the settings' limit. Bytes keep the hex limit.
     #[test]
@@ -2595,5 +2598,76 @@ mod tests {
         let (_, _, clipped, hex) = editor_text(&bytes, false, 1);
         assert!(hex);
         assert_eq!(clipped, None, "hex keeps its own limit");
+    }
+
+    #[test]
+    fn test_new_response_opens_pretty() {
+        assert_eq!(JsonView::default(), JsonView::Pretty);
+        let resp = HttpResponse {
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: br#"{"a":1,"b":[true,false]}"#.to_vec(),
+            ..Default::default()
+        };
+        let pretty = JsonView::default() == JsonView::Pretty;
+        let (lang, shown, clipped, hex) = editor_text(&resp, pretty, 256 * 1024);
+        assert_eq!(lang, "json");
+        assert!(!hex);
+        assert_eq!(clipped, None);
+        assert_eq!(
+            shown,
+            "{\n    \"a\": 1,\n    \"b\": [\n        true,\n        false\n    ]\n}"
+        );
+    }
+
+    #[test]
+    fn test_huge_response_json_prefix_performance() {
+        let mut body = Vec::with_capacity(512 * 1024);
+        body.extend_from_slice(br#"{"items":["#);
+        while body.len() < 300 * 1024 {
+            body.extend_from_slice(br#"{"id":12345,"name":"cyberapi"},"#);
+        }
+        body.extend_from_slice(br#"{"id":99999}]}"#);
+
+        let resp = HttpResponse {
+            headers: vec![("content-type".into(), "application/json".into())],
+            body,
+            ..Default::default()
+        };
+        let limit = 64 * 1024;
+        let (lang, shown, clipped, hex) = editor_text(&resp, true, limit);
+        assert_eq!(lang, "json");
+        assert!(!hex);
+        assert_eq!(clipped, Some(limit));
+        assert!(shown.starts_with("{\n    \"items\": [\n        {\n            \"id\": 12345"));
+    }
+
+    #[test]
+    fn test_json_tree_limit_safeguard() {
+        assert_eq!(TREE_LIMIT, 16 * 1024 * 1024);
+        let oversized = TREE_LIMIT + 1;
+        assert!(oversized > TREE_LIMIT);
+    }
+
+    #[test]
+    fn test_wrap_line_limit_safeguard() {
+        assert_eq!(WRAP_LINE_LIMIT, 64 * 1024);
+        let short = "a\nb\nc";
+        assert_eq!(unwrappable_line(short), None);
+        let long_line = "x".repeat(WRAP_LINE_LIMIT + 10);
+        assert_eq!(unwrappable_line(&long_line), Some(WRAP_LINE_LIMIT + 10));
+    }
+
+    #[test]
+    fn test_malformed_json_fallback_lossy() {
+        let malformed = HttpResponse {
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: b"{\"unclosed\": 123".to_vec(),
+            ..Default::default()
+        };
+        let (lang, shown, clipped, hex) = editor_text(&malformed, true, 256 * 1024);
+        assert_eq!(lang, "json");
+        assert!(!hex);
+        assert_eq!(clipped, None);
+        assert_eq!(shown, "{\"unclosed\": 123");
     }
 }

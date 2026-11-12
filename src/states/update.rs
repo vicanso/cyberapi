@@ -111,6 +111,8 @@ pub struct UpdateState {
     available: Option<UpdateInfo>,
     /// `(downloaded, total)` bytes while [`UpdatePhase::Downloading`].
     progress: Option<(u64, u64)>,
+    /// Why the last download or install attempt failed.
+    failed: Option<String>,
     _start: Option<Task<()>>,
     _task: Option<Task<()>>,
 }
@@ -126,6 +128,7 @@ impl UpdateState {
             phase: UpdatePhase::Idle,
             available: None,
             progress: None,
+            failed: None,
             _start: None,
             _task: None,
         }
@@ -145,6 +148,11 @@ impl UpdateState {
         self.progress
     }
 
+    /// Why the last download or install attempt failed, while waiting to retry.
+    pub fn failed(&self) -> Option<&str> {
+        self.failed.as_deref()
+    }
+
     /// `0..=100` while a package of known size is coming down.
     pub fn download_percent(&self) -> Option<u8> {
         let (done, total) = self.progress?;
@@ -155,6 +163,7 @@ impl UpdateState {
     /// permanently skipping the version.
     pub fn dismiss(&mut self, cx: &mut Context<Self>) {
         if self.phase == UpdatePhase::Idle && self.available.take().is_some() {
+            self.failed = None;
             cx.notify();
         }
     }
@@ -181,6 +190,7 @@ impl UpdateState {
         let proxy = app.read(cx).prefs().sending.proxy.clone();
         app.update(cx, |app, cx| app.note_update_check(now(), cx));
         self.phase = UpdatePhase::Checking { manual };
+        self.failed = None;
         cx.notify();
         let (engine, kinds) = (self.engine.clone(), self.kinds);
         self._task = Some(cx.spawn(async move |this, cx| {
@@ -217,6 +227,7 @@ impl UpdateState {
     /// Not to be told of the version found again, unless asked to look.
     pub fn skip(&mut self, cx: &mut Context<Self>) {
         if let Some(info) = self.available.take() {
+            self.failed = None;
             let app = AppStore::global(cx).state().clone();
             app.update(cx, |app, cx| app.skip_update(info.version, cx));
             cx.notify();
@@ -236,6 +247,7 @@ impl UpdateState {
         // Publish 0% synchronously before any await so the dialog and the
         // title-bar chip switch to progress state on the click itself.
         self.phase = UpdatePhase::Downloading;
+        self.failed = None;
         self.progress = Some((0, asset.size));
         cx.notify();
 
@@ -269,15 +281,18 @@ impl UpdateState {
                 match done {
                     Ok(Delivery::Replaced) => {
                         this.phase = UpdatePhase::Installed;
+                        this.failed = None;
                         cx.emit(UpdateEvent::Installed);
                     }
                     Ok(Delivery::HandedToOs(path)) => {
                         this.phase = UpdatePhase::Idle;
+                        this.failed = None;
                         cx.emit(UpdateEvent::HandedToOs(path));
                     }
                     Err(error) => {
                         warn!(%error, "update: not installed");
                         this.phase = UpdatePhase::Idle;
+                        this.failed = Some(error.clone());
                         cx.emit(UpdateEvent::InstallFailed(error));
                     }
                 }
@@ -732,6 +747,13 @@ mod tests {
             Some(UpdateEvent::InstallFailed(why)) if why.contains("not what the release published")
         ));
         assert_eq!(state.read_with(cx, |state, _| state.phase()), UpdatePhase::Idle);
+        assert!(
+            state
+                .read_with(cx, |state, _| state.failed().map(str::to_string))
+                .is_some_and(|why| why.contains("not what the release published"))
+        );
+        state.update(cx, |state, cx| state.dismiss(cx));
+        assert!(state.read_with(cx, |state, _| state.failed().is_none()));
     }
 
     #[gpui_kit::test]

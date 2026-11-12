@@ -975,9 +975,12 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(
             state.read_with(cx, |state, _| state.json_view()),
-            crate::json_view_local::JsonView::Raw
+            crate::json_view_local::JsonView::Pretty
         );
-        assert_eq!(crate::json_view_local::get(""), crate::json_view_local::JsonView::Raw);
+        assert_eq!(
+            crate::json_view_local::get(""),
+            crate::json_view_local::JsonView::Pretty
+        );
     }
 
     /// F14.6–F14.9: kept, handed to the next send, and reset.
@@ -990,6 +993,7 @@ mod tests {
             editor_size: 15,
             wrap: false,
             show_tabs: true,
+            ..Default::default()
         };
         let sending = SendPrefs {
             follow_redirects: true,

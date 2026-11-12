@@ -66,6 +66,12 @@ pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {
     _ => None,
 };
 
+/// The UTC timestamp when this binary was compiled (`YYYY-MM-DD HH:MM:SS UTC`).
+pub const BUILD_TIME: Option<&str> = match option_env!("CYBERAPI_BUILD_TIME") {
+    Some(time) if !time.is_empty() => Some(time),
+    _ => None,
+};
+
 /// The version with its commit, `0.2.1 (abc1234)`, for `--version`, the
 /// logs and the about page; a nightly's version names it already.
 pub fn describe() -> String {
@@ -91,6 +97,13 @@ mod tests {
             described("0.2.2-nightly.20261024.137a858", Some("137a858")),
             "0.2.2-nightly.20261024.137a858"
         );
+    }
+
+    #[test]
+    fn build_metadata_constants_are_populated() {
+        assert!(!VERSION.is_empty());
+        assert_eq!(MODEL, 24);
+        assert!(BUILD_TIME.is_some_and(|time| time.ends_with("UTC")));
     }
 
     #[test]

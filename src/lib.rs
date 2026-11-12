@@ -68,6 +68,7 @@ const APP_ID: &str = "com.bigtree.cyberapi";
 gpui_kit::actions!(
     cyberapi,
     [
+        OpenAbout,
         Quit,
         Hide,
         HideOthers,
@@ -434,21 +435,22 @@ fn install_mac_menus(cx: &mut App) {
     // After the dispatch: a menu's action comes while the window is being
     // updated, when it cannot be updated again (#44: Zoom and Minimize did
     // nothing).
-    fn on_window(cx: &mut App, act: impl FnOnce(&mut Window) + 'static) {
+    fn on_window(cx: &mut App, act: impl FnOnce(&mut Window, &mut App) + 'static) {
         if let Some(window) = cx.active_window() {
             cx.defer(move |cx| {
-                let _ = window.update(cx, |_, window, _| act(window));
+                let _ = window.update(cx, |_, window, cx| act(window, cx));
             });
         }
     }
 
+    cx.on_action(|_: &OpenAbout, cx| on_window(cx, views::open_about_dialog));
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    cx.on_action(|_: &Minimize, cx| on_window(cx, |window| window.minimize_window()));
-    cx.on_action(|_: &Zoom, cx| on_window(cx, |window| window.zoom_window()));
-    cx.on_action(|_: &ToggleFullScreen, cx| on_window(cx, |window| window.toggle_fullscreen()));
+    cx.on_action(|_: &Minimize, cx| on_window(cx, |window, _| window.minimize_window()));
+    cx.on_action(|_: &Zoom, cx| on_window(cx, |window, _| window.zoom_window()));
+    cx.on_action(|_: &ToggleFullScreen, cx| on_window(cx, |window, _| window.toggle_fullscreen()));
     // As the close button does (F1.4).
     cx.on_action(|_: &CloseWindow, cx| cx.hide());
     cx.bind_keys([
@@ -461,6 +463,8 @@ fn install_mac_menus(cx: &mut App) {
     ]);
     cx.set_menus([
         Menu::new(BUNDLE_NAME).items([
+            MenuItem::action(format!("About {BUNDLE_NAME}"), OpenAbout),
+            MenuItem::separator(),
             MenuItem::action(format!("Hide {BUNDLE_NAME}"), Hide),
             MenuItem::action("Hide Others", HideOthers),
             MenuItem::action("Show All", ShowAll),

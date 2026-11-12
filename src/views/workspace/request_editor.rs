@@ -16,7 +16,7 @@ use crate::views::open_variables_dialog;
 use crate::views::template_hints::{self, HintSource};
 use cyberapi_core::graphql::GraphQlBody;
 use cyberapi_core::grpc::{FROM_REFLECTION, GrpcBody};
-use cyberapi_core::import::{request_from_curl, split_url};
+use cyberapi_core::import::{format_uri_with_query, parse_uri_into_query, request_from_curl, split_url};
 use cyberapi_core::model::{ContentType, HttpMethod, HttpRequest, VariableCategory, split_env_prefix};
 use cyberapi_core::prefs::RequestTab;
 use cyberapi_core::send::{self, form_fields, unsent_body};
@@ -119,9 +119,23 @@ pub struct RequestEditor {
     body_as_tree: Option<bool>,
     /// Whether the body editor wraps long lines (F14.7).
     wrap: bool,
+    /// Whether query parameters are edited directly in the URL input (`?k=v`)
+    /// instead of the standalone Query table (`TextPrefs::query_in_url`, R5).
+    query_in_url: bool,
     /// What typing `{{` in the body or a value offers (M6).
     hints: HintSource,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Formats the URL input text from `request` according to `query_in_url` (R5),
+/// stripping the leading `{{ENV}}` prefix which is shown in the environment picker.
+fn uri_field_text(request: &HttpRequest, query_in_url: bool) -> String {
+    if query_in_url {
+        let full = format_uri_with_query(&request.uri, &request.query);
+        split_env_prefix(&full).1.to_string()
+    } else {
+        split_env_prefix(&request.uri).1.to_string()
+    }
 }
 
 /// Wraps `state` in a full-bleed pane that handles `Ctrl + /` (`Cmd + /` on
@@ -311,10 +325,11 @@ impl RequestEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let request = api.read(cx).request().clone();
+        let query_in_url = AppStore::global(cx).state().read(cx).prefs().text.query_in_url;
         let uri = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(uri_placeholder(request.method))
-                .default_value(split_env_prefix(&request.uri).1.to_string())
+                .default_value(uri_field_text(&request, query_in_url))
         });
         let hints = HintSource::new(&workspace);
         let body = body_state(&request, &hints, window, cx);
@@ -523,7 +538,8 @@ impl RequestEditor {
         let app = AppStore::global(cx).state().clone();
         let wrap = app.read(cx).prefs().text.wrap;
         subscriptions.push(cx.observe_in(&app, window, |this, app, window, cx| {
-            let wrap = app.read(cx).prefs().text.wrap;
+            let text_prefs = app.read(cx).prefs().text;
+            let wrap = text_prefs.wrap;
             if wrap != this.wrap {
                 this.wrap = wrap;
                 for editor in [
@@ -534,6 +550,9 @@ impl RequestEditor {
                 ] {
                     editor.update(cx, |editor, cx| editor.set_soft_wrap(wrap, window, cx));
                 }
+            }
+            if text_prefs.query_in_url != this.query_in_url {
+                this.apply_query_in_url_mode(text_prefs.query_in_url, window, cx);
             }
             this.sync_body_tree_if_shown(cx);
             cx.notify();
@@ -564,6 +583,7 @@ impl RequestEditor {
             json_tree,
             body_as_tree: None,
             wrap,
+            query_in_url,
             hints,
             _subscriptions: subscriptions,
         };
@@ -1093,7 +1113,8 @@ impl RequestEditor {
     /// F7.10: the request came back from the history; every field reads it.
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let request = self.api.read(cx).request().clone();
-        let rest = split_env_prefix(&request.uri).1.to_string();
+        self.query_in_url = AppStore::global(cx).state().read(cx).prefs().text.query_in_url;
+        let rest = uri_field_text(&request, self.query_in_url);
         self.uri.update(cx, |input, cx| {
             input.set_value(rest, window, cx);
             input.set_placeholder(uri_placeholder(request.method), window, cx);
@@ -1148,11 +1169,8 @@ impl RequestEditor {
     /// what was typed just before sending goes with it.
     pub(super) fn flush(&mut self, cx: &mut Context<Self>) {
         self.save_uri(cx);
-        let (query, headers, path_rows) = (
-            self.query.read(cx).list(cx),
-            self.headers.read(cx).list(cx),
-            self.path_params.read(cx).list(cx),
-        );
+        let query = (!self.query_in_url).then(|| self.query.read(cx).list(cx));
+        let (headers, path_rows) = (self.headers.read(cx).list(cx), self.path_params.read(cx).list(cx));
         for row in &path_rows {
             let key = row.key.trim();
             if !key.is_empty() {
@@ -1178,7 +1196,9 @@ impl RequestEditor {
         };
         let form = (content_type.is_key_value() && method != HttpMethod::Grpc).then(|| self.form.read(cx).list(cx));
         self.api.update(cx, |api, cx| {
-            api.set_query(query, cx);
+            if let Some(query) = query {
+                api.set_query(query, cx);
+            }
             api.set_headers(headers, cx);
             if next_vars != variables {
                 api.set_variables(next_vars, cx);
@@ -1218,8 +1238,11 @@ impl RequestEditor {
     /// #50: a query in the URI field goes to the end of the Query list, and
     /// the field keeps the rest, so each parameter has one place. Moved as
     /// the field is committed, not as it is typed, which would take the
-    /// text from under the caret.
+    /// text from under the caret. Skipped when `query_in_url` is enabled (R5).
     fn take_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.query_in_url {
+            return;
+        }
         let text = self.uri.read(cx).value().to_string();
         if !text.contains('?') {
             return;
@@ -1233,6 +1256,38 @@ impl RequestEditor {
         query.extend(pairs);
         self.query.update(cx, |kv, cx| kv.set_list(&query, window, cx));
         self.api.update(cx, |api, cx| api.set_query(query, cx));
+    }
+
+    /// Switches between the standalone Query table mode (`false`) and inline
+    /// URL query editing (`true`) without losing parameters or metadata (R5).
+    pub(super) fn apply_query_in_url_mode(&mut self, query_in_url: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if query_in_url == self.query_in_url {
+            return;
+        }
+        if query_in_url {
+            // Table -> URL inline: commit any pending `?query` in the URI field
+            // and flush the Query table into `ApiState`, then format the full URL.
+            self.take_query(window, cx);
+            self.take_prefix(window, cx);
+            self.save_uri(cx);
+            let table_query = self.query.read(cx).list(cx);
+            self.api.update(cx, |api, cx| api.set_query(table_query, cx));
+            self.query_in_url = true;
+            let rest = uri_field_text(self.api.read(cx).request(), true);
+            self.uri.update(cx, |input, cx| input.set_value(rest, window, cx));
+        } else {
+            // URL inline -> Table: split the URL input into clean URI + query
+            // list (preserving descriptions, schemas, and disabled rows), then
+            // update both the URL field and the Query table editor.
+            self.take_prefix(window, cx);
+            self.save_uri(cx);
+            self.query_in_url = false;
+            let request = self.api.read(cx).request().clone();
+            let rest = uri_field_text(&request, false);
+            self.uri.update(cx, |input, cx| input.set_value(rest, window, cx));
+            self.query.update(cx, |kv, cx| kv.set_list(&request.query, window, cx));
+        }
+        self.sync_path_params(window, cx);
     }
 
     /// The environment prefix, then what the field holds.
@@ -1311,7 +1366,13 @@ impl RequestEditor {
     }
 
     fn save_uri(&mut self, cx: &mut Context<Self>) {
-        let uri = self.current_full_uri(cx);
+        let full_uri = self.current_full_uri(cx);
+        let (uri, next_query) = if self.query_in_url {
+            let (clean_uri, parsed_query) = parse_uri_into_query(&full_uri, &self.api.read(cx).request().query);
+            (clean_uri, Some(parsed_query))
+        } else {
+            (full_uri, None)
+        };
         let current_rows = self.path_params.read(cx).list(cx);
         for row in &current_rows {
             let key = row.key.trim();
@@ -1325,6 +1386,11 @@ impl RequestEditor {
         };
         self.api.update(cx, |api, cx| {
             api.set_uri(uri, cx);
+            if let Some(next_query) = next_query
+                && api.request().query != next_query
+            {
+                api.set_query(next_query, cx);
+            }
             if api.request().variables != next_vars {
                 api.set_variables(next_vars, cx);
             }
@@ -1346,11 +1412,21 @@ impl RequestEditor {
     /// F4.4: the environment variable the URI starts with, or none.
     fn set_environment(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         let rest = self.uri.read(cx).value().trim().to_string();
-        let uri = match name {
+        let full_uri = match name {
             Some(name) => format!("{{{{{name}}}}}{rest}"),
             None => rest,
         };
-        self.api.update(cx, |api, cx| api.set_uri(uri, cx));
+        if self.query_in_url {
+            let (clean_uri, next_query) = parse_uri_into_query(&full_uri, &self.api.read(cx).request().query);
+            self.api.update(cx, |api, cx| {
+                api.set_uri(clean_uri, cx);
+                if api.request().query != next_query {
+                    api.set_query(next_query, cx);
+                }
+            });
+        } else {
+            self.api.update(cx, |api, cx| api.set_uri(full_uri, cx));
+        }
     }
 
     /// F4.6: a new content type empties the body; one with something in it
@@ -1828,7 +1904,9 @@ impl RequestEditor {
                                         }
                                         if text.contains('?') {
                                             cx.defer_in(window, |this, window, cx| {
-                                                this.take_query(window, cx);
+                                                if !this.query_in_url {
+                                                    this.take_query(window, cx);
+                                                }
                                                 this.save_uri(cx);
                                             });
                                         }
@@ -1885,16 +1963,47 @@ impl RequestEditor {
             .child(address)
     }
 
+    /// Returns the tabs shown in the tab bar for the current request and
+    /// `query_in_url` setting (R5: hides `RequestTab::Query` when `query_in_url`
+    /// is enabled and the URL has no `:param`/`{param}` path parameters).
+    pub(super) fn visible_tabs(&self, cx: &App) -> Vec<RequestTab> {
+        let request = self.api.read(cx).request();
+        let has_path = !cyberapi_core::model::path_param_names(&self.current_full_uri(cx)).is_empty();
+        RequestTab::for_request(request)
+            .iter()
+            .copied()
+            .filter(|tab| !(*tab == RequestTab::Query && self.query_in_url && !has_path))
+            .collect()
+    }
+
+    /// Resolves `tab` to a visible fallback when `RequestTab::Query` is hidden
+    /// in `query_in_url` mode (`RequestTab::Body` for methods with a body tab,
+    /// `RequestTab::Headers` for bodyless methods like GET/HEAD, R5).
+    pub(super) fn effective_tab(&self, tab: RequestTab, cx: &App) -> RequestTab {
+        let has_path = !cyberapi_core::model::path_param_names(&self.current_full_uri(cx)).is_empty();
+        if self.query_in_url && !has_path && tab == RequestTab::Query {
+            if self.api.read(cx).request().has_body_tab() {
+                RequestTab::Body
+            } else {
+                RequestTab::Headers
+            }
+        } else {
+            tab
+        }
+    }
+
     fn render_tabs(&self, tab: RequestTab, cx: &mut Context<Self>) -> impl IntoElement {
         // Read where it is: a clone of the request in each frame copied its
         // body and examples (PERF-10).
         let request = self.api.read(cx).request();
-        let tabs = RequestTab::for_request(request);
+        let tabs = self.visible_tabs(cx);
+        let path_count = cyberapi_core::model::path_param_names(&self.current_full_uri(cx)).len();
         // F4.13: how many entries are sent. A `//` line stays in the list and
         // is not counted (#43).
         let count = |list: &[cyberapi_core::model::KvParam]| list.iter().filter(|row| row.enabled).count();
         // A gRPC call's body is its message, its headers the metadata.
         let grpc = request.method == HttpMethod::Grpc;
+        let query_in_url = self.query_in_url;
         let label = |tab: &RequestTab| {
             let (name, count) = match tab {
                 RequestTab::Body if grpc || request.method == HttpMethod::WebSocket => (t!("editor.grpc_message"), 0),
@@ -1909,7 +2018,11 @@ impl RequestEditor {
                 ),
                 RequestTab::Query => (
                     t!("editor.query"),
-                    count(&request.query) + cyberapi_core::model::path_param_names(&self.current_full_uri(cx)).len(),
+                    if query_in_url {
+                        path_count
+                    } else {
+                        count(&request.query) + path_count
+                    },
                 ),
                 RequestTab::Headers => (t!("editor.headers"), count(&request.headers)),
                 // #66 / #85: one when it signs in itself and has credentials filled in.
@@ -2454,7 +2567,8 @@ impl RequestEditor {
 
 impl Render for RequestEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tab = self.workspace.read(cx).tab(&self.api, cx);
+        let raw_tab = self.workspace.read(cx).tab(&self.api, cx);
+        let tab = self.effective_tab(raw_tab, cx);
         let content: AnyElement = match tab {
             RequestTab::Body => self.render_body(cx),
             // A long list scrolls rather than running off the column.
@@ -2494,22 +2608,24 @@ impl Render for RequestEditor {
                                     )
                                     .child(self.path_params.clone()),
                             )
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .pt_2()
-                                    .border_t_1()
-                                    .border_color(border)
-                                    .child(
-                                        div()
-                                            .px_1()
-                                            .text_xs()
-                                            .font_semibold()
-                                            .text_color(muted)
-                                            .child(t!("editor.query").to_string()),
-                                    )
-                                    .child(self.query.clone()),
-                            )
+                            .when(!self.query_in_url, |column| {
+                                column.child(
+                                    v_flex()
+                                        .gap_1()
+                                        .pt_2()
+                                        .border_t_1()
+                                        .border_color(border)
+                                        .child(
+                                            div()
+                                                .px_1()
+                                                .text_xs()
+                                                .font_semibold()
+                                                .text_color(muted)
+                                                .child(t!("editor.query").to_string()),
+                                        )
+                                        .child(self.query.clone()),
+                                )
+                            })
                             .into_any_element()
                     } else {
                         self.query.clone().into_any_element()
@@ -2547,7 +2663,102 @@ impl Render for RequestEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::prefix_choices;
+    use super::*;
+    use crate::Extras;
+    use cyberapi_core::model::KvParam;
+    use cyberapi_core::prefs::{AppPrefs, SendPrefs, TextPrefs, Timeouts};
+    use cyberapi_core::template::NoFiles;
+    use cyberapi_http::{HttpEngine, PreparedRequest, SendFuture};
+    use cyberapi_service::Sender;
+    use cyberapi_store::{MemoryStore, NewCollection};
+    use gpui_kit::component::Root;
+    use gpui_kit::{AnyWindowHandle, TestAppContext, size};
+    use std::sync::Arc;
+
+    struct NoEngine;
+
+    impl HttpEngine for NoEngine {
+        fn send(&self, _: PreparedRequest) -> SendFuture {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    struct Blank;
+
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    fn setup_editor(
+        query_in_url: bool,
+        request: HttpRequest,
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<WorkspaceState>,
+        Entity<ApiState>,
+        Entity<RequestEditor>,
+        AnyWindowHandle,
+    ) {
+        cx.update(gpui_kit::init);
+        let store = MemoryStore::new();
+        let storage = store.storage();
+        let prefs = AppPrefs {
+            text: TextPrefs {
+                query_in_url,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            AppStore::init(storage.clone(), Arc::new(NoEngine), prefs, Extras::default(), cx);
+        });
+        let collection = pollster::block_on(storage.collections().create(NewCollection {
+            name: "p".into(),
+            ..Default::default()
+        }))
+        .expect("create");
+        let inserted = pollster::block_on(storage.tree().create_api(collection.id.clone(), None, "users".into()))
+            .expect("create api");
+        let api_id = inserted.item.id;
+        pollster::block_on(
+            storage
+                .tree()
+                .save_request(collection.id.clone(), api_id.clone(), request),
+        )
+        .expect("save request");
+        let sender = Sender {
+            storage,
+            engine: Arc::new(NoEngine),
+            files: Arc::new(NoFiles("no files in tests")),
+            env: Arc::new(cyberapi_core::template::NoEnv("no environment in tests")),
+            user_agent: "CyberAPI/test".into(),
+            timeouts: Timeouts::default(),
+            sending: SendPrefs::default(),
+            inherited: Default::default(),
+            environment: None,
+            tokens: Default::default(),
+            secrets: Default::default(),
+        };
+        let workspace = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
+        cx.run_until_parked();
+        workspace.update(cx, |ws, cx| ws.select(&api_id, cx));
+        cx.run_until_parked();
+        let api = workspace.read_with(cx, |ws, _| ws.api().expect("selected api").clone());
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(800.), px(600.)), |window, cx| {
+                Root::new(cx.new(|_| Blank), window, cx)
+            })
+            .into();
+        let editor = cx
+            .update_window(window, |_, window, cx| {
+                cx.new(|cx| RequestEditor::new(workspace.clone(), api.clone(), window, cx))
+            })
+            .expect("window");
+        cx.run_until_parked();
+        (workspace, api, editor, window)
+    }
 
     #[test]
     fn the_address_menu_skips_a_blank_environment_name() {
@@ -2562,5 +2773,107 @@ mod tests {
             .map(|(name, _)| name.as_str())
             .collect();
         assert_eq!(listed, ["financeoperations", "host"]);
+    }
+
+    #[test]
+    fn test_uri_field_text_respects_query_in_url_mode() {
+        let req = HttpRequest {
+            uri: "{{HOST}}/api/users#top".into(),
+            query: vec![
+                KvParam {
+                    key: "page".into(),
+                    value: "1".into(),
+                    enabled: true,
+                    ..Default::default()
+                },
+                KvParam {
+                    key: "debug".into(),
+                    value: "1".into(),
+                    enabled: false,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(uri_field_text(&req, false), "/api/users#top");
+        assert_eq!(uri_field_text(&req, true), "/api/users?page=1#top");
+    }
+
+    #[gpui_kit::test]
+    async fn test_query_in_url_mode_and_live_switch(cx: &mut TestAppContext) {
+        let initial = HttpRequest {
+            method: HttpMethod::Get,
+            uri: "{{HOST}}/users".into(),
+            query: vec![
+                KvParam {
+                    key: "page".into(),
+                    value: "1".into(),
+                    enabled: true,
+                    description: "Page number".into(),
+                    ..Default::default()
+                },
+                KvParam {
+                    key: "hidden".into(),
+                    value: "off".into(),
+                    enabled: false,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (workspace, api, editor, window) = setup_editor(true, initial, cx);
+
+        // In query_in_url == true mode, the URL input shows the formatted query
+        // and the Query tab is hidden when there are no path parameters.
+        assert_eq!(editor.read_with(cx, |ed, cx| ed.shown_uri(cx)), "/users?page=1");
+        assert!(
+            !editor.read_with(cx, |ed, cx| ed.visible_tabs(cx).contains(&RequestTab::Query)),
+            "Query tab is hidden when query_in_url is true and there are no path parameters"
+        );
+        workspace.update(cx, |ws, cx| ws.set_tab(&api, RequestTab::Query, cx));
+        assert_eq!(
+            editor.read_with(cx, |ed, cx| ed.effective_tab(RequestTab::Query, cx)),
+            RequestTab::Headers,
+            "GET falls back from hidden Query tab to Headers"
+        );
+
+        // Editing the URL in query_in_url == true mode keeps `?` in the input
+        // while saving clean base `uri` + parsed `query` (preserving metadata & disabled rows).
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |ed, cx| {
+                ed.type_uri("/users?page=2&limit=50", window, cx);
+                ed.take_query(window, cx);
+                ed.save_uri(cx);
+            });
+        })
+        .expect("window");
+        assert_eq!(
+            editor.read_with(cx, |ed, cx| ed.shown_uri(cx)),
+            "/users?page=2&limit=50"
+        );
+        let saved = api.read_with(cx, |api, _| api.request().clone());
+        assert_eq!(saved.uri, "{{HOST}}/users");
+        assert_eq!(saved.query.len(), 3);
+        assert_eq!(saved.query[0].key, "page");
+        assert_eq!(saved.query[0].value, "2");
+        assert_eq!(saved.query[0].description, "Page number");
+        assert_eq!(saved.query[1].key, "limit");
+        assert_eq!(saved.query[1].value, "50");
+        assert!(!saved.query[2].enabled);
+        assert_eq!(saved.query[2].key, "hidden");
+
+        // Live switch from query_in_url = true -> false strips `?` from URL input
+        // and populates the Query table editor.
+        cx.update(|cx| {
+            let app = AppStore::global(cx).state().clone();
+            let text = TextPrefs {
+                query_in_url: false,
+                ..app.read(cx).prefs().text
+            };
+            app.update(cx, |app, cx| app.set_text(text, cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(editor.read_with(cx, |ed, cx| ed.shown_uri(cx)), "/users");
+        assert!(editor.read_with(cx, |ed, cx| ed.visible_tabs(cx).contains(&RequestTab::Query)));
     }
 }

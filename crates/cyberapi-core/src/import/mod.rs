@@ -428,6 +428,193 @@ pub fn split_url(url: &str) -> (String, Vec<KvParam>) {
     (format!("{base}{fragment}"), pairs)
 }
 
+/// Splits a URI into `(base_without_query_or_fragment, query_opt, fragment_opt)`
+/// while ignoring `?` and `#` inside `{{...}}` template expressions (R5).
+pub fn split_uri_query(uri: &str) -> (&str, Option<&str>, Option<&str>) {
+    let bytes = uri.as_bytes();
+    let mut in_template = 0usize;
+    let mut q_pos = None;
+    let mut f_pos = None;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{' {
+            in_template += 1;
+            i += 2;
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i] == b'}' && bytes[i + 1] == b'}' {
+            in_template = in_template.saturating_sub(1);
+            i += 2;
+            continue;
+        }
+        if in_template == 0 {
+            if bytes[i] == b'?' && q_pos.is_none() && f_pos.is_none() {
+                q_pos = Some(i);
+            } else if bytes[i] == b'#' && f_pos.is_none() {
+                f_pos = Some(i);
+                break;
+            }
+        }
+        i += 1;
+    }
+
+    match (q_pos, f_pos) {
+        (Some(q), Some(f)) => (&uri[..q], Some(&uri[q + 1..f]), Some(&uri[f + 1..])),
+        (Some(q), None) => (&uri[..q], Some(&uri[q + 1..]), None),
+        (None, Some(f)) => (&uri[..f], None, Some(&uri[f + 1..])),
+        (None, None) => (uri, None, None),
+    }
+}
+
+/// Splits a raw query string into `(key, value)` slices while respecting `{{...}}`
+/// template expressions so `&` or `=` inside `{{fn(a=1&b=2)}}` are not split (R5).
+pub fn split_query_pairs(query: &str) -> Vec<(&str, &str)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let bytes = query.as_bytes();
+    let mut pairs = Vec::new();
+    let mut in_template = 0usize;
+    let mut seg_start = 0usize;
+    let mut eq_pos = None;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{' {
+            in_template += 1;
+            i += 2;
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i] == b'}' && bytes[i + 1] == b'}' {
+            in_template = in_template.saturating_sub(1);
+            i += 2;
+            continue;
+        }
+        if in_template == 0 {
+            if bytes[i] == b'=' && eq_pos.is_none() {
+                eq_pos = Some(i);
+            } else if bytes[i] == b'&' {
+                let seg = &query[seg_start..i];
+                if !seg.is_empty() {
+                    if let Some(eq) = eq_pos {
+                        pairs.push((&query[seg_start..eq], &query[eq + 1..i]));
+                    } else {
+                        pairs.push((seg, ""));
+                    }
+                }
+                seg_start = i + 1;
+                eq_pos = None;
+            }
+        }
+        i += 1;
+    }
+
+    let tail = &query[seg_start..];
+    if !tail.is_empty() {
+        if let Some(eq) = eq_pos {
+            pairs.push((&query[seg_start..eq], &query[eq + 1..]));
+        } else {
+            pairs.push((tail, ""));
+        }
+    }
+
+    pairs
+}
+
+/// Formats `uri` + enabled `query` items into a single full URL string for
+/// display in the URL input when `TextPrefs::query_in_url` is `true` (R5).
+/// Preserves `#fragment` at the very end.
+pub fn format_uri_with_query(uri: &str, query: &[KvParam]) -> String {
+    let (base, existing_q, fragment) = split_uri_query(uri);
+    let enabled_pairs: Vec<String> = query
+        .iter()
+        .filter(|kv| kv.enabled && !kv.key.trim().is_empty())
+        .map(|kv| {
+            if kv.value.is_empty() {
+                kv.key.clone()
+            } else {
+                format!("{}={}", kv.key, kv.value)
+            }
+        })
+        .collect();
+
+    let combined_q = match (existing_q.filter(|q| !q.is_empty()), enabled_pairs.is_empty()) {
+        (Some(eq), false) => Some(format!("{eq}&{}", enabled_pairs.join("&"))),
+        (Some(eq), true) => Some(eq.to_string()),
+        (None, false) => Some(enabled_pairs.join("&")),
+        (None, true) => None,
+    };
+
+    let mut out = base.to_string();
+    if let Some(q) = combined_q {
+        out.push('?');
+        out.push_str(&q);
+    }
+    if let Some(frag) = fragment {
+        out.push('#');
+        out.push_str(frag);
+    }
+    out
+}
+
+/// Parses a full URL from the URL input when `TextPrefs::query_in_url` is `true`
+/// into `(clean_uri_without_query, updated_query_vec)` so storage stays 100%
+/// compatible with the table mode (`HttpRequest.uri` + `HttpRequest.query`, R5).
+///
+/// - Preserves `description` and OpenAPI schema metadata (`schema_type`,
+///   `required`, `format`, `schema_enum`) from `previous_query` when keys match
+///   in order.
+/// - Retains disabled (`enabled == false`) parameters from `previous_query` so
+///   switching modes never silently deletes disabled rows.
+pub fn parse_uri_into_query(full_uri: &str, previous_query: &[KvParam]) -> (String, Vec<KvParam>) {
+    let (base, query_opt, fragment) = split_uri_query(full_uri);
+    let clean_uri = match fragment {
+        Some(frag) => format!("{base}#{frag}"),
+        None => base.to_string(),
+    };
+
+    let old_enabled: Vec<&KvParam> = previous_query
+        .iter()
+        .filter(|kv| kv.enabled && !kv.key.trim().is_empty())
+        .collect();
+    let mut used = vec![false; old_enabled.len()];
+    let mut new_query = Vec::new();
+
+    if let Some(q_str) = query_opt {
+        for (k, v) in split_query_pairs(q_str) {
+            if k.is_empty() {
+                continue;
+            }
+            let mut param = KvParam {
+                key: k.to_string(),
+                value: v.to_string(),
+                enabled: true,
+                ..Default::default()
+            };
+            if let Some((idx, matched)) = old_enabled
+                .iter()
+                .enumerate()
+                .find(|(idx, old)| !used[*idx] && old.key == k)
+            {
+                used[idx] = true;
+                param.description = matched.description.clone();
+                param = param.with_schema_of(matched);
+            }
+            new_query.push(param);
+        }
+    }
+
+    for disabled in previous_query
+        .iter()
+        .filter(|kv| !kv.enabled && !kv.key.trim().is_empty())
+    {
+        new_query.push(disabled.clone());
+    }
+
+    (clean_uri, new_query)
+}
+
 /// A body's type when nothing says it: JSON when it looks like JSON.
 fn guess_content_type(body: &str) -> ContentType {
     let trimmed = body.trim();
@@ -836,5 +1023,141 @@ paths:
         );
         assert_eq!(content_type_of("application/vnd.api+json"), None);
         assert_eq!(guess_content_type(" [1] "), ContentType::Json);
+    }
+
+    #[test]
+    fn test_split_uri_query_with_fragment_and_templates() {
+        assert_eq!(
+            split_uri_query("https://example.com/api/v1/users?page=1&size=20#section"),
+            (
+                "https://example.com/api/v1/users",
+                Some("page=1&size=20"),
+                Some("section")
+            )
+        );
+        assert_eq!(
+            split_uri_query("{{BASE_URL}}/items/{{id}}?filter={{expr(a?b:c)}}#frag"),
+            (
+                "{{BASE_URL}}/items/{{id}}",
+                Some("filter={{expr(a?b:c)}}"),
+                Some("frag")
+            )
+        );
+        assert_eq!(
+            split_uri_query("https://example.com/path#frag?not_query=1"),
+            ("https://example.com/path", None, Some("frag?not_query=1"))
+        );
+    }
+
+    #[test]
+    fn test_split_query_pairs_preserves_templates() {
+        let pairs = split_query_pairs("a=1&b={{fn(x=1&y=2)}}&flag&&c=hello%20world");
+        assert_eq!(
+            pairs,
+            vec![
+                ("a", "1"),
+                ("b", "{{fn(x=1&y=2)}}"),
+                ("flag", ""),
+                ("c", "hello%20world"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_format_uri_with_query_and_fragment() {
+        let query = vec![
+            kv("page", "1", true),
+            kv("debug", "true", false),
+            kv("tag", "{{env_tag}}", true),
+            kv("flag", "", true),
+        ];
+        assert_eq!(
+            format_uri_with_query("{{HOST}}/users#top", &query),
+            "{{HOST}}/users?page=1&tag={{env_tag}}&flag#top"
+        );
+        assert_eq!(format_uri_with_query("{{HOST}}/users", &[]), "{{HOST}}/users");
+    }
+
+    #[test]
+    fn test_parse_uri_into_query_preserves_metadata_and_disabled() {
+        let prev = vec![
+            KvParam {
+                key: "page".into(),
+                value: "1".into(),
+                enabled: true,
+                description: "Page number".into(),
+                schema_type: "integer".into(),
+                required: Some(true),
+                format: "int32".into(),
+                schema_enum: vec!["1".into(), "2".into()],
+            },
+            KvParam {
+                key: "disabled_key".into(),
+                value: "secret".into(),
+                enabled: false,
+                description: "Keep me".into(),
+                ..Default::default()
+            },
+        ];
+        let (clean_uri, updated) = parse_uri_into_query("{{HOST}}/users?page=2&sort=asc#results", &prev);
+        assert_eq!(clean_uri, "{{HOST}}/users#results");
+        assert_eq!(updated.len(), 3);
+        assert_eq!(updated[0].key, "page");
+        assert_eq!(updated[0].value, "2");
+        assert!(updated[0].enabled);
+        assert_eq!(updated[0].description, "Page number");
+        assert_eq!(updated[0].schema_type, "integer");
+        assert_eq!(updated[0].required, Some(true));
+        assert_eq!(updated[0].format, "int32");
+        assert_eq!(updated[0].schema_enum, vec!["1".to_string(), "2".to_string()]);
+
+        assert_eq!(updated[1].key, "sort");
+        assert_eq!(updated[1].value, "asc");
+        assert!(updated[1].enabled);
+
+        assert_eq!(updated[2].key, "disabled_key");
+        assert_eq!(updated[2].value, "secret");
+        assert!(!updated[2].enabled);
+        assert_eq!(updated[2].description, "Keep me");
+    }
+
+    #[test]
+    fn test_mode_switch_roundtrip_lossless() {
+        let original_uri = "{{HOST}}/api/v1/orders#summary";
+        let original_query = vec![
+            KvParam {
+                key: "status".into(),
+                value: "open".into(),
+                enabled: true,
+                description: "Order status".into(),
+                schema_type: "string".into(),
+                required: Some(false),
+                format: String::new(),
+                schema_enum: vec!["open".into(), "closed".into()],
+            },
+            KvParam {
+                key: "filter".into(),
+                value: "{{expr(a=1&b=2)}}".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            KvParam {
+                key: "archived".into(),
+                value: "false".into(),
+                enabled: false,
+                description: "Include archived".into(),
+                ..Default::default()
+            },
+        ];
+
+        let inline_url = format_uri_with_query(original_uri, &original_query);
+        assert_eq!(
+            inline_url,
+            "{{HOST}}/api/v1/orders?status=open&filter={{expr(a=1&b=2)}}#summary"
+        );
+
+        let (roundtrip_uri, roundtrip_query) = parse_uri_into_query(&inline_url, &original_query);
+        assert_eq!(roundtrip_uri, original_uri);
+        assert_eq!(roundtrip_query, original_query);
     }
 }

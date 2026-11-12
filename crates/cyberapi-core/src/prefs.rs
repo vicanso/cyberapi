@@ -118,6 +118,10 @@ pub struct TextPrefs {
     /// open and the shortcuts still reach them; the bar is not drawn.
     /// Pins in the title bar are separate and always drawn.
     pub show_tabs: bool,
+    /// Edit query parameters directly in the URL input (`?k1=v1&k2=v2`) and
+    /// hide the standalone Query table editor (`false` by default).
+    #[serde(default)]
+    pub query_in_url: bool,
 }
 
 impl Default for TextPrefs {
@@ -127,6 +131,7 @@ impl Default for TextPrefs {
             editor_size: 0,
             wrap: true,
             show_tabs: true,
+            query_in_url: false,
         }
     }
 }
@@ -1050,6 +1055,7 @@ mod tests {
             editor_size: 20,
             wrap: false,
             show_tabs: true,
+            ..Default::default()
         };
         assert_eq!((chosen.ui(), chosen.editor()), (16, 20));
         // A document edited by hand cannot make the window unreadable.
@@ -1058,6 +1064,7 @@ mod tests {
             editor_size: 90,
             wrap: true,
             show_tabs: true,
+            ..Default::default()
         };
         assert_eq!((odd.ui(), odd.editor()), (12, 20));
         assert!(TextPrefs::UI_SIZES.contains(&TextPrefs::DEFAULT_UI));
@@ -1067,8 +1074,30 @@ mod tests {
             editor_size: 19,
             wrap: true,
             show_tabs: true,
+            ..Default::default()
         };
         assert_eq!((inside.ui(), inside.editor()), (17, 19), "any size in the range");
+    }
+
+    #[test]
+    fn test_text_prefs_query_in_url_defaults_false() {
+        let default_text = TextPrefs::default();
+        assert!(!default_text.query_in_url);
+
+        let old_doc: AppPrefs = serde_json::from_str("{}").expect("parses");
+        assert!(!old_doc.text.query_in_url);
+
+        let enabled = AppPrefs {
+            text: TextPrefs {
+                query_in_url: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&enabled).expect("serialize");
+        assert!(json.contains("\"queryInUrl\":true"), "{json}");
+        let roundtrip: AppPrefs = serde_json::from_str(&json).expect("deserialize");
+        assert!(roundtrip.text.query_in_url);
     }
 
     #[test]

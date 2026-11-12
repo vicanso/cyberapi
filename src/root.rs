@@ -4,9 +4,9 @@ use crate::APP_NAME;
 use crate::i18n;
 use crate::states::{AppEvent, AppStore, Route, WorkspaceState};
 use crate::views::{
-    DashboardView, OpenPalette, ROOT_CONTEXT, WorkspaceView, follow_update, open_accounts_dialog, open_cookies_dialog,
-    open_mcp_dialog, open_palette, open_password_dialog, open_project_auth, open_settings, open_shortcuts_dialog,
-    open_teams_dialog, open_variables_dialog, update_chip,
+    DashboardView, OpenPalette, ROOT_CONTEXT, WorkspaceView, follow_update, open_about_dialog, open_accounts_dialog,
+    open_cookies_dialog, open_mcp_dialog, open_palette, open_password_dialog, open_project_auth, open_settings,
+    open_shortcuts_dialog, open_teams_dialog, open_variables_dialog, update_chip,
 };
 use cyberapi_core::model::VariableCategory;
 #[cfg(not(target_family = "wasm"))]
@@ -516,6 +516,11 @@ impl CyberApi {
                 } else {
                     menu
                 };
+                let menu = menu.item(
+                    PopupMenuItem::new(t!("about.open_dialog").to_string())
+                        .icon(Icons::Info)
+                        .on_click(|_, window, cx| open_about_dialog(window, cx)),
+                );
                 if signs_in {
                     account_items(menu, cx)
                 } else if let Some(local_mcp) = AppStore::global(cx).local_mcp() {

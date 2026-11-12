@@ -38,7 +38,7 @@ https://github.com/user-attachments/assets/47018134-b823-40e1-93f5-a2047711a9c2
 
 - ⚡ **Native and instant** — macOS, Windows and Linux; no Electron, no web view.
 - 🧩 **Every kind of API** — REST; GraphQL with schema completion; gRPC from server reflection or `.proto` files; WebSocket; event streams shown as they arrive.
-- 🔍 **See what really happened** — DNS, TCP, TLS and server time; the request as it went out; JSON as a tree or JSONPath; history, and the same checks from the app or `cyberapi-cli` in CI.
+- 🔍 **See what really happened** — DNS, TCP, TLS and server time; the request as it went out; JSON formatted by default, as a tree or filtered with JSONPath; history, and the same checks from the app or `cyberapi-cli` in CI.
 - 🔗 **Less copy and paste** — switch environments beside the project's name, inherit auth from a folder, chain a response with `{{g(api, data.token)}}`, and follow an OpenAPI source while the values and secrets you typed stay.
 - 👥 **Built for teams** — a self-hosted web version from the same code; the desktop app signs in, works offline and syncs when you choose.
 - 🤖 **Ready for AI assistants** — Claude Code, Cursor and other MCP clients read your APIs, secrets masked, and send them when you allow.
@@ -59,7 +59,7 @@ Download for **macOS**, **Windows** or **Linux** from [Releases](https://github.
 
 ## Web version (self-hosted)
 
-Try the live demo at **[https://cyberapi.pingap.io/](https://cyberapi.pingap.io/)** — account `cyberapi`, password `cyberapi123123` (demo account: read-only, password cannot be changed).
+Try the live demo at **[https://cyberapi.vicanso.dev/](https://cyberapi.vicanso.dev/)** — account `cyberapi`, password `cyberapi123123` (demo account: read-only, password cannot be changed).
 
 The web version is the same app compiled to WebAssembly and served by `cyberapi-bridge`, one binary that also keeps the accounts and projects in PostgreSQL or MySQL and sends the page's requests. It is an image on Docker Hub for linux/amd64 and linux/arm64, [`vicanso/cyberapi-web`](https://hub.docker.com/r/vicanso/cyberapi-web) (`latest`, each version, and `nightly` from `main`), and a tarball on each release.
 

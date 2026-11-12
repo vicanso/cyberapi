@@ -2024,7 +2024,7 @@ mod tests {
                 .read(cx)
                 .shown_body(cx)
         });
-        assert_eq!(echoed, "{\n  \"a\": 1\n}");
+        assert_eq!(echoed, "{\n    \"a\": 1\n}");
 
         // Pressing Ctrl/Cmd-/ (`secondary-/`) again uncomments the line.
         cx.update_window(window, |_, window, cx| {

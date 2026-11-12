@@ -54,7 +54,9 @@ jobs:
       - uses: actions/checkout@v7
       - name: commit
         shell: bash
-        run: echo "CYBERAPI_COMMIT=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
+        run: |
+          echo "CYBERAPI_COMMIT=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
+          echo "CYBERAPI_BUILD_TIME=$(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> "$GITHUB_ENV"
       - name: system libraries
         if: runner.os == 'Linux'
         run: |
@@ -121,7 +123,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: commit
-        run: echo "CYBERAPI_COMMIT=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
+        run: |
+          echo "CYBERAPI_COMMIT=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
+          echo "CYBERAPI_BUILD_TIME=$(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> "$GITHUB_ENV"
       - name: system libraries and wasm-opt
         run: |
           sudo apt-get update

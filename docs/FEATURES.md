@@ -13,6 +13,8 @@ A version in italics is in nightly builds until that release.
 - macOS, Windows and Linux, drawn on the GPU with GPUI. A project with thousands of APIs opens at once.
 - Light and dark themes, English and Chinese, adjustable text size and line wrapping.
 - The desktop window reopens where you left it, on each screen.
+- On the desktop, the title bar shows when it is checking for updates and displays a new-version badge when one is ready. Clicking the badge opens a release-notes popover with **Skip this version** and **Update & Restart**; updating closes the popover and shows download progress inline in the title bar.
+- **About** (from the menu or settings) shows the version, Git commit, build time and platform architecture.
 
 ## Projects, folders and APIs
 
@@ -30,7 +32,7 @@ A version in italics is in nightly builds until that release.
 
 ## Requests
 
-- Query, headers and a body: JSON, form, multipart, XML or plain text. A query typed into the address moves to the Query table. Any key-value list can be edited in bulk as text.
+- Query, headers and a body: JSON, form, multipart, XML or plain text. A query typed into the address moves to the Query table by default, or turn on **Edit query parameters in URL** under Editor in the settings to keep and edit the query string directly in the address bar without the standalone Query table (saved in the same compatible format). Any key-value list can be edited in bulk as text.
 - Path parameters appear above Query when the address has `:param` or `{param}`. They are filled in as the request goes out and as code is generated, and they travel with OpenAPI `in: path` parameters and Postman URL variables.
 - Each row of path parameters, query, headers, form bodies and folder variables can carry a description (*0.4.1*). Bulk edit keeps it. OpenAPI, Postman and Insomnia bring it in. Postman, OpenAPI and MCP take it out. What a later import or a source sync does with an empty description is in [Import](./IMPORT.md) and [Sync from a source](./SOURCE.md).
 - OpenAPI and Swagger keep the type, required flag, format and enum of each path, query and header parameter (*0.4.1*). The Docs tab and the online page show them, and the `*` on each parameter row marks or toggles whether it is required. An empty cell was never recorded. What a later import or a source sync does with the four is in [Import](./IMPORT.md) and [Sync from a source](./SOURCE.md).
@@ -87,7 +89,7 @@ An event stream (`text/event-stream`) shows as it arrives: time, type, id and da
 
 - Time split into DNS, TCP, TLS, the server and transfer.
 - The request as it went out. Each header says where it came from. Secrets stay masked until you show them. Headers, cookies and the sent headers can be filtered and copied per row or as a table. The whole exchange can be read as `curl -v` prints it.
-- JSON raw, indented, or as a tree (NDJSON too). A node's menu copies the value, the JSON or a JSONPath, copies `{{g(api, path)}}`, or adds a JSONPath assertion or a run extraction.
+- JSON opens indented (Pretty) by default, or switch to Raw or a tree (remembered; NDJSON too). A node's menu copies the value, the JSON or a JSONPath, copies `{{g(api, path)}}`, or adds a JSONPath assertion or a run extraction.
 - Images in place, fitted or zoomed, with format and size. A PDF in the system viewer. HTML in the browser, on the desktop. Other bytes as hex. A body with no content type is recognized from its first bytes.
 - Copy a body or save it. Search the body or the wire text from the status bar or ⌘/Ctrl-F, with match case and next / previous. Narrow JSON with a JSONPath kept per API.
 - A history per API, 5 to 100 entries (10 by default), set under Data. Each entry shows the method and path. Picking one puts that request back in the editor. Compare two responses line by line; JSON is indented first, and unchanged parts fold.
