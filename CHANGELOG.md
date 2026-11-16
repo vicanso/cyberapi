@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.2](https://github.com/vicanso/cyberapi/compare/v0.6.1..v0.6.2) - 2026-11-16
+
+### ⛰️  Features
+
+- Add titlebar update popover, about dialog, default pretty JSON, and URL query mode - ([4476a6e](https://github.com/vicanso/cyberapi/commit/4476a6e0e5698e400917920cb6afd7b3fef22114))
+
+### 🐛 Bug Fixes
+
+- *(store)* Guard json_extract in api_heads against malformed JSON - ([a4f2549](https://github.com/vicanso/cyberapi/commit/a4f2549e248ea49a01bcd4d01f1ede3fb51894ca))
+- Open the shortcuts dialog ([#93](https://github.com/vicanso/cyberapi/issues/93)) and correct run data (#94, #95) - ([c851de5](https://github.com/vicanso/cyberapi/commit/c851de5580da3708d8b82ede1454ae82b44771f3))
+
+### ⚡ Performance
+
+- Skip unchanged online docs and shrink the page's first load - ([c513e4c](https://github.com/vicanso/cyberapi/commit/c513e4c82cf952bbe449130cef1ab5eb184eb9d7))
+
 ## [0.6.1](https://github.com/vicanso/cyberapi/compare/v0.5.0..v0.6.1) - 2026-11-08
 
 ### ⛰️  Features
