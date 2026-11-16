@@ -255,8 +255,8 @@ pub const API_HEADS: Pair = Pair {
          updated_at \
          FROM apis WHERE collection = $1 ORDER BY seq",
     my: "SELECT id, name, \
-         COALESCE(JSON_UNQUOTE(JSON_EXTRACT(request, '$.method')), ''), \
-         COALESCE(JSON_UNQUOTE(JSON_EXTRACT(request, '$.uri')), ''), \
+         CASE WHEN JSON_VALID(request) THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(request, '$.method')), '') ELSE '' END, \
+         CASE WHEN JSON_VALID(request) THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(request, '$.uri')), '') ELSE '' END, \
          updated_at \
          FROM apis WHERE collection = ? ORDER BY seq",
 };

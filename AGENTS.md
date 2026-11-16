@@ -168,6 +168,15 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 
 浏览器不能替代桌面版的 L1 基础设施：受 CORS 限制不能请求任意域名，`Cookie` / `User-Agent` / `Host` 等是禁止设置的请求头，拿不到 DNS / TCP / TLS 分阶段耗时（F5.6），也没有 SQLite 和本地文件系统。所以和 zedis 的 `zedis-bridge` 一样，浏览器版的发送和存储都经过 `cyberapi-bridge`，切点在 L1 的 trait 上：发送是 `HttpEngine`（浏览器 `BridgeHttpEngine` → `/v1/send`，桌面 `NativeEngine`），存储是各 Store trait（浏览器 `BridgeStore` → `/v1/store`，桌面 `TursoStore`）。上层（L0 / L2 / L3 / View）两端共用。浏览器的剪贴板也一样受限：同步读永远是空的，要用 `read_from_clipboard_async`，并在用户的点击或按键里发起。
 
+## 数据库与旧数据兼容
+
+任何涉及数据库查询、表结构、存储实现（`cyberapi-store-turso` / `cyberapi-store-sql`）或序列化模型（`cyberapi-core`）的改动，**必须保证对旧版本数据库和历史数据的向后兼容**：
+
+- **兼容旧库与存量数据**：桌面端打开或迁移旧版数据库（含 Tauri 版 `my_db.db`）、服务端读写存量 PostgreSQL / MySQL 数据，以及读取旧版 `prefs` 等 JSON 文档时，不能因新增字段、旧格式或历史残留记录而阻断启动或项目加载。
+- **反序列化宽容读取**：模型与设置结构体新增字段一律带 `#[serde(default)]` 或兼容转换（如 `StoredRequest` / `HttpRequest::from_json_lenient` / `settings_of`），读到异常或缺失数据时按默认值安全降级。
+- **SQL 侧禁止裸调严格 JSON 函数**：在 SQLite / Turso（`json_extract` 等）或 MySQL（`JSON_EXTRACT` 等）中直接提取文本列内的 JSON 字段时，**必须先用 `json_valid(...)` / `JSON_VALID(...)` 守卫**（或读出到 Rust 侧容错解析），防止库中某一行存在空字符串或损坏 JSON 时触发 `Parse error: malformed JSON` 导致整表查询失败。
+- **补充兼容回归测试**：改动存储查询或持久化格式时，须在对应测试（如 `crates/cyberapi-store-turso/tests/store.rs`）中覆盖旧格式与异常数据场景。
+
 ## 分层
 
 完整设计（crate 划分、Store trait、turso / sqlx、view 拆分、实施步骤、决策）见 `docs/architecture.md`。

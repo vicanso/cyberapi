@@ -265,8 +265,8 @@ async fn api_heads(conn: &Connection, id: &CollectionId) -> Result<Vec<ApiHead>,
     query_all(
         conn,
         "SELECT id, name, \
-         COALESCE(json_extract(setting, '$.method'), ''), \
-         COALESCE(json_extract(setting, '$.uri'), ''), \
+         CASE WHEN json_valid(setting) THEN COALESCE(json_extract(setting, '$.method'), '') ELSE '' END, \
+         CASE WHEN json_valid(setting) THEN COALESCE(json_extract(setting, '$.uri'), '') ELSE '' END, \
          updated_at \
          FROM api_settings WHERE collection = ?1 ORDER BY rowid",
         (id.as_str(),),

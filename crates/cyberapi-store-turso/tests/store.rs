@@ -423,3 +423,45 @@ fn opens_a_real_tauri_database() {
         );
     });
 }
+
+#[test]
+fn outline_survives_malformed_setting_json() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("cyberapi.db");
+    let store = open(&path);
+    let storage = store.storage();
+    let collection = pollster::block_on(storage.collections().create(cyberapi_store::NewCollection {
+        id: None,
+        name: "legacy".into(),
+        description: String::new(),
+        owner: None,
+    }))
+    .expect("create collection");
+    drop(store);
+
+    raw(
+        &path,
+        &[
+            &format!(
+                "INSERT INTO api_settings (id, collection, name, category, setting, created_at, updated_at) \
+                 VALUES ('a1', '{}', 'empty', 'http', '', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+                collection.id
+            ),
+            &format!(
+                "INSERT INTO api_settings (id, collection, name, category, setting, created_at, updated_at) \
+                 VALUES ('a2', '{}', 'broken', 'http', '{{not json', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+                collection.id
+            ),
+        ],
+    );
+
+    let storage = open(&path).storage();
+    let outline = pollster::block_on(storage.tree().outline(collection.id))
+        .expect("outline should survive malformed setting JSON")
+        .outline;
+    assert_eq!(outline.apis.len(), 2);
+    assert_eq!(outline.apis[0].method, cyberapi_core::model::HttpMethod::Get);
+    assert_eq!(outline.apis[0].uri, "");
+    assert_eq!(outline.apis[1].method, cyberapi_core::model::HttpMethod::Get);
+    assert_eq!(outline.apis[1].uri, "");
+}
