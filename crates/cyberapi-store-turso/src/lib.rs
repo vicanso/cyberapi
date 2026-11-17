@@ -36,20 +36,51 @@ use cyberapi_store::{
     NewVariable, PrefStore, ServerCopyStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
     merge_changes, sort_cookies,
 };
+use futures::channel::oneshot;
 use rows::{API_COLUMNS, COLLECTION_COLUMNS, ENVIRONMENT_COLUMNS, FOLDER_COLUMNS, VARIABLE_COLUMNS};
 use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
 use turso::{Connection, IntoParams, Row};
 use ulid::Ulid;
 
 type Clock = Arc<dyn Fn() -> Timestamp + Send + Sync>;
 
+/// Stack given to the store's worker thread. On macOS, GPUI's background
+/// executor runs on libdispatch worker threads with ~512 KB stacks (and no
+/// Rust alternate signal stack), which turso's SQL parser and VDBE can
+/// outgrow.
+const WORKER_STACK: usize = 4 * 1024 * 1024;
+
+type Job = Box<dyn FnOnce() + Send + 'static>;
+
 #[derive(Clone)]
 pub struct TursoStore {
-    inner: Arc<Inner>,
+    worker: Arc<Worker>,
+}
+
+struct Worker {
+    inner: Option<Arc<Inner>>,
+    jobs: Option<mpsc::Sender<Job>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        // Closing `jobs` ends the worker loop after any job now running;
+        // joining before dropping `inner` ensures the connection and file
+        // lock are released before `drop(store)` returns.
+        drop(self.jobs.take());
+        if let Some(thread) = self.thread.take()
+            && thread.thread().id() != thread::current().id()
+        {
+            let _ = thread.join();
+        }
+        drop(self.inner.take());
+    }
 }
 
 struct Inner {
@@ -57,6 +88,14 @@ struct Inner {
     _database: turso::Database,
     conn: Mutex<Connection>,
     clock: Clock,
+}
+
+impl Inner {
+    /// Through text and back: what is returned is exactly what a read of
+    /// the row will give, to the second.
+    fn now(&self) -> Timestamp {
+        Timestamp::parse_lenient(&(self.clock)().to_rfc3339())
+    }
 }
 
 pub(crate) fn backend(error: impl std::fmt::Display) -> StoreError {
@@ -114,17 +153,50 @@ impl TursoStore {
         }
         let path = path
             .to_str()
-            .ok_or_else(|| backend(format!("the database path is not UTF-8: {}", path.display())))?;
-        let database = turso::Builder::new_local(path).build().await.map_err(backend)?;
-        let mut conn = database.connect().map_err(backend)?;
-        schema::migrate(&mut conn).await?;
-        Ok(TursoStore {
-            inner: Arc::new(Inner {
-                _database: database,
-                conn: Mutex::new(conn),
-                clock,
+            .ok_or_else(|| backend(format!("the database path is not UTF-8: {}", path.display())))?
+            .to_owned();
+        let (ready_tx, ready_rx) = oneshot::channel::<Result<Arc<Inner>, StoreError>>();
+        let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
+        let thread = thread::Builder::new()
+            .name("cyberapi-turso".into())
+            .stack_size(WORKER_STACK)
+            .spawn(move || {
+                let opened = pollster::block_on(async move {
+                    let database = turso::Builder::new_local(&path).build().await.map_err(backend)?;
+                    let mut conn = database.connect().map_err(backend)?;
+                    schema::migrate(&mut conn).await?;
+                    Ok(Arc::new(Inner {
+                        _database: database,
+                        conn: Mutex::new(conn),
+                        clock,
+                    }))
+                });
+                let ok = opened.is_ok();
+                if ready_tx.send(opened).is_err() || !ok {
+                    return;
+                }
+                while let Ok(job) = jobs_rx.recv() {
+                    job();
+                }
+            })
+            .map_err(|error| backend(format!("could not start the store thread: {error}")))?;
+        match ready_rx.await {
+            Ok(Ok(inner)) => Ok(TursoStore {
+                worker: Arc::new(Worker {
+                    inner: Some(inner),
+                    jobs: Some(jobs_tx),
+                    thread: Some(thread),
+                }),
             }),
-        })
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(error)
+            }
+            Err(_) => {
+                let _ = thread.join();
+                Err(backend("the store thread stopped while opening"))
+            }
+        }
     }
 
     /// Runs `work` with the connection to itself and "now", as a store future.
@@ -133,12 +205,25 @@ impl TursoStore {
         F: Future<Output = Result<T, StoreError>> + Send + 'static,
         T: Send + 'static,
     {
-        let inner = self.inner.clone();
+        let worker = self.worker.clone();
         Box::pin(async move {
-            // Through text and back: what is returned is exactly what a read
-            // of the row will give, to the second.
-            let now = Timestamp::parse_lenient(&(inner.clock)().to_rfc3339());
-            work(inner, now).await
+            let inner = worker
+                .inner
+                .as_ref()
+                .ok_or_else(|| backend("the store worker has stopped"))?
+                .clone();
+            let jobs = worker
+                .jobs
+                .as_ref()
+                .ok_or_else(|| backend("the store worker has stopped"))?;
+            let (done_tx, done_rx) = oneshot::channel();
+            jobs.send(Box::new(move || {
+                let now = inner.now();
+                let result = pollster::block_on(work(inner, now));
+                let _ = done_tx.send(result);
+            }))
+            .map_err(|_| backend("the store worker has stopped"))?;
+            done_rx.await.map_err(|_| backend("the store worker stopped"))?
         })
     }
 }
@@ -265,8 +350,8 @@ async fn api_heads(conn: &Connection, id: &CollectionId) -> Result<Vec<ApiHead>,
     query_all(
         conn,
         "SELECT id, name, \
-         CASE WHEN json_valid(setting) THEN COALESCE(json_extract(setting, '$.method'), '') ELSE '' END, \
-         CASE WHEN json_valid(setting) THEN COALESCE(json_extract(setting, '$.uri'), '') ELSE '' END, \
+         CASE WHEN json_valid(setting) THEN json_extract(setting, '$.method') ELSE '' END, \
+         CASE WHEN json_valid(setting) THEN json_extract(setting, '$.uri') ELSE '' END, \
          updated_at \
          FROM api_settings WHERE collection = ?1 ORDER BY rowid",
         (id.as_str(),),
@@ -1214,8 +1299,14 @@ impl TreeStore for TursoStore {
     }
 
     fn merge(&self, collection: CollectionId, changes: ProjectChanges, base: Option<u64>) -> StoreFuture<u64> {
-        self.run(move |inner, now| async move {
-            let store = TursoStore { inner };
+        let store = self.clone();
+        Box::pin(async move {
+            let now = store
+                .worker
+                .inner
+                .as_ref()
+                .ok_or_else(|| backend("the store worker has stopped"))?
+                .now();
             merge_changes(&store, collection, changes, base, now).await
         })
     }

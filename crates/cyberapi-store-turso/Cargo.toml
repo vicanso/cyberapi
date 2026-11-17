@@ -20,6 +20,8 @@ chrono = { workspace = true, features = ["clock"] }
 cyberapi-core = { workspace = true }
 cyberapi-store = { workspace = true }
 directories = { workspace = true }
+futures = { workspace = true }
+pollster = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # What opening a file had to repair (`schema::repair_old_environments`).
@@ -29,7 +31,6 @@ ulid = { workspace = true }
 
 [dev-dependencies]
 cyberapi-store-turso = { workspace = true, features = ["conformance"] }
-pollster = { workspace = true }
 tempfile = { workspace = true }
 
 [lints.clippy]

@@ -452,6 +452,11 @@ fn outline_survives_malformed_setting_json() {
                  VALUES ('a2', '{}', 'broken', 'http', '{{not json', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
                 collection.id
             ),
+            &format!(
+                "INSERT INTO api_settings (id, collection, name, category, setting, created_at, updated_at) \
+                 VALUES ('a3', '{}', 'empty-object', 'http', '{{}}', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+                collection.id
+            ),
         ],
     );
 
@@ -459,9 +464,51 @@ fn outline_survives_malformed_setting_json() {
     let outline = pollster::block_on(storage.tree().outline(collection.id))
         .expect("outline should survive malformed setting JSON")
         .outline;
-    assert_eq!(outline.apis.len(), 2);
+    assert_eq!(outline.apis.len(), 3);
     assert_eq!(outline.apis[0].method, cyberapi_core::model::HttpMethod::Get);
     assert_eq!(outline.apis[0].uri, "");
     assert_eq!(outline.apis[1].method, cyberapi_core::model::HttpMethod::Get);
     assert_eq!(outline.apis[1].uri, "");
+    assert_eq!(outline.apis[2].method, cyberapi_core::model::HttpMethod::Get);
+    assert_eq!(outline.apis[2].uri, "");
+}
+
+#[test]
+fn outline_survives_small_caller_stack() {
+    let handle = std::thread::Builder::new()
+        .name("small-stack-caller".into())
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("cyberapi.db");
+            let store = open(&path);
+            let storage = store.storage();
+            let collection = pollster::block_on(storage.collections().create(NewCollection {
+                id: None,
+                name: "small-stack".into(),
+                description: String::new(),
+                owner: None,
+            }))
+            .expect("create collection");
+            pollster::block_on(
+                storage
+                    .tree()
+                    .create_api(collection.id.clone(), None, "health".into()),
+            )
+            .expect("create api");
+            let outline = pollster::block_on(storage.tree().outline(collection.id.clone()))
+                .expect("outline")
+                .outline;
+            assert_eq!(outline.apis.len(), 1);
+            drop(storage);
+            drop(store);
+
+            let methods = raw_text(
+                &path,
+                "SELECT CASE WHEN json_valid(setting) THEN json_extract(setting, '$.method') ELSE '' END FROM api_settings",
+            );
+            assert_eq!(methods.len(), 1);
+        })
+        .expect("spawn small stack thread");
+    handle.join().expect("small stack caller thread should finish cleanly");
 }
