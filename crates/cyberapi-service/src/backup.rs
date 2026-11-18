@@ -2,7 +2,6 @@
 //! zip — one deflated `{table}.json` per table (`cyberapi_core::backup`) —
 //! and back. Either app restores the other's.
 
-use chrono::{Datelike as _, Timelike as _};
 use cyberapi_core::Timestamp;
 use cyberapi_core::backup::Backup;
 use cyberapi_store::{BackupStore, StoreError};
@@ -47,8 +46,8 @@ pub async fn back_up_some(store: Arc<dyn BackupStore>, at: Timestamp) -> Result<
 /// A zip's time is the wall clock's, with no zone; one it cannot hold
 /// (before 1980) is its earliest.
 fn zip_time(at: &Timestamp) -> zip::DateTime {
-    let at = at.get();
-    let small = |n: u32| u8::try_from(n).unwrap_or_default();
+    let at = at.to_datetime();
+    let small = |n: i8| u8::try_from(n).unwrap_or_default();
     zip::DateTime::from_date_and_time(
         u16::try_from(at.year()).unwrap_or_default(),
         small(at.month()),

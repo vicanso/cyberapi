@@ -254,9 +254,8 @@ impl VersionsView {
                 .map(|at| {
                     let when = versions[at]
                         .saved_at
-                        .get()
-                        .with_timezone(&chrono::Local)
-                        .format("%Y-%m-%d %H:%M")
+                        .in_zone(&jiff::tz::TimeZone::system())
+                        .strftime("%Y-%m-%d %H:%M")
                         .to_string();
                     (when, at > 0)
                 })
@@ -512,9 +511,8 @@ impl Render for VersionsView {
                     .map(|(at, version)| {
                         let when = version
                             .saved_at
-                            .get()
-                            .with_timezone(&chrono::Local)
-                            .format("%Y-%m-%d %H:%M")
+                            .in_zone(&jiff::tz::TimeZone::system())
+                            .strftime("%Y-%m-%d %H:%M")
                             .to_string();
                         let held = t!("versions.held", apis = version.apis, folders = version.folders).to_string();
                         let id = version.id.clone();

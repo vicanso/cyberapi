@@ -12,7 +12,7 @@ publish = false
 # this crate through the GUI. No gpui, no I/O, no clock.
 [dependencies]
 base64 = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 imagesize = { workspace = true }
 hmac = { workspace = true }
 jsonpath-rust = { workspace = true }
@@ -38,7 +38,7 @@ url = { workspace = true }
 pretty_assertions = { workspace = true }
 
 [build-dependencies]
-chrono = { workspace = true }
+jiff = { workspace = true }
 
 [lints.clippy]
 unwrap_used = "deny"

@@ -35,7 +35,7 @@ pub fn invites_section(state: &Entity<DirectoryState>, team: Option<&TeamId>, cx
         .map(|(_, link)| link.clone());
     let theme = cx.theme();
     let (muted, border) = (theme.muted_foreground, theme.border);
-    let now = Timestamp::new(chrono::Local::now().fixed_offset());
+    let now = Timestamp::from_zoned(&jiff::ZonedDateTime::now());
     let rows = invites.into_iter().enumerate().map(|(index, invite)| {
         let what = match &invite.place {
             Some(place) => t!("invites.as_role", role = i18n::team_role(place.role)).to_string(),

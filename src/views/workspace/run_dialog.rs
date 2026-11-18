@@ -287,7 +287,7 @@ impl RunView {
                 if let Some(error) = &response.error {
                     notes.push((error.clone(), danger));
                 }
-                let today = chrono::Local::now().date_naive();
+                let today = jiff::ZonedDateTime::now().date();
                 HistoryRow::of(response, today, cx)
                     .render(Some(&name), 640., cx)
                     .into_any_element()

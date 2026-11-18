@@ -47,7 +47,7 @@ pub enum BackupError {
 /// F13.1: what a backup made `at` is called — to the second, so a second
 /// backup the same day is a file of its own (#8).
 pub fn file_name(at: &Timestamp) -> String {
-    format!("cyberapi-backup-{}.zip", at.get().format(NAMED_AT))
+    format!("cyberapi-backup-{}.zip", at.to_datetime().strftime(NAMED_AT))
 }
 
 /// How a backup's file name says when it was made, on the wall clock.
@@ -58,24 +58,24 @@ pub const KEPT: usize = 7;
 
 /// F6: how long the desktop waits after one of its own backups before it
 /// makes the next.
-pub const EVERY: chrono::TimeDelta = chrono::TimeDelta::hours(24);
+pub const EVERY: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
 
 /// F6: when the backup named `name` ([`file_name`]) was made; `None` for a
 /// file that is not one.
-pub fn made_at(name: &str) -> Option<chrono::NaiveDateTime> {
+pub fn made_at(name: &str) -> Option<jiff::civil::DateTime> {
     let at = name.strip_prefix("cyberapi-backup-")?.strip_suffix(".zip")?;
-    chrono::NaiveDateTime::parse_from_str(at, NAMED_AT).ok()
+    jiff::civil::DateTime::strptime(NAMED_AT, at).ok()
 }
 
 /// F6: how far ahead of the wall clock a backup's name may be and still
 /// count as made a moment ago: the reader crossed time zones westward,
 /// which a name — the wall clock's — does not say. Further ahead, the
 /// clock was wrong when it was made (BUG-6).
-const AHEAD: chrono::TimeDelta = chrono::TimeDelta::hours(26);
+const AHEAD: jiff::SignedDuration = jiff::SignedDuration::from_hours(26);
 
 /// Whether a backup named for `made` was named by a clock that was wrong.
-fn misdated(made: chrono::NaiveDateTime, now: chrono::NaiveDateTime) -> bool {
-    now.checked_add_signed(AHEAD).is_some_and(|ahead| made > ahead)
+fn misdated(made: jiff::civil::DateTime, now: jiff::civil::DateTime) -> bool {
+    now.checked_add(AHEAD).is_ok_and(|ahead| made > ahead)
 }
 
 /// F6: whether, with the files `names` in the backups' folder, another is
@@ -83,21 +83,21 @@ fn misdated(made: chrono::NaiveDateTime, now: chrono::NaiveDateTime) -> bool {
 /// old. One a little ahead of the clock was made a moment ago, elsewhere;
 /// one far ahead counts for nothing — else every check would find it, and
 /// a backup would be due each time (BUG-6).
-pub fn due<S: AsRef<str>>(names: &[S], now: chrono::NaiveDateTime) -> bool {
+pub fn due<S: AsRef<str>>(names: &[S], now: jiff::civil::DateTime) -> bool {
     let newest = names
         .iter()
         .filter_map(|name| made_at(name.as_ref()))
         .filter(|made| !misdated(*made, now))
         .max();
-    newest.is_none_or(|newest| now.signed_duration_since(newest) >= EVERY)
+    newest.is_none_or(|newest| now.duration_since(newest) >= EVERY)
 }
 
 /// F6: those of `names` to remove so that only the newest [`KEPT`] backups
 /// stay, `now`. One named far ahead of the clock is the oldest — made before
 /// the clock was put right — and goes first; else it would outlast every
 /// new one. What is not a backup is never among them.
-pub fn pruned<S: AsRef<str>>(names: &[S], now: chrono::NaiveDateTime) -> Vec<String> {
-    let mut backups: Vec<(bool, chrono::NaiveDateTime, &str)> = names
+pub fn pruned<S: AsRef<str>>(names: &[S], now: jiff::civil::DateTime) -> Vec<String> {
+    let mut backups: Vec<(bool, jiff::civil::DateTime, &str)> = names
         .iter()
         .filter_map(|name| {
             let made = made_at(name.as_ref())?;
@@ -340,7 +340,7 @@ mod tests {
     /// touched.
     #[test]
     fn a_backup_is_due_once_a_day_and_seven_are_kept() {
-        let at = |text: &str| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M").expect("a time");
+        let at = |text: &str| jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M", text).expect("a time");
         let names: Vec<String> = (1..=9)
             .map(|day| format!("cyberapi-backup-2026-10-{day:02}-093000.zip"))
             .chain(["notes.txt".to_string(), "cyberapi-backup-x.zip".to_string()])
@@ -364,7 +364,7 @@ mod tests {
     /// every check, nor outlast every new one.
     #[test]
     fn a_backup_ahead_of_the_clock_keeps_the_day() {
-        let at = |text: &str| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M").expect("a time");
+        let at = |text: &str| jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M", text).expect("a time");
         let name = |at: &str| format!("cyberapi-backup-{at}.zip");
         // Westward across seven time zones: the newest is seven hours
         // ahead, and was made a moment ago.

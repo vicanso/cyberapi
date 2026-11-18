@@ -21,14 +21,14 @@ serde = { workspace = true }
 snafu = { workspace = true }
 
 # `MemoryStore` makes ids and reads the clock: the system's natively, the
-# browser's in a page (`wasmbind`, and getrandom's `wasm_js` for ulid's
+# browser's in a page (`js`, and getrandom's `wasm_js` for ulid's
 # randomness), where it holds a server project's working copy
 # (`docs/server-sync.md` §4).
-chrono = { workspace = true, features = ["clock"] }
+jiff = { workspace = true }
 ulid = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-chrono = { workspace = true, features = ["clock", "wasmbind"] }
+jiff = { workspace = true, features = ["js"] }
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 
 [dev-dependencies]

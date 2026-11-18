@@ -126,8 +126,12 @@ impl Render for MockView {
             .iter()
             .enumerate()
             .map(|(index, heard)| {
-                let when = chrono::DateTime::from_timestamp_millis(heard.at)
-                    .map(|at| at.with_timezone(&chrono::Local).format("%H:%M:%S").to_string())
+                let when = jiff::Timestamp::from_millisecond(heard.at)
+                    .map(|at| {
+                        at.to_zoned_datetime(jiff::tz::TimeZone::system())
+                            .strftime("%H:%M:%S")
+                            .to_string()
+                    })
                     .unwrap_or_default();
                 let status_color = if heard.status < 400 {
                     theme.success

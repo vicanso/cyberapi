@@ -14,7 +14,6 @@ pub use legacy::{LegacyCopy, TAURI_IDENTIFIER, copy_legacy_data, tauri_data_dir}
 pub use schema::CURRENT_VERSION as SCHEMA_VERSION;
 
 use async_lock::Mutex;
-use chrono::Local;
 use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
 use cyberapi_core::environments::reordered;
@@ -117,7 +116,7 @@ impl TursoStore {
     /// The parent directory is created (#41). A file another process still
     /// holds is tried again for a short while (#46).
     pub async fn open(path: &Path) -> Result<Self, StoreError> {
-        Self::open_with_clock(path, || Timestamp::new(Local::now().fixed_offset())).await
+        Self::open_with_clock(path, || Timestamp::from_zoned(&jiff::ZonedDateTime::now())).await
     }
 
     /// [`TursoStore::open`] with "now" read from `clock`, for tests that

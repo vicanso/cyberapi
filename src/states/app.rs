@@ -735,11 +735,11 @@ impl AppState {
         }
         let backups = AppStore::global(cx).backups().cloned()?;
         Some(cx.background_spawn(async move {
-            let now = chrono::Local::now();
-            if !this_build::backup_due(now.naive_local()) {
+            let now = jiff::ZonedDateTime::now();
+            if !this_build::backup_due(now.datetime()) {
                 return;
             }
-            let at = Timestamp::new(now.fixed_offset());
+            let at = Timestamp::from_zoned(&now);
             match backup::back_up_some(backups, at).await {
                 Ok(None) => {}
                 Ok(Some(bytes)) => match this_build::keep_backup(&cyberapi_core::backup::file_name(&at), &bytes) {
@@ -772,7 +772,7 @@ impl AppState {
         let Some(backups) = AppStore::global(cx).backups().cloned() else {
             return;
         };
-        let at = Timestamp::new(chrono::Local::now().fixed_offset());
+        let at = Timestamp::from_zoned(&jiff::ZonedDateTime::now());
         let name = cyberapi_core::backup::file_name(&at);
         let saving = cx.background_spawn(async move {
             let bytes = backup::back_up(backups, at).await.map_err(AppEvent::BackupFailed)?;
@@ -1131,7 +1131,7 @@ mod tests {
     async fn a_restore_replaces_everything_and_goes_home(cx: &mut TestAppContext) {
         let backed_up = MemoryStore::new();
         create(&backed_up, "shop");
-        let at = Timestamp::new(chrono::Local::now().fixed_offset());
+        let at = Timestamp::from_zoned(&jiff::ZonedDateTime::now());
         let bytes = pollster::block_on(backup::back_up(Arc::new(backed_up), at)).expect("backed up");
         let dir = tempfile::tempdir().expect("a directory");
         let file = dir.path().join("backup.zip");

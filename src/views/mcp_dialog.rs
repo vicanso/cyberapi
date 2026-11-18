@@ -489,7 +489,7 @@ impl McpTokens {
 
     fn render_token(&self, index: usize, token: &McpToken, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
-        let now = Timestamp::new(chrono::Local::now().fixed_offset());
+        let now = Timestamp::from_zoned(&jiff::ZonedDateTime::now());
         let lasts = match token.expires_at {
             Some(at) => i18n::counted("mcp.expires_in", days_until(at, now) as usize),
             None => t!("mcp.never").to_string(),

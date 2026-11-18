@@ -9,7 +9,9 @@
 //! app restarts.
 
 use crate::Timestamp;
-use chrono::{DateTime, Duration, NaiveDateTime, Utc};
+use jiff::SignedDuration;
+use jiff::civil::DateTime;
+use jiff::tz::Offset;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -38,7 +40,7 @@ impl Cookie {
     }
 
     pub fn is_expired(&self, now: Timestamp) -> bool {
-        self.expires.is_some_and(|expires| expires.get() <= now.get())
+        self.expires.is_some_and(|expires| expires <= now)
     }
 
     /// Whether it goes with a request to `url` (F9.3).
@@ -81,16 +83,18 @@ fn default_path(url: &Url) -> String {
 /// `Wed, 21 Oct 2015 07:28:00 GMT`, and the older `Wed, 21-Oct-2015 …`.
 fn parse_expires(text: &str) -> Option<Timestamp> {
     let text = text.trim();
-    if let Ok(at) = DateTime::parse_from_rfc2822(text) {
-        return Some(Timestamp::new(at));
+    if let Ok(at) = jiff::fmt::rfc2822::parse(text) {
+        return Some(Timestamp::from_zoned(&at));
     }
     for format in [
         "%a, %d-%b-%Y %H:%M:%S GMT",
         "%a, %d-%b-%y %H:%M:%S GMT",
         "%A, %d-%b-%y %H:%M:%S GMT",
     ] {
-        if let Ok(at) = NaiveDateTime::parse_from_str(text, format) {
-            return Some(Timestamp::new(at.and_utc().fixed_offset()));
+        if let Ok(at) = DateTime::strptime(format, text)
+            && let Ok(ts) = Offset::UTC.to_timestamp(at)
+        {
+            return Some(Timestamp::from_utc(ts));
         }
     }
     None
@@ -149,11 +153,15 @@ pub fn parse_set_cookie(header: &str, url: &Url, now: Timestamp) -> Option<Cooki
     // Max-Age wins over Expires.
     if let Some(seconds) = max_age {
         let at = if seconds <= 0 {
-            DateTime::<Utc>::UNIX_EPOCH.fixed_offset()
+            Timestamp::default()
         } else {
-            now.get() + Duration::seconds(seconds)
+            let instant = now
+                .instant()
+                .checked_add(SignedDuration::from_secs(seconds))
+                .unwrap_or(jiff::Timestamp::MAX);
+            Timestamp::new(instant, now.offset())
         };
-        cookie.expires = Some(Timestamp::new(at));
+        cookie.expires = Some(at);
     }
     Some(cookie)
 }

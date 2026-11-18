@@ -1,7 +1,6 @@
 //! How values are written for people to read (F15.6).
 
 use crate::Timestamp;
-use chrono::Datelike;
 use serde::Serialize;
 
 /// The spaces JSON is indented by wherever a reader sees it: a response, a
@@ -157,11 +156,18 @@ pub fn short_time(at: Timestamp, now: Timestamp) -> String {
     if at == Timestamp::default() {
         return String::new();
     }
-    let local = at.get().with_timezone(now.get().offset());
-    if local.year() == now.get().year() {
-        local.format("%m-%d %H:%M").to_string()
+    let local = at.in_offset(now.offset());
+    let now_local = now.to_datetime();
+    if local.year() == now_local.year() {
+        format!(
+            "{:02}-{:02} {:02}:{:02}",
+            local.month(),
+            local.day(),
+            local.hour(),
+            local.minute()
+        )
     } else {
-        local.format("%Y-%m-%d").to_string()
+        format!("{:04}-{:02}-{:02}", local.year(), local.month(), local.day())
     }
 }
 
@@ -182,21 +188,22 @@ pub fn ago(at: Timestamp, now: Timestamp) -> Ago {
     if at == Timestamp::default() {
         return Ago::On(String::new());
     }
-    let elapsed = now.get().signed_duration_since(at.get());
-    match elapsed.num_minutes() {
+    let elapsed = now.instant().duration_since(at.instant());
+    match elapsed.as_mins() {
         // A clock behind the store's reads as now.
         ..1 => Ago::JustNow,
         minutes @ 1..60 => Ago::Minutes(minutes),
         minutes if minutes < 24 * 60 => Ago::Hours(minutes / 60),
         minutes if minutes < 7 * 24 * 60 => Ago::Days(minutes / (24 * 60)),
         _ => {
-            let local = at.get().with_timezone(now.get().offset());
-            let format = if local.year() == now.get().year() {
-                "%m-%d"
+            let local = at.in_offset(now.offset());
+            let now_local = now.to_datetime();
+            let text = if local.year() == now_local.year() {
+                format!("{:02}-{:02}", local.month(), local.day())
             } else {
-                "%Y-%m-%d"
+                format!("{:04}-{:02}-{:02}", local.year(), local.month(), local.day())
             };
-            Ago::On(local.format(format).to_string())
+            Ago::On(text)
         }
     }
 }
@@ -204,7 +211,7 @@ pub fn ago(at: Timestamp, now: Timestamp) -> Ago {
 /// Whole days from `now` until `at`, a day begun counting as one; none once
 /// it is past. How long an invitation still lasts.
 pub fn days_until(at: Timestamp, now: Timestamp) -> i64 {
-    let seconds = at.get().signed_duration_since(now.get()).num_seconds();
+    let seconds = at.instant().duration_since(now.instant()).as_secs();
     if seconds <= 0 {
         return 0;
     }

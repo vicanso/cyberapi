@@ -1493,7 +1493,7 @@ impl HistoryStore for CopyHistory {
                 Err(error) if unknown_api(&error) => {
                     let kept = HttpResponse {
                         id: waiting_id(),
-                        created_at: Timestamp::from_unix(chrono::Utc::now().timestamp()),
+                        created_at: Timestamp::from_unix(jiff::Timestamp::now().as_second()),
                         ..response
                     };
                     let mut waiting = shared.waiting();

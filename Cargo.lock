@@ -2024,9 +2024,9 @@ name = "cyberapi-core"
 version = "0.6.2"
 dependencies = [
  "base64 0.23.1",
- "chrono",
  "hmac 0.13.0",
  "imagesize 0.15.0",
+ "jiff",
  "jsonpath-rust",
  "jsonschema",
  "md-5 0.11.0",
@@ -2053,7 +2053,6 @@ name = "cyberapi-gui"
 version = "0.6.2"
 dependencies = [
  "async-lock",
- "chrono",
  "cyberapi-core",
  "cyberapi-http",
  "cyberapi-service",
@@ -2063,6 +2062,7 @@ dependencies = [
  "directories",
  "futures",
  "gpui-kit",
+ "jiff",
  "js-sys",
  "lsp-types",
  "os_info",
@@ -2121,12 +2121,12 @@ dependencies = [
 name = "cyberapi-service"
 version = "0.6.2"
 dependencies = [
- "chrono",
  "cyberapi-core",
  "cyberapi-http",
  "cyberapi-store",
  "futures",
  "getrandom 0.4.3",
+ "jiff",
  "pollster 1.0.1",
  "pretty_assertions",
  "prost",
@@ -2143,10 +2143,10 @@ dependencies = [
 name = "cyberapi-store"
 version = "0.6.2"
 dependencies = [
- "chrono",
  "cyberapi-core",
  "cyberapi-store",
  "getrandom 0.4.3",
+ "jiff",
  "pollster 1.0.1",
  "serde",
  "snafu",
@@ -2171,11 +2171,11 @@ dependencies = [
 name = "cyberapi-store-sql"
 version = "0.6.2"
 dependencies = [
- "chrono",
  "cyberapi-core",
  "cyberapi-store",
  "cyberapi-store-sql",
  "getrandom 0.4.3",
+ "jiff",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -2190,12 +2190,12 @@ name = "cyberapi-store-turso"
 version = "0.6.2"
 dependencies = [
  "async-lock",
- "chrono",
  "cyberapi-core",
  "cyberapi-store",
  "cyberapi-store-turso",
  "directories",
  "futures",
+ "jiff",
  "pollster 1.0.1",
  "serde",
  "serde_json",
@@ -5081,6 +5081,60 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jiff"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5d126d72eb017f10b302e73bdeca446bea405ee449af4d9e7866d6b082d83e"
+dependencies = [
+ "jiff-core",
+ "jiff-static",
+ "jiff-tzdb-platform",
+ "js-sys",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+ "wasm-bindgen",
+ "windows-link 0.2.1",
+]
+
+[[package]]
+name = "jiff-core"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6b46a105a9874634dd96231021526bf24ca04955a5998c59a9c7666e634b7b8"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0127e9bde3c6130d6169e7d8d68676e4be69c4bf7573c308b6f960a5089c428"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "jiff-tzdb"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12e71a1b68a875a44a33bb7a1dd84392cb77145a3367a552a3cfe6a4f5cf3afc"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc65b284afcfa8f6cf189c7274c805505314a7ab975c60e1f548bff56525420e"
+dependencies = [
+ "jiff-tzdb",
+]
 
 [[package]]
 name = "jni-sys"

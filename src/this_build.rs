@@ -444,14 +444,14 @@ pub fn backs_up_by_itself() -> bool {
 /// F6: whether another of the desktop's own backups is due `now` (the wall
 /// clock), by those in its folder.
 #[cfg(not(target_family = "wasm"))]
-pub fn backup_due(now: chrono::NaiveDateTime) -> bool {
+pub fn backup_due(now: jiff::civil::DateTime) -> bool {
     let Some(dir) = crate::paths::backups_dir() else {
         return false;
     };
     cyberapi_core::backup::due(&file_names(&dir), now)
 }
 #[cfg(target_family = "wasm")]
-pub fn backup_due(_: chrono::NaiveDateTime) -> bool {
+pub fn backup_due(_: jiff::civil::DateTime) -> bool {
     false
 }
 
@@ -470,7 +470,7 @@ pub fn keep_backup(name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, Strin
             let _ = std::fs::remove_file(&writing);
             error.to_string()
         })?;
-    let now = chrono::Local::now().naive_local();
+    let now = jiff::ZonedDateTime::now().datetime();
     for old in cyberapi_core::backup::pruned(&file_names(&dir), now) {
         if let Err(error) = std::fs::remove_file(dir.join(&old)) {
             tracing::warn!(%error, old, "an old backup could not be removed");

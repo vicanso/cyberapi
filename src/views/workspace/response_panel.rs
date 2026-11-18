@@ -68,17 +68,17 @@ pub(super) struct HistoryRow {
 
 impl HistoryRow {
     /// Its status in its colour, how long it took, how big it was, when.
-    pub(super) fn of(response: &HttpResponse, today: chrono::NaiveDate, cx: &App) -> Self {
+    pub(super) fn of(response: &HttpResponse, today: jiff::civil::Date, cx: &App) -> Self {
         let (status, color) = match (response.grpc_status(), response.status) {
             (Some(grpc), _) => (grpc.code.to_string(), grpc_color(&grpc, cx)),
             (None, Some(code)) => (code.to_string(), status_color(code, cx)),
             (None, None) => (t!("response.failed").to_string(), cx.theme().danger),
         };
-        let at = response.created_at.get().with_timezone(&chrono::Local);
-        let when = if at.date_naive() == today {
-            at.format("%H:%M:%S")
+        let at = response.created_at.in_zone(&jiff::tz::TimeZone::system());
+        let when = if at.date() == today {
+            at.strftime("%H:%M:%S")
         } else {
-            at.format("%m-%d %H:%M")
+            at.strftime("%m-%d %H:%M")
         };
         // A failure has no size: only how long it took to fail.
         let measures = match response.status {
@@ -633,7 +633,7 @@ impl ResponsePanel {
     fn render_summary(&self, response: Option<&HttpResponse>, cx: &mut Context<Self>) -> AnyElement {
         let api = self.api.read(cx);
         let muted = cx.theme().muted_foreground;
-        let today = chrono::Local::now().date_naive();
+        let today = jiff::ZonedDateTime::now().date();
         // Each answer as a line of the history.
         let entries: Vec<HistoryRow> = api
             .responses()

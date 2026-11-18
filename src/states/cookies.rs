@@ -141,7 +141,7 @@ impl CookiesState {
         };
         let expired = cookie
             .expires
-            .is_some_and(|at| at.get() <= chrono::Utc::now().fixed_offset());
+            .is_some_and(|at| at <= Timestamp::from_utc(jiff::Timestamp::now()));
         run_store(
             cx,
             self.storage.cookies().put(vec![cookie]),

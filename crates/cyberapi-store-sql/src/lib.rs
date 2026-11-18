@@ -16,7 +16,6 @@ mod sql;
 pub use directory::Passwords;
 pub use sql::Dialect;
 
-use chrono::Utc;
 use cyberapi_core::access::{CollectionRole, Grantee, TeamRole};
 use cyberapi_core::directory::{AccountInfo, InviteInfo, McpToken, invite_needs, valid_account_name, valid_password};
 use cyberapi_core::{AccountId, CollectionId, TeamId, Timestamp};
@@ -49,11 +48,11 @@ pub(crate) fn new_id() -> String {
 /// "Now", to the second: what is answered is exactly what a read of the row
 /// gives back.
 pub(crate) fn now() -> Timestamp {
-    Timestamp::parse_lenient(&Timestamp::new(Utc::now().fixed_offset()).to_rfc3339())
+    Timestamp::parse_lenient(&Timestamp::from_utc(jiff::Timestamp::now()).to_rfc3339())
 }
 
 pub(crate) fn unix_now() -> i64 {
-    Utc::now().timestamp()
+    jiff::Timestamp::now().as_second()
 }
 
 /// An invitation's token: 32 random bytes, hex. The store keeps its hash.

@@ -14,7 +14,7 @@ conformance = ["cyberapi-store/conformance"]
 
 # Server only: the bridge links this crate, the GUI never does.
 [dependencies]
-chrono = { workspace = true, features = ["clock"] }
+jiff = { workspace = true }
 cyberapi-core = { workspace = true }
 cyberapi-store = { workspace = true }
 # An invitation's token (`docs/server-sync.md` §5).

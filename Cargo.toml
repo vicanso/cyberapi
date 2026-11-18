@@ -55,8 +55,8 @@ cyberapi-service = { path = "crates/cyberapi-service" }
 async-lock = "3.5.0"
 base64 = "0.23.1"
 # Parsing and formatting only: what "now" is comes from the caller, so no
-# `clock` feature and nothing that needs a wasm time source.
-chrono = { version = "0.4.45", default-features = false, features = ["std", "serde"] }
+# `tz-system` feature and nothing that needs a wasm time source.
+jiff = { version = "1.0.1", default-features = false, features = ["std", "serde", "perf-inline"] }
 # Toneless readings with every heteronym, for matching names by pinyin (F15.1).
 pinyin = { version = "0.11.0", default-features = false, features = ["plain", "heteronym"] }
 directories = "6.0.0"
@@ -135,9 +135,9 @@ ulid = "3.0.0"
 [dependencies]
 # Puts a workspace's changes in a queue (`states::run_serial`).
 async-lock = { workspace = true }
-# "Now", for showing times relative to it. `wasmbind` is what lets the
-# browser build read the clock; the desktop ignores it.
-chrono = { workspace = true, features = ["clock", "wasmbind"] }
+# "Now", for showing times relative to it. `js` is what lets the browser
+# build read the clock and local time zone; the desktop ignores it.
+jiff = { workspace = true, features = ["tz-system", "tz-fat", "tzdb-bundle-platform", "tzdb-zoneinfo", "tzdb-concatenated", "js"] }
 cyberapi-core = { workspace = true }
 cyberapi-http = { workspace = true }
 cyberapi-service = { workspace = true }

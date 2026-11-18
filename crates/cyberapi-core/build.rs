@@ -44,10 +44,10 @@ fn git_short_commit() -> Option<String> {
 fn current_utc_timestamp() -> String {
     if let Ok(epoch) = std::env::var("SOURCE_DATE_EPOCH")
         && let Ok(secs) = epoch.trim().parse::<i64>()
-        && let Some(dt) = chrono::DateTime::from_timestamp(secs, 0)
+        && let Ok(ts) = jiff::Timestamp::from_second(secs)
     {
-        return dt.format("%Y-%m-%d %H:%M:%S UTC").to_string();
+        return ts.strftime("%Y-%m-%d %H:%M:%S UTC").to_string();
     }
-    let now: chrono::DateTime<chrono::Utc> = SystemTime::now().into();
-    now.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+    let now = jiff::Timestamp::try_from(SystemTime::now()).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+    now.strftime("%Y-%m-%d %H:%M:%S UTC").to_string()
 }

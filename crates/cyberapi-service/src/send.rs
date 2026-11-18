@@ -783,7 +783,7 @@ pub(crate) async fn prepare(
         } else {
             sender.env.read(&needs.env)
         },
-        utc_offset: chrono::Local::now().offset().local_minus_utc(),
+        utc_offset: jiff::ZonedDateTime::now().offset().seconds(),
         // The clock, should the system have no randomness to give.
         draws: Draws::new(seed),
     };
@@ -924,7 +924,7 @@ pub(crate) async fn prepare_load(
         } else {
             sender.env.read(&needs.env)
         },
-        utc_offset: chrono::Local::now().offset().local_minus_utc(),
+        utc_offset: jiff::ZonedDateTime::now().offset().seconds(),
         draws: Draws::new(seed),
     };
     let dynamic = send::has_dynamic_templates(request, &variables, &sender.inherited);

@@ -100,7 +100,7 @@ impl CompareView {
         } else {
             (shown - 1, shown)
         };
-        let today = chrono::Local::now().date_naive();
+        let today = jiff::ZonedDateTime::now().date();
         let entries: Vec<Entry> = responses
             .iter()
             .enumerate()
@@ -223,16 +223,16 @@ impl CompareView {
 }
 
 /// `200 · 12:01:03`, as a list offers a response.
-fn entry_label(response: &HttpResponse, today: chrono::NaiveDate) -> String {
+fn entry_label(response: &HttpResponse, today: jiff::civil::Date) -> String {
     let status = match response.status {
         Some(code) => code.to_string(),
         None => t!("response.failed").to_string(),
     };
-    let at = response.created_at.get().with_timezone(&chrono::Local);
-    let when = if at.date_naive() == today {
-        at.format("%H:%M:%S")
+    let at = response.created_at.in_zone(&jiff::tz::TimeZone::system());
+    let when = if at.date() == today {
+        at.strftime("%H:%M:%S")
     } else {
-        at.format("%m-%d %H:%M")
+        at.strftime("%m-%d %H:%M")
     };
     format!("{status} · {when}")
 }

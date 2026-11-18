@@ -8,7 +8,6 @@ use crate::{
     NewVariable, PrefStore, ServerCopyStore, Storage, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore,
     merge_changes, sort_cookies,
 };
-use chrono::Utc;
 use cyberapi_core::backup::Backup;
 use cyberapi_core::cookie::Cookie;
 use cyberapi_core::environments::reordered;
@@ -73,7 +72,7 @@ impl Default for MemoryStore {
 
 impl MemoryStore {
     pub fn new() -> Self {
-        Self::with_clock(|| Timestamp::new(Utc::now().fixed_offset()))
+        Self::with_clock(|| Timestamp::from_utc(jiff::Timestamp::now()))
     }
 
     /// A store whose "now" is `clock`, for tests that compare times.
@@ -1156,11 +1155,7 @@ mod tests {
         let seconds = Arc::new(AtomicI64::new(1_700_000_000));
         MemoryStore::with_clock(move || {
             let at = seconds.fetch_add(1, Ordering::SeqCst);
-            Timestamp::new(
-                chrono::DateTime::from_timestamp(at, 0)
-                    .unwrap_or_default()
-                    .fixed_offset(),
-            )
+            Timestamp::from_unix(at)
         })
     }
 

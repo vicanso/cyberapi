@@ -781,7 +781,7 @@ impl DashboardView {
                 Vec::new(),
             ),
             _ => {
-                let now = Timestamp::new(chrono::Local::now().fixed_offset());
+                let now = Timestamp::from_zoned(&jiff::ZonedDateTime::now());
                 // Two columns at the narrowest window, more as it widens.
                 let width = window.viewport_size().width;
                 let columns = if width < px(1200.) {

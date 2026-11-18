@@ -3,7 +3,6 @@
 use crate::i18n;
 use crate::states::{AppStore, CookieKey, CookiesEvent, CookiesState, Load, cookie_key};
 use crate::views::inline_confirm::inline_confirm;
-use chrono::{Local, NaiveDate, NaiveDateTime, TimeZone as _};
 use cyberapi_core::Timestamp;
 use cyberapi_core::cookie::Cookie;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -26,7 +25,7 @@ const FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 /// An expiry in local time; empty for a session cookie.
 fn show_expires(expires: Option<Timestamp>) -> String {
     expires
-        .map(|at| at.get().with_timezone(&Local).format(FORMAT).to_string())
+        .map(|at| at.in_zone(&jiff::tz::TimeZone::system()).strftime(FORMAT).to_string())
         .unwrap_or_default()
 }
 
@@ -37,12 +36,12 @@ fn read_expires(text: &str) -> Result<Option<Timestamp>, ()> {
     if text.is_empty() {
         return Ok(None);
     }
-    let local = NaiveDateTime::parse_from_str(text, FORMAT)
-        .or_else(|_| NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M"))
-        .or_else(|_| NaiveDate::parse_from_str(text, "%Y-%m-%d").map(|date| date.and_time(Default::default())))
+    let local = jiff::civil::DateTime::strptime(FORMAT, text)
+        .or_else(|_| jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M", text))
+        .or_else(|_| jiff::civil::Date::strptime("%Y-%m-%d", text).map(|date| date.at(0, 0, 0, 0)))
         .map_err(|_| ())?;
-    let at = Local.from_local_datetime(&local).earliest().ok_or(())?;
-    Ok(Some(Timestamp::new(at.fixed_offset())))
+    let at = local.to_zoned_datetime(jiff::tz::TimeZone::system()).map_err(|_| ())?;
+    Ok(Some(Timestamp::from_zoned(&at)))
 }
 
 pub fn open_cookies_dialog(window: &mut Window, cx: &mut App) {

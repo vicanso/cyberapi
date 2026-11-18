@@ -27,7 +27,6 @@
 //! a page has none, and the bridge never gives its own.
 
 use base64::Engine as _;
-use chrono::format::{Item, StrftimeItems};
 use hmac::{KeyInit as _, Mac as _};
 use md5::Digest as _;
 use serde_json::Value as Json;
@@ -635,21 +634,17 @@ fn now(value: &Value, inputs: &Inputs) -> Result<String, TemplateError> {
     // Past what the calendar holds, an error: `+` would panic, and a
     // release build aborts on a panic — the bridge too, for an assistant's
     // send.
-    let at = chrono::DateTime::from_timestamp(inputs.now, 0)
-        .unwrap_or_default()
-        .checked_add_signed(shifted.unwrap_or_default())
-        .ok_or_else(|| params_error("now", value, FAR_SHIFT))?;
-    let at = at.with_timezone(
-        &chrono::FixedOffset::east_opt(offset).unwrap_or(chrono::FixedOffset::east_opt(0).expect("UTC")),
-    );
+    let at = jiff::Timestamp::from_second(inputs.now)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .checked_add(shifted.unwrap_or_default())
+        .map_err(|_| params_error("now", value, FAR_SHIFT))?;
+    let tz_offset = jiff::tz::Offset::from_seconds(offset).unwrap_or(jiff::tz::Offset::UTC);
     if format.is_empty() || format.eq_ignore_ascii_case("iso") {
-        return Ok(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        return Ok(crate::Timestamp::new(at, tz_offset).to_rfc3339());
     }
-    let items: Vec<Item> = StrftimeItems::new(format).collect();
-    if items.contains(&Item::Error) {
-        return Err(params_error("now", value, "a strftime format such as %Y-%m-%d"));
-    }
-    Ok(at.format_with_items(items.into_iter()).to_string())
+    let zoned = at.to_zoned_datetime(jiff::tz::TimeZone::fixed(tz_offset));
+    jiff::fmt::strtime::format(format, &zoned)
+        .map_err(|_| params_error("now", value, "a strftime format such as %Y-%m-%d"))
 }
 
 /// An HMAC (`D`: SHA-256, or D7's SHA-1 and SHA-512) of the data under
@@ -684,21 +679,22 @@ const FAR_SHIFT: &str = "a shift the calendar reaches, such as -1d";
 
 /// D7: a shift of `now`'s time — `-1d`, `+2h`, `30m`, `10s`, `1w`: `None`
 /// when `text` is no shift, `Some(None)` when it is one too far to hold.
-fn shift(text: &str) -> Option<Option<chrono::TimeDelta>> {
+fn shift(text: &str) -> Option<Option<jiff::SignedDuration>> {
     let text = text.trim();
     let unit = text.chars().last()?;
     let count: i64 = text[..text.len() - unit.len_utf8()]
         .trim_start_matches('+')
         .parse()
         .ok()?;
-    Some(match unit {
-        's' => chrono::TimeDelta::try_seconds(count),
-        'm' => chrono::TimeDelta::try_minutes(count),
-        'h' => chrono::TimeDelta::try_hours(count),
-        'd' => chrono::TimeDelta::try_days(count),
-        'w' => chrono::TimeDelta::try_weeks(count),
+    let secs = match unit {
+        's' => Some(count),
+        'm' => count.checked_mul(60),
+        'h' => count.checked_mul(3600),
+        'd' => count.checked_mul(86_400),
+        'w' => count.checked_mul(7 * 86_400),
         _ => return None,
-    })
+    };
+    Some(secs.map(jiff::SignedDuration::from_secs))
 }
 
 /// The environment variable `env(NAME)` names: one gathered beforehand, by
@@ -936,7 +932,7 @@ mod tests {
         assert_eq!(run("{{now(%Y-%m-%d %H:%M:%S)}}").as_deref(), Ok("2023-11-15 06:13:20"));
         assert_eq!(run("{{now('%Y%m%d', UTC)}}").as_deref(), Ok("20231114"));
         assert_eq!(run("{{now(iso, utc)}}").as_deref(), Ok("2023-11-14T22:13:20Z"));
-        assert!(run("{{now(%Q)}}").is_err(), "not a format: an error, not a panic");
+        assert!(run("{{now(%J)}}").is_err(), "not a format: an error, not a panic");
         assert!(run("{{now(a, b, c)}}").is_err());
         // D7: shifted.
         assert_eq!(run("{{now(%Y-%m-%d, -1d, utc)}}").as_deref(), Ok("2023-11-13"));

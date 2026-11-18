@@ -16,7 +16,7 @@ conformance = ["cyberapi-store/conformance"]
 # and the browser build never compiles it.
 [dependencies]
 async-lock = { workspace = true }
-chrono = { workspace = true, features = ["clock"] }
+jiff = { workspace = true, features = ["tz-system", "tz-fat", "tzdb-bundle-platform", "tzdb-zoneinfo", "tzdb-concatenated"] }
 cyberapi-core = { workspace = true }
 cyberapi-store = { workspace = true }
 directories = { workspace = true }

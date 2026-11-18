@@ -59,7 +59,7 @@ impl Render for RecentList {
             Some(Err(error)) => note(i18n::store_error(error)),
             Some(Ok(responses)) if responses.is_empty() => note(t!("recent.none").to_string()),
             Some(Ok(responses)) => {
-                let today = chrono::Local::now().date_naive();
+                let today = jiff::ZonedDateTime::now().date();
                 let hover = cx.theme().accent;
                 let rows: Vec<_> = responses
                     .iter()

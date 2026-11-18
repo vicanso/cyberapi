@@ -1,6 +1,11 @@
-use chrono::{DateTime, FixedOffset, SecondsFormat, Utc};
+use jiff::civil::DateTime;
+use jiff::fmt::temporal::Pieces;
+use jiff::tz::{Offset, TimeZone};
+use jiff::{Timestamp as JiffTimestamp, ZonedDateTime};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 /// A point in time with the offset it was written with.
 ///
@@ -9,40 +14,130 @@ use std::fmt;
 /// to UTC RFC 3339, and a row created without one holds `''`. Comparing those
 /// strings, as the old app did, orders `+08:00` and `Z` times wrongly (#24);
 /// a `Timestamp` compares the instants.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Timestamp(DateTime<FixedOffset>);
+#[derive(Clone, Copy)]
+pub struct Timestamp {
+    instant: JiffTimestamp,
+    offset: Offset,
+}
 
 impl Timestamp {
-    pub fn new(at: DateTime<FixedOffset>) -> Self {
-        Self(at)
+    pub fn new(instant: JiffTimestamp, offset: Offset) -> Self {
+        Self { instant, offset }
+    }
+
+    pub fn from_utc(instant: JiffTimestamp) -> Self {
+        Self {
+            instant,
+            offset: Offset::UTC,
+        }
+    }
+
+    pub fn from_zoned(at: &ZonedDateTime) -> Self {
+        Self {
+            instant: at.timestamp(),
+            offset: at.offset(),
+        }
     }
 
     /// Reads a stored time. What cannot be read — `''` included — is the Unix
     /// epoch, so a damaged value sorts first instead of failing the row.
     pub fn parse_lenient(text: &str) -> Self {
-        DateTime::parse_from_rfc3339(text.trim()).map_or_else(|_| Self::default(), Self)
+        let text = text.trim();
+        let Ok(instant) = text.parse::<JiffTimestamp>() else {
+            return Self::default();
+        };
+        let offset = Pieces::parse(text)
+            .ok()
+            .and_then(|pieces| pieces.to_numeric_offset())
+            .unwrap_or(Offset::UTC);
+        Self { instant, offset }
     }
 
-    pub fn get(&self) -> DateTime<FixedOffset> {
-        self.0
+    pub fn instant(&self) -> JiffTimestamp {
+        self.instant
+    }
+
+    pub fn offset(&self) -> Offset {
+        self.offset
+    }
+
+    pub fn to_datetime(&self) -> DateTime {
+        self.offset.to_datetime(self.instant)
+    }
+
+    pub fn in_offset(&self, offset: Offset) -> DateTime {
+        offset.to_datetime(self.instant)
+    }
+
+    pub fn in_zone(&self, tz: &TimeZone) -> ZonedDateTime {
+        self.instant.to_zoned_datetime(tz.clone())
+    }
+
+    pub fn as_second(&self) -> i64 {
+        self.instant.as_second()
     }
 
     /// Seconds since the Unix epoch, in UTC: "now" as a caller's clock gives
     /// it.
     pub fn from_unix(seconds: i64) -> Self {
-        DateTime::<Utc>::from_timestamp(seconds, 0).map_or_else(Self::default, |at| Self(at.fixed_offset()))
+        JiffTimestamp::from_second(seconds).map_or_else(|_| Self::default(), Self::from_utc)
     }
 
     /// RFC 3339 to the second with the original offset — the form the old
     /// app wrote, so a row written back reads the same in both.
     pub fn to_rfc3339(&self) -> String {
-        self.0.to_rfc3339_opts(SecondsFormat::Secs, true)
+        let dt = self.to_datetime();
+        let base = format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            dt.year(),
+            dt.month(),
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second(),
+        );
+        if self.offset == Offset::UTC {
+            format!("{base}Z")
+        } else {
+            let total = self.offset.seconds();
+            let sign = if total < 0 { '-' } else { '+' };
+            let abs = total.abs();
+            let hours = abs / 3600;
+            let minutes = (abs % 3600) / 60;
+            format!("{base}{sign}{hours:02}:{minutes:02}")
+        }
     }
 }
 
 impl Default for Timestamp {
     fn default() -> Self {
-        Self(DateTime::<Utc>::UNIX_EPOCH.fixed_offset())
+        Self::from_utc(JiffTimestamp::UNIX_EPOCH)
+    }
+}
+
+impl PartialEq for Timestamp {
+    fn eq(&self, other: &Self) -> bool {
+        self.instant == other.instant
+    }
+}
+
+impl Eq for Timestamp {}
+
+impl PartialOrd for Timestamp {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Timestamp {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.instant.cmp(&other.instant)
+    }
+}
+
+impl Hash for Timestamp {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.instant.hash(state);
     }
 }
 

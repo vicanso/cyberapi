@@ -75,11 +75,7 @@ fn content_changes_move_the_collection_forward() {
     let seconds = Arc::new(AtomicI64::new(1_700_000_000));
     let store = pollster::block_on(TursoStore::open_with_clock(&dir.path().join("t.db"), move || {
         let at = seconds.fetch_add(1, Ordering::SeqCst);
-        Timestamp::new(
-            chrono::DateTime::from_timestamp(at, 0)
-                .unwrap_or_default()
-                .fixed_offset(),
-        )
+        Timestamp::from_unix(at)
     }))
     .expect("open");
     let storage = store.storage();

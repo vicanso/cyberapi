@@ -1126,7 +1126,7 @@ async fn mcp_tokens(variable: &str) {
         .expect("issue");
     assert!(laptop.secret.starts_with(MCP_TOKEN_PREFIX) && laptop.secret.len() == MCP_TOKEN_PREFIX.len() + 64);
     assert_eq!(laptop.token.name, "laptop", "trimmed");
-    let lasts = laptop.token.expires_at.expect("an end").get().timestamp() - now();
+    let lasts = laptop.token.expires_at.expect("an end").as_second() - now();
     assert!((89 * 24 * 3600..=90 * 24 * 3600).contains(&lasts));
     // H1: one that may change projects too, and says so when listed.
     let ci = alice

@@ -311,7 +311,7 @@ impl UpdateState {
 }
 
 fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+    jiff::Timestamp::now().as_second()
 }
 
 fn request(url: &str, proxy: &ProxyPrefs) -> PreparedRequest {
