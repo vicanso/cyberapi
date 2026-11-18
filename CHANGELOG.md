@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.3](https://github.com/vicanso/cyberapi/compare/v0.6.2..v0.6.3) - 2026-11-18
+
+### 🐛 Bug Fixes
+
+- *(store)* Run TursoStore on a 4 MB worker thread to prevent stack overflow - ([8244a11](https://github.com/vicanso/cyberapi/commit/8244a11449d9496b1e60e96cc6a306893e9dffd3))
+- Prevent titlebar drag area from intercepting control clicks ([#96](https://github.com/vicanso/cyberapi/issues/96)) - ([f618085](https://github.com/vicanso/cyberapi/commit/f61808540705e78f0d835a576e550b01fa658440))
+
+### 🚜 Refactor
+
+- Replace chrono with jiff - ([f89566a](https://github.com/vicanso/cyberapi/commit/f89566a7188b84b319b31a61d766df601718815f))
+
 ## [0.6.2](https://github.com/vicanso/cyberapi/compare/v0.6.1..v0.6.2) - 2026-11-16
 
 ### ⛰️  Features
