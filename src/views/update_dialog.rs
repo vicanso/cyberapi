@@ -35,15 +35,7 @@ const MAX_NOTES: usize = 20_000;
 /// Wraps a title-bar update element so mouse-down events never bubble to
 /// `TitleBar` and initiate a window drag.
 fn stop_titlebar_drag(element: impl IntoElement) -> AnyElement {
-    div()
-        .id("titlebar-update-container")
-        .flex_none()
-        .occlude()
-        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-            cx.stop_propagation();
-        })
-        .child(element)
-        .into_any_element()
+    crate::views::stop_titlebar_drag("titlebar-update-container", element)
 }
 
 /// The title bar's update indicator (R2):

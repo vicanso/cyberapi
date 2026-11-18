@@ -353,7 +353,8 @@ impl CyberApi {
                 .min_w_0()
                 .items_center()
                 .gap_1()
-                .child(
+                .child(crate::views::stop_titlebar_drag(
+                    "title-back-container",
                     Button::new("title-back")
                         .ghost()
                         .xsmall()
@@ -363,7 +364,7 @@ impl CyberApi {
                             let state = AppStore::global(cx).state().clone();
                             state.update(cx, |state, cx| state.go_home(cx));
                         }),
-                )
+                ))
                 .child(div().text_sm().text_color(cx.theme().muted_foreground).child("/"))
                 .children(title)
                 .children(pins)
@@ -705,7 +706,10 @@ impl Render for CyberApi {
                                 .gap_1()
                                 .items_center()
                                 .children(update_chip(cx))
-                                .child(self.render_menu(cx)),
+                                .child(crate::views::stop_titlebar_drag(
+                                    "title-settings-container",
+                                    self.render_menu(cx),
+                                )),
                         ),
                 ),
             )

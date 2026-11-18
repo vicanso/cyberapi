@@ -97,6 +97,10 @@ impl Render for PinsBar {
                 .border_1()
                 .text_xs()
                 .cursor_pointer()
+                .occlude()
+                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                })
                 .map(|tag| {
                     if active {
                         tag.bg(theme.list_active)
@@ -195,7 +199,9 @@ impl Render for PinsBar {
                     )
             })
             .child(row)
-            .when_some(all, |bar, all| bar.child(all))
+            .when_some(all, |bar, all| {
+                bar.child(crate::views::stop_titlebar_drag("pins-all-container", all))
+            })
     }
 }
 

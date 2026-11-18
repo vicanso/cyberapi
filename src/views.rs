@@ -73,9 +73,24 @@ use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, ColorName, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    Action, AnyElement, App, InteractiveElement as _, IntoElement as _, KeyBinding, KeyBindingContextPredicate,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Action, AnyElement, App, ElementId, InteractiveElement as _, IntoElement, KeyBinding, KeyBindingContextPredicate,
+    MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div,
 };
+
+/// Wraps an interactive title-bar control so its hitbox occludes `TitleBar`'s
+/// `WindowControlArea::Drag` on Windows/Linux and mouse-down events never bubble
+/// to `TitleBar` to initiate a window drag.
+pub(crate) fn stop_titlebar_drag(id: impl Into<ElementId>, element: impl IntoElement) -> AnyElement {
+    div()
+        .id(id)
+        .flex_none()
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+            cx.stop_propagation();
+        })
+        .child(element)
+        .into_any_element()
+}
 
 /// A `secondary-` binding: Command on macOS, Control elsewhere.
 ///

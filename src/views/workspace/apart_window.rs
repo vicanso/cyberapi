@@ -363,7 +363,10 @@ impl Render for ApartView {
                         .gap_2()
                         .text_sm()
                         .child(name)
-                        .child(self.environment_switch(cx)),
+                        .child(crate::views::stop_titlebar_drag(
+                            "apart-env-container",
+                            self.environment_switch(cx),
+                        )),
                 ),
             )
             .child(
