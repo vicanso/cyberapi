@@ -28,7 +28,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, IndexPath, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
@@ -177,6 +177,28 @@ impl SelectItem for Choice {
 
 type Choices = Entity<SelectState<Vec<Choice>>>;
 
+/// A font family offered in the editor font picker; empty value means the
+/// bundled default (`TextPrefs::DEFAULT_EDITOR_FONT`).
+#[derive(Clone)]
+struct FontChoice {
+    label: SharedString,
+    value: String,
+}
+
+impl SelectItem for FontChoice {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &String {
+        &self.value
+    }
+}
+
+type FontChoices = Entity<SelectState<SearchableVec<FontChoice>>>;
+
 /// Which number a field holds, and so what leaving it saves.
 #[derive(Clone, Copy)]
 enum Number {
@@ -225,7 +247,11 @@ pub struct SettingsView {
     proxy_url: Entity<InputState>,
     proxy_bypass: Entity<InputState>,
     ui_size: Entity<InputState>,
+    /// #97, on the desktop: system font family for the interface.
+    ui_font: Option<FontChoices>,
     editor_size: Entity<InputState>,
+    /// #97, on the desktop: system font family for the code editors.
+    editor_font: Option<FontChoices>,
     /// D4: how many responses each API keeps.
     history_size: Entity<InputState>,
     /// How many MiB of a text body the response panel shows.
@@ -396,6 +422,32 @@ impl SettingsView {
             cx,
             &mut subscriptions,
         );
+        let (ui_font, editor_font) = if this_build::picks_fonts() {
+            (
+                Some(Self::font_selector(
+                    t!("settings.ui_font_system").to_string(),
+                    this_build::ui_fonts(cx),
+                    &prefs.text.ui_font,
+                    None,
+                    |text, font| text.ui_font = font,
+                    window,
+                    cx,
+                    &mut subscriptions,
+                )),
+                Some(Self::font_selector(
+                    t!("settings.editor_font_default", font = TextPrefs::DEFAULT_EDITOR_FONT).to_string(),
+                    this_build::editor_fonts(cx),
+                    &prefs.text.editor_font,
+                    Some(TextPrefs::DEFAULT_EDITOR_FONT),
+                    |text, font| text.editor_font = font,
+                    window,
+                    cx,
+                    &mut subscriptions,
+                )),
+            )
+        } else {
+            (None, None)
+        };
         // D4.
         let history_size = Self::size_field(
             prefs.sending.history_size() as u32,
@@ -518,7 +570,9 @@ impl SettingsView {
             proxy_url,
             proxy_bypass,
             ui_size,
+            ui_font,
             editor_size,
+            editor_font,
             history_size,
             display_mib,
             connect,
@@ -599,6 +653,51 @@ impl SettingsView {
         state
     }
 
+    /// Searchable dropdown of system fonts (#97); index 0 is the default
+    /// (`""`). `default_name` treats that literal family name as index 0 too.
+    #[allow(clippy::too_many_arguments)]
+    fn font_selector(
+        default_label: String,
+        fonts: Vec<String>,
+        saved: &str,
+        default_name: Option<&str>,
+        set: fn(&mut TextPrefs, String),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        subscriptions: &mut Vec<Subscription>,
+    ) -> FontChoices {
+        let mut items = Vec::with_capacity(fonts.len() + 1);
+        items.push(FontChoice {
+            label: default_label.into(),
+            value: String::new(),
+        });
+        items.extend(fonts.into_iter().map(|name| FontChoice {
+            label: name.clone().into(),
+            value: name,
+        }));
+        let saved = saved.trim();
+        let chosen = if saved.is_empty() || default_name.is_some_and(|default| saved == default) {
+            0
+        } else {
+            items.iter().position(|item| item.value == saved).unwrap_or(0)
+        };
+        let state = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(items), Some(IndexPath::new(chosen)), window, cx).searchable(true)
+        });
+        subscriptions.push(cx.subscribe(
+            &state,
+            move |_, _, event: &SelectEvent<SearchableVec<FontChoice>>, cx| {
+                if let SelectEvent::Confirm(Some(font)) = event {
+                    let app = AppStore::global(cx).state().clone();
+                    let mut text = app.read(cx).prefs().text.clone();
+                    set(&mut text, font.clone());
+                    app.update(cx, |app, cx| app.set_text(text, cx));
+                }
+            },
+        ));
+        state
+    }
+
     /// F14.6: a size in pixels within `sizes`, as [`Self::size_field`].
     #[allow(clippy::too_many_arguments)]
     fn text_size(
@@ -618,7 +717,7 @@ impl SettingsView {
             move |prefs| current(&prefs.text),
             move |size, cx| {
                 let app = AppStore::global(cx).state().clone();
-                let mut text = app.read(cx).prefs().text;
+                let mut text = app.read(cx).prefs().text.clone();
                 set(&mut text, size);
                 app.update(cx, |app, cx| app.set_text(text, cx));
             },
@@ -803,8 +902,8 @@ impl SettingsView {
         match self.section {
             // The text size first: each step makes the rows above it
             // taller, so with none its buttons stay under the pointer.
-            Section::Appearance => vec![
-                setting_row(
+            Section::Appearance => {
+                let mut rows = vec![setting_row(
                     t!("settings.ui_size").to_string(),
                     Some(size_description(
                         TextPrefs::UI_SIZES,
@@ -813,22 +912,35 @@ impl SettingsView {
                     )),
                     NumberInput::new(&self.ui_size).small(),
                     cx,
-                ),
-                setting_row(
-                    t!("settings.theme").to_string(),
-                    Some(t!("settings.theme_desc").to_string()),
-                    Select::new(&self.theme).small(),
-                    cx,
-                ),
-                setting_row(
-                    t!("settings.language").to_string(),
-                    Some(t!("settings.language_desc").to_string()),
-                    Select::new(&self.language).small(),
-                    cx,
-                ),
-            ],
-            Section::Editor => vec![
-                setting_row(
+                )];
+                if let Some(ui_font) = &self.ui_font {
+                    rows.push(setting_row(
+                        t!("settings.ui_font").to_string(),
+                        Some(t!("settings.ui_font_desc").to_string()),
+                        Select::new(ui_font)
+                            .small()
+                            .search_placeholder(t!("settings.font_search").to_string()),
+                        cx,
+                    ));
+                }
+                rows.extend([
+                    setting_row(
+                        t!("settings.theme").to_string(),
+                        Some(t!("settings.theme_desc").to_string()),
+                        Select::new(&self.theme).small(),
+                        cx,
+                    ),
+                    setting_row(
+                        t!("settings.language").to_string(),
+                        Some(t!("settings.language_desc").to_string()),
+                        Select::new(&self.language).small(),
+                        cx,
+                    ),
+                ]);
+                rows
+            }
+            Section::Editor => {
+                let mut rows = vec![setting_row(
                     t!("settings.editor_size").to_string(),
                     Some(size_description(
                         TextPrefs::EDITOR_SIZES,
@@ -837,59 +949,72 @@ impl SettingsView {
                     )),
                     NumberInput::new(&self.editor_size).small(),
                     cx,
-                ),
-                setting_row(
-                    t!("settings.wrap").to_string(),
-                    Some(t!("settings.wrap_desc").to_string()),
-                    Switch::new("settings-wrap")
-                        .checked(prefs.text.wrap)
-                        .on_click(|checked, _, cx| {
-                            let app = AppStore::global(cx).state().clone();
-                            let text = TextPrefs {
-                                wrap: *checked,
-                                ..app.read(cx).prefs().text
-                            };
-                            app.update(cx, |app, cx| app.set_text(text, cx));
-                        }),
-                    cx,
-                ),
-                setting_row(
-                    t!("settings.show_tabs").to_string(),
-                    Some(t!("settings.show_tabs_desc").to_string()),
-                    Switch::new("settings-tabs")
-                        .checked(prefs.text.show_tabs)
-                        .on_click(|checked, _, cx| {
-                            let app = AppStore::global(cx).state().clone();
-                            let text = TextPrefs {
-                                show_tabs: *checked,
-                                ..app.read(cx).prefs().text
-                            };
-                            app.update(cx, |app, cx| app.set_text(text, cx));
-                        }),
-                    cx,
-                ),
-                setting_row(
-                    t!("settings.query_in_url").to_string(),
-                    Some(t!("settings.query_in_url_desc").to_string()),
-                    Switch::new("settings-query-in-url")
-                        .checked(prefs.text.query_in_url)
-                        .on_click(|checked, _, cx| {
-                            let app = AppStore::global(cx).state().clone();
-                            let text = TextPrefs {
-                                query_in_url: *checked,
-                                ..app.read(cx).prefs().text
-                            };
-                            app.update(cx, |app, cx| app.set_text(text, cx));
-                        }),
-                    cx,
-                ),
-                setting_row(
-                    t!("settings.json_view").to_string(),
-                    Some(t!("settings.json_view_desc").to_string()),
-                    Select::new(&self.json_view).small(),
-                    cx,
-                ),
-            ],
+                )];
+                if let Some(editor_font) = &self.editor_font {
+                    rows.push(setting_row(
+                        t!("settings.editor_font").to_string(),
+                        Some(t!("settings.editor_font_desc", default = TextPrefs::DEFAULT_EDITOR_FONT).to_string()),
+                        Select::new(editor_font)
+                            .small()
+                            .search_placeholder(t!("settings.font_search").to_string()),
+                        cx,
+                    ));
+                }
+                rows.extend([
+                    setting_row(
+                        t!("settings.wrap").to_string(),
+                        Some(t!("settings.wrap_desc").to_string()),
+                        Switch::new("settings-wrap")
+                            .checked(prefs.text.wrap)
+                            .on_click(|checked, _, cx| {
+                                let app = AppStore::global(cx).state().clone();
+                                let text = TextPrefs {
+                                    wrap: *checked,
+                                    ..app.read(cx).prefs().text.clone()
+                                };
+                                app.update(cx, |app, cx| app.set_text(text, cx));
+                            }),
+                        cx,
+                    ),
+                    setting_row(
+                        t!("settings.show_tabs").to_string(),
+                        Some(t!("settings.show_tabs_desc").to_string()),
+                        Switch::new("settings-tabs")
+                            .checked(prefs.text.show_tabs)
+                            .on_click(|checked, _, cx| {
+                                let app = AppStore::global(cx).state().clone();
+                                let text = TextPrefs {
+                                    show_tabs: *checked,
+                                    ..app.read(cx).prefs().text.clone()
+                                };
+                                app.update(cx, |app, cx| app.set_text(text, cx));
+                            }),
+                        cx,
+                    ),
+                    setting_row(
+                        t!("settings.query_in_url").to_string(),
+                        Some(t!("settings.query_in_url_desc").to_string()),
+                        Switch::new("settings-query-in-url")
+                            .checked(prefs.text.query_in_url)
+                            .on_click(|checked, _, cx| {
+                                let app = AppStore::global(cx).state().clone();
+                                let text = TextPrefs {
+                                    query_in_url: *checked,
+                                    ..app.read(cx).prefs().text.clone()
+                                };
+                                app.update(cx, |app, cx| app.set_text(text, cx));
+                            }),
+                        cx,
+                    ),
+                    setting_row(
+                        t!("settings.json_view").to_string(),
+                        Some(t!("settings.json_view_desc").to_string()),
+                        Select::new(&self.json_view).small(),
+                        cx,
+                    ),
+                ]);
+                rows
+            }
             Section::Requests => vec![
                 setting_row(
                     t!("settings.http_version").to_string(),
@@ -1560,5 +1685,79 @@ mod tests {
             .expect("the window is open");
         assert!(has_homepage, "About section renders inline with homepage link");
         assert!(!has_dialog, "About section never stacks a second dialog");
+    }
+
+    /// #97: picking UI and editor fonts saves them independently, picking
+    /// the default clears them, and resetting settings restores the defaults.
+    #[gpui_kit::test]
+    async fn font_selectors_save_and_reset_independently(cx: &mut TestAppContext) {
+        let (handle, view) = open(cx);
+        let (ui_selector, editor_selector, _subs) = cx
+            .update_window(handle, |_, window, cx| {
+                view.update(cx, |_, cx| {
+                    let mut subs = Vec::new();
+                    let ui = SettingsView::font_selector(
+                        "System (Default)".into(),
+                        vec!["Inter".into(), "PingFang SC".into()],
+                        "Inter",
+                        None,
+                        |text, font| text.ui_font = font,
+                        window,
+                        cx,
+                        &mut subs,
+                    );
+                    let editor = SettingsView::font_selector(
+                        "JetBrains Mono (Default)".into(),
+                        vec!["Fira Code".into(), "Menlo".into()],
+                        "Fira Code",
+                        Some(TextPrefs::DEFAULT_EDITOR_FONT),
+                        |text, font| text.editor_font = font,
+                        window,
+                        cx,
+                        &mut subs,
+                    );
+                    (ui, editor, subs)
+                })
+            })
+            .expect("the window is open");
+        assert_eq!(
+            cx.read(|cx| ui_selector.read(cx).selected_index(cx)),
+            Some(IndexPath::new(1))
+        );
+        assert_eq!(
+            cx.read(|cx| editor_selector.read(cx).selected_index(cx)),
+            Some(IndexPath::new(1))
+        );
+
+        cx.update(|cx| {
+            ui_selector.update(cx, |_, cx| cx.emit(SelectEvent::Confirm(Some("PingFang SC".into()))));
+            editor_selector.update(cx, |_, cx| cx.emit(SelectEvent::Confirm(Some("Menlo".into()))));
+        });
+        cx.run_until_parked();
+        assert_eq!(prefs(cx).text.ui_font, "PingFang SC");
+        assert_eq!(prefs(cx).text.editor_font, "Menlo");
+
+        cx.update(|cx| {
+            ui_selector.update(cx, |_, cx| cx.emit(SelectEvent::Confirm(Some(String::new()))));
+        });
+        cx.run_until_parked();
+        assert_eq!(prefs(cx).text.ui_font, "");
+        assert_eq!(prefs(cx).text.editor_font, "Menlo");
+
+        cx.update(|cx| {
+            ui_selector.update(cx, |_, cx| cx.emit(SelectEvent::Confirm(Some("Inter".into()))));
+            editor_selector.update(cx, |_, cx| cx.emit(SelectEvent::Confirm(Some(String::new()))));
+        });
+        cx.run_until_parked();
+        assert_eq!(prefs(cx).text.ui_font, "Inter");
+        assert_eq!(prefs(cx).text.editor_font, "");
+
+        cx.update(|cx| {
+            editor_selector.update(cx, |_, cx| cx.emit(SelectEvent::Confirm(Some("Fira Code".into()))));
+        });
+        cx.run_until_parked();
+        click(cx, handle, &["settings-data", "settings-reset", "inline-ok"]);
+        assert_eq!(prefs(cx).text.ui_font, "");
+        assert_eq!(prefs(cx).text.editor_font, "");
     }
 }

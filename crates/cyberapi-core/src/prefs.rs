@@ -103,16 +103,24 @@ pub enum ThemeMode {
     Dark,
 }
 
-/// How text shows: sizes in pixels, `0` the default (F14.6), and whether
-/// long lines in the code editors wrap (F14.7). The open APIs' tab bar
-/// belongs here too: it shows unless a document says otherwise.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// How text shows: sizes in pixels, `0` the default (F14.6), whether long
+/// lines in the code editors wrap (F14.7), and the UI / editor font families (#97).
+/// The open APIs' tab bar belongs here too: it shows unless a document says
+/// otherwise.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TextPrefs {
     /// The interface's: the rem everything is measured in.
     pub ui_size: u32,
+    /// The interface's font family (`""` follows the system UI font).
+    /// Desktop only; a page ignores it and leaves the stored value untouched.
+    pub ui_font: String,
     /// The code editors': a request's body and a response's.
     pub editor_size: u32,
+    /// The code editors' font family (`""` means the built-in default,
+    /// JetBrains Mono). Desktop only; a page ignores it and leaves the stored
+    /// value untouched.
+    pub editor_font: String,
     pub wrap: bool,
     /// The open APIs above the request and the response. Off, they stay
     /// open and the shortcuts still reach them; the bar is not drawn.
@@ -128,7 +136,9 @@ impl Default for TextPrefs {
     fn default() -> Self {
         Self {
             ui_size: 0,
+            ui_font: String::new(),
             editor_size: 0,
+            editor_font: String::new(),
             wrap: true,
             show_tabs: true,
             query_in_url: false,
@@ -142,6 +152,8 @@ impl TextPrefs {
     pub const DEFAULT_UI: u32 = 14;
     /// The kit's code size.
     pub const DEFAULT_EDITOR: u32 = 13;
+    /// The bundled monospace font family used when no custom font is chosen.
+    pub const DEFAULT_EDITOR_FONT: &'static str = "JetBrains Mono";
     /// The sizes offered. The interface stops at 18: rows of a fixed height
     /// hold no larger text.
     pub const UI_SIZES: RangeInclusive<u32> = 12..=18;
@@ -153,9 +165,26 @@ impl TextPrefs {
         within(self.ui_size, Self::DEFAULT_UI, Self::UI_SIZES)
     }
 
+    /// The interface's custom font family, or `None` to follow the system font.
+    pub fn ui_font(&self) -> Option<&str> {
+        let font = self.ui_font.trim();
+        (!font.is_empty()).then_some(font)
+    }
+
     /// The code editors' size to use, as [`Self::ui`].
     pub fn editor(&self) -> u32 {
         within(self.editor_size, Self::DEFAULT_EDITOR, Self::EDITOR_SIZES)
+    }
+
+    /// The code editors' font family to use, falling back to
+    /// [`Self::DEFAULT_EDITOR_FONT`] when empty.
+    pub fn editor_font(&self) -> &str {
+        let font = self.editor_font.trim();
+        if font.is_empty() {
+            Self::DEFAULT_EDITOR_FONT
+        } else {
+            font
+        }
     }
 }
 
@@ -792,6 +821,38 @@ mod tests {
                 ..TextPrefs::default()
             }
         );
+        assert_eq!(text.ui_font, "");
+        assert_eq!(text.ui_font(), None);
+        assert_eq!(
+            TextPrefs {
+                ui_font: "   ".into(),
+                ..TextPrefs::default()
+            }
+            .ui_font(),
+            None
+        );
+        assert_eq!(text.editor_font, "");
+        assert_eq!(text.editor_font(), TextPrefs::DEFAULT_EDITOR_FONT);
+        assert_eq!(
+            TextPrefs {
+                editor_font: "   ".into(),
+                ..TextPrefs::default()
+            }
+            .editor_font(),
+            TextPrefs::DEFAULT_EDITOR_FONT
+        );
+        let custom = TextPrefs {
+            ui_font: " Inter ".into(),
+            editor_font: " Fira Code ".into(),
+            ..TextPrefs::default()
+        };
+        assert_eq!(custom.ui_font(), Some("Inter"));
+        assert_eq!(custom.editor_font(), "Fira Code");
+        let serialized = serde_json::to_string(&custom).expect("json");
+        assert!(serialized.contains(r#""uiFont":" Inter ""#), "{serialized}");
+        assert!(serialized.contains(r#""editorFont":" Fira Code ""#), "{serialized}");
+        let round_tripped: TextPrefs = serde_json::from_str(&serialized).expect("back");
+        assert_eq!(round_tripped, custom);
         let workspace: WorkspacePrefs = serde_json::from_str(r#"{"pinned":["a"],"gone":1}"#).expect("defaults");
         assert_eq!(workspace.pinned, vec![ItemId::from("a")]);
         assert!(

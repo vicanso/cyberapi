@@ -1756,7 +1756,7 @@ mod tests {
                 app.set_text(
                     TextPrefs {
                         show_tabs: false,
-                        ..app.prefs().text
+                        ..app.prefs().text.clone()
                     },
                     cx,
                 );
@@ -1772,7 +1772,7 @@ mod tests {
                 app.set_text(
                     TextPrefs {
                         show_tabs: true,
-                        ..app.prefs().text
+                        ..app.prefs().text.clone()
                     },
                     cx,
                 );

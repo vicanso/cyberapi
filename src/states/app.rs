@@ -1002,7 +1002,7 @@ mod tests {
             ..Default::default()
         };
         state.update(cx, |state, cx| {
-            state.set_text(text, cx);
+            state.set_text(text.clone(), cx);
             state.set_sending(sending.clone(), cx);
         });
         cx.run_until_parked();

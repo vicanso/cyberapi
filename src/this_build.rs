@@ -597,6 +597,157 @@ pub fn add_fonts(cx: &mut gpui_kit::App) {
 #[cfg(target_family = "wasm")]
 pub fn add_fonts(_: &mut gpui_kit::App) {}
 
+/// Whether this build offers system font pickers for the UI and code editors (#97):
+/// the desktop reads installed fonts; a page bundles only IBM Plex Sans and
+/// JetBrains Mono.
+pub fn picks_fonts() -> bool {
+    !cfg!(target_family = "wasm")
+}
+
+/// The virtual family GPUI resolves on every platform for the system UI font.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+const SYSTEM_UI_FONT: &str = ".SystemUIFont";
+
+/// Filters raw system font family names for the UI font picker: drops blank
+/// entries and dot-prefixed internal system fonts (e.g. `.SF NS`).
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+fn filter_ui_fonts(names: Vec<String>) -> Vec<String> {
+    names
+        .into_iter()
+        .filter(|name| {
+            let trimmed = name.trim();
+            !trimmed.is_empty() && !trimmed.starts_with('.')
+        })
+        .collect()
+}
+
+/// Filters raw system font family names for the editor font picker: drops
+/// blank entries, dot-prefixed internal system fonts (e.g. `.SF NS Mono`), and
+/// the bundled default (`JetBrains Mono`, shown first as the default entry).
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+fn filter_editor_fonts(names: Vec<String>) -> Vec<String> {
+    filter_ui_fonts(names)
+        .into_iter()
+        .filter(|name| name.trim() != cyberapi_core::prefs::TextPrefs::DEFAULT_EDITOR_FONT)
+        .collect()
+}
+
+/// Resolves `requested` UI font against `installed` fonts, falling back to
+/// [`SYSTEM_UI_FONT`] whenever `requested` is empty or missing from `installed`.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+fn resolve_ui_font_from(requested: &str, installed: &[String]) -> String {
+    let trimmed = requested.trim();
+    if trimmed.is_empty() {
+        return SYSTEM_UI_FONT.to_string();
+    }
+    if installed.iter().any(|name| name == trimmed) {
+        trimmed.to_string()
+    } else {
+        SYSTEM_UI_FONT.to_string()
+    }
+}
+
+/// Resolves `requested` against `installed` fonts, falling back to
+/// [`TextPrefs::DEFAULT_EDITOR_FONT`] whenever `requested` is empty, equals the
+/// default, or is missing from `installed` (so GPUI never panics laying out an
+/// unknown family).
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+fn resolve_editor_font_from(requested: &str, installed: &[String]) -> String {
+    let default = cyberapi_core::prefs::TextPrefs::DEFAULT_EDITOR_FONT;
+    let trimmed = requested.trim();
+    if trimmed.is_empty() || trimmed == default {
+        return default.to_string();
+    }
+    if installed.iter().any(|name| name == trimmed) {
+        trimmed.to_string()
+    } else {
+        default.to_string()
+    }
+}
+
+#[cfg(all(not(target_family = "wasm"), not(test)))]
+fn installed_font_names(cx: &gpui_kit::App) -> Vec<String> {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| cx.text_system().all_font_names()).clone()
+}
+
+#[cfg(all(not(target_family = "wasm"), test))]
+fn installed_font_names(cx: &gpui_kit::App) -> Vec<String> {
+    cx.text_system().all_font_names()
+}
+
+/// Available custom font families on this machine for the UI font picker, sorted.
+#[cfg(not(target_family = "wasm"))]
+pub fn ui_fonts(cx: &gpui_kit::App) -> Vec<String> {
+    filter_ui_fonts(installed_font_names(cx))
+}
+#[cfg(target_family = "wasm")]
+pub fn ui_fonts(_: &gpui_kit::App) -> Vec<String> {
+    Vec::new()
+}
+
+/// Available custom font families on this machine for the editor font picker,
+/// sorted and excluding the bundled default.
+#[cfg(not(target_family = "wasm"))]
+pub fn editor_fonts(cx: &gpui_kit::App) -> Vec<String> {
+    filter_editor_fonts(installed_font_names(cx))
+}
+#[cfg(target_family = "wasm")]
+pub fn editor_fonts(_: &gpui_kit::App) -> Vec<String> {
+    Vec::new()
+}
+
+/// The UI font family to apply to the theme (#97), or `None` on the web so the
+/// bundled IBM Plex Sans face stays intact. Fast-paths empty input without
+/// enumerating system fonts, and falls back to [`SYSTEM_UI_FONT`] if missing.
+#[cfg(not(target_family = "wasm"))]
+pub fn resolve_ui_font(requested: &str, cx: &gpui_kit::App) -> Option<String> {
+    let trimmed = requested.trim();
+    if trimmed.is_empty() {
+        return Some(SYSTEM_UI_FONT.to_string());
+    }
+    let installed = installed_font_names(cx);
+    let resolved = resolve_ui_font_from(trimmed, &installed);
+    if resolved != trimmed {
+        tracing::warn!(
+            font = trimmed,
+            fallback = SYSTEM_UI_FONT,
+            "the chosen UI font is not installed, using the system font instead"
+        );
+    }
+    Some(resolved)
+}
+#[cfg(target_family = "wasm")]
+pub fn resolve_ui_font(_: &str, _: &gpui_kit::App) -> Option<String> {
+    None
+}
+
+/// The editor font family to apply to the theme (#97). Leaves system fonts
+/// untouched when `requested` is empty or the bundled default; falls back to the
+/// bundled default if a custom font is missing on this machine.
+#[cfg(not(target_family = "wasm"))]
+pub fn resolve_editor_font(requested: &str, cx: &gpui_kit::App) -> String {
+    let default = cyberapi_core::prefs::TextPrefs::DEFAULT_EDITOR_FONT;
+    let trimmed = requested.trim();
+    if trimmed.is_empty() || trimmed == default {
+        return default.to_string();
+    }
+    let installed = installed_font_names(cx);
+    let resolved = resolve_editor_font_from(trimmed, &installed);
+    if resolved != trimmed {
+        tracing::warn!(
+            font = trimmed,
+            fallback = default,
+            "the chosen editor font is not installed, using the default instead"
+        );
+    }
+    resolved
+}
+#[cfg(target_family = "wasm")]
+pub fn resolve_editor_font(_: &str, _: &gpui_kit::App) -> String {
+    cyberapi_core::prefs::TextPrefs::DEFAULT_EDITOR_FONT.to_string()
+}
+
 /// F7.4: a body the app cannot draw (a PDF) shown by what can: the
 /// system's viewer for it, or a new tab of the browser.
 #[cfg(not(target_family = "wasm"))]
@@ -1137,5 +1288,36 @@ mod tests {
             Some(named) => assert!(named.is_absolute() && relative == named, "{}", relative.display()),
             None => assert_eq!(relative, std::path::Path::new("x.json")),
         }
+    }
+
+    #[test]
+    fn fonts_filter_and_resolve_safely() {
+        assert!(picks_fonts());
+        let raw = vec![
+            "".into(),
+            "   ".into(),
+            ".SF NS Mono".into(),
+            "Inter".into(),
+            "JetBrains Mono".into(),
+            "Fira Code".into(),
+            "Menlo".into(),
+        ];
+        assert_eq!(
+            filter_ui_fonts(raw.clone()),
+            vec!["Inter", "JetBrains Mono", "Fira Code", "Menlo"]
+        );
+        assert_eq!(filter_editor_fonts(raw), vec!["Inter", "Fira Code", "Menlo"]);
+
+        let installed = vec!["Inter".to_string(), "Fira Code".to_string(), "Menlo".to_string()];
+        assert_eq!(resolve_ui_font_from("", &installed), SYSTEM_UI_FONT);
+        assert_eq!(resolve_ui_font_from("  ", &installed), SYSTEM_UI_FONT);
+        assert_eq!(resolve_ui_font_from(" Inter ", &installed), "Inter");
+        assert_eq!(resolve_ui_font_from("Missing Font", &installed), SYSTEM_UI_FONT);
+
+        assert_eq!(resolve_editor_font_from("", &installed), "JetBrains Mono");
+        assert_eq!(resolve_editor_font_from("  ", &installed), "JetBrains Mono");
+        assert_eq!(resolve_editor_font_from("JetBrains Mono", &installed), "JetBrains Mono");
+        assert_eq!(resolve_editor_font_from(" Fira Code ", &installed), "Fira Code");
+        assert_eq!(resolve_editor_font_from("Missing Font", &installed), "JetBrains Mono");
     }
 }

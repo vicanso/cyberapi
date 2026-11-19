@@ -11,7 +11,7 @@ A version in italics is in nightly builds until that release.
 ## Native and fast
 
 - macOS, Windows and Linux, drawn on the GPU with GPUI. A project with thousands of APIs opens at once.
-- Light and dark themes, English and Chinese, adjustable text size and line wrapping.
+- Light and dark themes, English and Chinese, adjustable text size and line wrapping, and customizable UI and editor fonts on the desktop.
 - The desktop window reopens where you left it, on each screen.
 - On the desktop, the title bar shows when it is checking for updates and displays a new-version badge when one is ready. Clicking the badge opens a release-notes popover with **Skip this version** and **Update & Restart**; updating closes the popover and shows download progress inline in the title bar.
 - **About** (from the menu or settings) shows the version, Git commit, build time and platform architecture.

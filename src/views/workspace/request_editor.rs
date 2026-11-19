@@ -538,8 +538,9 @@ impl RequestEditor {
         let app = AppStore::global(cx).state().clone();
         let wrap = app.read(cx).prefs().text.wrap;
         subscriptions.push(cx.observe_in(&app, window, |this, app, window, cx| {
-            let text_prefs = app.read(cx).prefs().text;
+            let text_prefs = &app.read(cx).prefs().text;
             let wrap = text_prefs.wrap;
+            let query_in_url = text_prefs.query_in_url;
             if wrap != this.wrap {
                 this.wrap = wrap;
                 for editor in [
@@ -551,8 +552,8 @@ impl RequestEditor {
                     editor.update(cx, |editor, cx| editor.set_soft_wrap(wrap, window, cx));
                 }
             }
-            if text_prefs.query_in_url != this.query_in_url {
-                this.apply_query_in_url_mode(text_prefs.query_in_url, window, cx);
+            if query_in_url != this.query_in_url {
+                this.apply_query_in_url_mode(query_in_url, window, cx);
             }
             this.sync_body_tree_if_shown(cx);
             cx.notify();
@@ -2868,7 +2869,7 @@ mod tests {
             let app = AppStore::global(cx).state().clone();
             let text = TextPrefs {
                 query_in_url: false,
-                ..app.read(cx).prefs().text
+                ..app.read(cx).prefs().text.clone()
             };
             app.update(cx, |app, cx| app.set_text(text, cx));
         });

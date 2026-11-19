@@ -90,14 +90,14 @@ pub struct CyberApi {
 impl CyberApi {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppStore::global(cx).state().clone();
-        let prefs = state.read(cx).prefs();
-        apply_theme(prefs.theme, prefs.text, window, cx);
+        let prefs = state.read(cx).prefs().clone();
+        apply_theme(prefs.theme, &prefs.text, window, cx);
         let mut subscriptions = vec![
             // F14.1: "follow the system" keeps following it.
             cx.observe_window_appearance(window, |_, window, cx| {
-                let prefs = AppStore::global(cx).state().read(cx).prefs();
+                let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
                 if prefs.theme == ThemeMode::System {
-                    apply_theme(prefs.theme, prefs.text, window, cx);
+                    apply_theme(prefs.theme, &prefs.text, window, cx);
                 }
             }),
             cx.observe_in(&state, window, |this, _, window, cx| {
@@ -288,11 +288,11 @@ impl CyberApi {
         let prefs = AppStore::global(cx).state().read(cx).prefs().clone();
         if prefs.theme != self.theme {
             self.theme = prefs.theme;
-            self.text = prefs.text;
-            apply_theme(prefs.theme, prefs.text, window, cx);
+            self.text = prefs.text.clone();
+            apply_theme(prefs.theme, &prefs.text, window, cx);
         } else if prefs.text != self.text {
-            self.text = prefs.text;
-            apply_text(prefs.text, window, cx);
+            self.text = prefs.text.clone();
+            apply_text(&prefs.text, window, cx);
         }
         if prefs.language != self.language {
             self.language = prefs.language.clone();
@@ -373,10 +373,7 @@ impl CyberApi {
     }
 }
 
-/// The editors' face, the same on every platform (`this_build::add_fonts`).
-const MONO_FONT: &str = "JetBrains Mono";
-
-fn apply_theme(mode: ThemeMode, text: TextPrefs, window: &mut Window, cx: &mut App) {
+fn apply_theme(mode: ThemeMode, text: &TextPrefs, window: &mut Window, cx: &mut App) {
     match mode {
         ThemeMode::System => Theme::sync_system_appearance(Some(window), cx),
         ThemeMode::Light => Theme::change(ComponentThemeMode::Light, Some(window), cx),
@@ -391,7 +388,6 @@ fn apply_theme(mode: ThemeMode, text: TextPrefs, window: &mut Window, cx: &mut A
     let dark = Theme::global(cx).mode.is_dark();
     let accent = try_parse_color(if dark { "neutral-600" } else { "neutral-200" }).expect("neutral scale");
     Theme::update(cx, |theme| {
-        theme.mono_font_family = MONO_FONT.into();
         theme.accent = accent;
         // Notes come up in the bottom corner: in the top one they lay over
         // the response's buttons (text or tree, copy) for as long as they
@@ -408,10 +404,16 @@ fn apply_theme(mode: ThemeMode, text: TextPrefs, window: &mut Window, cx: &mut A
 
 /// F14.6: the interface's size is the rem everything is measured in; the
 /// code editors read theirs when they draw.
-fn apply_text(text: TextPrefs, window: &mut Window, cx: &mut App) {
+fn apply_text(text: &TextPrefs, window: &mut Window, cx: &mut App) {
+    let ui_font = crate::this_build::resolve_ui_font(&text.ui_font, cx);
+    let mono_font = crate::this_build::resolve_editor_font(&text.editor_font, cx);
     Theme::update(cx, |theme| {
         theme.font_size = px(text.ui() as f32);
         theme.mono_font_size = px(text.editor() as f32);
+        if let Some(ui_font) = ui_font {
+            theme.font_family = ui_font.into();
+        }
+        theme.mono_font_family = mono_font.into();
     });
     window.refresh();
 }
