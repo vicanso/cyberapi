@@ -292,12 +292,53 @@ pub struct Example {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<(String, String)>,
     pub body: String,
+    /// M1: the mock answers with this example only when all of these hold.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub when: Vec<MockCondition>,
+    /// M2: how long the mock waits before answering, in milliseconds.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub delay_ms: u32,
+    /// M3: for an event stream body, the pause between its events when the
+    /// mock sends them one by one; 0 sends the body at once.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub stream_interval_ms: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// M1: where a mock condition reads the request.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MockSource {
+    #[default]
+    Query,
+    Header,
+    /// A JSONPath into a JSON request body.
+    Body,
+}
+
+/// M1: one thing a request must have for the mock to pick an example.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MockCondition {
+    pub source: MockSource,
+    /// The query parameter or header; for the body, a JSONPath.
+    pub name: String,
+    /// What it must equal; empty, only that it is there.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub value: String,
 }
 
 impl Example {
     /// The most of a body an example keeps: it goes everywhere the
     /// project does.
     pub const BODY_LIMIT: usize = 256 * 1024;
+    /// M2: the longest a mock waits before answering.
+    pub const MAX_DELAY_MS: u32 = 30_000;
+    /// M3: the longest pause between two events of a streamed answer.
+    pub const MAX_STREAM_INTERVAL_MS: u32 = 10_000;
 
     /// `response` as an example named `name`; `None` for one with no
     /// status, a body that is no text, or one longer than
@@ -313,6 +354,7 @@ impl Example {
             status,
             headers: response.headers.clone(),
             body,
+            ..Default::default()
         })
     }
 

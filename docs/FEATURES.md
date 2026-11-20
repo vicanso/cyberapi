@@ -118,8 +118,10 @@ Import Postman, Insomnia, Hoppscotch, Bruno, Swagger 2 / OpenAPI 3, HAR, `.http`
 
 - On the desktop, **Mock server…** answers on this machine from the project's examples (port 4010 unless you choose another).
 - A server project also has `/v1/mock/<project-id>/…` on the bridge, shown in that dialog. Call it with a session or an MCP token (`Authorization: Bearer cat_…`, `X-CyberAPI-Token`, or `?token=cat_…`).
-- The method and the path pick the API. The path is the address without its variable, scheme and host. `{{id}}`, `:id` and `{id}` match any one segment, and more fixed segments win. The answer is the first example, or the one named by `x-mock-example`. No example, or no API, is a 404 that says why.
-- Any origin may call it. It follows the project as you edit. The desktop dialog lists what the local server answered.
+- The method and the path pick the API. The path is the address without its variable, scheme and host. `{{id}}`, `:id` and `{id}` match any one segment, and more fixed segments win. The answer is the example named by `x-mock-example`; else the first whose conditions all hold; else the first without conditions. No example, or no API, is a 404 that says why.
+- Examples are written and edited in the API's Docs tab (**New example** and the pencil on each one), not only kept from history. A 3xx status with a `Location` header makes a redirect (*0.6.4*).
+- An example can answer only when the request has a query parameter, a header, or a JSONPath in its JSON body equal to a value (or present at all). It can wait up to 30 s before answering, and an event stream body can be sent one event at a time with a pause between, to mock a model's streaming reply. The answer names its example in `x-mock-example-used` (*0.6.4*).
+- Any origin may call it. It follows the project as you edit. The desktop dialog lists what the local server answered, and with which example.
 
 ## Your data
 
@@ -127,14 +129,17 @@ On the desktop, back up and restore in the same format as the earlier Tauri app.
 
 ## Teams
 
-- One binary or one Docker image, at the root or under a sub-path. Accounts come from invitations. Roles on a project are viewer, editor and manager. Share a project with accounts or teams, or move it to another team.
+- One binary or one Docker image, at the root or under a sub-path. Accounts come from invitations. Roles on a project are viewer, editor and manager. An editor (a team's member) cannot delete synced APIs, only the ones they made and have not synced, so curated APIs are not lost by mistake; deleting a synced API takes a manager (*0.6.4*). Share a project with accounts or teams, or move it to another team.
 - The desktop app signs in to the same server. The home page lists the team's projects as they appear. Upload a local project and keep its history. Edit a shared project offline and sync when you choose. If someone else changed it meanwhile, you choose which copy to keep. On the web, keeping yours sends the APIs you changed and leaves the ones you never opened.
 - An API or a folder can stay local and out of that sync.
-- The server keeps the last 50 versions of a project, taken before each sync. An editor restores one from **Versions…**. The copy that was replaced is kept too, so a restore can be undone.
+- The server keeps the last 50 versions of a project, taken before each sync. An editor restores one from **Versions…** (a restore that would take away APIs takes a manager). The copy that was replaced is kept too, so a restore can be undone.
 - Compare a version with now, or with the version after it (*0.4.1*): folders and APIs added, removed, renamed, moved or edited, and variables and environments that changed. Open an edited API to see where its request differs.
 - When the server is set up for OpenID Connect (*0.4.1*), the sign-in page and the desktop offer single sign-on. An invited account whose name is that person's email is linked on the first sign-in. The password still works.
+- LDAP sign-in (*0.6.4*): a system administrator sets the directory's address, reader account, base DN and user filter in the settings menu → “LDAP sign-in…”, testing the connection before saving. Once it is on, the sign-in page says LDAP accounts may sign in; the form does not change, and a local password that does not hold is tried against the directory, an invitation link is taken up by signing in with an LDAP account, which joins the team; someone it knows gets an ordinary account at their first sign-in, whose password is the directory's: neither they nor an administrator can change or reset it here. System administrators always sign in with their own password, so a directory in trouble locks no administrator out ([deployment](./DEPLOY.md#accounts-teams-and-invitations)).
 
 ## AI assistants
+
+- The web version's workspace has a built-in **AI assistant** (*0.6.4*): when the server has a team model, an “AI” button in the title bar opens a column for questions about the open project, answered as they are written and stoppable. The assistant sees the project's APIs, the API open and the response shown (untick “Include the response” to leave it out), reads an API's details, the variables and the history itself when it needs them, and says above the answer what it read; values that look secret are masked as for MCP. It changes and sends nothing itself: to make or change an API, or to send one, it puts a card in its answer, a change shown line by line, written only when the reader clicks “Apply” (as their own edit: a server project then shows it unsynced) and undoable after; a card over an API changed since it was proposed says so and may be applied anyway; “Send” opens the API and sends it as usual, production still asking first. A viewer sees cards but cannot apply them. A system administrator sets the model and its key in the settings menu → “AI model…”, or the server's options give them ([deployment](./DEPLOY.md#the-built-in-ai-assistant)); readers need no keys of their own, and conversations are not kept.
 
 The web server, and the desktop app on `127.0.0.1`, are MCP servers. Claude Code, Cursor and other MCP clients sign in with a token and read projects, APIs, variables and responses, with secrets masked.
 

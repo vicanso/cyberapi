@@ -157,11 +157,18 @@ impl Render for MockView {
                     )
                     .child(
                         div()
-                            .w(px(140.))
+                            .w(px(180.))
                             .flex_none()
                             .truncate()
                             .text_color(muted)
-                            .child(heard.api.clone().unwrap_or_default()),
+                            // M5: which example answered, after the API.
+                            .child(
+                                [heard.api.clone(), heard.example.clone()]
+                                    .into_iter()
+                                    .flatten()
+                                    .collect::<Vec<_>>()
+                                    .join(" · "),
+                            ),
                     )
                     .into_any_element()
             })

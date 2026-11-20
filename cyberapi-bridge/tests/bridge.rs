@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use cyberapi_bridge::Bridge;
 use cyberapi_core::auth::Auth;
-use cyberapi_core::model::HttpMethod;
+use cyberapi_core::model::{HttpMethod, MockCondition, MockSource};
 use cyberapi_core::prefs::Timeouts;
 use cyberapi_core::version::MODEL;
 use cyberapi_http::{HttpEngine, NativeEngine, PreparedRequest, SendError, TargetPolicy};
@@ -792,12 +792,41 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
                     expected: "200".into(),
                     ..Default::default()
                 }],
-                examples: vec![cyberapi_core::model::Example {
-                    name: "ok".into(),
-                    status: 200,
-                    headers: vec![("content-type".into(), "application/json".into())],
-                    body: r#"{"pong":true}"#.into(),
-                }],
+                examples: vec![
+                    cyberapi_core::model::Example {
+                        name: "ok".into(),
+                        status: 200,
+                        headers: vec![("content-type".into(), "application/json".into())],
+                        body: r#"{"pong":true}"#.into(),
+                        ..Default::default()
+                    },
+                    // M1–M3: one on a header, waiting; one on a query, streamed.
+                    cyberapi_core::model::Example {
+                        name: "admin".into(),
+                        status: 200,
+                        body: "hi admin".into(),
+                        when: vec![MockCondition {
+                            source: MockSource::Header,
+                            name: "x-who".into(),
+                            value: "admin".into(),
+                        }],
+                        delay_ms: 100,
+                        ..Default::default()
+                    },
+                    cyberapi_core::model::Example {
+                        name: "stream".into(),
+                        status: 200,
+                        headers: vec![("content-type".into(), "text/event-stream".into())],
+                        body: "data: 1\n\ndata: 2\n\n".into(),
+                        when: vec![MockCondition {
+                            source: MockSource::Query,
+                            name: "stream".into(),
+                            value: String::new(),
+                        }],
+                        stream_interval_ms: 100,
+                        ..Default::default()
+                    },
+                ],
                 ..Default::default()
             },
         )
@@ -1177,6 +1206,53 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     .await;
     assert_eq!(mock_status, StatusCode::OK);
     assert_eq!(mock_body, r#"{"pong":true}"#);
+    // M1–M3: a header picks the example, which waits; a query picks the
+    // streamed one, whose events come apart.
+    let mock = |path: String, who: Option<&str>| {
+        let mut request = Request::builder().method("GET").uri(path);
+        if let Some(who) = who {
+            request = request.header("x-who", who);
+        }
+        let request = request.body(Body::empty()).expect("a request");
+        let router = router.clone();
+        async move {
+            let started = std::time::Instant::now();
+            let response = router.oneshot(request).await.expect("an answer");
+            let used = response
+                .headers()
+                .get("x-mock-example-used")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            let bytes = response.into_body().collect().await.expect("a body").to_bytes();
+            (used, String::from_utf8_lossy(&bytes).into_owned(), started.elapsed())
+        }
+    };
+    let (used, body, took) = mock(
+        format!("/v1/mock/{}/ping?token={}", project.id, reader.secret),
+        Some("admin"),
+    )
+    .await;
+    assert_eq!((used.as_deref(), body.as_str()), (Some("admin"), "hi admin"));
+    assert!(took >= std::time::Duration::from_millis(100), "it waited");
+    let (used, _, _) = mock(
+        format!("/v1/mock/{}/ping?token={}", project.id, reader.secret),
+        Some("guest"),
+    )
+    .await;
+    assert_eq!(used.as_deref(), Some("ok"), "the condition does not hold");
+    let (used, body, took) = mock(
+        format!("/v1/mock/{}/ping?stream&token={}", project.id, reader.secret),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (used.as_deref(), body.as_str()),
+        (Some("stream"), "data: 1\n\ndata: 2\n\n")
+    );
+    assert!(
+        took >= std::time::Duration::from_millis(100),
+        "a pause between the events"
+    );
 
     // G3: read-only HTML project documentation renders with secrets masked.
     let (docs_status, _, docs_body) = send(
@@ -1459,4 +1535,542 @@ async fn send_bearer(router: &Router, path: &str, token: &str) -> (StatusCode, O
     let status = response.status();
     let bytes = response.into_body().collect().await.expect("a body").to_bytes();
     (status, None, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A model on this machine: each request is answered with the next of
+/// `answers` (a status line's code, a content type, a body), and its body is
+/// kept for the test to read.
+async fn model_server(
+    answers: Vec<(u16, &'static str, &'static str)>,
+) -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = asked.clone();
+    tokio::spawn(async move {
+        for (status, kind, body) in answers {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 65536];
+            // The head, then as much body as it says.
+            loop {
+                let read = stream.read(&mut buffer).await.unwrap_or(0);
+                request.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&request).to_string();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let length = head
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|n| n.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= length || read == 0 {
+                        kept.lock().expect("lock").push(text);
+                        break;
+                    }
+                }
+                if read == 0 {
+                    break;
+                }
+            }
+            let head = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes()).await;
+            let _ = stream.write_all(body.as_bytes()).await;
+        }
+    });
+    (address, asked)
+}
+
+/// H3: the team's model, asked through the bridge; its answer comes back
+/// one event a line, its key never leaves the bridge.
+#[tokio::test]
+async fn the_team_model_answers_signed_in_readers() {
+    let Some(plain) = fresh_bridge().await else {
+        return;
+    };
+    let stream = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi \"}}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"there\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let (address, asked) = model_server(vec![
+        (200, "text/event-stream", stream),
+        (
+            401,
+            "application/json",
+            "{\"error\":{\"message\":\"Incorrect API key\"}}",
+        ),
+    ])
+    .await;
+    let config = cyberapi_core::ai::ModelConfig {
+        protocol: cyberapi_core::ai::Protocol::OpenAi,
+        url: format!("http://{address}/v1"),
+        model: "team-model".into(),
+        key: "sk-team".into(),
+        max_tokens: 64,
+    };
+    let anywhere = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::Anywhere);
+    let bridge = plain.with_ai(Some(config), Arc::new(anywhere)).expect("a model");
+    let (router, cookie) = signed_in_router(&bridge).await;
+
+    let (status, _, _) = send(&router, "GET", "/v1/ai", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "signed in only");
+    let (status, _, said) = send(&router, "GET", "/v1/ai", Some(&cookie), None).await;
+    assert_eq!((status, said.as_str()), (StatusCode::OK, r#"{"model":"team-model"}"#));
+
+    let chat = json!({ "system": "Be brief.", "messages": [{ "role": "user", "parts": [{ "type": "text", "text": "Hello" }] }] });
+    let (status, _, _) = send(&router, "POST", "/v1/ai/chat", None, Some(chat.clone())).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, lines) = send(&router, "POST", "/v1/ai/chat", Some(&cookie), Some(chat.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+    let events: Vec<Value> = lines
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a line"))
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            json!({ "kind": "text", "text": "Hi " }),
+            json!({ "kind": "text", "text": "there" }),
+            json!({ "kind": "done", "stop": "done" }),
+        ]
+    );
+    let request = asked.lock().expect("lock")[0].clone();
+    assert!(request.starts_with("POST /v1/chat/completions"), "{request}");
+    assert!(
+        request.to_ascii_lowercase().contains("authorization: bearer sk-team"),
+        "the bridge adds the key"
+    );
+    assert!(request.contains(r#""model":"team-model""#) && request.contains("Be brief."));
+
+    let (_, _, refused) = send(&router, "POST", "/v1/ai/chat", Some(&cookie), Some(chat.clone())).await;
+    assert_eq!(
+        serde_json::from_str::<Value>(refused.trim()).expect("a line"),
+        json!({ "kind": "error", "message": "the model answered 401: Incorrect API key" })
+    );
+
+    // A bridge with no model says so.
+    let Some(none) = fresh_bridge().await else {
+        return;
+    };
+    let (router, cookie) = signed_in_router(&none).await;
+    let (_, _, said) = send(&router, "GET", "/v1/ai", Some(&cookie), None).await;
+    assert_eq!(said, "null");
+    let (status, _, _) = send(&router, "POST", "/v1/ai/chat", Some(&cookie), Some(chat)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// H3: an administrator sets the model on the page; the key goes in and
+/// never comes back out.
+#[tokio::test]
+async fn an_administrator_sets_the_model_on_the_page() {
+    let Some(plain) = fresh_bridge().await else {
+        return;
+    };
+    let stream = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let (address, asked) = model_server(vec![(200, "text/event-stream", stream)]).await;
+    let anywhere = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::Anywhere);
+    let bridge = plain.with_ai(None, Arc::new(anywhere)).expect("the assistant");
+    let (router, cookie) = signed_in_router(&bridge).await;
+
+    let (_, _, said) = send(&router, "GET", "/v1/ai", Some(&cookie), None).await;
+    assert_eq!(said, "null", "no model until one is set");
+    let (status, _, _) = send(&router, "POST", "/v1/ai/settings", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, _, said) = send(&router, "POST", "/v1/ai/settings", Some(&cookie), None).await;
+    assert_eq!(said, "null");
+
+    let change =
+        json!({ "protocol": "openai", "url": format!("http://{address}/v1"), "model": "page-model", "key": "" });
+    let (status, _, said) = send(
+        &router,
+        "POST",
+        "/v1/ai/settings/save",
+        Some(&cookie),
+        Some(change.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a key at first: {said}");
+
+    let mut keyed = change.clone();
+    keyed["key"] = json!("sk-page");
+    let (status, _, said) = send(&router, "POST", "/v1/ai/settings/save", Some(&cookie), Some(keyed)).await;
+    assert_eq!(status, StatusCode::OK, "{said}");
+    assert!(!said.contains("sk-page"), "the key does not come back: {said}");
+    let settings: Value = serde_json::from_str(&said).expect("settings");
+    assert_eq!(
+        (settings["hasKey"].clone(), settings["onPage"].clone()),
+        (json!(true), json!(true))
+    );
+
+    // A blank key keeps the one set.
+    let (status, _, _) = send(&router, "POST", "/v1/ai/settings/save", Some(&cookie), Some(change)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, said) = send(&router, "GET", "/v1/ai", Some(&cookie), None).await;
+    assert_eq!(said, r#"{"model":"page-model"}"#);
+    let chat = json!({ "system": "", "messages": [{ "role": "user", "parts": [{ "type": "text", "text": "Hi" }] }] });
+    let (status, _, _) = send(&router, "POST", "/v1/ai/chat", Some(&cookie), Some(chat)).await;
+    assert_eq!(status, StatusCode::OK);
+    let request = asked.lock().expect("lock")[0].clone();
+    assert!(
+        request.to_ascii_lowercase().contains("authorization: bearer sk-page"),
+        "{request}"
+    );
+
+    // Kept in the store: read back as a restarted bridge would.
+    assert_eq!(bridge.load_ai().await.expect("read"), Some("page-model".into()));
+
+    // `null` puts the options' model back: none here.
+    let (status, _, said) = send(
+        &router,
+        "POST",
+        "/v1/ai/settings/save",
+        Some(&cookie),
+        Some(Value::Null),
+    )
+    .await;
+    assert_eq!((status, said.as_str()), (StatusCode::OK, "null"));
+    assert_eq!(bridge.load_ai().await.expect("read"), None);
+}
+
+/// LDAP sign-in against a real directory: `CYBERAPI_TEST_LDAP` is its
+/// `ldap://` address, laid out as the `bitnami/openldap` image's defaults
+/// (`dc=example,dc=org`, `cn=admin` / `adminpassword`, the people in
+/// `ou=users`, alice / alicepass among them). The local password comes
+/// first, an administrator never goes to the directory, and a directory
+/// that is down locks nobody out.
+#[tokio::test]
+async fn ldap_signs_people_in_and_never_the_administrators() {
+    let Ok(url) = std::env::var("CYBERAPI_TEST_LDAP") else {
+        eprintln!("skipped: CYBERAPI_TEST_LDAP is not set");
+        return;
+    };
+    let Some(bridge) = fresh_bridge().await else {
+        return;
+    };
+    let (router, cookie) = signed_in_router(&bridge).await;
+    let login = |name: &str, password: &str| json!({ "name": name, "password": password });
+    let settings = json!({
+        "url": url,
+        "bindDn": "cn=admin,dc=example,dc=org",
+        "bindPassword": "adminpassword",
+        "baseDn": "ou=users,dc=example,dc=org",
+        "userFilter": "(uid={username})",
+        "displayAttribute": "cn",
+    });
+
+    // The sign-in page asks, signed in or not.
+    let (_, _, said) = send(&router, "GET", "/v1/ldap", None, None).await;
+    assert_eq!(said, r#"{"enabled":false}"#);
+
+    // Administrators only; a test before saving; nothing echoed back.
+    let (status, ..) = send(&router, "POST", "/v1/ldap/settings", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, said) = send(&router, "POST", "/v1/ldap/test", Some(&cookie), Some(settings.clone())).await;
+    assert_eq!((status, said.as_str()), (StatusCode::OK, r#"{"ok":true}"#));
+    let mut wrong = settings.clone();
+    wrong["bindPassword"] = json!("nope");
+    let (_, _, said) = send(&router, "POST", "/v1/ldap/test", Some(&cookie), Some(wrong)).await;
+    assert!(said.contains(r#""ok":false"#), "{said}");
+    let (status, _, said) = send(
+        &router,
+        "POST",
+        "/v1/ldap/settings/save",
+        Some(&cookie),
+        Some(settings.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{said}");
+    assert!(
+        !said.contains("adminpassword") && said.contains(r#""hasBindPassword":true"#),
+        "{said}"
+    );
+    let mut bad = settings.clone();
+    bad["userFilter"] = json!("(uid=alice)");
+    let (status, _, said) = send(&router, "POST", "/v1/ldap/settings/save", Some(&cookie), Some(bad)).await;
+    assert_eq!(
+        (status, said.as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, r#"{"problem":"filter"}"#)
+    );
+
+    let (_, _, said) = send(&router, "GET", "/v1/ldap", None, None).await;
+    assert_eq!(said, r#"{"enabled":true}"#, "the sign-in page says so");
+
+    // Someone the directory knows: an account, not an administrator.
+    let (status, set_cookie, _) = send(&router, "POST", "/v1/login", None, Some(login("alice", "alicepass"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let alice = cookie_pair(&set_cookie.expect("a cookie"));
+    let (_, _, me) = send(&router, "GET", "/v1/session", Some(&alice), None).await;
+    let me: Value = serde_json::from_str(&me).expect("me");
+    let account = if me.get("account").is_some() {
+        &me["account"]
+    } else {
+        &me
+    };
+    assert_eq!(account["name"], "alice", "{me}");
+    assert_eq!(account["admin"], false, "{me}");
+    // And again: the same account.
+    let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login("alice", "alicepass"))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Its password is the directory's: an administrator cannot reset it,
+    // nor alice change it, and the account says it is an LDAP one.
+    let (_, _, listed) = send(
+        &router,
+        "POST",
+        STORE_PATH,
+        Some(&cookie),
+        Some(json!({ "call": "directoryAccounts" })),
+    )
+    .await;
+    let listed: Value = serde_json::from_str(&listed).expect("accounts");
+    let accounts = listed["ok"].as_array().expect("a list");
+    let alice_info = accounts
+        .iter()
+        .find(|account| account["name"] == "alice")
+        .expect("alice");
+    assert_eq!(alice_info["ldap"], true);
+    let admin_info = accounts
+        .iter()
+        .find(|account| account["name"] == "admin")
+        .expect("admin");
+    assert_eq!(admin_info["ldap"], false);
+    let reset =
+        json!({ "call": "directoryResetPassword", "args": { "account": alice_info["id"], "password": "a local one" } });
+    let (_, _, said) = send(&router, "POST", STORE_PATH, Some(&cookie), Some(reset)).await;
+    assert!(said.contains("ldapAccount"), "{said}");
+    let change =
+        json!({ "call": "directoryChangePassword", "args": { "current": "alicepass", "password": "a local one" } });
+    let (_, _, said) = send(&router, "POST", STORE_PATH, Some(&alice), Some(change)).await;
+    assert!(said.contains("ldapAccount"), "{said}");
+    let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login("alice", "a local one"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "no local password was set");
+
+    // An account that was here first — invited, with a password of its own
+    // — becomes an LDAP one when it signs in through the directory.
+    let admin = BridgeStore::new(Arc::new(RouterTransport {
+        router: router.clone(),
+        cookie: cookie.clone(),
+        model: Some(MODEL),
+    }))
+    .directory();
+    let made = admin.create_invite(None).await.expect("an invitation");
+    let accept = json!({ "token": made.token, "name": "bob", "password": "bobs local password" });
+    // With LDAP on, nobody makes a password here to accept an invitation.
+    let (status, ..) = send(&router, "POST", "/v1/invite/accept", None, Some(accept.clone())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "LDAP on: sign in to accept");
+    // So bob's own account is made while it is off.
+    let (status, ..) = send(
+        &router,
+        "POST",
+        "/v1/ldap/settings/save",
+        Some(&cookie),
+        Some(Value::Null),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, said) = send(&router, "POST", "/v1/invite/accept", None, Some(accept)).await;
+    assert_eq!(status, StatusCode::OK, "{said}");
+    let (status, ..) = send(
+        &router,
+        "POST",
+        "/v1/ldap/settings/save",
+        Some(&cookie),
+        Some(settings.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let ldap_of = |accounts: &[cyberapi_core::directory::AccountInfo], name: &str| {
+        accounts
+            .iter()
+            .find(|account| account.name == name)
+            .expect("an account")
+            .ldap
+    };
+    assert!(!ldap_of(&admin.accounts().await.expect("accounts"), "bob"), "not yet");
+    let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login("bob", "bobpass"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let accounts = admin.accounts().await.expect("accounts");
+    assert!(ldap_of(&accounts, "bob"), "marked at its LDAP sign-in");
+    let bob = accounts
+        .iter()
+        .find(|account| account.name == "bob")
+        .expect("bob")
+        .id
+        .clone();
+    let refused = admin.reset_password(bob, "another one".into()).await;
+    assert!(
+        matches!(
+            refused,
+            Err(StoreError::Refused {
+                reason: Refusal::LdapAccount
+            })
+        ),
+        "{refused:?}"
+    );
+
+    // Refused: a wrong password, an empty one, a name that is a pattern,
+    // someone the directory does not know.
+    for (name, password) in [
+        ("alice", "wrong"),
+        ("alice", ""),
+        ("*", "alicepass"),
+        ("carol", "alicepass"),
+    ] {
+        let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login(name, password))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{name}");
+    }
+
+    // A team's invitation, taken up by signing in with the directory's
+    // password: a wrong one uses nothing.
+    let team = admin.create_team("backend".into()).await.expect("a team");
+    let made = admin
+        .create_invite(Some(cyberapi_core::directory::TeamPlace {
+            team: team.id.clone(),
+            role: cyberapi_core::access::TeamRole::Member,
+        }))
+        .await
+        .expect("an invitation");
+    let join = |password: &str| json!({ "token": made.token, "name": "alice", "password": password });
+    let (status, ..) = send(&router, "POST", "/v1/invite/join", None, Some(join("wrong"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, ..) = send(
+        &router,
+        "POST",
+        "/v1/invite",
+        None,
+        Some(json!({ "token": made.token })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "still open");
+    let (status, set_cookie, said) = send(&router, "POST", "/v1/invite/join", None, Some(join("alicepass"))).await;
+    assert_eq!(status, StatusCode::OK, "{said}");
+    assert!(set_cookie.is_some(), "signed in");
+    let members = admin.members(team.id.clone()).await.expect("members");
+    assert!(
+        members
+            .iter()
+            .any(|member| member.account.name == "alice" && member.role == cyberapi_core::access::TeamRole::Member),
+        "{members:?}"
+    );
+    let (status, ..) = send(&router, "POST", "/v1/invite/join", None, Some(join("alicepass"))).await;
+    assert_eq!(status, StatusCode::GONE, "used");
+
+    // The administrator signs in with their own password, never the
+    // directory's — even when the directory is down.
+    let mut down = settings.clone();
+    down["url"] = json!("ldap://127.0.0.1:9");
+    let (status, ..) = send(&router, "POST", "/v1/ldap/settings/save", Some(&cookie), Some(down)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login("admin", "long enough"))).await;
+    assert_eq!(status, StatusCode::OK, "a directory down locks no administrator out");
+    let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login("alice", "alicepass"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the directory is down");
+
+    // Off again.
+    let (status, _, said) = send(
+        &router,
+        "POST",
+        "/v1/ldap/settings/save",
+        Some(&cookie),
+        Some(Value::Null),
+    )
+    .await;
+    assert_eq!((status, said.as_str()), (StatusCode::OK, "null"));
+    assert_eq!(bridge.load_ldap().await.expect("read"), None);
+    let (_, _, said) = send(&router, "GET", "/v1/ldap", None, None).await;
+    assert_eq!(said, r#"{"enabled":false}"#);
+}
+
+/// An invitation taken up by an account already here: it signs in, joins
+/// the team, and keeps a higher role it has there. A wrong password uses
+/// nothing.
+#[tokio::test]
+async fn an_account_here_takes_up_an_invitation_by_signing_in() {
+    let Some(bridge) = fresh_bridge().await else {
+        return;
+    };
+    let (router, cookie) = signed_in_router(&bridge).await;
+    let admin = BridgeStore::new(Arc::new(RouterTransport {
+        router: router.clone(),
+        cookie,
+        model: Some(MODEL),
+    }))
+    .directory();
+    // Erin, made by an invitation of no team.
+    let first = admin.create_invite(None).await.expect("an invitation");
+    let accept = json!({ "token": first.token, "name": "erin", "password": "erins password" });
+    let (status, ..) = send(&router, "POST", "/v1/invite/accept", None, Some(accept)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let team = admin.create_team("qa".into()).await.expect("a team");
+    let place = |role| cyberapi_core::directory::TeamPlace {
+        team: team.id.clone(),
+        role,
+    };
+    let as_admin = admin
+        .create_invite(Some(place(cyberapi_core::access::TeamRole::Admin)))
+        .await
+        .expect("an invitation");
+    let join = |token: &str, password: &str| json!({ "token": token, "name": "erin", "password": password });
+    let (status, ..) = send(
+        &router,
+        "POST",
+        "/v1/invite/join",
+        None,
+        Some(join(&as_admin.token, "wrong")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, set_cookie, said) = send(
+        &router,
+        "POST",
+        "/v1/invite/join",
+        None,
+        Some(join(&as_admin.token, "erins password")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{said}");
+    assert!(set_cookie.is_some());
+    let role_of_erin = || async {
+        admin
+            .members(team.id.clone())
+            .await
+            .expect("members")
+            .into_iter()
+            .find(|member| member.account.name == "erin")
+            .map(|member| member.role)
+    };
+    assert_eq!(role_of_erin().await, Some(cyberapi_core::access::TeamRole::Admin));
+
+    // A member's invitation leaves her an admin.
+    let as_member = admin
+        .create_invite(Some(place(cyberapi_core::access::TeamRole::Member)))
+        .await
+        .expect("an invitation");
+    let (status, ..) = send(
+        &router,
+        "POST",
+        "/v1/invite/join",
+        None,
+        Some(join(&as_member.token, "erins password")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        role_of_erin().await,
+        Some(cyberapi_core::access::TeamRole::Admin),
+        "not lowered"
+    );
 }

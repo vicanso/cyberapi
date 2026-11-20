@@ -7,9 +7,10 @@
 //! kept. While the server cannot be reached, that is said where the button
 //! is, whether or not there are changes to sync.
 //!
-//! Beside it, the reader's environment (#61), to switch.
+//! Beside it, the reader's environment (#61), to switch; and, when the
+//! bridge has a model, the assistant's column to show (H3).
 
-use crate::states::WorkspaceState;
+use crate::states::{AppStore, WorkspaceState};
 use crate::views::{open_project_auth, open_variables_dialog};
 use cyberapi_core::model::VariableCategory;
 use gpui_kit::assets::IconName as Icons;
@@ -17,7 +18,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Sizable as _, StyledExt as _, h_flex};
+use gpui_kit::component::{Selectable as _, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
@@ -27,15 +28,19 @@ use rust_i18n::t;
 
 pub struct ProjectTitle {
     state: Entity<WorkspaceState>,
-    _subscription: Subscription,
+    _subscriptions: [Subscription; 2],
 }
 
 impl ProjectTitle {
     pub fn new(state: Entity<WorkspaceState>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.observe(&state, |_, _, cx| cx.notify());
+        // H3: the model is known a little after the app starts.
+        let app = AppStore::global(cx).state().clone();
         Self {
+            _subscriptions: [
+                cx.observe(&state, |_, _, cx| cx.notify()),
+                cx.observe(&app, |_, _, cx| cx.notify()),
+            ],
             state,
-            _subscription: subscription,
         }
     }
 }
@@ -48,10 +53,31 @@ impl Render for ProjectTitle {
             .gap_2()
             .child(self.title(cx))
             .child(self.environment_switch(cx))
+            .when_some(self.assistant_toggle(cx), |this, toggle| this.child(toggle))
     }
 }
 
 impl ProjectTitle {
+    /// H3: shows or hides the assistant; only when there is a model.
+    fn assistant_toggle(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        AppStore::global(cx).state().read(cx).ai_model()?;
+        let open = self.state.read(cx).assistant().is_some();
+        let workspace = self.state.downgrade();
+        Some(
+            Button::new("assistant-toggle")
+                .ghost()
+                .xsmall()
+                .selected(open)
+                .icon(Icons::WandSparkles)
+                .label(t!("assistant.button").to_string())
+                .tooltip(t!("assistant.button_tooltip").to_string())
+                .on_click(move |_, _, cx| {
+                    let _ = workspace.update(cx, |workspace, cx| workspace.toggle_assistant(cx));
+                })
+                .into_any_element(),
+        )
+    }
+
     /// #61: the reader's environment, and the others to switch to; the
     /// variables' dialog, where they are made, from the same menu.
     fn environment_switch(&self, cx: &mut Context<Self>) -> AnyElement {

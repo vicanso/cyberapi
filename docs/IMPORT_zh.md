@@ -75,4 +75,6 @@
 
 cURL、HTTPie、JavaScript `fetch`、Node.js axios、Python `requests`、PHP Guzzle、Go `net/http`、Rust reqwest、Java `HttpClient`、C# `HttpClient`、Swift `URLSession`。
 
+cURL 一个选项一行（*0.6.4*），和 Postman、Insomnia 的写法一样：`--request`、`--url`、`--header`，最后是 `--data`（JSON 请求体按 4 个空格缩进展开）或 `--form`，行尾用 `\` 续行，可以直接粘贴回来新建接口。
+
 跟随重定向、是否校验证书照设置写出。库能自己应答 Digest 时，写成它的写法。OAuth 2.0 写当前的令牌；还没有令牌时写一句从哪里取。gRPC 一律是 grpcurl。WebSocket 一律是 websocat。

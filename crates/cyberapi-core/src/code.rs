@@ -538,7 +538,7 @@ mod tests {
         };
         assert!(
             with(pem.clone(), vec!["/certs/ca.pem".into()])
-                .contains("--cert '/certs/me.pem' --key '/certs/me.key' --cacert '/certs/ca.pem'")
+                .contains("--cert '/certs/me.pem' \\\n  --key '/certs/me.key' \\\n  --cacert '/certs/ca.pem'")
         );
         let bundle = ClientCertificate {
             format: CertificateFormat::Pkcs12,
@@ -547,7 +547,7 @@ mod tests {
             ..pem
         };
         let two = with(bundle, vec!["a.pem".into(), "b.pem".into()]);
-        assert!(two.contains("--cert-type P12 --cert '/certs/me.p12:pw'"), "{two}");
+        assert!(two.contains("--cert-type P12 \\\n  --cert '/certs/me.p12:pw'"), "{two}");
         assert!(!two.contains("--cacert"), "curl takes one bundle: {two}");
     }
 
@@ -566,7 +566,7 @@ mod tests {
         let request = HttpRequest::default();
         let of = |target| code(target, &prepared, &request, false);
         assert!(
-            of(CodeTarget::Curl).contains(r"--digest -u 'admin:it'\''s'"),
+            of(CodeTarget::Curl).contains("--digest \\\n  --user 'admin:it'\\''s'"),
             "{}",
             of(CodeTarget::Curl)
         );

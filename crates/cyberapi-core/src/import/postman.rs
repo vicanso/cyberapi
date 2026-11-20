@@ -306,6 +306,7 @@ fn example(response: &Value) -> Option<Example> {
             })
             .unwrap_or_default(),
         body: text(response, "body").to_string(),
+        ..Default::default()
     })
 }
 

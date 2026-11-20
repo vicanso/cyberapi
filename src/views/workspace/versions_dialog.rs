@@ -410,34 +410,7 @@ impl VersionsView {
         let theme = cx.theme();
         let rows: Vec<AnyElement> = open
             .iter()
-            .flat_map(|compared| compared.rows.iter().take(SHOWN_ROWS))
-            .map(|row| match row {
-                Row::Folded(lines) => div()
-                    .px_2()
-                    .bg(theme.muted)
-                    .text_color(theme.muted_foreground)
-                    .child(t!("compare.folded", count = lines).to_string())
-                    .into_any_element(),
-                Row::Line { change, text, .. } => {
-                    let (sign, background) = match change {
-                        diff::Change::Same => (" ", None),
-                        diff::Change::Removed => ("-", Some(theme.danger.opacity(0.15))),
-                        diff::Change::Added => ("+", Some(theme.success.opacity(0.15))),
-                    };
-                    h_flex()
-                        .when_some(background, |row, background| row.bg(background))
-                        .child(div().w(px(16.)).flex_none().pl_1().child(sign))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .child(text.clone()),
-                        )
-                        .into_any_element()
-                }
-            })
+            .flat_map(|compared| diff_rows(compared, SHOWN_ROWS, cx))
             .collect();
         let cut = open
             .as_ref()
@@ -598,4 +571,42 @@ impl Render for VersionsView {
             )
             .into_any_element()
     }
+}
+
+/// G8 / H3d: the first `limit` rows of a comparison, a sign and a colour a
+/// line.
+pub(super) fn diff_rows(compared: &diff::Compared, limit: usize, cx: &App) -> Vec<AnyElement> {
+    let theme = cx.theme();
+    compared
+        .rows
+        .iter()
+        .take(limit)
+        .map(|row| match row {
+            Row::Folded(lines) => div()
+                .px_2()
+                .bg(theme.muted)
+                .text_color(theme.muted_foreground)
+                .child(t!("compare.folded", count = lines).to_string())
+                .into_any_element(),
+            Row::Line { change, text, .. } => {
+                let (sign, background) = match change {
+                    diff::Change::Same => (" ", None),
+                    diff::Change::Removed => ("-", Some(theme.danger.opacity(0.15))),
+                    diff::Change::Added => ("+", Some(theme.success.opacity(0.15))),
+                };
+                h_flex()
+                    .when_some(background, |row, background| row.bg(background))
+                    .child(div().w(px(16.)).flex_none().pl_1().child(sign))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(text.clone()),
+                    )
+                    .into_any_element()
+            }
+        })
+        .collect()
 }

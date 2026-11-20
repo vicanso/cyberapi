@@ -1550,6 +1550,11 @@ impl RequestEditor {
     /// F5.1: sends — after asking for what its `prompt`s (D1) and its
     /// `openFile` need, and in production whether it should (D6) — or
     /// cancels the request on its way.
+    /// The API it edits.
+    pub fn api_id(&self, cx: &App) -> cyberapi_core::ItemId {
+        self.api.read(cx).api().clone()
+    }
+
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush(cx);
         let api = self.api.read(cx);

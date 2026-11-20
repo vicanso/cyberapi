@@ -4,6 +4,7 @@
 //! browser and on the bridge, and it is tested without any of them.
 
 pub mod access;
+pub mod ai;
 pub mod assertions;
 pub mod auth;
 pub mod backup;
@@ -30,6 +31,7 @@ pub mod import;
 pub mod inherit;
 pub mod json_filter;
 pub mod json_view;
+pub mod ldap;
 pub mod load;
 pub mod local_only;
 pub mod mcp;

@@ -18,6 +18,15 @@
 //! | `POST /v1/store` | one store call (`cyberapi_store_bridge::Call`) |
 //! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5), a few of an account's at a time ([`in_flight`]) |
 //! | `POST /v1/send/stream` | the same, an event stream's answer told as it comes (NDJSON of `StreamReply`); the page leaving stops it |
+//! | `GET` / `POST /v1/ai` | the team's model (`{"model": …}`), or `null` when the bridge has none (H3, [`ai`]) |
+//! | `POST /v1/ai/chat` | asks it: a conversation in, its answer as it comes (NDJSON of `AiEvent`); the page leaving stops it |
+//! | `POST /v1/ai/settings` | administrators: the model in use without its key (`ModelSettings`), or `null` |
+//! | `POST /v1/invite/join` | an invitation taken up by signing in: an account already here, or with LDAP on one the directory knows; it joins the team the invitation names |
+//! | `GET /v1/ldap` | whether LDAP sign-in is on (`{"enabled": bool}`), for the sign-in page |
+//! | `POST /v1/ldap/settings` | system administrators: the LDAP directory sign-ins fall back to, without its bind password (`LdapSettings`), or `null` |
+//! | `POST /v1/ldap/settings/save` | system administrators: sets it (`LdapChange`; a blank bind password keeps the kept one), `null` turns LDAP sign-in off |
+//! | `POST /v1/ldap/test` | system administrators: whether `LdapChange` reaches and reads the directory, before it is saved |
+//! | `POST /v1/ai/settings/save` | administrators: sets the model (`ModelChange`; a blank key keeps the page's), `null` puts the options' back |
 //! | `POST /v1/mcp` | an AI assistant's tools, signed in with an account's MCP token ([`mcp`]) |
 //! | `ANY /v1/mock/{project}`, `ANY /v1/mock/{project}/{*rest}` | a project's mock responses (`G2b`, [`mock`]), signed in by session or MCP token |
 //! | `GET /v1/docs/{project}` | a project's read-only HTML documentation (`G3`, [`docs`]); public when the project says so, otherwise a session or MCP token, and a signed-out browser is sent to the sign-in page |
@@ -35,9 +44,11 @@
 //! `into_make_service_with_connect_info::<SocketAddr>` so they are counted
 //! by address too.
 
+mod ai;
 mod auth;
 mod docs;
 mod in_flight;
+mod ldap;
 mod mcp;
 mod mock;
 mod oidc;
@@ -116,6 +127,18 @@ struct Inner {
     docs_html: Arc<docs::HtmlCache>,
     /// OpenID Connect, when the process was given an issuer and a client.
     oidc: Option<oidc::Service>,
+    /// The team's model in use, when there is one (H3): the page's, or
+    /// the options'.
+    ai: std::sync::RwLock<Option<Arc<ai::Ai>>>,
+    /// What calls the model; none in a bridge without the assistant.
+    ai_engine: Option<Arc<dyn HttpEngine>>,
+    /// The model the bridge's options gave, if any.
+    ai_options: Option<cyberapi_core::ai::ModelConfig>,
+    /// Each account's turns in the last minute.
+    ai_calls: mcp::Limiter,
+    /// The directory a sign-in the local password refused is tried
+    /// against, when an administrator set one.
+    ldap: std::sync::RwLock<Option<cyberapi_core::ldap::LdapConfig>>,
 }
 
 impl Bridge {
@@ -144,6 +167,11 @@ impl Bridge {
                 mock_routes: mock::RouteCache::default(),
                 docs_html: Arc::new(docs::HtmlCache::default()),
                 oidc: None,
+                ai: Default::default(),
+                ai_engine: None,
+                ai_options: None,
+                ai_calls: mcp::Limiter::default(),
+                ldap: Default::default(),
             }),
         }
     }
@@ -166,6 +194,48 @@ impl Bridge {
         let inner = Arc::get_mut(&mut bridge.inner).ok_or_else(|| "the bridge is already shared".to_string())?;
         inner.oidc = Some(oidc::Service::new(settings));
         Ok(bridge)
+    }
+
+    /// Turns the assistant on (H3): its model called through `engine`,
+    /// the one `options` gives until an administrator sets one on the page
+    /// (read from the store by [`Bridge::load_ai`]). Call this before the
+    /// bridge is shared.
+    pub fn with_ai(
+        self,
+        options: Option<cyberapi_core::ai::ModelConfig>,
+        engine: Arc<dyn HttpEngine>,
+    ) -> Result<Self, String> {
+        let mut bridge = self;
+        let inner = Arc::get_mut(&mut bridge.inner).ok_or_else(|| "the bridge is already shared".to_string())?;
+        inner.ai = std::sync::RwLock::new(options.clone().map(|config| Arc::new(ai::Ai::new(config, false))));
+        inner.ai_engine = Some(engine);
+        inner.ai_options = options;
+        Ok(bridge)
+    }
+
+    /// Puts the LDAP directory an administrator set on the page in use, if
+    /// there is one; returns its address.
+    pub async fn load_ldap(&self) -> Result<Option<String>, String> {
+        let config = ldap::kept(self).await?;
+        let url = config.as_ref().map(|config| config.url.clone());
+        *self
+            .inner
+            .ldap
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
+        Ok(url)
+    }
+
+    /// Puts the model an administrator set on the page in use, if there is
+    /// one; returns its name.
+    pub async fn load_ai(&self) -> Result<Option<String>, String> {
+        let Some(config) = ai::kept(self).await? else {
+            return Ok(None);
+        };
+        let name = config.model.clone();
+        *self.inner.ai.write().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::new(ai::Ai::new(config, true)));
+        Ok(Some(name))
     }
 
     /// Forgets the logins that ran out, now and every hour after, for as
@@ -206,6 +276,7 @@ impl Bridge {
             .route(&at("/v1/logout"), post(logout))
             .route(&at("/v1/invite"), post(invite_info))
             .route(&at("/v1/invite/accept"), post(accept_invite))
+            .route(&at("/v1/invite/join"), post(join_invite))
             .route(&at("/v1/session"), get(session))
             .route(&at("/v1/oidc"), get(oidc::enabled))
             .route(&at("/v1/oidc/start"), post(oidc::start))
@@ -214,6 +285,14 @@ impl Bridge {
             .route(&at(STORE_PATH), post(store_call))
             .route(&at(SEND_PATH), post(send_request))
             .route(&at(SEND_STREAM_PATH), post(send_watched))
+            .route(&at("/v1/ai"), get(ai::info).post(ai::info))
+            .route(&at("/v1/ai/chat"), post(ai::chat))
+            .route(&at("/v1/ai/settings"), post(ai::settings))
+            .route(&at("/v1/ai/settings/save"), post(ai::save))
+            .route(&at("/v1/ldap"), get(ldap::enabled))
+            .route(&at("/v1/ldap/settings"), post(ldap::settings))
+            .route(&at("/v1/ldap/settings/save"), post(ldap::save))
+            .route(&at("/v1/ldap/test"), post(ldap::test))
             .route(
                 &at("/v1/mcp"),
                 post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed),
@@ -435,6 +514,26 @@ fn check_new_account(name: &str, password: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The account `name` and `password` sign in as: the local password first;
+/// refused, the LDAP directory (never for an administrator).
+async fn authenticate(bridge: &Bridge, name: &str, password: &str) -> Result<Option<Account>, StoreError> {
+    let found = bridge.inner.store.find_login(name).await?;
+    // A missing name costs the same Argon2 check as a wrong password, so the
+    // answer's timing does not say which it was.
+    let (account, hash) = match found {
+        Some((account, hash)) => (Some(account), hash),
+        None => (None, auth::DECOY_HASH.clone()),
+    };
+    let checked = password.to_string();
+    let verified = tokio::task::spawn_blocking(move || verify_password(&hash, &checked))
+        .await
+        .unwrap_or(false);
+    Ok(match account {
+        Some(account) if verified => Some(account),
+        local => ldap::sign_in(bridge, local, name, password).await,
+    })
+}
+
 async fn login(State(bridge): State<Bridge>, extensions: Extensions, Json(form): Json<LoginForm>) -> Response {
     let name = Key::name(&form.name);
     let keys: Vec<Key> = [Some(name.clone()), address(&extensions)]
@@ -444,26 +543,16 @@ async fn login(State(bridge): State<Bridge>, extensions: Extensions, Json(form):
     if let Some(refused) = throttled(&bridge, &keys) {
         return refused;
     }
-    let found = match bridge.inner.store.find_login(&form.name).await {
-        Ok(found) => found,
+    let account = match authenticate(&bridge, &form.name, &form.password).await {
+        Ok(account) => account,
         Err(error) => return internal(error),
     };
-    // A missing name costs the same Argon2 check as a wrong password, so the
-    // answer's timing does not say which it was.
-    let (account, hash) = match found {
-        Some((account, hash)) => (Some(account), hash),
-        None => (None, auth::DECOY_HASH.clone()),
-    };
-    let password = form.password;
-    let verified = tokio::task::spawn_blocking(move || verify_password(&hash, &password))
-        .await
-        .unwrap_or(false);
     match account {
-        Some(account) if verified => {
+        Some(account) => {
             bridge.inner.throttle.succeeded(&name);
             bridge.sign_in(account, form.bearer, form.remember).await
         }
-        _ => {
+        None => {
             bridge.inner.throttle.failed(&keys, Instant::now());
             (StatusCode::UNAUTHORIZED, "wrong name or password").into_response()
         }
@@ -508,6 +597,15 @@ async fn accept_invite(State(bridge): State<Bridge>, extensions: Extensions, Jso
     if let Some(refused) = throttled(&bridge, &keys) {
         return refused;
     }
+    // With LDAP on, people come from the directory: an invitation is taken
+    // up by signing in (`/v1/invite/join`), not by making a password here.
+    if ldap::is_on(&bridge) {
+        return (
+            StatusCode::FORBIDDEN,
+            "sign in with your LDAP account to accept the invitation",
+        )
+            .into_response();
+    }
     let acceptance = Acceptance {
         name: form.name,
         display_name: form.display_name,
@@ -515,6 +613,51 @@ async fn accept_invite(State(bridge): State<Bridge>, extensions: Extensions, Jso
     };
     match bridge.inner.store.accept_invite(&form.token, acceptance).await {
         Ok(account) => bridge.sign_in(account, false, form.remember).await,
+        Err(error) => invite_refused(&bridge, &keys, error),
+    }
+}
+
+#[derive(Deserialize)]
+struct JoinForm {
+    token: String,
+    name: String,
+    password: String,
+    /// "Keep me signed in".
+    #[serde(default = "kept")]
+    remember: bool,
+}
+
+/// An invitation taken up by signing in: an account already here, or —
+/// with LDAP on — one the directory knows (made at its first sign-in). It
+/// joins the team the invitation names. A wrong name or password uses
+/// nothing.
+async fn join_invite(State(bridge): State<Bridge>, extensions: Extensions, Json(form): Json<JoinForm>) -> Response {
+    let name = Key::name(&form.name);
+    let keys: Vec<Key> = [Some(name.clone()), address(&extensions)]
+        .into_iter()
+        .flatten()
+        .collect();
+    if let Some(refused) = throttled(&bridge, &keys) {
+        return refused;
+    }
+    // Still open, before anyone is signed in or made.
+    if let Err(error) = bridge.inner.store.invite_info(&form.token).await {
+        return invite_refused(&bridge, &keys, error);
+    }
+    let account = match authenticate(&bridge, &form.name, &form.password).await {
+        Ok(Some(account)) => account,
+        Ok(None) => {
+            bridge.inner.throttle.failed(&keys, Instant::now());
+            return (StatusCode::UNAUTHORIZED, "wrong name or password").into_response();
+        }
+        Err(error) => return internal(error),
+    };
+    match bridge.inner.store.accept_invite_as(&form.token, &account.id).await {
+        Ok(()) => {
+            bridge.inner.throttle.succeeded(&name);
+            tracing::info!(account = %account.id, "an invitation was taken up by signing in");
+            bridge.sign_in(account, false, form.remember).await
+        }
         Err(error) => invite_refused(&bridge, &keys, error),
     }
 }

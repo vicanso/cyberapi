@@ -125,14 +125,30 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::AsyncWriteExt as _;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+    /// A browser's visit: the request, and the page read to its end. A
+    /// client that hangs up before the answer may have its request dropped
+    /// unread, and the test would wait for ever.
     async fn get(port: u16, path: &str) {
         let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .expect("connect");
         let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
         stream.write_all(request.as_bytes()).await.expect("write");
+        let mut page = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut page))
+            .await
+            .expect("answered in time")
+            .expect("read");
+    }
+
+    async fn heard(done: oneshot::Receiver<Result<String, String>>) -> Result<String, String> {
+        tokio::time::timeout(Duration::from_secs(5), done)
+            .await
+            .expect("heard in time")
+            .expect("sent")
     }
 
     #[tokio::test]
@@ -142,7 +158,7 @@ mod tests {
             .expect("listen");
         let (port, done, stop) = listener.into_wait();
         get(port, "/callback?code=abc&state=s1").await;
-        assert_eq!(done.await.expect("sent").expect("code"), "abc");
+        assert_eq!(heard(done).await.expect("code"), "abc");
         drop(stop);
     }
 
@@ -158,7 +174,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            done.await.expect("sent").expect_err("refused"),
+            heard(done).await.expect_err("refused"),
             "OAuth 2.0: access_denied: no thanks"
         );
         drop(stop);

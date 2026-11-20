@@ -49,12 +49,17 @@ pub struct Limiter(Mutex<HashMap<String, VecDeque<Instant>>>);
 impl Limiter {
     /// Whether `account` may make a call now; counted when it may.
     fn allow(&self, account: &str, now: Instant) -> bool {
+        self.allow_up_to(account, now, CALLS_PER_MINUTE)
+    }
+
+    /// As [`Self::allow`], with `limit` calls a minute.
+    pub(crate) fn allow_up_to(&self, account: &str, now: Instant, limit: usize) -> bool {
         let mut calls = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let recent = calls.entry(account.to_string()).or_default();
         while recent.front().is_some_and(|at| now.duration_since(*at) >= WINDOW) {
             recent.pop_front();
         }
-        if recent.len() >= CALLS_PER_MINUTE {
+        if recent.len() >= limit {
             return false;
         }
         recent.push_back(now);

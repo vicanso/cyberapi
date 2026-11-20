@@ -308,7 +308,7 @@ A9、A10、F15、F16、B11、G5、A11、F9b 已完成。A4c、G7、Q2、Q8、E4/
 - F4 的 Linux 窗口还原尺寸
 - “从来源同步”的主机检查
 
-此前已经否决的仍然不做：C1 签名类认证、A5 前后置脚本、网页版 WebSocket、插件系统（Q10）、Vim 模式、jq、SAML / LDAP / 审计日志、预览标签，以及内置 AI（H3）。
+此前已经否决的仍然不做：C1 签名类认证、A5 前后置脚本、网页版 WebSocket、插件系统（Q10）、Vim 模式、jq、SAML / 审计日志、预览标签。LDAP 登录已于 2026-11-19 按维护者要求做了（管理员在页面上配置；本地密码优先、系统管理员从不经过 LDAP；第一次登录自动建普通账号；网页版已实测，未提交），见 `docs/DEPLOY_zh.md`“账号、团队和邀请”。内置 AI（H3）已于 2026-11-18 重新打开，见文末“借鉴 apiflow 与 Yaak”。
 
 ## 待做（2026-11-01）
 
@@ -360,5 +360,46 @@ Query、路径参数和请求头的类型、必填、format 和枚举。已完�
 | PERF-9 | `cyberapi-bridge` 请求体解压支持（`RequestDecompressionLayer`） | S | [`cyberapi-bridge/src/lib.rs`](../cyberapi-bridge/src/lib.rs)、[`crates/cyberapi-store-bridge/src/lib.rs`](../crates/cyberapi-store-bridge/src/lib.rs) | 大型项目执行全量替换（`TreeReplace`）、合并（`TreeMerge`）或 OpenAPI 导入时上行 JSON 可达数 MB。在 `cyberapi-bridge` 启用 `RequestDecompressionLayer`（支持 `zstd` / `gzip`），并在客户端上行大请求体时自动压缩 | 已完成 |
 | MAINT-1 | 清理 GitHub Dependabot 依赖安全告警 | S | [`Cargo.lock`](../Cargo.lock) | 排查并升级 GitHub Dependabot 报告的 2 个 moderate 级别依赖包版本 | 待做 |
 
+## 借鉴 apiflow 与 Yaak（2026-11-18 整理）
 
+对照 [trueleaf/apiflow](https://github.com/trueleaf/apiflow)（Vue + Tauri，团队协作、Mock、内置 AI）和 [mountain-loop/yaak](https://github.com/mountain-loop/yaak)（Tauri + Rust，模板函数、插件、文件同步）整理。维护者 2026-11-18 定：做 **M 组（Mock 增强）**，并**重新打开 H3（内置 AI）**；其余候选（`g()` 自动发送依赖、更多模板函数、XPath 过滤、DNS 覆盖、目录级请求设置、Cookie 开关、回收站、版本作者、钥匙串）暂不做；此前否决的 A5、C1、Q2、Q8、Q10、NTLM 仍不做。先做 M 组，再做 H3；一项一个提交。
+
+### M 组：Mock 增强（来自 apiflow，数据模型 +1，编号 25）
+
+现在的 Mock（G2 / G2b）按方法和路径找到接口，回它的第一个示例或 `x-mock-example` 点名的那个；示例只能从历史“存为示例”、只能删除。
+
+| 编号 | 内容 | 落点 | 状态 |
+|---|---|---|---|
+| M0 | **示例编辑器**：说明标签页的示例可以新建（不必先有响应）和编辑：名称、状态码、响应头（文本批量编辑）、响应体。改状态码和 `Location` 即可做重定向示例（原计划的 M4 由此覆盖，不另加模型） | `views/workspace/docs_editor.rs` 新弹窗、`ApiState::set_example` | 已完成（网页版已实测） |
+| M1 | **条件匹配**：示例可写“仅当”条件，全部成立才选它：Query 参数、请求头（不分大小写）、请求体 JSONPath（RFC 9535，复用 `json_filter`）等于某值，值留空表示“存在即可”。选择顺序：`x-mock-example` 点名的 → 条件全部成立的（按列表顺序）→ 第一个没有条件的 → 404 说明原因。`Example.when: Vec<MockCondition>` | `core::mock`、`model::Example`、两端服务器读 Query / 请求头 / 请求体（请求体最多读 1 MB） | 已完成（网页版已实测） |
+| M2 | **延迟**：示例可设延迟（`Example.delay_ms`，0–30000），用来试加载状态和超时 | 同上；桌面 `MockServer` 与 bridge 都 `sleep` | 已完成（网页版已实测） |
+| M3 | **事件流逐条推送**：响应体是事件流（`text/event-stream`，从 SSE 响应存下的示例就是）时可设间隔（`Example.stream_interval_ms`），按空行切成事件逐条发出，用来 Mock 大模型的流式回复；不设时整段一次发出 | `core::mock` 给出分段，桌面 hyper 与 bridge axum 都用流式响应体 | 已完成（网页版已实测） |
+| M5 | **日志写出选中的示例**：桌面 Mock 弹窗的请求日志加一列“示例”，回答头带 `x-mock-example-used` | `mock::Answer` / `Heard` | 已完成（网页版已实测） |
+
+默认做法（可改）：
+
+- 新字段都 `#[serde(default, skip_serializing_if = …)]`，旧数据不变。数据模型编号 24 → 25：旧客户端会丢掉不认识的示例字段，bridge 按编号拒绝它们写项目内容。
+- 条件只做“等于 / 存在”，不做正则和比较运算，需要时再加。
+- 导出 Postman / OpenAPI 只带示例本身，不带条件、延迟和间隔；在线接口文档在示例旁写出条件。
+- MCP 的 `get_api` 原样带出这些字段；`create_api` / `update_api` 不改示例。
+- 检查先写在 `core::mock` 的测试里（选择顺序、条件各种来源、延迟上限、事件切分），再改两端服务器；两端都实际起服务用 curl 验证，桌面界面截浅色、深色图。
+
+### H3：内置 AI 助手（来自 apiflow，重新打开，规模 L，先出设计）
+
+动手前单独写 `docs/ai-assistant.md` 并请维护者确认。下面是替维护者先定的默认做法：
+
+- **经 bridge 调用**：页面（和登录了服务器的桌面）调用 bridge 的 `/v1/ai/chat`，bridge 带上密钥调用模型并把流式回答转成与协议无关的事件。
+- **模型由 bridge 管理员配置**（2026-11-18 定）：`--ai-url` / `--ai-model` / `--ai-key` / `--ai-protocol`，密钥只在服务器环境变量里；支持 OpenAI 兼容的 Chat Completions 和 Anthropic Messages 两种协议。
+- **工具复用 MCP**：`cyberapi_core::mcp` 的读工具（项目、接口、变量、历史，秘密值只给名字、敏感值打码）在进程内执行；`send_api` 照生产环境确认（D6）。
+- **改动先成为变更集**：AI 要新建或修改接口时不直接写入，先列出变更（用 `versions::request_text` + `diff::compare` 显示每个接口改了什么），读者批准后经 `WorkspaceState` 写入（服务器项目随后照常同步），可以整份放弃。查看者只能问、不能批准写入。
+- **第一批功能**：工作区右侧的对话面板（带当前项目和当前接口作上下文）；“用文字新建请求”（粘贴文档片段或一句话，生成一个临时请求）；“为当前响应生成断言”。对话不存库，关掉即丢。
+- **不做**：AI 自动执行变更、远程插件、把秘密值发给模型。
+
+| 编号 | 内容 | 状态 |
+|---|---|---|
+| H3a | 设计文档 [`docs/ai-assistant.md`](./ai-assistant.md)，维护者确认 | 已完成（2026-11-18 定：bridge 上的团队模型、第四栏、每次发送确认、OpenAI + Anthropic） |
+| H3b | `core::ai` 与两种协议、bridge 的 `--ai-*` 选项和 `/v1/ai/chat`、页面的流式对话 | 已完成（管理员也可在页面上设模型） |
+| H3c | 读工具 + 对话面板 | 已完成：每次提问带上项目的接口列表、打开的接口和显示的响应（可取消）；模型可调用 `list_apis` / `get_api` / `get_variables` / `get_history`（`cyberapi_service::assistant`，读工作区自己的存储），一问最多 `MAX_STEPS` 轮，面板写出读过什么 |
+| H3d | 变更集：新建 / 修改接口的预览、批准、放弃 | 已完成（网页版已实测）：`propose_create_api` / `propose_update_api` / `propose_send` 只产出卡片（`cyberapi_service::assistant::Proposal`）；卡片显示请求的逐行差异，“应用”经 `WorkspaceState::apply_card` 和读者手改同一路径写入（服务器项目随后“未同步”），之后被改过的接口标“已被修改”可“仍然应用”，应用后可“撤销”；“发送”打开该接口交给它的编辑器发送（提示输入、生产环境确认照常）；查看者不能应用。与设计的出入：发送结果不自动回到对话（下次提问时显示的响应会带上），断言的提议留到 H3e |
+| H3e | 用文字新建请求、为响应生成断言 | 待做 |
 

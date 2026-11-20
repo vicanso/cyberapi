@@ -320,7 +320,12 @@ impl TreePanel {
 
     fn remove_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((id, name, kind)) = self.editable_cursor(window, cx) {
-            confirm_delete(&self.state.downgrade(), id, &name, kind, window, cx);
+            if self.state.read(cx).may_delete(&id) {
+                confirm_delete(&self.state.downgrade(), id, &name, kind, window, cx);
+            } else {
+                // Refused, and the reader told why.
+                self.state.update(cx, |state, cx| state.delete(id, cx));
+            }
         }
     }
 
@@ -1412,6 +1417,8 @@ fn item_menu(
         return menu;
     }
     let menu = local_item(menu, state, id, cx);
+    // A team's member deletes only what they made and never synced.
+    let deletable = state.upgrade().is_some_and(|state| state.read(cx).may_delete(id));
     let (rename_view, rename_id, rename_name) = (view.clone(), id.clone(), name.to_string());
     let (delete_state, delete_id, delete_name) = (state.clone(), id.clone(), name.to_string());
     let (move_state, move_id, move_name) = (state.clone(), id.clone(), name.to_string());
@@ -1425,14 +1432,16 @@ fn item_menu(
                     open_move_dialog(move_state.clone(), move_id.clone(), move_name.clone(), window, cx)
                 }),
         )
-        // F5.
-        .item(
-            PopupMenuItem::new(t!("transfer.move").to_string())
-                .icon(Icons::FolderInput)
-                .on_click(move |_, window, cx| {
-                    open_transfer_dialog(away_state.clone(), away_id.clone(), away_name.clone(), true, window, cx)
-                }),
-        );
+        // F5: moving away deletes it here.
+        .when(deletable, |menu| {
+            menu.item(
+                PopupMenuItem::new(t!("transfer.move").to_string())
+                    .icon(Icons::FolderInput)
+                    .on_click(move |_, window, cx| {
+                        open_transfer_dialog(away_state.clone(), away_id.clone(), away_name.clone(), true, window, cx)
+                    }),
+            )
+        });
     // An API's copy, to change beside it.
     let menu = match kind {
         ItemKind::Api => {
@@ -1459,14 +1468,16 @@ fn item_menu(
                 });
             }),
     )
-    .item(
-        PopupMenuItem::new(t!("common.delete").to_string())
-            .icon(Icons::Trash)
-            .action(Box::new(Remove))
-            .on_click(move |_, window, cx| {
-                confirm_delete(&delete_state, delete_id.clone(), &delete_name, kind, window, cx)
-            }),
-    )
+    .when(deletable, |menu| {
+        menu.item(
+            PopupMenuItem::new(t!("common.delete").to_string())
+                .icon(Icons::Trash)
+                .action(Box::new(Remove))
+                .on_click(move |_, window, cx| {
+                    confirm_delete(&delete_state, delete_id.clone(), &delete_name, kind, window, cx)
+                }),
+        )
+    })
 }
 
 /// Server-sync §3.4: an item made here, never synced, may stay the

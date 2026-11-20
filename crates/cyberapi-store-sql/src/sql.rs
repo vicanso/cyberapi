@@ -168,12 +168,13 @@ pub const GRANT_DELETE: &str =
 
 // ---- the directory (§9.4) -----------------------------------------------------
 
-pub const ACCOUNT_INFO: &str = "SELECT id, name, display_name, admin, disabled, demo FROM accounts WHERE id = $1";
-pub const ACCOUNTS_ALL: &str = "SELECT id, name, display_name, admin, disabled, demo FROM accounts";
+pub const ACCOUNT_INFO: &str = "SELECT id, name, display_name, admin, disabled, demo, ldap FROM accounts WHERE id = $1";
+pub const ACCOUNTS_ALL: &str = "SELECT id, name, display_name, admin, disabled, demo, ldap FROM accounts";
 pub const ACCOUNT_NAME_COUNT: &str = "SELECT COUNT(*) FROM accounts WHERE name = $1";
 pub const ACCOUNT_UPDATE: &str =
     "UPDATE accounts SET display_name = $1, admin = $2, disabled = $3, demo = $4 WHERE id = $5";
-pub const ACCOUNT_PASSWORD: &str = "SELECT password_hash, demo FROM accounts WHERE id = $1";
+pub const ACCOUNT_PASSWORD: &str = "SELECT password_hash, demo, ldap FROM accounts WHERE id = $1";
+pub const ACCOUNT_MARK_LDAP: &str = "UPDATE accounts SET ldap = 1 WHERE id = $1";
 pub const ACCOUNT_SET_PASSWORD: &str = "UPDATE accounts SET password_hash = $1 WHERE id = $2";
 pub const SESSIONS_OF_DELETE: &str = "DELETE FROM sessions WHERE account = $1";
 pub const INVITE_INSERT: &str = "INSERT INTO invites \
@@ -226,7 +227,7 @@ pub const TEAM_DELETE: &str = "DELETE FROM teams WHERE id = $1";
 pub const TEAM_GRANTS_DELETE: &str = "DELETE FROM collection_grants WHERE grantee_kind = 'team' AND grantee = $1";
 pub const TEAM_PROJECT_COUNT: &str = "SELECT COUNT(*) FROM collections WHERE owner_team = $1";
 pub const TEAM_OWNER_COUNT: &str = "SELECT COUNT(*) FROM team_members WHERE team = $1 AND role = 'owner'";
-pub const TEAM_MEMBERS: &str = "SELECT a.id, a.name, a.display_name, a.admin, a.disabled, a.demo, tm.role \
+pub const TEAM_MEMBERS: &str = "SELECT a.id, a.name, a.display_name, a.admin, a.disabled, a.demo, a.ldap, tm.role \
     FROM team_members tm JOIN accounts a ON a.id = tm.account WHERE tm.team = $1";
 /// A project's grants, with what each grantee is called.
 pub const GRANTS_OF: &str = "SELECT g.grantee_kind, g.grantee, g.role, a.name, a.display_name, t.name \
@@ -311,6 +312,16 @@ pub const PROJECT_SETTINGS_UPSERT: Pair = Pair {
          ON DUPLICATE KEY UPDATE settings = new.settings",
 };
 pub const PROJECT_SETTINGS_DELETE: &str = "DELETE FROM project_settings WHERE collection = $1";
+
+// Settings for the whole bridge (H3).
+pub const BRIDGE_SETTING_OF: &str = "SELECT value FROM bridge_settings WHERE name = $1";
+pub const BRIDGE_SETTING_UPSERT: Pair = Pair {
+    pg: "INSERT INTO bridge_settings (name, value) VALUES ($1, $2) \
+         ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value",
+    my: "INSERT INTO bridge_settings (name, value) VALUES (?, ?) AS new \
+         ON DUPLICATE KEY UPDATE value = new.value",
+};
+pub const BRIDGE_SETTING_DELETE: &str = "DELETE FROM bridge_settings WHERE name = $1";
 
 // A whole configuration put in place of a project's (server-sync §3.3).
 // Folders and variables are written again; an API that stays is rewritten
@@ -444,6 +455,8 @@ mod tests {
 
     /// Every single-spelling statement, for the placeholder check.
     const ALL: &[&str] = &[
+        BRIDGE_SETTING_OF,
+        BRIDGE_SETTING_DELETE,
         COLLECTION_EXISTS,
         INVITE_INSERT,
         INVITES_OPEN_OF,
@@ -485,6 +498,7 @@ mod tests {
         ACCOUNT_NAME_COUNT,
         ACCOUNT_UPDATE,
         ACCOUNT_PASSWORD,
+        ACCOUNT_MARK_LDAP,
         ACCOUNT_SET_PASSWORD,
         SESSIONS_OF_DELETE,
         TEAMS_OF,
@@ -589,6 +603,7 @@ mod tests {
             assert_eq!(found, expected, "{statement}");
         }
         for pair in [
+            BRIDGE_SETTING_UPSERT,
             MEMBER_UPSERT,
             GRANT_UPSERT,
             TOP_ORDER_UPSERT,

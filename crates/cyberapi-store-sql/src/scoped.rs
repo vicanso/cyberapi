@@ -28,7 +28,7 @@ use cyberapi_core::{AccountId, CollectionId, EnvironmentId, ItemId, TeamId, Time
 use cyberapi_store::rules::{environment_name, known_environment, project_config, required_name};
 use cyberapi_store::{
     CollectionEdit, CollectionStore, CookieStore, Entity, HistoryStore, Imported, Inserted, NewCollection, NewVariable,
-    PrefStore, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, VersionStore, merge_changes,
+    PrefStore, Refusal, StoreError, StoreFuture, TreeStore, VariableEdit, VariableStore, VersionStore, merge_changes,
     sort_cookies,
 };
 use serde::Serialize;
@@ -1120,9 +1120,15 @@ impl TreeStore for Scoped {
     fn delete(&self, collection: CollectionId, item: ItemId) -> StoreFuture<Removal> {
         self.run(|this| async move {
             let mut tx = this.pool.begin().await.map_err(db)?;
-            this.require(&mut tx, &collection, CollectionRole::Editor).await?;
+            let role = this.require(&mut tx, &collection, CollectionRole::Editor).await?;
             this.lock(&mut tx, &collection).await?;
             let removal = this.tree_data(&mut tx, &collection).await?.plan_remove(&item)?;
+            // Every API here is one the server has: a manager's to delete.
+            if role < CollectionRole::Manager && !removal.apis.is_empty() {
+                return Err(StoreError::Refused {
+                    reason: Refusal::DeleteNeedsManager,
+                });
+            }
             for (statement, ids) in [(sql::FOLDER_DELETE, &removal.folders), (sql::API_DELETE, &removal.apis)] {
                 for id in ids {
                     sqlx::query(this.dialect.sql(statement))
@@ -1213,6 +1219,16 @@ impl TreeStore for Scoped {
             }
             // G4: what it was, kept before it is replaced.
             let before = this.keep_version(&mut tx, &current).await?;
+            // An editor's push may add and change APIs, not take away one
+            // the server has (refused, nothing of this is committed).
+            if role < CollectionRole::Manager {
+                let kept: HashSet<&str> = config.apis.iter().map(|api| api.id.as_str()).collect();
+                if before.apis.iter().any(|api| !kept.contains(api.id.as_str())) {
+                    return Err(StoreError::Refused {
+                        reason: Refusal::DeleteNeedsManager,
+                    });
+                }
+            }
             let id = collection.as_str().to_string();
             // PERF-7: only an id the project did not have may be another
             // project's; asked one at a time, a sync of a big project asked

@@ -2,6 +2,7 @@
 //! ask for, written once over the store and engine traits so the desktop and
 //! the browser run the same code.
 
+pub mod assistant;
 pub mod backup;
 pub mod graphql_ws;
 pub mod grpc_stream;

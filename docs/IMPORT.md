@@ -75,4 +75,6 @@ Any request can be copied as code. The menu groups the command line, scripting l
 
 cURL, HTTPie, JavaScript `fetch`, Node.js axios, Python `requests`, PHP Guzzle, Go `net/http`, Rust reqwest, Java `HttpClient`, C# `HttpClient`, Swift `URLSession`.
 
+cURL is one option a line (*0.6.4*), as Postman and Insomnia write it: `--request`, `--url`, `--header`s, then `--data` (a JSON body indented by 4 spaces) or `--form`, each line ending in `\`; it pastes back in as an API.
+
 Following redirects and checking certificates follow the settings. Digest is written in the library's own way where that library answers it. OAuth 2.0 writes the token you have now, or one line saying where to get one. gRPC is grpcurl. WebSocket is websocat.

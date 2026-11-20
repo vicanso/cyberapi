@@ -109,6 +109,39 @@ async fn rules(variable: &str) {
         .save_request(id.clone(), login.item.id.clone(), HttpRequest::default())
         .await
         .expect("an editor saves a request");
+    // An API the server has is a manager's to delete: not directly, not by
+    // a push that leaves it out. An editor's empty folder goes.
+    let spare = alice
+        .tree()
+        .create_api(id.clone(), None, "spare".into())
+        .await
+        .expect("an API");
+    refused(
+        bob.tree().delete(id.clone(), spare.item.id.clone()).await,
+        Refusal::DeleteNeedsManager,
+    );
+    let at = bob.tree().config(id.clone()).await.expect("the config");
+    let mut without = at.config.clone();
+    without.apis.retain(|api| api.id != spare.item.id);
+    without.top_order.retain(|item| item != &spare.item.id);
+    refused(
+        bob.tree().replace(id.clone(), without, Some(at.revision)).await,
+        Refusal::DeleteNeedsManager,
+    );
+    let scratch = bob
+        .tree()
+        .create_folder(id.clone(), None, "scratch".into())
+        .await
+        .expect("a folder");
+    bob.tree()
+        .delete(id.clone(), scratch.item.id.clone())
+        .await
+        .expect("an editor deletes an empty folder");
+    alice
+        .tree()
+        .delete(id.clone(), spare.item.id.clone())
+        .await
+        .expect("a manager deletes an API");
     // A project's API count goes to those who see the project only.
     let count = |counts: std::collections::BTreeMap<CollectionId, usize>| counts.get(&id).copied();
     assert_eq!(count(alice.collections().api_counts().await.expect("counts")), Some(1));

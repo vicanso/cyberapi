@@ -545,6 +545,7 @@ async fn requests_are_saved(storage: &Storage) {
             status: 200,
             headers: vec![("content-type".into(), "application/json".into())],
             body: r#"{"token": "中文"}"#.into(),
+            ..Default::default()
         }],
         // What a newer version keeps in a request comes back as it went
         // (`docs/batch4-design.md` §2.1).

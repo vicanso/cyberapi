@@ -199,17 +199,24 @@ impl Render for AccountsEditor {
                             })),
                     ),
                 )
-                .child(
-                    div().w(px(130.)).child(
-                        Button::new(("account-reset", index))
-                            .ghost()
-                            .xsmall()
-                            .label(t!("accounts.reset_password").to_string())
-                            .on_click(
-                                cx.listener(move |this, _, window, cx| this.start_reset(for_reset.clone(), window, cx)),
-                            ),
-                    ),
-                )
+                .child(div().w(px(130.)).child(if account.ldap {
+                    // Its password is the directory's: nothing to reset here.
+                    div()
+                        .text_xs()
+                        .text_center()
+                        .text_color(muted)
+                        .child(t!("accounts.ldap").to_string())
+                        .into_any_element()
+                } else {
+                    Button::new(("account-reset", index))
+                        .ghost()
+                        .xsmall()
+                        .label(t!("accounts.reset_password").to_string())
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.start_reset(for_reset.clone(), window, cx)),
+                        )
+                        .into_any_element()
+                }))
         });
         let invites = invites_section(&self.state, None, cx);
         v_flex()

@@ -5,10 +5,12 @@
 #[cfg(not(target_family = "wasm"))]
 mod apart_window;
 mod assertions_editor;
+mod assistant_panel;
 mod auth_editor;
 mod compare_dialog;
 mod docs_editor;
 mod event_stream;
+mod example_dialog;
 mod find_replace_dialog;
 mod import_dialog;
 mod load_dialog;
@@ -473,6 +475,8 @@ pub struct WorkspaceView {
     /// F6: the delete whose undo notice is up; it goes with this view
     /// (BUG-24).
     undo_notice: Option<u64>,
+    /// H3: the assistant's column, once it was opened.
+    assistant: Option<Entity<assistant_panel::AssistantPanel>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -715,6 +719,7 @@ impl WorkspaceView {
             focus,
             title: String::new(),
             undo_notice: None,
+            assistant: None,
             _subscriptions: subscriptions,
         };
         view.follow_selection(window, cx);
@@ -783,6 +788,14 @@ impl WorkspaceView {
             }
             Some(_) => {}
             None => self.selected = None,
+        }
+        // H3d: a card asked to send the API now shown; its editor sends it,
+        // asking what it asks first (prompts, production).
+        if let Some(selected) = &self.selected {
+            let id = selected.editor.read(cx).api_id(cx);
+            if self.state.update(cx, |state, _| state.take_send(&id)) {
+                selected.editor.update(cx, |editor, cx| editor.send(window, cx));
+            }
         }
     }
 
@@ -1067,6 +1080,8 @@ impl Render for WorkspaceView {
         };
         let editor = self.selected.as_ref().map(|selected| selected.editor.downgrade());
         let url_editor = editor.clone();
+        let assistant = self.assistant_panel(window, cx);
+        let border = cx.theme().border;
         h_flex()
             .size_full()
             .track_focus(&self.focus)
@@ -1106,11 +1121,36 @@ impl Render for WorkspaceView {
                     let _ = editor.update(cx, |editor, cx| editor.focus_uri_now(window, cx));
                 }
             })
-            .child(
-                group.on_resize(cx.listener(|this, columns: &Entity<ResizableState>, window, cx| {
-                    this.columns_resized(columns, window, cx)
-                })),
-            )
+            .child(div().flex_1().min_w_0().h_full().child(group.on_resize(cx.listener(
+                |this, columns: &Entity<ResizableState>, window, cx| this.columns_resized(columns, window, cx),
+            ))))
+            .when_some(assistant, |this, assistant| {
+                this.child(
+                    div()
+                        .w(px(assistant_panel::WIDTH))
+                        .flex_none()
+                        .h_full()
+                        .border_l_1()
+                        .border_color(border)
+                        .child(assistant),
+                )
+            })
+    }
+}
+
+impl WorkspaceView {
+    /// H3: the assistant's column while it shows, made the first time.
+    fn assistant_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<assistant_panel::AssistantPanel>> {
+        let assistant = self.state.read(cx).assistant()?.clone();
+        if self.assistant.is_none() {
+            let workspace = self.state.downgrade();
+            self.assistant = Some(cx.new(|cx| assistant_panel::AssistantPanel::new(workspace, assistant, window, cx)));
+        }
+        self.assistant.clone()
     }
 }
 

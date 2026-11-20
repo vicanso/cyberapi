@@ -47,6 +47,7 @@
 <div id="login" class="center" hidden>
   <form id="login-form">
     <h1 data-t="login_title"></h1>
+    <p id="login-ldap" class="hint" data-t="ldap_hint" hidden></p>
     <label><span data-t="name"></span><input id="login-name" autocomplete="username" required /></label>
     <label><span data-t="password"></span><input id="login-password" type="password" autocomplete="current-password" required /></label>
     <label class="check"><input id="login-remember" type="checkbox" checked /><span data-t="remember"></span></label>
@@ -75,6 +76,7 @@
   <form id="invite-form">
     <h1 data-t="invite_title"></h1>
     <p id="invite-from" class="hint"></p>
+    <p id="invite-ldap" class="hint" data-t="invite_ldap" hidden></p>
     <label><span data-t="name"></span><input id="invite-name" autocomplete="username" required /></label>
     <label><span data-t="display_name"></span><input id="invite-display" autocomplete="name" /></label>
     <label><span data-t="password"></span><input id="invite-password" type="password" autocomplete="new-password" minlength="8" required /></label>
@@ -190,6 +192,11 @@
       name_taken: "That name is taken.",
       have_account: "I have an account",
       remember: "Keep me signed in for 30 days",
+      invite_join_title: "Sign in to accept",
+      invite_ldap: "Sign in with your LDAP (company directory) account and password to accept the invitation.",
+      join_invite: "Sign in and accept",
+      new_account: "Create a new account",
+      ldap_hint: "You can sign in with your LDAP (company directory) account and password.",
       oidc: "Sign in with single sign-on",
       oidc_no_account: "No account matches this sign-in. An administrator invites the account first, and its name is the email.",
       oidc_unverified: "The identity provider did not confirm this email.",
@@ -219,6 +226,11 @@
       name_taken: "这个用户名已被占用。",
       have_account: "已有账号，去登录",
       remember: "保持登录 30 天",
+      invite_join_title: "登录以接受邀请",
+      invite_ldap: "用公司 LDAP（域）账号和密码登录，即可接受邀请。",
+      join_invite: "登录并接受",
+      new_account: "创建新账号",
+      ldap_hint: "可以用公司 LDAP（域）账号和密码登录。",
       oidc: "使用单点登录",
       oidc_no_account: "没有账号对得上这次登录。管理员要先邀请账号，用户名是这个人的邮箱。",
       oidc_unverified: "身份提供方没有确认这个邮箱。",
@@ -263,6 +275,9 @@
       }
       const offered = await api("/v1/oidc");
       if (offered.ok && (await offered.json()).enabled) $("login-oidc").hidden = false;
+      // A bridge from before LDAP has no such route: no hint.
+      const ldap = await api("/v1/ldap");
+      if (ldap.ok && (await ldap.json()).enabled) $("login-ldap").hidden = false;
       $("login-oidc").onclick = async () => {
         $("login-oidc").disabled = true;
         $(msg).textContent = "";
@@ -335,8 +350,9 @@
     if (new URLSearchParams(location.hash.slice(1)).get("invite")) location.reload();
   });
 
-  // The account an invitation asks for, chosen and made: resolves `true`
-  // once it is signed in, `false` when the reader would rather sign in.
+  // The invitation taken up — by a new account made here, or by signing in
+  // (with LDAP on, only so): resolves `true` once someone is signed in,
+  // `false` when a dead invitation sends the reader to the sign-in page.
   async function acceptInvite(token) {
     show("invite");
     const [msg, go] = [$("invite-msg"), $("invite-go")];
@@ -350,38 +366,73 @@
       msg.textContent = gone ? t("invite_gone") : tooMany(info);
     }
     go.disabled = gone;
+    // With LDAP on, the directory's people sign in to accept; otherwise a
+    // new account is made here, or one already here signs in.
+    const ldap = await api("/v1/ldap");
+    const ldapOn = ldap.ok && (await ldap.json()).enabled;
+    let joining = false;
+    const display = $("invite-display").closest("label");
+    const password = $("invite-password");
+    const setMode = (join) => {
+      joining = join;
+      display.hidden = join;
+      $("invite-ldap").hidden = !(join && ldapOn);
+      password.autocomplete = join ? "current-password" : "new-password";
+      if (join) password.removeAttribute("minlength");
+      else password.setAttribute("minlength", "8");
+      $("invite-form").querySelector("h1").textContent = t(join ? "invite_join_title" : "invite_title");
+      go.textContent = t(join ? "join_invite" : "create_account");
+      $("invite-skip").textContent = t(join ? "new_account" : "have_account");
+      // A dead invitation still leads to the sign-in page.
+      $("invite-skip").hidden = ldapOn && !gone;
+      msg.textContent = gone ? msg.textContent : "";
+    };
+    setMode(ldapOn);
     $("invite-name").focus();
     return new Promise((resolve) => {
       $("invite-skip").onclick = (event) => {
         event.preventDefault();
-        dropInvite();
-        resolve(false);
+        if (gone) {
+          dropInvite();
+          return resolve(false);
+        }
+        setMode(!joining);
+        $("invite-name").focus();
       };
       $("invite-form").onsubmit = async (event) => {
         event.preventDefault();
         go.disabled = true;
         msg.textContent = "";
         try {
-          const res = await postJson("/v1/invite/accept", {
-            token,
-            name: $("invite-name").value.trim(),
-            displayName: $("invite-display").value.trim(),
-            password: $("invite-password").value,
-            remember: $("invite-remember").checked,
-          });
+          const res = joining
+            ? await postJson("/v1/invite/join", {
+                token,
+                name: $("invite-name").value.trim(),
+                password: password.value,
+                remember: $("invite-remember").checked,
+              })
+            : await postJson("/v1/invite/accept", {
+                token,
+                name: $("invite-name").value.trim(),
+                displayName: $("invite-display").value.trim(),
+                password: password.value,
+                remember: $("invite-remember").checked,
+              });
           if (res.ok) {
             dropInvite();
             return resolve(true);
           }
           gone = res.status === 410;
           msg.textContent =
-            res.status === 409
-              ? t("name_taken")
-              : gone
-                ? t("invite_gone")
-                : res.status === 429
-                  ? tooMany(res)
-                  : await res.text();
+            res.status === 401
+              ? t("wrong_login")
+              : res.status === 409
+                ? t("name_taken")
+                : gone
+                  ? t("invite_gone")
+                  : res.status === 429
+                    ? tooMany(res)
+                    : await res.text();
         } catch (error) {
           msg.textContent = String(error);
         } finally {

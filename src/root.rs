@@ -5,8 +5,9 @@ use crate::i18n;
 use crate::states::{AppEvent, AppStore, Route, WorkspaceState};
 use crate::views::{
     DashboardView, OpenPalette, ROOT_CONTEXT, WorkspaceView, follow_update, open_about_dialog, open_accounts_dialog,
-    open_cookies_dialog, open_mcp_dialog, open_palette, open_password_dialog, open_project_auth, open_settings,
-    open_shortcuts_dialog, open_teams_dialog, open_variables_dialog, update_chip,
+    open_ai_settings_dialog, open_cookies_dialog, open_ldap_dialog, open_mcp_dialog, open_palette,
+    open_password_dialog, open_project_auth, open_settings, open_shortcuts_dialog, open_teams_dialog,
+    open_variables_dialog, update_chip,
 };
 use cyberapi_core::model::VariableCategory;
 #[cfg(not(target_family = "wasm"))]
@@ -580,7 +581,8 @@ fn discard_item(menu: PopupMenu, workspace: WeakEntity<WorkspaceState>, cx: &App
 fn account_items(menu: PopupMenu, cx: &App) -> PopupMenu {
     let me = AppStore::global(cx).state().read(cx).me().map(|me| me.account.clone());
     let admin = me.as_ref().is_some_and(|me| me.admin);
-    let demo = me.as_ref().is_some_and(|me| me.demo);
+    // A demo account keeps its password; an LDAP account's is the directory's.
+    let demo = me.as_ref().is_some_and(|me| me.demo || me.ldap);
     let menu = match &me {
         Some(me) => menu.separator().item(
             PopupMenuItem::new(t!("account.signed_in_as", name = me.label()).to_string())
@@ -595,11 +597,29 @@ fn account_items(menu: PopupMenu, cx: &App) -> PopupMenu {
             .on_click(|_, window, cx| open_teams_dialog(window, cx)),
     );
     let menu = if admin {
-        menu.item(
+        let menu = menu.item(
             PopupMenuItem::new(t!("account.accounts").to_string())
                 .icon(Icons::UserCog)
                 .on_click(|_, window, cx| open_accounts_dialog(window, cx)),
-        )
+        );
+        let menu = if AppStore::global(cx).offers_ldap() {
+            menu.item(
+                PopupMenuItem::new(t!("ldap.menu").to_string())
+                    .icon(Icons::Network)
+                    .on_click(|_, window, cx| open_ldap_dialog(window, cx)),
+            )
+        } else {
+            menu
+        };
+        if AppStore::global(cx).offers_ai() {
+            menu.item(
+                PopupMenuItem::new(t!("ai_settings.menu").to_string())
+                    .icon(Icons::WandSparkles)
+                    .on_click(|_, window, cx| open_ai_settings_dialog(window, cx)),
+            )
+        } else {
+            menu
+        }
     } else {
         menu
     };

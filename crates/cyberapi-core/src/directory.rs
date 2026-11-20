@@ -33,6 +33,10 @@ pub struct AccountInfo {
     /// administrator can still reset it).
     #[serde(default)]
     pub demo: bool,
+    /// Made by an LDAP sign-in: its password is the directory's, and nobody
+    /// sets one here — an administrator included.
+    #[serde(default)]
+    pub ldap: bool,
 }
 
 impl AccountInfo {

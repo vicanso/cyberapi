@@ -812,6 +812,12 @@ impl ServerCopy {
     }
 
     /// The reader's own items (server-sync §3.4).
+    /// Whether an editor (not a manager) may delete `item`: no API the
+    /// server has goes with it (`LocalItems::editor_may_delete`).
+    pub fn editor_may_delete(&self, folders: &[Folder], item: &ItemId) -> bool {
+        self.shared.local().editor_may_delete(folders, item)
+    }
+
     pub fn local_items(&self) -> LocalItems {
         self.shared.local().clone()
     }

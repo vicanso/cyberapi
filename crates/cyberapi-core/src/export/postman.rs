@@ -348,6 +348,7 @@ mod tests {
                             status: 201,
                             headers: vec![("Content-Type".into(), "application/json".into())],
                             body: "{\"id\": 7}".into(),
+                            ..Default::default()
                         }],
                         ..Default::default()
                     },
