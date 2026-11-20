@@ -138,6 +138,7 @@ On the desktop, back up and restore in the same format as the earlier Tauri app.
 
 ## AI assistants
 
+- The web version's workspace has a built-in **AI assistant** (*0.6.4*): when the server has a team model, an “AI” button in the title bar opens a column for questions about the open project, answered as they are written and stoppable. The assistant sees the project's APIs, the API open and the response shown (untick “Include the response” to leave it out), reads an API's details, the variables and the history itself when it needs them, and says above the answer what it read; values that look secret are masked as for MCP. It changes and sends nothing itself: to make or change an API, or to send one, it puts a card in its answer, a change shown line by line, written only when the reader clicks “Apply” (as their own edit: a server project then shows it unsynced) and undoable after; a card over an API changed since it was proposed says so and may be applied anyway; “Send” opens the API and sends it as usual, production still asking first. A viewer sees cards but cannot apply them. A system administrator sets the model and its key in the settings menu → “AI model…”, or the server's options give them ([deployment](./DEPLOY.md#the-built-in-ai-assistant)); readers need no keys of their own, and conversations are not kept.
 
 The web server, and the desktop app on `127.0.0.1`, are MCP servers. Claude Code, Cursor and other MCP clients sign in with a token and read projects, APIs, variables and responses, with secrets masked.
 

@@ -5,6 +5,7 @@ use super::{LocalMcpState, ServerState, ServerStatus, UpdateState, run_serial, r
 use crate::json_view_local::JsonView;
 use crate::{Extras, this_build};
 use async_lock::Mutex;
+use cyberapi_core::ai::{ModelChange, ModelSettings};
 use cyberapi_core::collection::SortOrder;
 use cyberapi_core::directory::Me;
 use cyberapi_core::import::ImportBundle;
@@ -64,6 +65,7 @@ impl AppStore {
             save_task: None,
             saves: Arc::default(),
             backing_up: None,
+            ai_model: None,
         });
         let backs_up = extras.backups.is_some() && this_build::backs_up_by_itself();
         let server = extras.sign_out.is_none().then(|| {
@@ -99,6 +101,7 @@ impl AppStore {
             if backs_up {
                 state.watch_backups(cx);
             }
+            state.ask_ai_model(cx);
         });
     }
 
@@ -115,6 +118,7 @@ impl AppStore {
             save_task: None,
             saves: Arc::default(),
             backing_up: None,
+            ai_model: None,
         });
         cx.set_global(Self {
             storage,
@@ -134,6 +138,17 @@ impl AppStore {
 
     pub fn storage(&self) -> &Storage {
         &self.storage
+    }
+
+    /// H3: the team's model, once it is known there is one.
+    pub fn ai(&self, cx: &App) -> Option<Arc<dyn cyberapi_http::ai::AiModel>> {
+        self.state.read(cx).ai_model.as_ref()?;
+        self.extras.ai.clone()
+    }
+
+    /// H3: whether there is an assistant to set a model for (the page).
+    pub fn offers_ai(&self) -> bool {
+        self.extras.ai.is_some()
     }
 
     /// The desktop's backups (M13); a page has none.
@@ -283,6 +298,8 @@ pub struct AppState {
     saves: Arc<Mutex<()>>,
     /// F6: the desktop looking, now and then, whether to back up.
     backing_up: Option<Task<()>>,
+    /// H3: the team model's name, once the bridge said it has one.
+    ai_model: Option<String>,
 }
 
 impl AppState {
@@ -307,6 +324,59 @@ impl AppState {
     /// Reads who is signed in again: their teams change as they make,
     /// leave and are added to them. The desktop's is its server's, which
     /// tells this one ([`ServerState::reload_me`]).
+    /// H3: the team model's name, if there is a model to ask.
+    pub fn ai_model(&self) -> Option<&str> {
+        self.ai_model.as_deref()
+    }
+
+    /// H3: asks once whether there is a model; the assistant shows when
+    /// there is.
+    fn ask_ai_model(&mut self, cx: &mut Context<Self>) {
+        let Some(model) = AppStore::global(cx).extras.ai.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let named = cx.background_spawn(model.model()).await;
+            let _ = this.update(cx, |this, cx| match named {
+                Ok(name) => {
+                    this.ai_model = name;
+                    cx.notify();
+                }
+                Err(error) => warn!(%error, "whether there is a model could not be read"),
+            });
+        })
+        .detach();
+    }
+
+    /// H3, administrators: the model in use, without its key.
+    pub fn ai_settings(&self, cx: &mut Context<Self>) -> Task<Result<Option<ModelSettings>, String>> {
+        let Some(model) = AppStore::global(cx).extras.ai.clone() else {
+            return Task::ready(Err("no assistant here".into()));
+        };
+        cx.background_spawn(model.settings())
+    }
+
+    /// H3, administrators: sets the model (`None` puts the bridge's own
+    /// back); the assistant shows or goes with the answer.
+    pub fn save_ai_settings(
+        &mut self,
+        change: Option<ModelChange>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<ModelSettings>, String>> {
+        let Some(model) = AppStore::global(cx).extras.ai.clone() else {
+            return Task::ready(Err("no assistant here".into()));
+        };
+        cx.spawn(async move |this, cx| {
+            let saved = cx.background_spawn(model.save_settings(change)).await?;
+            let name = saved.as_ref().map(|settings| settings.model.clone());
+            let _ = this.update(cx, |this, cx| {
+                this.ai_model = name;
+                cx.notify();
+            });
+            Ok(saved)
+        })
+    }
+
     pub fn reload_me(&mut self, cx: &mut Context<Self>) {
         if let Some(server) = AppStore::global(cx).server().cloned() {
             return server.update(cx, |server, cx| server.reload_me(cx));

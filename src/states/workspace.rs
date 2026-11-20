@@ -17,7 +17,10 @@
 //! draft's.
 
 use super::copy::{self, Kept, PushPlan, Pushed, Resume, ServerCopy};
-use super::{ApiState, AppStore, GrpcDefinitions, Load, MockState, ServerStatus, run_serial, run_store};
+use super::{
+    ApiState, AppStore, AssistantProject, AssistantState, CardState, GrpcDefinitions, Load, MockState, OnScreen,
+    ServerStatus, run_serial, run_store,
+};
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::Timestamp;
@@ -44,6 +47,7 @@ use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
 use cyberapi_core::undo;
 use cyberapi_core::{EnvironmentId, ItemId, VariableId};
 use cyberapi_service::Sender;
+use cyberapi_service::assistant::Proposal;
 use cyberapi_store::{Storage, StoreError, StoreFuture};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
@@ -287,6 +291,8 @@ pub struct WorkspaceState {
     /// The API the reader just made, until its editor is up: its URI is
     /// what they type next.
     created: Option<ItemId>,
+    /// H3d: the API a card asked to send, sent by its editor once shown.
+    send_when_shown: Option<ItemId>,
     /// The project's environment variables, for the URI's prefix (F4.4).
     environment: Vec<Variable>,
     /// The project's global request headers, for the file an `openFile`
@@ -335,6 +341,10 @@ pub struct WorkspaceState {
     /// G2: the project's mock server, once its dialog opened; it stops
     /// with the project.
     mock: Option<Entity<MockState>>,
+    /// H3: the conversation with the team's model, once opened.
+    assistant: Option<Entity<AssistantState>>,
+    /// H3: whether the assistant's column shows.
+    assistant_open: bool,
     /// A server project's beat, its poll started once the opening heard
     /// from the server or failed to: a first ask after a failed opening
     /// waits as one after any failure.
@@ -456,6 +466,7 @@ impl WorkspaceState {
             apart: HashSet::new(),
             shown: Vec::new(),
             created: None,
+            send_when_shown: None,
             pin_open: None,
             environment: Vec::new(),
             global_headers: Vec::new(),
@@ -475,6 +486,8 @@ impl WorkspaceState {
             secrets: SecretValues::default(),
             secrets_save: None,
             mock: None,
+            assistant: None,
+            assistant_open: false,
             poll_every: poll,
             cached_bundles: HashMap::new(),
             cached_requests: HashMap::new(),
@@ -1577,6 +1590,261 @@ impl WorkspaceState {
         let mock = cx.new(|cx| MockState::new(workspace, cx));
         self.mock = Some(mock.clone());
         mock
+    }
+
+    /// H3: the conversation, while its column shows.
+    pub fn assistant(&self) -> Option<&Entity<AssistantState>> {
+        self.assistant.as_ref().filter(|_| self.assistant_open)
+    }
+
+    /// H3: shows or hides the assistant's column; the conversation stays
+    /// while the project is open.
+    pub fn toggle_assistant(&mut self, cx: &mut Context<Self>) {
+        if self.assistant.is_none() {
+            let Some(model) = AppStore::global(cx).ai(cx) else {
+                return;
+            };
+            let project = AssistantProject {
+                name: self.collection.name.clone(),
+                id: self.collection.id.clone(),
+                storage: self.storage().clone(),
+            };
+            self.assistant = Some(cx.new(|_| AssistantState::new(model, project)));
+        }
+        self.assistant_open = !self.assistant_open;
+        cx.notify();
+    }
+
+    /// H3c: asks the assistant about what is on screen: the API being
+    /// edited (saved first, so the model reads what the reader sees) and
+    /// the response it shows.
+    pub fn ask_assistant(&mut self, question: String, cx: &mut Context<Self>) {
+        if self.assistant.is_none() {
+            return;
+        }
+        // The editors give their last keystrokes to the API's state as this
+        // update ends; what is deferred runs after that.
+        self.flush_editors(cx);
+        let workspace = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = workspace.update(cx, |this, cx| {
+                let Some(assistant) = this.assistant.clone() else {
+                    return;
+                };
+                let mut on_screen = OnScreen::default();
+                if let Some(api) = &this.api {
+                    api.update(cx, |api, cx| api.save_now(cx));
+                    let api = api.read(cx);
+                    on_screen.api = Some(api.api().clone());
+                    on_screen.response = api.shown_response().cloned();
+                }
+                assistant.update(cx, |assistant, cx| assistant.ask(question, on_screen, cx));
+            });
+        });
+    }
+
+    /// H3d: applies the card at `at`, or with `anyway` over a change made
+    /// to its API after it was proposed. Written as the reader's own edits
+    /// are: a server project shows them unsynced.
+    pub fn apply_card(&mut self, at: (usize, usize), anyway: bool, cx: &mut Context<Self>) {
+        let Some(assistant) = self.assistant.clone() else {
+            return;
+        };
+        let Some(card) = assistant.read(cx).card(at).cloned() else {
+            return;
+        };
+        if !self.editable() || !matches!(card.state, CardState::Open | CardState::Changed | CardState::Failed(_)) {
+            return;
+        }
+        let told = move |this: &mut Self, state: CardState, cx: &mut Context<Self>| {
+            if let Some(assistant) = &this.assistant {
+                assistant.update(cx, |assistant, cx| assistant.set_card_state(at, state, cx));
+            }
+        };
+        match card.proposal {
+            Proposal::Update {
+                api,
+                rename,
+                before,
+                after,
+                ..
+            } => {
+                // Open: what its editor holds is the API as it is now.
+                let open = self.kept.get(&api).map(|state| state.read(cx).request().clone());
+                if !anyway && open.as_ref().is_some_and(|open| open != &*before) {
+                    told(self, CardState::Changed, cx);
+                    return;
+                }
+                told(self, CardState::Working, cx);
+                let check = (!anyway && open.is_none()).then_some(*before);
+                self.write_request(api, *after, rename, check, cx, move |this, written, cx| {
+                    let state = match written {
+                        Ok(true) => CardState::Applied { made: None },
+                        Ok(false) => CardState::Changed,
+                        Err(error) => CardState::Failed(crate::i18n::store_error(&error)),
+                    };
+                    told(this, state, cx);
+                });
+            }
+            Proposal::Create {
+                folder, name, request, ..
+            } => {
+                told(self, CardState::Working, cx);
+                self.create_api_with(folder, name, *request, cx, move |this, made, cx| {
+                    let state = match made {
+                        Ok(id) => CardState::Applied { made: Some(id) },
+                        Err(error) => CardState::Failed(crate::i18n::store_error(&error)),
+                    };
+                    told(this, state, cx);
+                });
+            }
+            Proposal::Send { api, .. } => {
+                told(self, CardState::Sent, cx);
+                self.send_when_shown = Some(api.clone());
+                self.select(&api, cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// H3d: puts back what an applied card changed: the request it had, or
+    /// no API where it made one.
+    pub fn undo_card(&mut self, at: (usize, usize), cx: &mut Context<Self>) {
+        let Some(assistant) = self.assistant.clone() else {
+            return;
+        };
+        let Some(card) = assistant.read(cx).card(at).cloned() else {
+            return;
+        };
+        let CardState::Applied { made } = card.state else {
+            return;
+        };
+        if !self.editable() {
+            return;
+        }
+        let told = move |this: &mut Self, state: CardState, cx: &mut Context<Self>| {
+            if let Some(assistant) = &this.assistant {
+                assistant.update(cx, |assistant, cx| assistant.set_card_state(at, state, cx));
+            }
+        };
+        match (card.proposal, made) {
+            (_, Some(made)) => {
+                self.delete_told(made, false, cx);
+                told(self, CardState::Undone, cx);
+            }
+            (
+                Proposal::Update {
+                    api,
+                    name,
+                    rename,
+                    before,
+                    ..
+                },
+                None,
+            ) => {
+                // The name it had: the last part of its path.
+                let name = rename.map(|_| name.rsplit('/').next().unwrap_or(&name).to_string());
+                told(self, CardState::Working, cx);
+                self.write_request(api, *before, name, None, cx, move |this, written, cx| {
+                    let state = match written {
+                        Ok(_) => CardState::Undone,
+                        Err(error) => CardState::Failed(crate::i18n::store_error(&error)),
+                    };
+                    told(this, state, cx);
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// H3d: whether `id` was shown to be sent; asked once by the view.
+    pub fn take_send(&mut self, id: &ItemId) -> bool {
+        if self.send_when_shown.as_ref() == Some(id) {
+            self.send_when_shown = None;
+            return true;
+        }
+        false
+    }
+
+    /// Writes `request` (and `rename`) for `id`, as find-and-replace does;
+    /// with `check`, only while the stored request still is that one.
+    /// `done` hears whether it was written.
+    fn write_request(
+        &mut self,
+        id: ItemId,
+        request: HttpRequest,
+        rename: Option<String>,
+        check: Option<HttpRequest>,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, Result<bool, StoreError>, &mut Context<Self>) + 'static,
+    ) {
+        if let Some(api) = self.kept.get(&id) {
+            api.update(cx, |api, _| api.forget_unsaved());
+        }
+        let storage = self.sender.storage.clone();
+        let collection = self.collection.id.clone();
+        let call: StoreFuture<Option<ApiSetting>> = Box::pin(async move {
+            let tree = storage.tree();
+            if let Some(check) = check
+                && tree.api(collection.clone(), id.clone()).await?.request != check
+            {
+                return Ok(None);
+            }
+            if let Some(name) = rename {
+                tree.rename(collection.clone(), id.clone(), name).await?;
+            }
+            tree.save_request(collection, id, request).await.map(Some)
+        });
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok(Some(setting)) => {
+                if let Some(api) = this.kept.get(&setting.id).cloned() {
+                    let request = setting.request.clone();
+                    api.update(cx, |api, cx| api.set_stored_request(request, cx));
+                }
+                this.api_saved(setting, cx);
+                this.sync_api(cx);
+                done(this, Ok(true), cx);
+            }
+            Ok(None) => done(this, Ok(false), cx),
+            Err(error) => done(this, Err(error), cx),
+        });
+    }
+
+    /// An API made in `folder` with `request`, selected as a new one is.
+    fn create_api_with(
+        &mut self,
+        folder: Option<ItemId>,
+        name: String,
+        request: HttpRequest,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, Result<ItemId, StoreError>, &mut Context<Self>) + 'static,
+    ) {
+        let storage = self.sender.storage.clone();
+        let collection = self.collection.id.clone();
+        let parent = folder.clone();
+        let call: StoreFuture<(cyberapi_store::Inserted<ApiSetting>, ApiSetting)> = Box::pin(async move {
+            let tree = storage.tree();
+            let made = tree.create_api(collection.clone(), parent, name).await?;
+            let saved = tree.save_request(collection, made.item.id.clone(), request).await?;
+            Ok((made, saved))
+        });
+        run_serial(cx, &self.gate, call, move |this, result, cx| match result {
+            Ok((made, saved)) => {
+                let id = saved.id.clone();
+                this.mark_loaded(&saved);
+                this.data.apis.push(saved);
+                this.data.apply(&made.change);
+                this.build_tree();
+                this.open_folder(folder.as_ref());
+                this.prefs.selected = Some(id.clone());
+                this.pin_open = None;
+                this.sync_api(cx);
+                this.save_prefs(cx);
+                cx.notify();
+                done(this, Ok(id), cx);
+            }
+            Err(error) => done(this, Err(error), cx),
+        });
     }
 
     /// G2: where the mock server listens, while it runs.
@@ -4808,6 +5076,130 @@ mod tests {
             .expect("kept");
         state.update(cx, |state, _| state.forget_answer(&login));
         assert_eq!(read(&state, cx).await, None);
+    }
+
+    /// H3d: a card is applied as the reader's own edit, undone, refused
+    /// over a change made after it was proposed, and makes an API.
+    #[gpui_kit::test]
+    async fn an_assistant_card_is_applied_and_undone(cx: &mut TestAppContext) {
+        use crate::states::{AssistantProject, AssistantState};
+        use cyberapi_service::assistant::Proposal;
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| state.create_api(None, "login".into(), cx));
+        cx.run_until_parked();
+        let login = find(&state, "login", cx);
+        let assistant = cx.new(|_| {
+            AssistantState::for_tests(AssistantProject {
+                name: collection.name.clone(),
+                id: collection.id.clone(),
+                storage: storage.clone(),
+            })
+        });
+        state.update(cx, |state, _| state.assistant = Some(assistant.clone()));
+        let stored = |cx: &mut TestAppContext| {
+            let (storage, collection, login) = (storage.clone(), collection.id.clone(), login.clone());
+            cx.foreground_executor()
+                .block_on(async move { storage.tree().api(collection, login).await.expect("an API").request })
+        };
+        let card = |at, cx: &mut TestAppContext| {
+            assistant.read_with(cx, |assistant, _| assistant.card(at).expect("a card").state.clone())
+        };
+        let before = stored(cx);
+        let after = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "{{HOST}}/login".into(),
+            ..before.clone()
+        };
+        let update = Proposal::Update {
+            api: login.clone(),
+            name: "login".into(),
+            rename: None,
+            before: Box::new(before.clone()),
+            after: Box::new(after.clone()),
+        };
+
+        let at = assistant.update(cx, |assistant, _| assistant.push_card(update));
+        state.update(cx, |state, cx| state.apply_card(at, false, cx));
+        cx.run_until_parked();
+        assert_eq!(card(at, cx), CardState::Applied { made: None });
+        assert_eq!(stored(cx), after);
+        state.read_with(cx, |state, cx| {
+            assert_eq!(
+                state.api().expect("open").read(cx).request(),
+                &after,
+                "its editor shows it"
+            );
+        });
+        state.update(cx, |state, cx| state.undo_card(at, cx));
+        cx.run_until_parked();
+        assert_eq!(card(at, cx), CardState::Undone);
+        assert_eq!(stored(cx), before);
+
+        // Proposed over a request the API no longer has.
+        let stale = Proposal::Update {
+            api: login.clone(),
+            name: "login".into(),
+            rename: None,
+            before: Box::new(HttpRequest {
+                uri: "{{HOST}}/old".into(),
+                ..before.clone()
+            }),
+            after: Box::new(after.clone()),
+        };
+        let at = assistant.update(cx, |assistant, _| assistant.push_card(stale));
+        state.update(cx, |state, cx| state.apply_card(at, false, cx));
+        cx.run_until_parked();
+        assert_eq!(card(at, cx), CardState::Changed);
+        assert_eq!(stored(cx), before, "nothing written");
+        state.update(cx, |state, cx| state.apply_card(at, true, cx));
+        cx.run_until_parked();
+        assert_eq!(card(at, cx), CardState::Applied { made: None });
+        assert_eq!(stored(cx), after);
+
+        // A new API, and taken away again.
+        let create = Proposal::Create {
+            folder: None,
+            place: String::new(),
+            name: "logout".into(),
+            request: Box::new(HttpRequest {
+                method: HttpMethod::Delete,
+                uri: "{{HOST}}/session".into(),
+                ..Default::default()
+            }),
+        };
+        let at = assistant.update(cx, |assistant, _| assistant.push_card(create));
+        state.update(cx, |state, cx| state.apply_card(at, false, cx));
+        cx.run_until_parked();
+        assert!(matches!(card(at, cx), CardState::Applied { made: Some(_) }));
+        let logout = find(&state, "logout", cx);
+        let made = cx
+            .foreground_executor()
+            .block_on(storage.tree().api(collection.id.clone(), logout))
+            .expect("made");
+        assert_eq!(made.request.method, HttpMethod::Delete);
+        state.update(cx, |state, cx| state.undo_card(at, cx));
+        cx.run_until_parked();
+        assert_eq!(row_names(&state, cx), ["login"]);
+
+        // A viewer applies nothing.
+        state.update(cx, |state, _| {
+            state.collection.role = cyberapi_core::access::CollectionRole::Viewer
+        });
+        let at = assistant.update(cx, |assistant, _| {
+            assistant.push_card(Proposal::Update {
+                api: login.clone(),
+                name: "login".into(),
+                rename: None,
+                before: Box::new(after.clone()),
+                after: Box::new(before.clone()),
+            })
+        });
+        state.update(cx, |state, cx| state.apply_card(at, false, cx));
+        cx.run_until_parked();
+        assert_eq!(card(at, cx), CardState::Open);
+        assert_eq!(stored(cx), after);
     }
 
     #[gpui_kit::test]

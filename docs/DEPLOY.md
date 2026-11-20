@@ -17,6 +17,7 @@ This guide follows `main`. What a release does not have yet is marked with the v
 - [Where requests may go](#where-requests-may-go)
 - [Accounts, teams and invitations](#accounts-teams-and-invitations)
 - [Signing in from the desktop app](#signing-in-from-the-desktop-app)
+- [The built-in AI assistant](#the-built-in-ai-assistant)
 - [AI assistants (MCP)](#ai-assistants-mcp)
 - [Upgrading](#upgrading)
 - [Backups](#backups)
@@ -159,6 +160,10 @@ Each is a flag and, where given, an environment variable.
 | `--oidc-client-id <id>` | `CYBERAPI_BRIDGE_OIDC_CLIENT_ID` | *0.4.1.* The client id the provider gave this bridge. |
 | `--oidc-client-secret <secret>` | `CYBERAPI_BRIDGE_OIDC_CLIENT_SECRET` | *0.4.1.* The client secret. Prefer the variable. |
 | `--oidc-redirect <url>` | `CYBERAPI_BRIDGE_OIDC_REDIRECT` | *0.4.1.* The full callback URL. Set it behind a reverse proxy; otherwise the bridge builds `{base}/v1/oidc/callback` from the request. |
+| `--ai-url <url>` | `CYBERAPI_BRIDGE_AI_URL` | *0.6.2.* The API of the team model the built-in assistant uses, e.g. `https://api.openai.com/v1` or a company gateway. With the model and the key, the page shows an “AI” button. Blank is unset. |
+| `--ai-model <name>` | `CYBERAPI_BRIDGE_AI_MODEL` | *0.6.2.* The model's name, as that API calls it. |
+| | `CYBERAPI_BRIDGE_AI_KEY` | *0.6.2.* The model's key. **Environment only** (there is no flag); never logged, never sent to the page. |
+| `--ai-protocol <openai\|anthropic>` | `CYBERAPI_BRIDGE_AI_PROTOCOL` | *0.6.2.* How the model is called: `openai` (default; Chat Completions and gateways that speak it) or `anthropic` (Messages). |
 | `--insecure-cookie` | | Leave `Secure` off the login cookie, for plain HTTP on your own machine. |
 | `--www <dir>` | | Serve this directory as the page instead of the built-in one (development). |
 | | `RUST_LOG` | How much to log: `info` by default, `debug` for more. Logs go to standard output. |
@@ -246,6 +251,16 @@ The desktop app can sign in to the same server: **Settings → Server**, the pag
 - The address must be reachable from the desktop with a certificate the system trusts. The desktop always checks it, also when its own settings let requests skip certificate checks.
 - Once signed in, the home page lists the account's server projects beside this computer's own. Each is copied to the computer, edited there, also offline, and sent to the server when you sync; if someone else changed it meanwhile, you choose whose version to keep.
 - Requests, response history and cookies stay on the computer; the desktop's sign-in is kept in `server.json` in its data directory, not in the projects' database and not in backups.
+
+## The built-in AI assistant
+
+*0.6.2.* A system administrator fills in the protocol (OpenAI or Anthropic), address, model and key in the page's settings menu → **AI model…** and saves, or the options `--ai-url`, `--ai-model` and `CYBERAPI_BRIDGE_AI_KEY` give them (with both, the page's wins; “Remove the setting made here” in the dialog goes back to the options'). Then the page's workspace shows an **AI** button in its title bar that opens the assistant's column, for questions about the open project. The administrator configures the model once and readers need no keys of their own: the page hands the conversation to the bridge's `/v1/ai/chat`, the bridge calls the model with the key and passes the answer on as it comes; when the page leaves or the reader stops it, the bridge drops the call to the model.
+
+- The model's address is the administrator's, so the bridge calls it **outside** [where requests may go](#where-requests-may-go): a model gateway on a private network needs no `--allow-target`.
+- Signed-in accounts only (not MCP tokens). Each account may ask 20 questions a minute, and a question on its way counts with the account's sends.
+- A model set on the page is kept, key and all, in the database's `bridge_settings` table (in plain text: back it up and guard it with the database). Once saved the dialog only says a key is set and never shows it; saving with the key blank keeps the old one. Each change is a log line (`the assistant's model was set`, with the account, address and model, not the key).
+- Each question is one log line (`ai chat`, with the account, the model, the time it took and the tokens the model reported); never its content.
+- Conversations go to the model service you configure; they are not kept and are forgotten when the reader leaves the project.
 
 ## AI assistants (MCP)
 

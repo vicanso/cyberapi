@@ -55,9 +55,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+mod ai;
 mod body;
 mod client;
 
+pub use ai::{AI_CHAT_PATH, AI_PATH, BridgeAi};
 pub use body::encoded_body;
 pub use client::{
     BearerSession, EngineTransport, LOGIN_PATH, LOGOUT_PATH, LoginForm, OidcPoll, SignInError, bridge_address,

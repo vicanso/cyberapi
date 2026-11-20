@@ -605,6 +605,28 @@ impl SqlStore {
         Ok(())
     }
 
+    /// A setting for the whole bridge, by name (H3).
+    pub async fn bridge_setting(&self, name: &str) -> Result<Option<String>, StoreError> {
+        let row = sqlx::query(self.dialect.sql(sql::BRIDGE_SETTING_OF))
+            .bind(name.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        row.map(|row| rows::text(&row, 0)).transpose()
+    }
+
+    /// Sets a setting for the whole bridge; `None` removes it.
+    pub async fn set_bridge_setting(&self, name: &str, value: Option<&str>) -> Result<(), StoreError> {
+        let query = match value {
+            Some(value) => sqlx::query(self.dialect.pick(&sql::BRIDGE_SETTING_UPSERT))
+                .bind(name.to_string())
+                .bind(value.to_string()),
+            None => sqlx::query(self.dialect.sql(sql::BRIDGE_SETTING_DELETE)).bind(name.to_string()),
+        };
+        query.execute(&self.pool).await.map_err(db)?;
+        Ok(())
+    }
+
     /// A team, with its creator as owner.
     pub async fn create_team(&self, name: &str, creator: &AccountId) -> Result<TeamId, StoreError> {
         let team = TeamId::new(new_id());

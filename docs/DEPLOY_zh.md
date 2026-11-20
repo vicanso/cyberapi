@@ -17,6 +17,7 @@
 - [请求能发往哪里](#请求能发往哪里)
 - [账号、团队和邀请](#账号团队和邀请)
 - [桌面版登录](#桌面版登录)
+- [内置 AI 助手](#内置-ai-助手)
 - [AI 助手（MCP）](#ai-助手mcp)
 - [升级](#升级)
 - [备份](#备份)
@@ -159,6 +160,10 @@ helm install cyberapi deploy/helm/cyberapi \
 | `--oidc-client-id <id>` | `CYBERAPI_BRIDGE_OIDC_CLIENT_ID` | *0.4.1*。身份提供方发给这个 bridge 的 client id。 |
 | `--oidc-client-secret <secret>` | `CYBERAPI_BRIDGE_OIDC_CLIENT_SECRET` | *0.4.1*。client secret。建议用环境变量。 |
 | `--oidc-redirect <url>` | `CYBERAPI_BRIDGE_OIDC_REDIRECT` | *0.4.1*。完整的回调地址。放在反向代理后面时要设置；否则 bridge 按它自己看到的请求拼出 `{base}/v1/oidc/callback`。 |
+| `--ai-url <url>` | `CYBERAPI_BRIDGE_AI_URL` | *0.6.4*。内置 AI 助手用的团队模型的接口地址，如 `https://api.openai.com/v1` 或公司的模型网关。和模型名、密钥一起设置后，页面上出现“AI”按钮。空白视为未设置。 |
+| `--ai-model <name>` | `CYBERAPI_BRIDGE_AI_MODEL` | *0.6.4*。模型名，按那个接口的叫法。 |
+| | `CYBERAPI_BRIDGE_AI_KEY` | *0.6.4*。模型的密钥。**只能用环境变量**（没有对应的命令行选项），不会写进日志，也不会发给页面。 |
+| `--ai-protocol <openai\|anthropic>` | `CYBERAPI_BRIDGE_AI_PROTOCOL` | *0.6.4*。怎么调用模型：`openai`（默认，OpenAI Chat Completions 及兼容它的网关）或 `anthropic`（Messages）。 |
 | `--insecure-cookie` | | 登录 Cookie 不带 `Secure`，用于在自己机器上走纯 HTTP。 |
 | `--www <dir>` | | 用这个目录作为页面，代替内置的页面（开发用）。 |
 | | `RUST_LOG` | 日志详细程度：默认 `info`，`debug` 更详细。日志写到标准输出。 |
@@ -246,6 +251,16 @@ bridge 总是自己连接每台服务器，不经过代理：既不读它所在�
 - 桌面版必须能访问这个地址，而且证书要被系统信任。桌面版总会校验这个证书，即使它自己的设置允许请求跳过证书校验。
 - 登录后，首页会在本机项目旁边列出该账号的服务器项目。每个服务器项目都会复制一份到本机，在本机编辑（离线也可以），同步时再推到服务器；如果期间别人也改过，由你选择保留哪一份。
 - 请求、响应历史和 Cookie 都留在本机；桌面版的登录信息存在数据目录的 `server.json` 里，不进项目库，也不进备份。
+
+## 内置 AI 助手
+
+*0.6.4*。系统管理员在页面的设置菜单 → **AI 模型…** 里填协议（OpenAI 或 Anthropic）、地址、模型和密钥并保存，或者用启动选项 `--ai-url`、`--ai-model` 和 `CYBERAPI_BRIDGE_AI_KEY` 给出（两者都有时用页面上设的；在弹窗里“移除这里的设置”即回到启动选项的）。之后页面工作区的标题栏出现 **AI** 按钮，打开右侧的助手栏，可以就当前项目提问。模型由管理员统一配置，读者不需要自己的密钥：页面把对话交给 bridge 的 `/v1/ai/chat`，由 bridge 带上密钥调用模型，再把回答一段段转给页面；页面关掉或点“停止”，bridge 随即断开对模型的调用。
+
+- 模型地址由管理员给出，bridge 调用它时**不受**[请求能发往哪里](#请求能发往哪里)的限制，公司内网的模型网关不需要 `--allow-target`。
+- 只有登录的账号能用（MCP 令牌不行）。每个账号每分钟最多 20 次提问，进行中的提问和发送请求一起算在每个账号同时发送的数量里。
+- 页面上设的模型连同密钥存在数据库的 `bridge_settings` 表里（明文，和数据库一起备份、一起保护），保存后弹窗只说明“已设置”，不再显示密钥；密钥留空保存即保留原来的。每次修改在日志里记一行（`the assistant's model was set`，带账号、地址和模型，不含密钥）。
+- 每次提问在日志里记一行（`ai chat`，带账号、模型、用时和模型报告的 token 数），不记内容。
+- 对话会发往你配置的模型服务；对话不保存，离开项目即丢弃。
 
 ## AI 助手（MCP）
 

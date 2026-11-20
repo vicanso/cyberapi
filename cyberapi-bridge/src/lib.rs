@@ -18,6 +18,10 @@
 //! | `POST /v1/store` | one store call (`cyberapi_store_bridge::Call`) |
 //! | `POST /v1/send` | sends a prepared request (`docs/architecture.md` §5), a few of an account's at a time ([`in_flight`]) |
 //! | `POST /v1/send/stream` | the same, an event stream's answer told as it comes (NDJSON of `StreamReply`); the page leaving stops it |
+//! | `GET` / `POST /v1/ai` | the team's model (`{"model": …}`), or `null` when the bridge has none (H3, [`ai`]) |
+//! | `POST /v1/ai/chat` | asks it: a conversation in, its answer as it comes (NDJSON of `AiEvent`); the page leaving stops it |
+//! | `POST /v1/ai/settings` | administrators: the model in use without its key (`ModelSettings`), or `null` |
+//! | `POST /v1/ai/settings/save` | administrators: sets the model (`ModelChange`; a blank key keeps the page's), `null` puts the options' back |
 //! | `POST /v1/mcp` | an AI assistant's tools, signed in with an account's MCP token ([`mcp`]) |
 //! | `ANY /v1/mock/{project}`, `ANY /v1/mock/{project}/{*rest}` | a project's mock responses (`G2b`, [`mock`]), signed in by session or MCP token |
 //! | `GET /v1/docs/{project}` | a project's read-only HTML documentation (`G3`, [`docs`]); public when the project says so, otherwise a session or MCP token, and a signed-out browser is sent to the sign-in page |
@@ -35,6 +39,7 @@
 //! `into_make_service_with_connect_info::<SocketAddr>` so they are counted
 //! by address too.
 
+mod ai;
 mod auth;
 mod docs;
 mod in_flight;
@@ -116,6 +121,15 @@ struct Inner {
     docs_html: Arc<docs::HtmlCache>,
     /// OpenID Connect, when the process was given an issuer and a client.
     oidc: Option<oidc::Service>,
+    /// The team's model in use, when there is one (H3): the page's, or
+    /// the options'.
+    ai: std::sync::RwLock<Option<Arc<ai::Ai>>>,
+    /// What calls the model; none in a bridge without the assistant.
+    ai_engine: Option<Arc<dyn HttpEngine>>,
+    /// The model the bridge's options gave, if any.
+    ai_options: Option<cyberapi_core::ai::ModelConfig>,
+    /// Each account's turns in the last minute.
+    ai_calls: mcp::Limiter,
 }
 
 impl Bridge {
@@ -144,6 +158,10 @@ impl Bridge {
                 mock_routes: mock::RouteCache::default(),
                 docs_html: Arc::new(docs::HtmlCache::default()),
                 oidc: None,
+                ai: Default::default(),
+                ai_engine: None,
+                ai_options: None,
+                ai_calls: mcp::Limiter::default(),
             }),
         }
     }
@@ -166,6 +184,35 @@ impl Bridge {
         let inner = Arc::get_mut(&mut bridge.inner).ok_or_else(|| "the bridge is already shared".to_string())?;
         inner.oidc = Some(oidc::Service::new(settings));
         Ok(bridge)
+    }
+
+    /// Turns the assistant on (H3): its model called through `engine`,
+    /// the one `options` gives until an administrator sets one on the page
+    /// (read from the store by [`Bridge::load_ai`]). Call this before the
+    /// bridge is shared.
+    pub fn with_ai(
+        self,
+        options: Option<cyberapi_core::ai::ModelConfig>,
+        engine: Arc<dyn HttpEngine>,
+    ) -> Result<Self, String> {
+        let mut bridge = self;
+        let inner = Arc::get_mut(&mut bridge.inner).ok_or_else(|| "the bridge is already shared".to_string())?;
+        inner.ai = std::sync::RwLock::new(options.clone().map(|config| Arc::new(ai::Ai::new(config, false))));
+        inner.ai_engine = Some(engine);
+        inner.ai_options = options;
+        Ok(bridge)
+    }
+
+    /// Puts the model an administrator set on the page in use, if there is
+    /// one; returns its name.
+    pub async fn load_ai(&self) -> Result<Option<String>, String> {
+        let Some(config) = ai::kept(self).await? else {
+            return Ok(None);
+        };
+        let name = config.model.clone();
+        *self.inner.ai.write().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::new(ai::Ai::new(config, true)));
+        Ok(Some(name))
     }
 
     /// Forgets the logins that ran out, now and every hour after, for as
@@ -214,6 +261,10 @@ impl Bridge {
             .route(&at(STORE_PATH), post(store_call))
             .route(&at(SEND_PATH), post(send_request))
             .route(&at(SEND_STREAM_PATH), post(send_watched))
+            .route(&at("/v1/ai"), get(ai::info).post(ai::info))
+            .route(&at("/v1/ai/chat"), post(ai::chat))
+            .route(&at("/v1/ai/settings"), post(ai::settings))
+            .route(&at("/v1/ai/settings/save"), post(ai::save))
             .route(
                 &at("/v1/mcp"),
                 post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed),

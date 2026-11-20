@@ -77,6 +77,55 @@ struct Args {
     /// not guess it from the request. `{base}/v1/oidc/callback` otherwise.
     #[arg(long, env = "CYBERAPI_BRIDGE_OIDC_REDIRECT")]
     oidc_redirect: Option<String>,
+    /// The team's model for the built-in assistant (H3): the API's base,
+    /// e.g. `https://api.openai.com/v1`. With the model and the key, the
+    /// assistant is on. Blank is unset.
+    #[arg(long, env = "CYBERAPI_BRIDGE_AI_URL")]
+    ai_url: Option<String>,
+    /// The model's name, as the API knows it. Its key is read from
+    /// `CYBERAPI_BRIDGE_AI_KEY` only: a flag would be in the process list.
+    #[arg(long, env = "CYBERAPI_BRIDGE_AI_MODEL")]
+    ai_model: Option<String>,
+    /// How the model is spoken to: `openai` (Chat Completions and the
+    /// gateways that speak it) or `anthropic` (Messages).
+    #[arg(long, env = "CYBERAPI_BRIDGE_AI_PROTOCOL", default_value = "openai")]
+    ai_protocol: String,
+}
+
+/// The team's model, when the three of address, model and key are given;
+/// a part of them is a mistake to say before serving.
+fn ai_model(args: &Args) -> Result<Option<cyberapi_core::ai::ModelConfig>, String> {
+    let given = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let key = std::env::var("CYBERAPI_BRIDGE_AI_KEY").ok();
+    let (url, model, key) = (given(&args.ai_url), given(&args.ai_model), given(&key));
+    let (url, model, key) = match (url, model, key) {
+        (None, None, None) => return Ok(None),
+        (Some(url), Some(model), Some(key)) => (url, model, key),
+        _ => {
+            return Err(
+                "the assistant needs all of CYBERAPI_BRIDGE_AI_URL, CYBERAPI_BRIDGE_AI_MODEL and CYBERAPI_BRIDGE_AI_KEY".into(),
+            );
+        }
+    };
+    let protocol = cyberapi_core::ai::Protocol::parse(&args.ai_protocol).ok_or_else(|| {
+        format!(
+            "CYBERAPI_BRIDGE_AI_PROTOCOL is openai or anthropic, not {:?}",
+            args.ai_protocol
+        )
+    })?;
+    Ok(Some(cyberapi_core::ai::ModelConfig {
+        protocol,
+        url,
+        model,
+        key,
+        max_tokens: cyberapi_core::ai::MAX_TOKENS,
+    }))
 }
 
 #[tokio::main]
@@ -86,6 +135,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     tracing::info!(version = version(), "cyberapi-bridge starting");
     let base_path = cyberapi_bridge::normalize_base_path(&args.base_path)?;
+    let model = ai_model(&args)?;
+    let bridge_options_model = model.as_ref().map(|model| (model.url.clone(), model.model.clone()));
 
     let store = SqlStore::connect(&args.store).await?;
     let setup_token = match args.setup_token {
@@ -120,6 +171,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.oidc_client_secret,
         args.oidc_redirect,
     )?;
+    // The administrator's address, not a reader's: any it names.
+    let anywhere = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::Anywhere);
+    let bridge = bridge.with_ai(model, Arc::new(anywhere))?;
+    match bridge.load_ai().await? {
+        Some(name) => tracing::info!(model = %name, "the assistant's model is the one set on the page"),
+        None => {
+            if let Some(model) = &bridge_options_model {
+                tracing::info!(url = %model.0, model = %model.1, "the assistant's model is the options' one");
+            }
+        }
+    }
     bridge.spawn_housekeeping();
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     let at = format!("{base_path}/");

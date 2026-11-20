@@ -26,6 +26,7 @@
 //! speaks HTTP/2 and hands back a [`LiveCall`]: messages go out while the
 //! answer comes in. The others cannot.
 
+pub mod ai;
 #[cfg(not(target_family = "wasm"))]
 mod call;
 #[cfg(not(target_family = "wasm"))]

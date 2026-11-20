@@ -11,6 +11,12 @@
 {{- if and $oidcAny (not $oidcReady) }}
 {{- fail "bridge.oidc needs issuer, clientId, and clientSecret or existingSecret together" }}
 {{- end }}
+{{- $ai := .Values.bridge.ai }}
+{{- $aiAny := or $ai.url $ai.model $ai.key $ai.existingSecret }}
+{{- $aiReady := and $ai.url $ai.model (or $ai.key $ai.existingSecret) }}
+{{- if and $aiAny (not $aiReady) }}
+{{- fail "bridge.ai needs url, model, and key or existingSecret together" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -100,6 +106,19 @@ spec:
             - name: CYBERAPI_BRIDGE_OIDC_REDIRECT
               value: {{ . | quote }}
             {{- end }}
+            {{- end }}
+            {{- if $aiReady }}
+            - name: CYBERAPI_BRIDGE_AI_URL
+              value: {{ $ai.url | quote }}
+            - name: CYBERAPI_BRIDGE_AI_MODEL
+              value: {{ $ai.model | quote }}
+            - name: CYBERAPI_BRIDGE_AI_PROTOCOL
+              value: {{ $ai.protocol | default "openai" | quote }}
+            - name: CYBERAPI_BRIDGE_AI_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ai.existingSecret | default (include "cyberapi.secretName" .) }}
+                  key: {{ ternary $ai.existingSecretKey "ai-key" (not (empty $ai.existingSecret)) }}
             {{- end }}
             {{- with .Values.bridge.extraEnv }}
             {{- toYaml . | nindent 12 }}

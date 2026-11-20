@@ -4,6 +4,7 @@
 //! browser and on the bridge, and it is tested without any of them.
 
 pub mod access;
+pub mod ai;
 pub mod assertions;
 pub mod auth;
 pub mod backup;

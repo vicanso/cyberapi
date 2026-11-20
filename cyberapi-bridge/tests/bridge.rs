@@ -1536,3 +1536,210 @@ async fn send_bearer(router: &Router, path: &str, token: &str) -> (StatusCode, O
     let bytes = response.into_body().collect().await.expect("a body").to_bytes();
     (status, None, String::from_utf8_lossy(&bytes).into_owned())
 }
+
+/// A model on this machine: each request is answered with the next of
+/// `answers` (a status line's code, a content type, a body), and its body is
+/// kept for the test to read.
+async fn model_server(
+    answers: Vec<(u16, &'static str, &'static str)>,
+) -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = asked.clone();
+    tokio::spawn(async move {
+        for (status, kind, body) in answers {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 65536];
+            // The head, then as much body as it says.
+            loop {
+                let read = stream.read(&mut buffer).await.unwrap_or(0);
+                request.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&request).to_string();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let length = head
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|n| n.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= length || read == 0 {
+                        kept.lock().expect("lock").push(text);
+                        break;
+                    }
+                }
+                if read == 0 {
+                    break;
+                }
+            }
+            let head = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes()).await;
+            let _ = stream.write_all(body.as_bytes()).await;
+        }
+    });
+    (address, asked)
+}
+
+/// H3: the team's model, asked through the bridge; its answer comes back
+/// one event a line, its key never leaves the bridge.
+#[tokio::test]
+async fn the_team_model_answers_signed_in_readers() {
+    let Some(plain) = fresh_bridge().await else {
+        return;
+    };
+    let stream = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi \"}}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"there\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let (address, asked) = model_server(vec![
+        (200, "text/event-stream", stream),
+        (
+            401,
+            "application/json",
+            "{\"error\":{\"message\":\"Incorrect API key\"}}",
+        ),
+    ])
+    .await;
+    let config = cyberapi_core::ai::ModelConfig {
+        protocol: cyberapi_core::ai::Protocol::OpenAi,
+        url: format!("http://{address}/v1"),
+        model: "team-model".into(),
+        key: "sk-team".into(),
+        max_tokens: 64,
+    };
+    let anywhere = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::Anywhere);
+    let bridge = plain.with_ai(Some(config), Arc::new(anywhere)).expect("a model");
+    let (router, cookie) = signed_in_router(&bridge).await;
+
+    let (status, _, _) = send(&router, "GET", "/v1/ai", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "signed in only");
+    let (status, _, said) = send(&router, "GET", "/v1/ai", Some(&cookie), None).await;
+    assert_eq!((status, said.as_str()), (StatusCode::OK, r#"{"model":"team-model"}"#));
+
+    let chat = json!({ "system": "Be brief.", "messages": [{ "role": "user", "parts": [{ "type": "text", "text": "Hello" }] }] });
+    let (status, _, _) = send(&router, "POST", "/v1/ai/chat", None, Some(chat.clone())).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, lines) = send(&router, "POST", "/v1/ai/chat", Some(&cookie), Some(chat.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+    let events: Vec<Value> = lines
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a line"))
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            json!({ "kind": "text", "text": "Hi " }),
+            json!({ "kind": "text", "text": "there" }),
+            json!({ "kind": "done", "stop": "done" }),
+        ]
+    );
+    let request = asked.lock().expect("lock")[0].clone();
+    assert!(request.starts_with("POST /v1/chat/completions"), "{request}");
+    assert!(
+        request.to_ascii_lowercase().contains("authorization: bearer sk-team"),
+        "the bridge adds the key"
+    );
+    assert!(request.contains(r#""model":"team-model""#) && request.contains("Be brief."));
+
+    let (_, _, refused) = send(&router, "POST", "/v1/ai/chat", Some(&cookie), Some(chat.clone())).await;
+    assert_eq!(
+        serde_json::from_str::<Value>(refused.trim()).expect("a line"),
+        json!({ "kind": "error", "message": "the model answered 401: Incorrect API key" })
+    );
+
+    // A bridge with no model says so.
+    let Some(none) = fresh_bridge().await else {
+        return;
+    };
+    let (router, cookie) = signed_in_router(&none).await;
+    let (_, _, said) = send(&router, "GET", "/v1/ai", Some(&cookie), None).await;
+    assert_eq!(said, "null");
+    let (status, _, _) = send(&router, "POST", "/v1/ai/chat", Some(&cookie), Some(chat)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// H3: an administrator sets the model on the page; the key goes in and
+/// never comes back out.
+#[tokio::test]
+async fn an_administrator_sets_the_model_on_the_page() {
+    let Some(plain) = fresh_bridge().await else {
+        return;
+    };
+    let stream = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let (address, asked) = model_server(vec![(200, "text/event-stream", stream)]).await;
+    let anywhere = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::Anywhere);
+    let bridge = plain.with_ai(None, Arc::new(anywhere)).expect("the assistant");
+    let (router, cookie) = signed_in_router(&bridge).await;
+
+    let (_, _, said) = send(&router, "GET", "/v1/ai", Some(&cookie), None).await;
+    assert_eq!(said, "null", "no model until one is set");
+    let (status, _, _) = send(&router, "POST", "/v1/ai/settings", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, _, said) = send(&router, "POST", "/v1/ai/settings", Some(&cookie), None).await;
+    assert_eq!(said, "null");
+
+    let change =
+        json!({ "protocol": "openai", "url": format!("http://{address}/v1"), "model": "page-model", "key": "" });
+    let (status, _, said) = send(
+        &router,
+        "POST",
+        "/v1/ai/settings/save",
+        Some(&cookie),
+        Some(change.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a key at first: {said}");
+
+    let mut keyed = change.clone();
+    keyed["key"] = json!("sk-page");
+    let (status, _, said) = send(&router, "POST", "/v1/ai/settings/save", Some(&cookie), Some(keyed)).await;
+    assert_eq!(status, StatusCode::OK, "{said}");
+    assert!(!said.contains("sk-page"), "the key does not come back: {said}");
+    let settings: Value = serde_json::from_str(&said).expect("settings");
+    assert_eq!(
+        (settings["hasKey"].clone(), settings["onPage"].clone()),
+        (json!(true), json!(true))
+    );
+
+    // A blank key keeps the one set.
+    let (status, _, _) = send(&router, "POST", "/v1/ai/settings/save", Some(&cookie), Some(change)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, said) = send(&router, "GET", "/v1/ai", Some(&cookie), None).await;
+    assert_eq!(said, r#"{"model":"page-model"}"#);
+    let chat = json!({ "system": "", "messages": [{ "role": "user", "parts": [{ "type": "text", "text": "Hi" }] }] });
+    let (status, _, _) = send(&router, "POST", "/v1/ai/chat", Some(&cookie), Some(chat)).await;
+    assert_eq!(status, StatusCode::OK);
+    let request = asked.lock().expect("lock")[0].clone();
+    assert!(
+        request.to_ascii_lowercase().contains("authorization: bearer sk-page"),
+        "{request}"
+    );
+
+    // Kept in the store: read back as a restarted bridge would.
+    assert_eq!(bridge.load_ai().await.expect("read"), Some("page-model".into()));
+
+    // `null` puts the options' model back: none here.
+    let (status, _, said) = send(
+        &router,
+        "POST",
+        "/v1/ai/settings/save",
+        Some(&cookie),
+        Some(Value::Null),
+    )
+    .await;
+    assert_eq!((status, said.as_str()), (StatusCode::OK, "null"));
+    assert_eq!(bridge.load_ai().await.expect("read"), None);
+}

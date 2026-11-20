@@ -102,6 +102,8 @@ pub fn run(origin: String, ui_font: Vec<u8>, prefs: String) {
         directory: Some(bridge.directory()),
         versions: Some(bridge.versions()),
         sign_out: Some(sign_out),
+        // H3: whether the bridge has a model is asked once the app runs.
+        ai: Some(Arc::new(cyberapi_store_bridge::BridgeAi::new(transport.clone()))),
         ..Default::default()
     };
     // Requests go out from the bridge (`docs/architecture.md` §5, D5).

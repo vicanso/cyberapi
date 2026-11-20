@@ -101,6 +101,9 @@ pub struct Extras {
     pub versions: Option<Arc<dyn VersionStore>>,
     /// Ends the browser's login; the page then asks for one again.
     pub sign_out: Option<SignOut>,
+    /// H3: the team's model, through the page's bridge; whether it has one
+    /// is asked once the app runs.
+    pub ai: Option<Arc<dyn cyberapi_http::ai::AiModel>>,
 }
 
 /// Ending a login: the work, as a future to run.

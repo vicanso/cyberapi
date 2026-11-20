@@ -56,6 +56,16 @@ bridge:
     existingSecret: ""
     existingSecretKey: oidc-client-secret
     redirect: ""
+  # The built-in assistant's team model (*0.6.4*). url, model and a key,
+  # together, or none. existingSecret wins over key. protocol: openai or
+  # anthropic.
+  ai:
+    url: ""
+    model: ""
+    protocol: openai
+    key: ""
+    existingSecret: ""
+    existingSecretKey: ai-key
 
 service:
   type: ClusterIP

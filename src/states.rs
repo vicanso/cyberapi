@@ -4,6 +4,7 @@
 
 mod api;
 mod app;
+mod assistant;
 mod cookies;
 mod copy;
 mod dashboard;
@@ -22,6 +23,7 @@ mod workspace;
 
 pub use api::{ApiEvent, ApiState, GrpcDefinitions, typed_prompts};
 pub use app::{AppEvent, AppState, AppStore, Route};
+pub use assistant::{AssistantProject, AssistantState, Card, CardState, ChatLine, OnScreen};
 pub use cookies::{CookieKey, CookiesEvent, CookiesState, cookie_key};
 pub use copy::{ServerCopy, keep_due_drafts};
 pub use dashboard::{DashboardEvent, DashboardState, ProjectSourceEdit};

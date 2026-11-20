@@ -312,6 +312,16 @@ pub const PROJECT_SETTINGS_UPSERT: Pair = Pair {
 };
 pub const PROJECT_SETTINGS_DELETE: &str = "DELETE FROM project_settings WHERE collection = $1";
 
+// Settings for the whole bridge (H3).
+pub const BRIDGE_SETTING_OF: &str = "SELECT value FROM bridge_settings WHERE name = $1";
+pub const BRIDGE_SETTING_UPSERT: Pair = Pair {
+    pg: "INSERT INTO bridge_settings (name, value) VALUES ($1, $2) \
+         ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value",
+    my: "INSERT INTO bridge_settings (name, value) VALUES (?, ?) AS new \
+         ON DUPLICATE KEY UPDATE value = new.value",
+};
+pub const BRIDGE_SETTING_DELETE: &str = "DELETE FROM bridge_settings WHERE name = $1";
+
 // A whole configuration put in place of a project's (server-sync §3.3).
 // Folders and variables are written again; an API that stays is rewritten
 // in its row, which its responses hang from.
@@ -444,6 +454,8 @@ mod tests {
 
     /// Every single-spelling statement, for the placeholder check.
     const ALL: &[&str] = &[
+        BRIDGE_SETTING_OF,
+        BRIDGE_SETTING_DELETE,
         COLLECTION_EXISTS,
         INVITE_INSERT,
         INVITES_OPEN_OF,
@@ -589,6 +601,7 @@ mod tests {
             assert_eq!(found, expected, "{statement}");
         }
         for pair in [
+            BRIDGE_SETTING_UPSERT,
             MEMBER_UPSERT,
             GRANT_UPSERT,
             TOP_ORDER_UPSERT,
