@@ -910,6 +910,18 @@ impl ApiState {
         true
     }
 
+    /// M0: `example` written at `at`, or added after the others for `None`.
+    pub fn set_example(&mut self, at: Option<usize>, example: Example, cx: &mut Context<Self>) {
+        match at.filter(|at| *at < self.request.examples.len()) {
+            Some(at) if self.request.examples[at] == example => return,
+            Some(at) => self.request.examples[at] = example,
+            None => self.request.examples.push(example),
+        }
+        *self.checks.borrow_mut() = None;
+        self.save_later(cx);
+        cx.notify();
+    }
+
     /// F3: the example at `at` no longer kept.
     pub fn remove_example(&mut self, at: usize, cx: &mut Context<Self>) {
         if at < self.request.examples.len() {

@@ -1714,6 +1714,7 @@ mod tests {
                         status: 200,
                         headers: vec![],
                         body: r#"{"id":"ord_123"}"#.into(),
+                        ..Default::default()
                     }],
                     ..Default::default()
                 },

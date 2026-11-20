@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use cyberapi_bridge::Bridge;
 use cyberapi_core::auth::Auth;
-use cyberapi_core::model::HttpMethod;
+use cyberapi_core::model::{HttpMethod, MockCondition, MockSource};
 use cyberapi_core::prefs::Timeouts;
 use cyberapi_core::version::MODEL;
 use cyberapi_http::{HttpEngine, NativeEngine, PreparedRequest, SendError, TargetPolicy};
@@ -792,12 +792,41 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
                     expected: "200".into(),
                     ..Default::default()
                 }],
-                examples: vec![cyberapi_core::model::Example {
-                    name: "ok".into(),
-                    status: 200,
-                    headers: vec![("content-type".into(), "application/json".into())],
-                    body: r#"{"pong":true}"#.into(),
-                }],
+                examples: vec![
+                    cyberapi_core::model::Example {
+                        name: "ok".into(),
+                        status: 200,
+                        headers: vec![("content-type".into(), "application/json".into())],
+                        body: r#"{"pong":true}"#.into(),
+                        ..Default::default()
+                    },
+                    // M1–M3: one on a header, waiting; one on a query, streamed.
+                    cyberapi_core::model::Example {
+                        name: "admin".into(),
+                        status: 200,
+                        body: "hi admin".into(),
+                        when: vec![MockCondition {
+                            source: MockSource::Header,
+                            name: "x-who".into(),
+                            value: "admin".into(),
+                        }],
+                        delay_ms: 100,
+                        ..Default::default()
+                    },
+                    cyberapi_core::model::Example {
+                        name: "stream".into(),
+                        status: 200,
+                        headers: vec![("content-type".into(), "text/event-stream".into())],
+                        body: "data: 1\n\ndata: 2\n\n".into(),
+                        when: vec![MockCondition {
+                            source: MockSource::Query,
+                            name: "stream".into(),
+                            value: String::new(),
+                        }],
+                        stream_interval_ms: 100,
+                        ..Default::default()
+                    },
+                ],
                 ..Default::default()
             },
         )
@@ -1177,6 +1206,53 @@ async fn an_assistant_reads_with_a_token_and_sends_only_when_allowed() {
     .await;
     assert_eq!(mock_status, StatusCode::OK);
     assert_eq!(mock_body, r#"{"pong":true}"#);
+    // M1–M3: a header picks the example, which waits; a query picks the
+    // streamed one, whose events come apart.
+    let mock = |path: String, who: Option<&str>| {
+        let mut request = Request::builder().method("GET").uri(path);
+        if let Some(who) = who {
+            request = request.header("x-who", who);
+        }
+        let request = request.body(Body::empty()).expect("a request");
+        let router = router.clone();
+        async move {
+            let started = std::time::Instant::now();
+            let response = router.oneshot(request).await.expect("an answer");
+            let used = response
+                .headers()
+                .get("x-mock-example-used")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            let bytes = response.into_body().collect().await.expect("a body").to_bytes();
+            (used, String::from_utf8_lossy(&bytes).into_owned(), started.elapsed())
+        }
+    };
+    let (used, body, took) = mock(
+        format!("/v1/mock/{}/ping?token={}", project.id, reader.secret),
+        Some("admin"),
+    )
+    .await;
+    assert_eq!((used.as_deref(), body.as_str()), (Some("admin"), "hi admin"));
+    assert!(took >= std::time::Duration::from_millis(100), "it waited");
+    let (used, _, _) = mock(
+        format!("/v1/mock/{}/ping?token={}", project.id, reader.secret),
+        Some("guest"),
+    )
+    .await;
+    assert_eq!(used.as_deref(), Some("ok"), "the condition does not hold");
+    let (used, body, took) = mock(
+        format!("/v1/mock/{}/ping?stream&token={}", project.id, reader.secret),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (used.as_deref(), body.as_str()),
+        (Some("stream"), "data: 1\n\ndata: 2\n\n")
+    );
+    assert!(
+        took >= std::time::Duration::from_millis(100),
+        "a pause between the events"
+    );
 
     // G3: read-only HTML project documentation renders with secrets masked.
     let (docs_status, _, docs_body) = send(

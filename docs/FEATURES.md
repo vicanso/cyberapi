@@ -118,8 +118,10 @@ Import Postman, Insomnia, Hoppscotch, Bruno, Swagger 2 / OpenAPI 3, HAR, `.http`
 
 - On the desktop, **Mock server…** answers on this machine from the project's examples (port 4010 unless you choose another).
 - A server project also has `/v1/mock/<project-id>/…` on the bridge, shown in that dialog. Call it with a session or an MCP token (`Authorization: Bearer cat_…`, `X-CyberAPI-Token`, or `?token=cat_…`).
-- The method and the path pick the API. The path is the address without its variable, scheme and host. `{{id}}`, `:id` and `{id}` match any one segment, and more fixed segments win. The answer is the first example, or the one named by `x-mock-example`. No example, or no API, is a 404 that says why.
-- Any origin may call it. It follows the project as you edit. The desktop dialog lists what the local server answered.
+- The method and the path pick the API. The path is the address without its variable, scheme and host. `{{id}}`, `:id` and `{id}` match any one segment, and more fixed segments win. The answer is the example named by `x-mock-example`; else the first whose conditions all hold; else the first without conditions. No example, or no API, is a 404 that says why.
+- Examples are written and edited in the API's Docs tab (**New example** and the pencil on each one), not only kept from history. A 3xx status with a `Location` header makes a redirect (*0.6.4*).
+- An example can answer only when the request has a query parameter, a header, or a JSONPath in its JSON body equal to a value (or present at all). It can wait up to 30 s before answering, and an event stream body can be sent one event at a time with a pause between, to mock a model's streaming reply. The answer names its example in `x-mock-example-used` (*0.6.4*).
+- Any origin may call it. It follows the project as you edit. The desktop dialog lists what the local server answered, and with which example.
 
 ## Your data
 
@@ -135,6 +137,7 @@ On the desktop, back up and restore in the same format as the earlier Tauri app.
 - When the server is set up for OpenID Connect (*0.4.1*), the sign-in page and the desktop offer single sign-on. An invited account whose name is that person's email is linked on the first sign-in. The password still works.
 
 ## AI assistants
+
 
 The web server, and the desktop app on `127.0.0.1`, are MCP servers. Claude Code, Cursor and other MCP clients sign in with a token and read projects, APIs, variables and responses, with secrets masked.
 

@@ -7,7 +7,9 @@
 //! request is answered by [`cyberapi_core::mock::Routes`] from the project's
 //! saved response examples. Browser CORS preflight (`OPTIONS`) requests are
 //! answered directly so frontend applications on another origin can call
-//! the mock endpoint with a bearer/header token.
+//! the mock endpoint with a bearer/header token. Conditions read the
+//! request's query, headers and up to 1 MB of its body (M1); an example's
+//! delay is waited (M2) and an event stream sent one event at a time (M3).
 
 use crate::Bridge;
 use crate::auth::signed_in_or_token;
@@ -16,10 +18,11 @@ use axum::extract::{Path, Request, State};
 use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use cyberapi_core::CollectionId;
-use cyberapi_core::mock::{Answer, EXAMPLE_HEADER, Routes};
+use cyberapi_core::mock::{Answer, Asked, BODY_READ_LIMIT, Routes};
 use cyberapi_store::StoreError;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 const MAX_CACHED_PROJECTS: usize = 64;
 
@@ -70,18 +73,30 @@ pub async fn handle_path(
 }
 
 async fn handle(bridge: Bridge, project: String, subpath: String, request: Request) -> Response {
-    let method = request.method().as_str().to_string();
-    let headers = request.headers();
-    let header_str = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
-    let preflight = header_str("access-control-request-method")
-        .is_some()
-        .then(|| header_str("access-control-request-headers").unwrap_or_default());
+    let (parts, body) = request.into_parts();
+    let method = parts.method.as_str().to_string();
+    let headers = &parts.headers;
+    let pairs: Vec<(String, String)> = headers
+        .iter()
+        .filter_map(|(name, value)| Some((name.as_str().to_string(), value.to_str().ok()?.to_string())))
+        .collect();
+    let query = parts.uri.query();
+    // The routes match the path without the query; the conditions read it.
+    let path = match query {
+        Some(query) => format!("{subpath}?{query}"),
+        None => subpath,
+    };
 
-    if method.eq_ignore_ascii_case("OPTIONS") && preflight.is_some() {
-        return into_response(Routes::default().answer(&method, &subpath, None, preflight));
+    if method.eq_ignore_ascii_case("OPTIONS") && headers.contains_key("access-control-request-method") {
+        return into_response(Routes::default().answer(&Asked {
+            method: &method,
+            path: &path,
+            headers: &pairs,
+            body: &[],
+        }))
+        .await;
     }
 
-    let query = request.uri().query();
     let account = match signed_in_or_token(&bridge.inner.store, headers, query).await {
         Ok(account) => account,
         Err(status) => {
@@ -127,9 +142,15 @@ async fn handle(bridge: Bridge, project: String, subpath: String, request: Reque
         }
     };
 
-    let wanted = header_str(EXAMPLE_HEADER);
-    let answered = routes.answer(&method, &subpath, wanted, preflight);
-    into_response(answered)
+    // M1: a body past the limit is not read; its conditions do not hold.
+    let body = axum::body::to_bytes(body, BODY_READ_LIMIT).await.unwrap_or_default();
+    let answered = routes.answer(&Asked {
+        method: &method,
+        path: &path,
+        headers: &pairs,
+        body: &body,
+    });
+    into_response(answered).await
 }
 
 fn is_forbidden_mock_header(name: &str) -> bool {
@@ -147,7 +168,10 @@ fn is_forbidden_mock_header(name: &str) -> bool {
     ) || lower.starts_with("cross-origin-")
 }
 
-fn into_response(answer: Answer) -> Response {
+async fn into_response(answer: Answer) -> Response {
+    if answer.delay_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(answer.delay_ms.into())).await;
+    }
     let status = StatusCode::from_u16(answer.status).unwrap_or(StatusCode::OK);
     let mut response = Response::builder().status(status);
     if let Some(headers) = response.headers_mut() {
@@ -165,9 +189,28 @@ fn into_response(answer: Answer) -> Response {
         );
         headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
         headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+        if answer.stream_interval_ms > 0 {
+            // As `/v1/send/stream`: a proxy in front must not hold the events.
+            headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
+        }
     }
+    let body = if answer.stream_interval_ms > 0 {
+        let pause = Duration::from_millis(answer.stream_interval_ms.into());
+        let events = answer.events().into_iter().enumerate();
+        Body::from_stream(futures::stream::StreamExt::then(
+            futures::stream::iter(events),
+            move |(at, event)| async move {
+                if at > 0 {
+                    tokio::time::sleep(pause).await;
+                }
+                Ok::<_, std::convert::Infallible>(event)
+            },
+        ))
+    } else {
+        Body::from(answer.body)
+    };
     response
-        .body(Body::from(answer.body))
+        .body(body)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
@@ -188,10 +231,9 @@ fn cors_json(status: StatusCode, message: &str) -> Response {
 mod tests {
     use super::*;
 
-    #[test]
-    fn mock_responses_strip_set_cookie_and_enforce_sandbox_csp() {
+    #[tokio::test]
+    async fn mock_responses_strip_set_cookie_and_enforce_sandbox_csp() {
         let answer = Answer {
-            api: None,
             status: 200,
             headers: vec![
                 ("Content-Type".into(), "text/html".into()),
@@ -200,8 +242,9 @@ mod tests {
                 ("X-Custom".into(), "ok".into()),
             ],
             body: b"<script>alert(1)</script>".to_vec(),
+            ..Default::default()
         };
-        let response = into_response(answer);
+        let response = into_response(answer).await;
         let headers = response.headers();
         assert!(headers.get(header::SET_COOKIE).is_none());
         assert_eq!(

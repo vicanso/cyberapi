@@ -9,6 +9,7 @@ mod auth_editor;
 mod compare_dialog;
 mod docs_editor;
 mod event_stream;
+mod example_dialog;
 mod find_replace_dialog;
 mod import_dialog;
 mod load_dialog;

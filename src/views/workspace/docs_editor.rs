@@ -3,6 +3,7 @@
 //! Schema assertion, both editable right here), and the answers kept as
 //! examples of what it returns.
 
+use super::example_dialog::open_example_dialog;
 use crate::states::{ApiEvent, ApiState};
 use crate::views::name_dialog::ok_button;
 use cyberapi_core::assertions::Subject;
@@ -805,9 +806,14 @@ impl Render for DocsEditor {
                     StatusLevel::ServerError => theme.danger,
                 };
                 let opened = self.open == Some(at);
+                // M1–M3: what the mock does with it besides answering.
+                let conditions = example.when.iter().filter(|when| !when.name.trim().is_empty()).count();
                 let note = [
                     example.content_type().map(str::to_string),
                     Some(format_size(example.body.len() as u64)),
+                    (conditions > 0).then(|| t!("example.conditions_count", count = conditions).to_string()),
+                    (example.delay_ms > 0).then(|| t!("example.delayed", ms = example.delay_ms).to_string()),
+                    (example.stream_interval_ms > 0).then(|| t!("example.streamed").to_string()),
                 ]
                 .into_iter()
                 .flatten()
@@ -840,6 +846,18 @@ impl Render for DocsEditor {
                             .child(div().text_xs().text_color(muted).child(note))
                             .when(editable, |this| {
                                 this.child(
+                                    Button::new(("example-edit", at))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(gpui_kit::assets::IconName::Pencil)
+                                        .tooltip(SharedString::from(t!("example.edit").to_string()))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            // Not also the row's click, which opens its body.
+                                            cx.stop_propagation();
+                                            open_example_dialog(this.api.clone(), Some(at), window, cx);
+                                        })),
+                                )
+                                .child(
                                     Button::new(("example-remove", at))
                                         .ghost()
                                         .xsmall()
@@ -938,11 +956,23 @@ impl Render for DocsEditor {
             .child(inputs)
             .child(outputs)
             .child(
-                div()
+                h_flex()
                     .pt_2()
-                    .text_sm()
-                    .font_semibold()
-                    .child(t!("docs.examples").to_string()),
+                    .items_center()
+                    .justify_between()
+                    .child(div().text_sm().font_semibold().child(t!("docs.examples").to_string()))
+                    .when(editable, |this| {
+                        this.child(
+                            Button::new("example-new")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Plus)
+                                .label(t!("example.new").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    open_example_dialog(this.api.clone(), None, window, cx);
+                                })),
+                        )
+                    }),
             )
             .when(empty, |this| {
                 this.child(

@@ -23,6 +23,7 @@ fn routes(body: &str) -> Routes {
                     status: 201,
                     headers: vec![("x-trace".into(), "t".into())],
                     body: body.into(),
+                    ..Default::default()
                 }],
                 ..Default::default()
             },
@@ -94,4 +95,91 @@ async fn a_port_taken_is_said() {
     )
     .await;
     assert!(taken.is_err(), "the port is taken");
+}
+
+/// M1–M3: a body condition picks the example, a delay is waited, and an
+/// event stream comes one event at a time.
+#[tokio::test]
+async fn conditions_delays_and_streams() {
+    use cyberapi_core::model::{MockCondition, MockSource};
+    let example = |name: &str, body: &str| Example {
+        name: name.into(),
+        status: 200,
+        body: body.into(),
+        ..Default::default()
+    };
+    let mut admin = example("admin", "hi admin");
+    admin.when = vec![MockCondition {
+        source: MockSource::Body,
+        name: "$.role".into(),
+        value: "admin".into(),
+    }];
+    admin.delay_ms = 200;
+    let mut stream = example("stream", "data: 1\n\ndata: 2\n\ndata: 3\n\n");
+    stream.headers = vec![("Content-Type".into(), "text/event-stream".into())];
+    stream.stream_interval_ms = 150;
+    let api = |id: &str, method: HttpMethod, uri: &str, examples: Vec<Example>| ApiSetting {
+        id: ItemId::new(id),
+        name: id.into(),
+        request: HttpRequest {
+            method,
+            uri: uri.into(),
+            examples,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let routes = Routes::of(&TreeData {
+        apis: vec![
+            api(
+                "login",
+                HttpMethod::Post,
+                "/login",
+                vec![admin, example("guest", "hi guest")],
+            ),
+            api("chat", HttpMethod::Get, "/chat", vec![stream]),
+        ],
+        ..Default::default()
+    });
+    let (heard, mut told) = futures::channel::mpsc::unbounded();
+    let server = MockServer::start(tokio::runtime::Handle::current(), 0, routes, heard)
+        .await
+        .expect("started");
+    let address = server.address();
+    let engine = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::Anywhere);
+    let request = |method: HttpMethod, path: &str, body: &str| PreparedRequest {
+        method,
+        url: format!("http://{address}{path}"),
+        headers: vec![("Content-Type".into(), "application/json".into())],
+        body: body.as_bytes().to_vec(),
+        timeouts: Timeouts::default().effective(),
+        ..Default::default()
+    };
+
+    let started = std::time::Instant::now();
+    let admin = engine
+        .send(request(HttpMethod::Post, "/login", r#"{"role":"admin"}"#))
+        .await
+        .expect("an answer");
+    assert_eq!(admin.body, b"hi admin");
+    assert!(started.elapsed() >= std::time::Duration::from_millis(200), "it waited");
+    assert!(admin.headers.contains(&("x-mock-example-used".into(), "admin".into())));
+    assert_eq!(told.next().await.expect("told").example.as_deref(), Some("admin"));
+
+    let guest = engine
+        .send(request(HttpMethod::Post, "/login", r#"{"role":"user"}"#))
+        .await
+        .expect("an answer");
+    assert_eq!(guest.body, b"hi guest");
+
+    let started = std::time::Instant::now();
+    let streamed = engine
+        .send(request(HttpMethod::Get, "/chat", ""))
+        .await
+        .expect("an answer");
+    assert_eq!(streamed.body, b"data: 1\n\ndata: 2\n\ndata: 3\n\n");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(300),
+        "two pauses between three events"
+    );
 }
