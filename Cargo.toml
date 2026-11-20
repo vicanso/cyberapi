@@ -193,6 +193,10 @@ tracing-appender = "0.2.5"
 tokio = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+# Highlighting in the page's editors: tree-sitter's grammars are C and
+# gpui-component leaves them out of wasm, so the page takes its syntect
+# backend (pure Rust, regex-based) instead.
+gpui-kit = { workspace = true, features = ["syntect"] }
 # A file the page saves is a download the browser makes (`this_build`).
 js-sys = "0.3.106"
 # `get_locale()` reads `navigator.languages` only behind this feature.
