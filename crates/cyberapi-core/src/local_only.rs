@@ -275,6 +275,25 @@ impl LocalItems {
     }
 
     /// The copy is level with the server, whose content is `syncable`.
+    /// Whether someone who edits the project but does not manage it may
+    /// delete `item`: no API the server has goes with it — a folder of only
+    /// new APIs, or none, may go. Not while what the server has is unknown.
+    pub fn editor_may_delete(&self, folders: &[Folder], item: &ItemId) -> bool {
+        let Some(server) = &self.server else {
+            return false;
+        };
+        let folders: HashMap<&ItemId, &Folder> = folders.iter().map(|folder| (&folder.id, folder)).collect();
+        let mut going = vec![item];
+        while let Some(id) = going.pop() {
+            match folders.get(id) {
+                Some(folder) => going.extend(folder.children.iter()),
+                None if server.contains(id) => return false,
+                None => {}
+            }
+        }
+        true
+    }
+
     pub fn level_with(&mut self, syncable: &ProjectConfig) {
         self.server = Some(ids(syncable));
         self.level = Some(fingerprint(syncable));
@@ -425,6 +444,34 @@ mod tests {
         let mut local = LocalItems::default();
         local.level_with(&server());
         local
+    }
+
+    #[test]
+    fn an_editor_deletes_only_what_the_server_has_no_api_of() {
+        let config = copy();
+        let local = local();
+        assert!(
+            !local.editor_may_delete(&config.folders, &"login".into()),
+            "the server's API"
+        );
+        assert!(
+            !local.editor_may_delete(&config.folders, &"users".into()),
+            "holds the server's API"
+        );
+        assert!(
+            local.editor_may_delete(&config.folders, &"mine".into()),
+            "only new APIs in it"
+        );
+        assert!(local.editor_may_delete(&config.folders, &"note".into()), "a new API");
+        let empty = vec![folder("users", &[])];
+        assert!(
+            local.editor_may_delete(&empty, &"users".into()),
+            "the server's folder, its APIs gone"
+        );
+        assert!(
+            !LocalItems::default().editor_may_delete(&config.folders, &"note".into()),
+            "nothing while the server's are not known"
+        );
     }
 
     #[test]

@@ -48,7 +48,7 @@ use cyberapi_core::undo;
 use cyberapi_core::{EnvironmentId, ItemId, VariableId};
 use cyberapi_service::Sender;
 use cyberapi_service::assistant::Proposal;
-use cyberapi_store::{Storage, StoreError, StoreFuture};
+use cyberapi_store::{Refusal, Storage, StoreError, StoreFuture};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Task};
@@ -904,6 +904,28 @@ impl WorkspaceState {
     }
 
     /// Whether `item` may become the reader's own: made here, never synced.
+    /// Whether the reader may delete `item`: a manager anything; an editor
+    /// (a team's member) only what holds no API the server has — what they
+    /// made and never synced — so a synced API is not lost by mistake.
+    pub fn may_delete(&self, item: &ItemId) -> bool {
+        if !self.editable() {
+            return false;
+        }
+        if self.collection.role.can_manage() {
+            return true;
+        }
+        self.copy
+            .as_ref()
+            .is_some_and(|copy| copy.copy.editor_may_delete(&self.data.folders, item))
+    }
+
+    /// Says why `item` may not be deleted.
+    fn refuse_delete(&self, cx: &mut Context<Self>) {
+        cx.emit(WorkspaceEvent::Failed(StoreError::Refused {
+            reason: Refusal::DeleteNeedsManager,
+        }));
+    }
+
     pub fn can_make_local(&self, item: &ItemId) -> bool {
         self.syncs()
             && self
@@ -1729,6 +1751,17 @@ impl WorkspaceState {
         };
         match (card.proposal, made) {
             (_, Some(made)) => {
+                // Synced since: a manager's to delete.
+                if !self.may_delete(&made) {
+                    told(
+                        self,
+                        CardState::Failed(crate::i18n::store_error(&StoreError::Refused {
+                            reason: Refusal::DeleteNeedsManager,
+                        })),
+                        cx,
+                    );
+                    return;
+                }
                 self.delete_told(made, false, cx);
                 told(self, CardState::Undone, cx);
             }
@@ -4300,6 +4333,10 @@ impl WorkspaceState {
     /// F3.6. The view asks first. What was removed leaves the reader's state
     /// too: selection, pins, open folders.
     pub fn delete(&mut self, id: ItemId, cx: &mut Context<Self>) {
+        if !self.may_delete(&id) {
+            self.refuse_delete(cx);
+            return;
+        }
         self.delete_told(id, true, cx);
     }
 
@@ -4380,6 +4417,11 @@ impl WorkspaceState {
         cx: &mut Context<Self>,
     ) {
         if moving && !self.editable() || target.id == self.collection.id {
+            return;
+        }
+        // Moving away deletes it here.
+        if moving && !self.may_delete(&id) {
+            self.refuse_delete(cx);
             return;
         }
         let ids = self.apis_in(Some(&id));
@@ -8249,29 +8291,24 @@ mod tests {
         const BEAT: Duration = Duration::from_secs(10);
         const READER: &str = "alice";
 
-        /// Projects the reader only views.
-        struct Viewing(MemoryStore);
+        /// Projects in which the reader has the role given.
+        struct AsRole(MemoryStore, CollectionRole);
 
-        impl cyberapi_store::CollectionStore for Viewing {
+        impl cyberapi_store::CollectionStore for AsRole {
             fn list(&self) -> cyberapi_store::StoreFuture<Vec<Collection>> {
-                let call = self.0.list();
+                let (call, role) = (self.0.list(), self.1);
                 Box::pin(async move {
                     let mut found = call.await?;
                     for collection in &mut found {
-                        collection.role = CollectionRole::Viewer;
+                        collection.role = role;
                     }
                     Ok(found)
                 })
             }
 
             fn get(&self, id: cyberapi_core::CollectionId) -> cyberapi_store::StoreFuture<Collection> {
-                let call = self.0.get(id);
-                Box::pin(async move {
-                    Ok(Collection {
-                        role: CollectionRole::Viewer,
-                        ..call.await?
-                    })
-                })
+                let (call, role) = (self.0.get(id), self.1);
+                Box::pin(async move { Ok(Collection { role, ..call.await? }) })
             }
 
             fn create(&self, input: NewCollection) -> cyberapi_store::StoreFuture<Collection> {
@@ -8349,6 +8386,68 @@ mod tests {
         fn beat(cx: &mut TestAppContext) {
             cx.executor().advance_clock(BEAT);
             cx.run_until_parked();
+        }
+
+        /// A team's member (an editor) deletes what they made and never
+        /// synced, not an API the server has; a manager deletes either.
+        #[gpui_kit::test]
+        async fn an_editor_does_not_delete_a_synced_api(cx: &mut TestAppContext) {
+            let memory = MemoryStore::new();
+            let server = memory.storage();
+            let collection = project(&server).await;
+            let login = server
+                .tree()
+                .create_api(collection.id.clone(), None, "login".into())
+                .await
+                .expect("an API")
+                .item
+                .id;
+            let collection = Collection {
+                revision: server
+                    .collections()
+                    .get(collection.id.clone())
+                    .await
+                    .expect("read")
+                    .revision,
+                role: CollectionRole::Editor,
+                ..collection
+            };
+            // The server says the reader edits it, as a team's member does.
+            let editing = Storage::new(
+                Arc::new(AsRole(memory.clone(), CollectionRole::Editor)),
+                Arc::new(memory.clone()),
+                Arc::new(memory.clone()),
+                Arc::new(memory.clone()),
+                Arc::new(memory.clone()),
+                Arc::new(memory.clone()),
+            );
+            let (state, told) = open_copy(&editing, collection.clone(), cx);
+            state.update(cx, |state, cx| state.create_api(None, "mine".into(), cx));
+            cx.run_until_parked();
+            let mine = find(&state, "mine", cx);
+            state.read_with(cx, |state, _| {
+                assert!(!state.may_delete(&login), "on the server");
+                assert!(state.may_delete(&mine), "made here, never synced");
+            });
+            state.update(cx, |state, cx| state.delete(login.clone(), cx));
+            cx.run_until_parked();
+            assert_eq!(row_names(&state, cx), ["mine", "login"], "nothing deleted");
+            assert!(
+                told.borrow().iter().any(|said| said.contains("DeleteNeedsManager")),
+                "{:?}",
+                told.borrow()
+            );
+            // Synced, it is the server's too.
+            state.update(cx, |state, cx| state.sync(false, cx));
+            cx.run_until_parked();
+            state.read_with(cx, |state, _| assert!(!state.may_delete(&mine), "synced now"));
+
+            let managed = Collection {
+                role: CollectionRole::Manager,
+                ..collection
+            };
+            let (manager, _) = open_copy(&server, managed, cx);
+            manager.read_with(cx, |state, _| assert!(state.may_delete(&login)));
         }
 
         #[gpui_kit::test]
@@ -8714,7 +8813,7 @@ mod tests {
 
             // The same server, which now says the reader only views it.
             let viewing = Storage::new(
-                Arc::new(Viewing(memory.clone())),
+                Arc::new(AsRole(memory.clone(), CollectionRole::Viewer)),
                 Arc::new(memory.clone()),
                 Arc::new(memory.clone()),
                 Arc::new(memory.clone()),

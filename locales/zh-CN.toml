@@ -42,6 +42,7 @@ refused_bad_account_name = "用户名为 1 到 64 个字符，不能包含空格
 refused_password_too_short = "密码至少 8 个字符。"
 refused_wrong_password = "当前密码不正确。"
 refused_demo_account = "演示账号不能修改密码。"
+refused_delete_needs_manager = "已同步的接口只有项目的管理者（团队所有者或管理员）能删除；你可以删除自己新建、还没同步的接口。"
 refused_ldap_account = "LDAP 账号的密码由 LDAP 目录管理，这里不能修改或重置。"
 refused_not_yourself = "不能停用自己，也不能取消自己的系统管理员身份。"
 refused_invite_gone = "这个邀请已失效：已被使用、已撤销或已过期。"
