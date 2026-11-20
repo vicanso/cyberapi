@@ -174,6 +174,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The administrator's address, not a reader's: any it names.
     let anywhere = NativeEngine::new(tokio::runtime::Handle::current(), TargetPolicy::Anywhere);
     let bridge = bridge.with_ai(model, Arc::new(anywhere))?;
+    if let Some(url) = bridge.load_ldap().await? {
+        tracing::info!(%url, "sign-ins the local password refuses are tried against LDAP");
+    }
     match bridge.load_ai().await? {
         Some(name) => tracing::info!(model = %name, "the assistant's model is the one set on the page"),
         None => {

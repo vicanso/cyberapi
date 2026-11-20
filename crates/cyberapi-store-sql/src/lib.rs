@@ -255,6 +255,31 @@ impl SqlStore {
         Ok(account)
     }
 
+    /// An account made by an LDAP sign-in, marked so in the same
+    /// transaction: nobody sets its password here.
+    pub async fn create_ldap_account(&self, input: NewAccount) -> Result<AccountId, StoreError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let account = self.insert_account(&mut tx, AccountId::new(new_id()), input).await?;
+        sqlx::query(self.dialect.sql(sql::ACCOUNT_MARK_LDAP))
+            .bind(account.as_str().to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(account)
+    }
+
+    /// Marks an account an LDAP one: it signed in through the directory, so
+    /// nobody sets its password here from now on.
+    pub async fn mark_ldap_account(&self, account: &AccountId) -> Result<(), StoreError> {
+        sqlx::query(self.dialect.sql(sql::ACCOUNT_MARK_LDAP))
+            .bind(account.as_str().to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
     /// The first administrator (§9.5), made only while there is no account
     /// at all: `None` once there is one — or when another setup, at the
     /// same moment, got there first.
@@ -357,6 +382,99 @@ impl SqlStore {
         })
     }
 
+    /// Uses the invitation `token` for `account`: the team's place it gives,
+    /// if any. Refused when it was used, revoked or ran out, or when its
+    /// sender may no longer invite so.
+    async fn claim_invite(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+        token: &str,
+        account: &AccountId,
+    ) -> Result<Option<(String, TeamRole)>, StoreError> {
+        let refused = |reason| StoreError::Refused { reason };
+        let claimed = sqlx::query(self.dialect.sql(sql::INVITE_CLAIM))
+            .bind(account.as_str().to_string())
+            .bind(token_hash(token))
+            .bind(unix_now())
+            .execute(&mut **tx)
+            .await
+            .map_err(db)?
+            .rows_affected()
+            == 1;
+        if !claimed {
+            return Err(refused(Refusal::InviteGone));
+        }
+        let row = sqlx::query(self.dialect.sql(sql::INVITE_PLACE))
+            .bind(token_hash(token))
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(db)?;
+        let inviter = rows::text(&row, 0)?;
+        let place = match row.try_get::<Option<String>, _>(1).map_err(db)? {
+            Some(team) => Some((team, TeamRole::parse(&rows::text(&row, 2)?).unwrap_or(TeamRole::Member))),
+            None => None,
+        };
+        // The sender may still invite so: an administrator, or a member of
+        // the team placed to give that role.
+        let allowed = match &place {
+            None => sqlx::query(self.dialect.sql(sql::ACCOUNT_INFO))
+                .bind(inviter)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(db)?
+                .map(|row| -> Result<bool, StoreError> {
+                    let admin = row.try_get::<i32, _>(3).map_err(db)? != 0;
+                    let disabled = row.try_get::<i32, _>(4).map_err(db)? != 0;
+                    Ok(admin && !disabled)
+                })
+                .transpose()?
+                .unwrap_or(false),
+            Some((team, role)) => sqlx::query(self.dialect.sql(sql::TEAM_ROLE))
+                .bind(team.clone())
+                .bind(inviter)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(db)?
+                .map(|row| rows::text(&row, 0))
+                .transpose()?
+                .and_then(|theirs| TeamRole::parse(&theirs))
+                .is_some_and(|theirs| theirs >= invite_needs(*role)),
+        };
+        if !allowed {
+            return Err(refused(Refusal::InviteGone));
+        }
+        Ok(place)
+    }
+
+    /// The invitation `token` taken up by an account that is already here
+    /// (it signed in to accept it): it joins the team the invitation names,
+    /// keeping a higher role it may have there.
+    pub async fn accept_invite_as(&self, token: &str, account: &AccountId) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        if let Some((team, role)) = self.claim_invite(&mut tx, token, account).await? {
+            let theirs = sqlx::query(self.dialect.sql(sql::TEAM_ROLE))
+                .bind(team.clone())
+                .bind(account.as_str().to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?
+                .map(|row| rows::text(&row, 0))
+                .transpose()?
+                .and_then(|theirs| TeamRole::parse(&theirs));
+            if theirs.is_none_or(|theirs| theirs < role) {
+                sqlx::query(self.dialect.pick(&sql::MEMBER_UPSERT))
+                    .bind(team)
+                    .bind(account.as_str().to_string())
+                    .bind(role.as_str())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(())
+    }
+
     /// Makes the account the invitation `token` asks for (server-sync §5):
     /// its own space, and the team's place the invitation gives. Nothing is
     /// made when the invitation was used, revoked or ran out, when its
@@ -373,57 +491,7 @@ impl SqlStore {
         let password_hash = self.hash_password(acceptance.password).await?;
         let account = AccountId::new(new_id());
         let mut tx = self.pool.begin().await.map_err(db)?;
-        let claimed = sqlx::query(self.dialect.sql(sql::INVITE_CLAIM))
-            .bind(account.as_str().to_string())
-            .bind(token_hash(token))
-            .bind(unix_now())
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?
-            .rows_affected()
-            == 1;
-        if !claimed {
-            return Err(refused(Refusal::InviteGone));
-        }
-        let row = sqlx::query(self.dialect.sql(sql::INVITE_PLACE))
-            .bind(token_hash(token))
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db)?;
-        let inviter = rows::text(&row, 0)?;
-        let place = match row.try_get::<Option<String>, _>(1).map_err(db)? {
-            Some(team) => Some((team, TeamRole::parse(&rows::text(&row, 2)?).unwrap_or(TeamRole::Member))),
-            None => None,
-        };
-        // The sender may still invite so: an administrator, or a member of
-        // the team placed to give that role.
-        let allowed = match &place {
-            None => sqlx::query(self.dialect.sql(sql::ACCOUNT_INFO))
-                .bind(inviter)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db)?
-                .map(|row| -> Result<bool, StoreError> {
-                    let admin = row.try_get::<i32, _>(3).map_err(db)? != 0;
-                    let disabled = row.try_get::<i32, _>(4).map_err(db)? != 0;
-                    Ok(admin && !disabled)
-                })
-                .transpose()?
-                .unwrap_or(false),
-            Some((team, role)) => sqlx::query(self.dialect.sql(sql::TEAM_ROLE))
-                .bind(team.clone())
-                .bind(inviter)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db)?
-                .map(|row| rows::text(&row, 0))
-                .transpose()?
-                .and_then(|theirs| TeamRole::parse(&theirs))
-                .is_some_and(|theirs| theirs >= invite_needs(*role)),
-        };
-        if !allowed {
-            return Err(refused(Refusal::InviteGone));
-        }
+        let place = self.claim_invite(&mut tx, token, &account).await?;
         let taken = sqlx::query(self.dialect.sql(sql::ACCOUNT_NAME_COUNT))
             .bind(name.clone())
             .fetch_one(&mut *tx)

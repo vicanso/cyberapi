@@ -50,6 +50,7 @@ impl Bridge {
                 admin: false,
                 disabled: false,
                 demo: false,
+                ldap: false,
             },
             teams: vec![Team {
                 id: TeamId::new("team"),

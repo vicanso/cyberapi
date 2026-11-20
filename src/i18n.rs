@@ -65,6 +65,7 @@ pub fn store_error(error: &StoreError) -> String {
             Refusal::PasswordTooShort => t!("errors.refused_password_too_short").into(),
             Refusal::WrongPassword => t!("errors.refused_wrong_password").into(),
             Refusal::DemoAccount => t!("errors.refused_demo_account").into(),
+            Refusal::LdapAccount => t!("errors.refused_ldap_account").into(),
             Refusal::NotYourself => t!("errors.refused_not_yourself").into(),
             Refusal::InviteGone => t!("errors.refused_invite_gone").into(),
             Refusal::BadTokenName => t!("errors.refused_bad_token_name").into(),

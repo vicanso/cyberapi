@@ -127,6 +127,8 @@ pub enum Refusal {
     WrongPassword,
     /// A demo account cannot change its own password.
     DemoAccount,
+    /// An LDAP account's password is the directory's: nobody sets it here.
+    LdapAccount,
     /// An administrator cannot disable or demote themselves.
     NotYourself,
     /// The invitation was used, revoked or ran out — or never was

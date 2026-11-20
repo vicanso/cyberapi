@@ -104,6 +104,8 @@ pub struct Extras {
     /// H3: the team's model, through the page's bridge; whether it has one
     /// is asked once the app runs.
     pub ai: Option<Arc<dyn cyberapi_http::ai::AiModel>>,
+    /// The page's bridge's LDAP sign-in settings, for its administrators.
+    pub ldap: Option<cyberapi_store_bridge::BridgeLdap>,
 }
 
 /// Ending a login: the work, as a future to run.

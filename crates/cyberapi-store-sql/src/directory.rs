@@ -44,7 +44,7 @@ fn flag(row: &AnyRow, index: usize) -> Result<bool, StoreError> {
     Ok(row.try_get::<i32, _>(index).map_err(db)? != 0)
 }
 
-/// `id, name, display_name, admin, disabled, demo` from `start`.
+/// `id, name, display_name, admin, disabled, demo, ldap` from `start`.
 fn account_info(row: &AnyRow, start: usize) -> Result<AccountInfo, StoreError> {
     Ok(AccountInfo {
         id: AccountId::new(rows::text(row, start)?),
@@ -53,6 +53,7 @@ fn account_info(row: &AnyRow, start: usize) -> Result<AccountInfo, StoreError> {
         admin: flag(row, start + 3)?,
         disabled: flag(row, start + 4)?,
         demo: flag(row, start + 5)?,
+        ldap: flag(row, start + 6)?,
     })
 }
 
@@ -269,7 +270,7 @@ impl DirectoryStore for Scoped {
                 .map(|row| {
                     Ok(Member {
                         account: account_info(row, 0)?,
-                        role: team_role(&rows::text(row, 6)?),
+                        role: team_role(&rows::text(row, 7)?),
                     })
                 })
                 .collect::<Result<Vec<_>, StoreError>>()?;
@@ -529,7 +530,9 @@ impl DirectoryStore for Scoped {
             if !valid_password(&password) {
                 return Err(refused(Refusal::PasswordTooShort));
             }
-            this.account_info(&mut conn, &account).await?;
+            if this.account_info(&mut conn, &account).await?.ldap {
+                return Err(refused(Refusal::LdapAccount));
+            }
             let hash = this.hash(password).await?;
             let id = account.as_str().to_string();
             sqlx::query(this.dialect.sql(sql::ACCOUNT_SET_PASSWORD))
@@ -562,6 +565,9 @@ impl DirectoryStore for Scoped {
                 .ok_or_else(|| StoreError::not_found(Entity::Account, &this.account))?;
             if flag(&row, 1)? {
                 return Err(refused(Refusal::DemoAccount));
+            }
+            if flag(&row, 2)? {
+                return Err(refused(Refusal::LdapAccount));
             }
             let stored = rows::text(&row, 0)?;
             let passwords = this.store.passwords.clone();

@@ -1743,3 +1743,334 @@ async fn an_administrator_sets_the_model_on_the_page() {
     assert_eq!((status, said.as_str()), (StatusCode::OK, "null"));
     assert_eq!(bridge.load_ai().await.expect("read"), None);
 }
+
+/// LDAP sign-in against a real directory: `CYBERAPI_TEST_LDAP` is its
+/// `ldap://` address, laid out as the `bitnami/openldap` image's defaults
+/// (`dc=example,dc=org`, `cn=admin` / `adminpassword`, the people in
+/// `ou=users`, alice / alicepass among them). The local password comes
+/// first, an administrator never goes to the directory, and a directory
+/// that is down locks nobody out.
+#[tokio::test]
+async fn ldap_signs_people_in_and_never_the_administrators() {
+    let Ok(url) = std::env::var("CYBERAPI_TEST_LDAP") else {
+        eprintln!("skipped: CYBERAPI_TEST_LDAP is not set");
+        return;
+    };
+    let Some(bridge) = fresh_bridge().await else {
+        return;
+    };
+    let (router, cookie) = signed_in_router(&bridge).await;
+    let login = |name: &str, password: &str| json!({ "name": name, "password": password });
+    let settings = json!({
+        "url": url,
+        "bindDn": "cn=admin,dc=example,dc=org",
+        "bindPassword": "adminpassword",
+        "baseDn": "ou=users,dc=example,dc=org",
+        "userFilter": "(uid={username})",
+        "displayAttribute": "cn",
+    });
+
+    // The sign-in page asks, signed in or not.
+    let (_, _, said) = send(&router, "GET", "/v1/ldap", None, None).await;
+    assert_eq!(said, r#"{"enabled":false}"#);
+
+    // Administrators only; a test before saving; nothing echoed back.
+    let (status, ..) = send(&router, "POST", "/v1/ldap/settings", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, said) = send(&router, "POST", "/v1/ldap/test", Some(&cookie), Some(settings.clone())).await;
+    assert_eq!((status, said.as_str()), (StatusCode::OK, r#"{"ok":true}"#));
+    let mut wrong = settings.clone();
+    wrong["bindPassword"] = json!("nope");
+    let (_, _, said) = send(&router, "POST", "/v1/ldap/test", Some(&cookie), Some(wrong)).await;
+    assert!(said.contains(r#""ok":false"#), "{said}");
+    let (status, _, said) = send(
+        &router,
+        "POST",
+        "/v1/ldap/settings/save",
+        Some(&cookie),
+        Some(settings.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{said}");
+    assert!(
+        !said.contains("adminpassword") && said.contains(r#""hasBindPassword":true"#),
+        "{said}"
+    );
+    let mut bad = settings.clone();
+    bad["userFilter"] = json!("(uid=alice)");
+    let (status, _, said) = send(&router, "POST", "/v1/ldap/settings/save", Some(&cookie), Some(bad)).await;
+    assert_eq!(
+        (status, said.as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, r#"{"problem":"filter"}"#)
+    );
+
+    let (_, _, said) = send(&router, "GET", "/v1/ldap", None, None).await;
+    assert_eq!(said, r#"{"enabled":true}"#, "the sign-in page says so");
+
+    // Someone the directory knows: an account, not an administrator.
+    let (status, set_cookie, _) = send(&router, "POST", "/v1/login", None, Some(login("alice", "alicepass"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let alice = cookie_pair(&set_cookie.expect("a cookie"));
+    let (_, _, me) = send(&router, "GET", "/v1/session", Some(&alice), None).await;
+    let me: Value = serde_json::from_str(&me).expect("me");
+    let account = if me.get("account").is_some() {
+        &me["account"]
+    } else {
+        &me
+    };
+    assert_eq!(account["name"], "alice", "{me}");
+    assert_eq!(account["admin"], false, "{me}");
+    // And again: the same account.
+    let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login("alice", "alicepass"))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Its password is the directory's: an administrator cannot reset it,
+    // nor alice change it, and the account says it is an LDAP one.
+    let (_, _, listed) = send(
+        &router,
+        "POST",
+        STORE_PATH,
+        Some(&cookie),
+        Some(json!({ "call": "directoryAccounts" })),
+    )
+    .await;
+    let listed: Value = serde_json::from_str(&listed).expect("accounts");
+    let accounts = listed["ok"].as_array().expect("a list");
+    let alice_info = accounts
+        .iter()
+        .find(|account| account["name"] == "alice")
+        .expect("alice");
+    assert_eq!(alice_info["ldap"], true);
+    let admin_info = accounts
+        .iter()
+        .find(|account| account["name"] == "admin")
+        .expect("admin");
+    assert_eq!(admin_info["ldap"], false);
+    let reset =
+        json!({ "call": "directoryResetPassword", "args": { "account": alice_info["id"], "password": "a local one" } });
+    let (_, _, said) = send(&router, "POST", STORE_PATH, Some(&cookie), Some(reset)).await;
+    assert!(said.contains("ldapAccount"), "{said}");
+    let change =
+        json!({ "call": "directoryChangePassword", "args": { "current": "alicepass", "password": "a local one" } });
+    let (_, _, said) = send(&router, "POST", STORE_PATH, Some(&alice), Some(change)).await;
+    assert!(said.contains("ldapAccount"), "{said}");
+    let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login("alice", "a local one"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "no local password was set");
+
+    // An account that was here first — invited, with a password of its own
+    // — becomes an LDAP one when it signs in through the directory.
+    let admin = BridgeStore::new(Arc::new(RouterTransport {
+        router: router.clone(),
+        cookie: cookie.clone(),
+        model: Some(MODEL),
+    }))
+    .directory();
+    let made = admin.create_invite(None).await.expect("an invitation");
+    let accept = json!({ "token": made.token, "name": "bob", "password": "bobs local password" });
+    // With LDAP on, nobody makes a password here to accept an invitation.
+    let (status, ..) = send(&router, "POST", "/v1/invite/accept", None, Some(accept.clone())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "LDAP on: sign in to accept");
+    // So bob's own account is made while it is off.
+    let (status, ..) = send(
+        &router,
+        "POST",
+        "/v1/ldap/settings/save",
+        Some(&cookie),
+        Some(Value::Null),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, said) = send(&router, "POST", "/v1/invite/accept", None, Some(accept)).await;
+    assert_eq!(status, StatusCode::OK, "{said}");
+    let (status, ..) = send(
+        &router,
+        "POST",
+        "/v1/ldap/settings/save",
+        Some(&cookie),
+        Some(settings.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let ldap_of = |accounts: &[cyberapi_core::directory::AccountInfo], name: &str| {
+        accounts
+            .iter()
+            .find(|account| account.name == name)
+            .expect("an account")
+            .ldap
+    };
+    assert!(!ldap_of(&admin.accounts().await.expect("accounts"), "bob"), "not yet");
+    let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login("bob", "bobpass"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let accounts = admin.accounts().await.expect("accounts");
+    assert!(ldap_of(&accounts, "bob"), "marked at its LDAP sign-in");
+    let bob = accounts
+        .iter()
+        .find(|account| account.name == "bob")
+        .expect("bob")
+        .id
+        .clone();
+    let refused = admin.reset_password(bob, "another one".into()).await;
+    assert!(
+        matches!(
+            refused,
+            Err(StoreError::Refused {
+                reason: Refusal::LdapAccount
+            })
+        ),
+        "{refused:?}"
+    );
+
+    // Refused: a wrong password, an empty one, a name that is a pattern,
+    // someone the directory does not know.
+    for (name, password) in [
+        ("alice", "wrong"),
+        ("alice", ""),
+        ("*", "alicepass"),
+        ("carol", "alicepass"),
+    ] {
+        let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login(name, password))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{name}");
+    }
+
+    // A team's invitation, taken up by signing in with the directory's
+    // password: a wrong one uses nothing.
+    let team = admin.create_team("backend".into()).await.expect("a team");
+    let made = admin
+        .create_invite(Some(cyberapi_core::directory::TeamPlace {
+            team: team.id.clone(),
+            role: cyberapi_core::access::TeamRole::Member,
+        }))
+        .await
+        .expect("an invitation");
+    let join = |password: &str| json!({ "token": made.token, "name": "alice", "password": password });
+    let (status, ..) = send(&router, "POST", "/v1/invite/join", None, Some(join("wrong"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, ..) = send(
+        &router,
+        "POST",
+        "/v1/invite",
+        None,
+        Some(json!({ "token": made.token })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "still open");
+    let (status, set_cookie, said) = send(&router, "POST", "/v1/invite/join", None, Some(join("alicepass"))).await;
+    assert_eq!(status, StatusCode::OK, "{said}");
+    assert!(set_cookie.is_some(), "signed in");
+    let members = admin.members(team.id.clone()).await.expect("members");
+    assert!(
+        members
+            .iter()
+            .any(|member| member.account.name == "alice" && member.role == cyberapi_core::access::TeamRole::Member),
+        "{members:?}"
+    );
+    let (status, ..) = send(&router, "POST", "/v1/invite/join", None, Some(join("alicepass"))).await;
+    assert_eq!(status, StatusCode::GONE, "used");
+
+    // The administrator signs in with their own password, never the
+    // directory's — even when the directory is down.
+    let mut down = settings.clone();
+    down["url"] = json!("ldap://127.0.0.1:9");
+    let (status, ..) = send(&router, "POST", "/v1/ldap/settings/save", Some(&cookie), Some(down)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login("admin", "long enough"))).await;
+    assert_eq!(status, StatusCode::OK, "a directory down locks no administrator out");
+    let (status, ..) = send(&router, "POST", "/v1/login", None, Some(login("alice", "alicepass"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the directory is down");
+
+    // Off again.
+    let (status, _, said) = send(
+        &router,
+        "POST",
+        "/v1/ldap/settings/save",
+        Some(&cookie),
+        Some(Value::Null),
+    )
+    .await;
+    assert_eq!((status, said.as_str()), (StatusCode::OK, "null"));
+    assert_eq!(bridge.load_ldap().await.expect("read"), None);
+    let (_, _, said) = send(&router, "GET", "/v1/ldap", None, None).await;
+    assert_eq!(said, r#"{"enabled":false}"#);
+}
+
+/// An invitation taken up by an account already here: it signs in, joins
+/// the team, and keeps a higher role it has there. A wrong password uses
+/// nothing.
+#[tokio::test]
+async fn an_account_here_takes_up_an_invitation_by_signing_in() {
+    let Some(bridge) = fresh_bridge().await else {
+        return;
+    };
+    let (router, cookie) = signed_in_router(&bridge).await;
+    let admin = BridgeStore::new(Arc::new(RouterTransport {
+        router: router.clone(),
+        cookie,
+        model: Some(MODEL),
+    }))
+    .directory();
+    // Erin, made by an invitation of no team.
+    let first = admin.create_invite(None).await.expect("an invitation");
+    let accept = json!({ "token": first.token, "name": "erin", "password": "erins password" });
+    let (status, ..) = send(&router, "POST", "/v1/invite/accept", None, Some(accept)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let team = admin.create_team("qa".into()).await.expect("a team");
+    let place = |role| cyberapi_core::directory::TeamPlace {
+        team: team.id.clone(),
+        role,
+    };
+    let as_admin = admin
+        .create_invite(Some(place(cyberapi_core::access::TeamRole::Admin)))
+        .await
+        .expect("an invitation");
+    let join = |token: &str, password: &str| json!({ "token": token, "name": "erin", "password": password });
+    let (status, ..) = send(
+        &router,
+        "POST",
+        "/v1/invite/join",
+        None,
+        Some(join(&as_admin.token, "wrong")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, set_cookie, said) = send(
+        &router,
+        "POST",
+        "/v1/invite/join",
+        None,
+        Some(join(&as_admin.token, "erins password")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{said}");
+    assert!(set_cookie.is_some());
+    let role_of_erin = || async {
+        admin
+            .members(team.id.clone())
+            .await
+            .expect("members")
+            .into_iter()
+            .find(|member| member.account.name == "erin")
+            .map(|member| member.role)
+    };
+    assert_eq!(role_of_erin().await, Some(cyberapi_core::access::TeamRole::Admin));
+
+    // A member's invitation leaves her an admin.
+    let as_member = admin
+        .create_invite(Some(place(cyberapi_core::access::TeamRole::Member)))
+        .await
+        .expect("an invitation");
+    let (status, ..) = send(
+        &router,
+        "POST",
+        "/v1/invite/join",
+        None,
+        Some(join(&as_member.token, "erins password")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        role_of_erin().await,
+        Some(cyberapi_core::access::TeamRole::Admin),
+        "not lowered"
+    );
+}

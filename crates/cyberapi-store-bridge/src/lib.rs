@@ -58,6 +58,7 @@ use std::sync::Arc;
 mod ai;
 mod body;
 mod client;
+mod ldap;
 
 pub use ai::{AI_CHAT_PATH, AI_PATH, BridgeAi};
 pub use body::encoded_body;
@@ -65,6 +66,7 @@ pub use client::{
     BearerSession, EngineTransport, LOGIN_PATH, LOGOUT_PATH, LoginForm, OidcPoll, SignInError, bridge_address,
     oidc_enabled, oidc_poll, oidc_start, session_me, sign_in, sign_out,
 };
+pub use ldap::{BridgeLdap, LdapFuture, LdapRefusal};
 
 /// Where calls are posted.
 pub const STORE_PATH: &str = "/v1/store";

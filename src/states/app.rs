@@ -9,6 +9,7 @@ use cyberapi_core::ai::{ModelChange, ModelSettings};
 use cyberapi_core::collection::SortOrder;
 use cyberapi_core::directory::Me;
 use cyberapi_core::import::ImportBundle;
+use cyberapi_core::ldap::{LdapChange, LdapSettings};
 use cyberapi_core::model::Collection;
 use cyberapi_core::prefs::{AppPrefs, ColumnWidths, SendPrefs, TextPrefs, ThemeMode, Timeouts, WindowPrefs};
 #[cfg(not(target_family = "wasm"))]
@@ -18,6 +19,7 @@ use cyberapi_http::HttpEngine;
 use cyberapi_service::backup::{self, BackupFailure};
 use cyberapi_service::{Sender, Tokens};
 use cyberapi_store::{BackupStore, DirectoryStore, Storage, StoreError, StoreFuture, VersionStore};
+use cyberapi_store_bridge::LdapRefusal;
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -144,6 +146,11 @@ impl AppStore {
     pub fn ai(&self, cx: &App) -> Option<Arc<dyn cyberapi_http::ai::AiModel>> {
         self.state.read(cx).ai_model.as_ref()?;
         self.extras.ai.clone()
+    }
+
+    /// Whether there is an LDAP sign-in to set up (the page).
+    pub fn offers_ldap(&self) -> bool {
+        self.extras.ldap.is_some()
     }
 
     /// H3: whether there is an assistant to set a model for (the page).
@@ -375,6 +382,34 @@ impl AppState {
             });
             Ok(saved)
         })
+    }
+
+    /// System administrators: the LDAP directory sign-ins fall back to.
+    pub fn ldap_settings(&self, cx: &mut Context<Self>) -> Task<Result<Option<LdapSettings>, LdapRefusal>> {
+        match AppStore::global(cx).extras.ldap.clone() {
+            Some(ldap) => cx.background_spawn(ldap.settings()),
+            None => Task::ready(Err(LdapRefusal::Failed("no LDAP here".into()))),
+        }
+    }
+
+    /// System administrators: sets it, or with `None` turns it off.
+    pub fn save_ldap(
+        &self,
+        change: Option<LdapChange>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<LdapSettings>, LdapRefusal>> {
+        match AppStore::global(cx).extras.ldap.clone() {
+            Some(ldap) => cx.background_spawn(ldap.save(change)),
+            None => Task::ready(Err(LdapRefusal::Failed("no LDAP here".into()))),
+        }
+    }
+
+    /// System administrators: whether `change` reaches the directory.
+    pub fn test_ldap(&self, change: LdapChange, cx: &mut Context<Self>) -> Task<Result<(), LdapRefusal>> {
+        match AppStore::global(cx).extras.ldap.clone() {
+            Some(ldap) => cx.background_spawn(ldap.test(change)),
+            None => Task::ready(Err(LdapRefusal::Failed("no LDAP here".into()))),
+        }
     }
 
     pub fn reload_me(&mut self, cx: &mut Context<Self>) {

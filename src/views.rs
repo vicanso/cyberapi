@@ -14,6 +14,7 @@ mod inline_confirm;
 mod invites;
 mod json_tree;
 mod kv_editor;
+mod ldap_dialog;
 mod marked;
 mod mcp_dialog;
 mod name_dialog;
@@ -50,6 +51,7 @@ pub use ai_settings_dialog::open_ai_settings_dialog;
 pub use cookies_dialog::open_cookies_dialog;
 pub use dashboard::DashboardView;
 pub use dashboard::{bind_keys as bind_dashboard_keys, bind_mac_page_keys as bind_dashboard_mac_page_keys};
+pub use ldap_dialog::open_ldap_dialog;
 pub use mcp_dialog::open_mcp_dialog;
 pub use password_dialog::open_password_dialog;
 #[cfg(not(any(target_os = "macos", target_family = "wasm")))]

@@ -135,6 +135,7 @@ On the desktop, back up and restore in the same format as the earlier Tauri app.
 - The server keeps the last 50 versions of a project, taken before each sync. An editor restores one from **Versions…**. The copy that was replaced is kept too, so a restore can be undone.
 - Compare a version with now, or with the version after it (*0.4.1*): folders and APIs added, removed, renamed, moved or edited, and variables and environments that changed. Open an edited API to see where its request differs.
 - When the server is set up for OpenID Connect (*0.4.1*), the sign-in page and the desktop offer single sign-on. An invited account whose name is that person's email is linked on the first sign-in. The password still works.
+- LDAP sign-in (*0.6.4*): a system administrator sets the directory's address, reader account, base DN and user filter in the settings menu → “LDAP sign-in…”, testing the connection before saving. Once it is on, the sign-in page says LDAP accounts may sign in; the form does not change, and a local password that does not hold is tried against the directory, an invitation link is taken up by signing in with an LDAP account, which joins the team; someone it knows gets an ordinary account at their first sign-in, whose password is the directory's: neither they nor an administrator can change or reset it here. System administrators always sign in with their own password, so a directory in trouble locks no administrator out ([deployment](./DEPLOY.md#accounts-teams-and-invitations)).
 
 ## AI assistants
 

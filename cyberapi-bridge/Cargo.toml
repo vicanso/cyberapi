@@ -29,6 +29,9 @@ hex = "0.4.3"
 ipnet = "2.12.2"
 # 9.3.1 signs with ring. `rust_crypto` arrived in 10 and is not needed here.
 jsonwebtoken = { version = "9.3.1", default-features = false, features = ["use_pem"] }
+# LDAP sign-in (`src/ldap.rs`): rustls with ring, as the rest of the bridge,
+# and the system's roots for `ldaps://` and StartTLS.
+ldap3 = { version = "0.12.1", default-features = false, features = ["tls-rustls-ring"] }
 mime_guess = { workspace = true }
 # The page, compiled into a release binary (`static_files::WebBuild`) so a
 # deployment is one file. No `debug-embed`: a debug bridge reads
