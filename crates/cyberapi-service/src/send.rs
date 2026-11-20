@@ -2345,7 +2345,7 @@ mod tests {
         ))
         .expect("code");
         assert!(
-            curl.contains(" -L") && curl.contains(" -k") && curl.contains("--http1.1"),
+            curl.contains("--location") && curl.contains("--insecure") && curl.contains("--http1.1"),
             "{curl}"
         );
     }
@@ -2654,7 +2654,7 @@ mod tests {
         };
         assert_eq!(
             as_code(CodeTarget::Curl),
-            "curl -v -XGET -H 'User-Agent: CyberAPI/test' 'https://api.test/me?v=0cc175b9c0f1b6a831c399e269772661'"
+            "curl --request GET \\\n  --url 'https://api.test/me?v=0cc175b9c0f1b6a831c399e269772661' \\\n  --header 'User-Agent: CyberAPI/test'"
         );
         // #69: another client's code, prepared the same way.
         assert_eq!(

@@ -1,13 +1,14 @@
 //! The cURL command of a request (F7.8).
 //!
 //! Made from the [`PreparedRequest`] — variables resolved, functions run,
-//! headers merged — so the command sends what the app sends. As the old app
-//! did: `-v`, the method, a JSON body on one line, a cookie header from the
-//! cookies whose domain is part of the host. Unlike it, quotes inside values
-//! are escaped for the shell, and a multipart body becomes `-F` fields. A
-//! send that follows redirects is `-L`, one that takes any certificate `-k`
-//! (F14.8, F14.9), and an HTTP version other than curl's own choice is named
-//! (F14.10).
+//! headers merged — so the command sends what the app sends. One option a
+//! line, as Postman and Insomnia write it: `--request`, `--url`, the send
+//! settings, `--header`s, then `--data` (a JSON body indented as the app
+//! shows it) or `--form` fields; a cookie header from the cookies whose
+//! domain is part of the host. Quotes inside values are escaped for the
+//! shell. A send that follows redirects is `--location`, one that takes any
+//! certificate `--insecure` (F14.8, F14.9), and an HTTP version other than
+//! curl's own choice is named (F14.10).
 
 use crate::certificates::CertificateFormat;
 use crate::model::{ContentType, HttpMethod, HttpRequest};
@@ -26,6 +27,19 @@ fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
+/// `text` as it is when the shell reads it so, quoted otherwise: a URL
+/// with `?`, `&` or a space must be.
+fn word(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._~:/@%+,=-".contains(c));
+    if plain { text.to_string() } else { quote(text) }
+}
+
+/// Where one option ends and the next begins.
+const NEXT: &str = " \\\n  ";
+
 /// `request` is what the API holds, for its multipart fields.
 pub fn curl(
     prepared: &PreparedRequest,
@@ -41,17 +55,20 @@ pub fn curl(
     if request.method == HttpMethod::WebSocket {
         return crate::ws::websocat(prepared);
     }
-    let mut parts = vec!["curl".to_string(), "-v".to_string()];
+    let mut parts = vec![
+        format!("curl --request {}", prepared.method.as_str()),
+        format!("--url {}", word(&prepared.url)),
+    ];
     if follow_redirects {
-        parts.push("-L".to_string());
+        parts.push("--location".to_string());
     }
     if prepared.accept_invalid_certs {
-        parts.push("-k".to_string());
+        parts.push("--insecure".to_string());
     }
     if let Some(login) = &prepared.digest {
         parts.push("--digest".to_string());
         parts.push(format!(
-            "-u {}",
+            "--user {}",
             quote(&format!("{}:{}", login.username, login.password))
         ));
     }
@@ -84,29 +101,7 @@ pub fn curl(
         HttpVersion::Http2 if prepared.url.starts_with("https:") => parts.push("--http2".to_string()),
         HttpVersion::Http2 => parts.push("--http2-prior-knowledge".to_string()),
     }
-    parts.push(format!("-X{}", prepared.method.as_str()));
     let multipart = prepared.method.has_body() && request.content_type == ContentType::Multipart;
-
-    if multipart {
-        for kv in form_fields(&request.body)
-            .iter()
-            .filter(|kv| kv.enabled && !kv.key.is_empty())
-        {
-            let field = match kv.value.strip_prefix("file://") {
-                Some(path) => format!("{}=@{path}", kv.key),
-                None => format!("{}={}", kv.key, kv.value),
-            };
-            parts.push(format!("-F {}", quote(&field)));
-        }
-    } else if !prepared.body.is_empty() {
-        let text = String::from_utf8_lossy(&prepared.body);
-        let body = serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .filter(|_| matches!(request.content_type, ContentType::Json | ContentType::GraphQl))
-            .map(|json| json.to_string())
-            .unwrap_or_else(|| text.into_owned());
-        parts.push(format!("-d {}", quote(&body)));
-    }
 
     let host = url::Url::parse(&prepared.url)
         .ok()
@@ -119,17 +114,37 @@ pub fn curl(
         .collect::<Vec<_>>()
         .join("; ");
     if !cookie.is_empty() {
-        parts.push(format!("-H {}", quote(&format!("Cookie: {cookie}"))));
+        parts.push(format!("--header {}", quote(&format!("Cookie: {cookie}"))));
     }
     for (name, value) in &prepared.headers {
         // curl writes its own multipart type, with the boundary it picks.
         if multipart && name.eq_ignore_ascii_case("content-type") {
             continue;
         }
-        parts.push(format!("-H {}", quote(&format!("{name}: {value}"))));
+        parts.push(format!("--header {}", quote(&format!("{name}: {value}"))));
     }
-    parts.push(quote(&prepared.url));
-    parts.join(" ")
+
+    if multipart {
+        for kv in form_fields(&request.body)
+            .iter()
+            .filter(|kv| kv.enabled && !kv.key.is_empty())
+        {
+            let field = match kv.value.strip_prefix("file://") {
+                Some(path) => format!("{}=@{path}", kv.key),
+                None => format!("{}={}", kv.key, kv.value),
+            };
+            parts.push(format!("--form {}", quote(&field)));
+        }
+    } else if !prepared.body.is_empty() {
+        let text = String::from_utf8_lossy(&prepared.body);
+        let body = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .filter(|_| matches!(request.content_type, ContentType::Json | ContentType::GraphQl))
+            .map(|json| crate::format::json(&json))
+            .unwrap_or_else(|| text.into_owned());
+        parts.push(format!("--data {}", quote(&body)));
+    }
+    parts.join(NEXT)
 }
 
 #[cfg(test)]
@@ -148,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn json_goes_on_one_line_and_quotes_are_escaped() {
+    fn one_option_a_line_json_indented_and_quotes_escaped() {
         let prepared = PreparedRequest {
             method: HttpMethod::Post,
             url: "https://api.test/v1/users?q=a".into(),
@@ -177,7 +192,14 @@ mod tests {
         ];
         assert_eq!(
             curl(&prepared, &request, &cookies, false),
-            r#"curl -v -XPOST -d '{"name":"o'\''neil"}' -H 'Cookie: sid=1' -H 'Content-Type: application/json' -H 'X-Note: it'\''s' 'https://api.test/v1/users?q=a'"#
+            r#"curl --request POST \
+  --url 'https://api.test/v1/users?q=a' \
+  --header 'Cookie: sid=1' \
+  --header 'Content-Type: application/json' \
+  --header 'X-Note: it'\''s' \
+  --data '{
+    "name": "o'\''neil"
+}'"#
         );
     }
 
@@ -198,7 +220,7 @@ mod tests {
         };
         assert_eq!(
             curl(&prepared, &request, &[], false),
-            "curl -v -XPOST -F 'a=1' -F 'f=@/tmp/x.png' 'http://h.test/'"
+            "curl --request POST \\\n  --url http://h.test/ \\\n  --form 'a=1' \\\n  --form 'f=@/tmp/x.png'"
         );
     }
 
@@ -210,7 +232,7 @@ mod tests {
         };
         assert_eq!(
             curl(&prepared, &HttpRequest::default(), &[], false),
-            "curl -v -XGET 'http://h.test/'"
+            "curl --request GET \\\n  --url http://h.test/"
         );
     }
 
@@ -223,7 +245,7 @@ mod tests {
         };
         assert_eq!(
             curl(&prepared, &HttpRequest::default(), &[], true),
-            "curl -v -L -k -XGET 'https://h.test/'"
+            "curl --request GET \\\n  --url https://h.test/ \\\n  --location \\\n  --insecure"
         );
         let versions = [
             (HttpVersion::Http1, "https://h.test/", "--http1.1"),
@@ -238,8 +260,55 @@ mod tests {
             };
             assert_eq!(
                 curl(&prepared, &HttpRequest::default(), &[], false),
-                format!("curl -v {flag} -XGET '{url}'")
+                format!("curl --request GET \\\n  --url {url} \\\n  {flag}")
             );
         }
+    }
+
+    /// As Postman and Insomnia write it, and as it pastes back in.
+    #[test]
+    fn it_reads_as_it_is_written_and_pastes_back() {
+        let prepared = PreparedRequest {
+            method: HttpMethod::Post,
+            url: "http://ai.example/ner/single".into(),
+            headers: vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("app-token".into(), "t-1".into()),
+            ],
+            body: r#"{"docid":"test_001","text":"慧科讯业发布新品"}"#.as_bytes().to_vec(),
+            ..Default::default()
+        };
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            content_type: ContentType::Json,
+            ..Default::default()
+        };
+        let command = curl(&prepared, &request, &[], false);
+        assert_eq!(
+            command,
+            "curl --request POST \\
+  --url http://ai.example/ner/single \\
+  --header 'Content-Type: application/json' \\
+  --header 'app-token: t-1' \\
+  --data '{
+    \"docid\": \"test_001\",
+    \"text\": \"慧科讯业发布新品\"
+}'"
+        );
+        let pasted = crate::import::curl_command(&command).expect("a cURL command");
+        let Some(crate::import::ImportItem::Api { request: api, .. }) = pasted.items.first() else {
+            panic!("an API")
+        };
+        assert_eq!(
+            (api.method, api.uri.as_str()),
+            (HttpMethod::Post, "http://ai.example/ner/single")
+        );
+        assert!(
+            api.headers
+                .iter()
+                .any(|header| header.key == "app-token" && header.value == "t-1")
+        );
+        let body: serde_json::Value = serde_json::from_str(&api.body).expect("JSON");
+        assert_eq!(body["text"], "慧科讯业发布新品");
     }
 }
