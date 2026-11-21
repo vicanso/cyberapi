@@ -25,7 +25,7 @@ const CODE_TARGETS: [CodeTarget; 5] = [
 
 /// Half of the docs `ETag`. Bump it when the page markup changes so a
 /// conditional GET does not keep the previous HTML after a deploy.
-pub const RENDER: &str = "2";
+pub const RENDER: &str = "3";
 
 /// A schema table longer than this starts folded to the first rows.
 const SCHEMA_FOLD_AT: usize = 25;
@@ -220,6 +220,20 @@ const PAGE_SCRIPT: &str = r##"(function () {
     }, { rootMargin: '-15% 0px -70% 0px', threshold: 0 });
     document.querySelectorAll('article.api-card').forEach(function (card) { observer.observe(card); });
   }
+  var navToggle = document.getElementById('nav-toggle');
+  var sidebar = document.querySelector('.sidebar');
+  if (navToggle && sidebar) {
+    navToggle.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('nav-open');
+      navToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    sidebar.addEventListener('click', function (event) {
+      if (event.target.closest && event.target.closest('a.nav-item')) {
+        sidebar.classList.remove('nav-open');
+        navToggle.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
   applySearch();
   if ((lang && lang.value !== '0') || selectedBase()) renderSamples();
 })();"##;
@@ -232,9 +246,34 @@ pub fn render(
     environments: &[Environment],
     variables: &[Variable],
 ) -> String {
+    render_scope(collection, data, None, environments, variables)
+}
+
+/// F17: renders a single folder's subtree as a standalone HTML5 document,
+/// preserving inherited folder headers and auth from ancestors in `data`.
+pub fn render_folder(
+    collection: &Collection,
+    data: &TreeData,
+    folder: &crate::ItemId,
+    environments: &[Environment],
+    variables: &[Variable],
+) -> String {
+    render_scope(collection, data, Some(folder), environments, variables)
+}
+
+fn render_scope(
+    collection: &Collection,
+    data: &TreeData,
+    folder: Option<&crate::ItemId>,
+    environments: &[Environment],
+    variables: &[Variable],
+) -> String {
     let tree = Tree::build(data);
-    let top = tree.top_level_ids();
-    let prefixes = leading_prefixes(data, &tree);
+    let top = match folder {
+        Some(id) => tree.get(id).map(|node| node.children().to_vec()).unwrap_or_default(),
+        None => tree.top_level_ids(),
+    };
+    let prefixes = leading_prefixes_in(data, &tree, &top);
     let mut nav_html = String::new();
     let mut main_html = String::new();
 
@@ -250,9 +289,13 @@ pub fn render(
         &mut main_html,
     );
 
-    let title = escape(&collection.name);
+    let title_text = folder
+        .and_then(|id| tree.get(id))
+        .map(|node| node.name())
+        .unwrap_or(&collection.name);
+    let title = escape(title_text);
     let project_id = escape(collection.id.as_str());
-    let api_count = data.apis.len();
+    let api_count = count_apis(data, &tree, &top);
     let lang_options: String = CODE_TARGETS
         .iter()
         .enumerate()
@@ -681,12 +724,66 @@ tr.folded {{ display: none; }}
 }}
 .show-fields {{ border: 0; background: transparent; color: var(--get); padding: 4px 0 8px; }}
 .empty {{ color: var(--muted); font-size: 13px; margin: 12px 0; }}
+.sidebar-head {{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}}
+.sidebar-head h1 {{ margin-bottom: 10px; }}
+.nav-toggle {{
+  display: none;
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--input);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}}
+.nav-toggle:hover {{ background: var(--hover); }}
+@media (max-width: 860px) {{
+  .layout {{ flex-direction: column; }}
+  .sidebar {{
+    width: 100%;
+    height: auto;
+    position: static;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 12px 16px;
+    overflow: visible;
+  }}
+  .nav-toggle {{ display: inline-flex; align-items: center; }}
+  .sidebar:not(.nav-open) #doc-nav {{ display: none; }}
+  .sidebar.nav-open #doc-nav {{
+    max-height: 55vh;
+    overflow-y: auto;
+    margin-top: 8px;
+  }}
+  .content {{
+    padding: 16px;
+    max-width: 100%;
+    width: 100%;
+  }}
+  table {{
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+  }}
+  .api-head {{ flex-wrap: wrap; }}
+}}
 </style>
 </head>
 <body data-project="{project_id}">
 <div class="layout">
   <aside class="sidebar">
-    <h1>{title}</h1>
+    <div class="sidebar-head">
+      <h1>{title}</h1>
+      <button type="button" id="nav-toggle" class="nav-toggle" aria-expanded="false" aria-controls="doc-nav">Menu</button>
+    </div>
     <input id="doc-search" class="search" type="search" placeholder="Filter APIs…" aria-label="Filter APIs">
     <div class="nav-tools">
       <button type="button" id="nav-fold">Collapse</button>
@@ -714,9 +811,9 @@ tr.folded {{ display: none; }}
     )
 }
 
-/// Names of a leading `{{variable}}` on any API, in the order the page walks
-/// the tree. One name is shown as `BASE_URL`; two names each keep their own.
-fn leading_prefixes(data: &TreeData, tree: &Tree) -> Vec<String> {
+/// Names of a leading `{{variable}}` on any API in `top`, in the order the page
+/// walks the tree. One name is shown as `BASE_URL`; two names each keep their own.
+fn leading_prefixes_in(data: &TreeData, tree: &Tree, top: &[crate::ItemId]) -> Vec<String> {
     let mut names = Vec::new();
     fn walk(data: &TreeData, tree: &Tree, ids: &[crate::ItemId], names: &mut Vec<String>) {
         for id in ids {
@@ -732,8 +829,21 @@ fn leading_prefixes(data: &TreeData, tree: &Tree) -> Vec<String> {
             }
         }
     }
-    walk(data, tree, &tree.top_level_ids(), &mut names);
+    walk(data, tree, top, &mut names);
     names
+}
+
+fn count_apis(data: &TreeData, tree: &Tree, ids: &[crate::ItemId]) -> usize {
+    let mut count = 0;
+    for id in ids {
+        if data.apis.iter().any(|api| &api.id == id) {
+            count += 1;
+        } else if data.folders.iter().any(|folder| &folder.id == id) {
+            let children = tree.get(id).map(|node| node.children().to_vec()).unwrap_or_default();
+            count += count_apis(data, tree, &children);
+        }
+    }
+    count
 }
 
 /// The address a reader sees. The path after a leading prefix is unchanged.
@@ -2197,5 +2307,54 @@ mod tests {
         assert!(html.contains("schema-extra"));
         assert!(html.contains("Show all 30 fields"));
         assert!(!html.contains("&nbsp;&nbsp;"));
+        assert!(html.contains("@media (max-width: 860px)"));
+        assert!(html.contains("id=\"nav-toggle\""));
+    }
+
+    #[test]
+    fn render_folder_scopes_output_to_the_chosen_folder() {
+        let collection = Collection {
+            id: "01JPROJECT".into(),
+            name: "Shop".into(),
+            ..Default::default()
+        };
+        let folder_id: crate::ItemId = "01JFOLDER".into();
+        let data = TreeData {
+            folders: vec![crate::model::Folder {
+                id: folder_id.clone(),
+                name: "Orders".into(),
+                children: vec!["01JAPI_IN".into()],
+                ..Default::default()
+            }],
+            apis: vec![
+                ApiSetting {
+                    id: "01JAPI_IN".into(),
+                    name: "List Orders".into(),
+                    request: HttpRequest {
+                        method: HttpMethod::Get,
+                        uri: "/orders".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ApiSetting {
+                    id: "01JAPI_OUT".into(),
+                    name: "Health Check".into(),
+                    request: HttpRequest {
+                        method: HttpMethod::Get,
+                        uri: "/health".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ],
+            top_order: vec![folder_id.clone(), "01JAPI_OUT".into()],
+            ..Default::default()
+        };
+        let html = render_folder(&collection, &data, &folder_id, &[], &[]);
+        assert!(html.contains("<title>Orders — CyberAPI Docs</title>"));
+        assert!(html.contains("List Orders"));
+        assert!(!html.contains("Health Check"));
+        assert!(html.contains("id=\"doc-count\">1 APIs<"));
     }
 }

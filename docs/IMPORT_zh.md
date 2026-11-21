@@ -62,7 +62,7 @@
 
 接口、目录或项目可以导出为本应用自己的文件。
 
-目录和项目还可以导出为 Postman 集合（v2.1）或 OpenAPI 3（YAML）：
+目录和项目还可以导出为 Postman 集合（v2.1）、OpenAPI 3（YAML）或单文件离线 HTML 文档（`.html`）：
 
 - 地址前面的变量成为 `servers`。
 - 请求体写成示例，并带上从示例推断出的 schema。

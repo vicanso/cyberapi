@@ -62,7 +62,7 @@ Choose this when the file should not touch APIs the project already has. Matchin
 
 Export an API, a folder or a project as CyberAPI's own file.
 
-A folder or a project can also be a Postman collection (v2.1) or OpenAPI 3 YAML:
+A folder or a project can also be a Postman collection (v2.1), OpenAPI 3 YAML, or a standalone HTML documentation file (`.html`):
 
 - The variable in front of the address becomes `servers`.
 - Bodies are examples, with a schema read off them.

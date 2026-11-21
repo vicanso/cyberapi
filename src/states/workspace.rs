@@ -4080,6 +4080,33 @@ impl WorkspaceState {
                     cyberapi_core::export::openapi(&self.data, folder, &name, &pairs(effective.iter().collect())),
                 )
             }
+            ExportFormat::Html => {
+                // F17: standalone single-file HTML docs; secrets stay empty/masked.
+                let variables: Vec<Variable> = self
+                    .environment
+                    .iter()
+                    .chain(self.custom.iter())
+                    .chain(self.global_headers.iter())
+                    .cloned()
+                    .map(|mut variable| {
+                        if self.is_secret(&variable.id) {
+                            variable.value.clear();
+                        }
+                        variable
+                    })
+                    .collect();
+                let html = match folder {
+                    Some(id) => cyberapi_core::html_docs::render_folder(
+                        &self.collection,
+                        &self.data,
+                        id,
+                        &self.named,
+                        &variables,
+                    ),
+                    None => cyberapi_core::html_docs::render(&self.collection, &self.data, &self.named, &variables),
+                };
+                (format!("{name}.html"), html)
+            }
         }
     }
 

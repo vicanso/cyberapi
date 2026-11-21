@@ -339,7 +339,7 @@ fn export(
 
 /// Writes an export the workspace finished reading.
 fn deliver_export(name: String, text: String, window: &mut Window, cx: &mut App) {
-    if !crate::this_build::saves_files() {
+    if !crate::this_build::saves_files() && !name.ends_with(".html") {
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
         window.push_notification(Notification::success(t!("export.copied").to_string()), cx);
         return;

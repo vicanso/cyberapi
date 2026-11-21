@@ -953,6 +953,7 @@ fn export_menu(
                     ExportFormat::CyberApi => t!("export.as_cyberapi"),
                     ExportFormat::Postman => t!("export.as_postman"),
                     ExportFormat::OpenApi => t!("export.as_openapi"),
+                    ExportFormat::Html => t!("export.as_html"),
                 };
                 menu.item(
                     PopupMenuItem::new(label.to_string())

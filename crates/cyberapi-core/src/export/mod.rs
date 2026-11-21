@@ -26,10 +26,12 @@ pub enum ExportFormat {
     Postman,
     /// B1.
     OpenApi,
+    /// F17: standalone single-file HTML documentation.
+    Html,
 }
 
 impl ExportFormat {
-    pub const ALL: [Self; 3] = [Self::CyberApi, Self::Postman, Self::OpenApi];
+    pub const ALL: [Self; 4] = [Self::CyberApi, Self::Postman, Self::OpenApi, Self::Html];
 }
 
 /// An item to export, in the tree's order.
