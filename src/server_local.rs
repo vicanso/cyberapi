@@ -26,12 +26,32 @@ fn decode(text: &str) -> ServerFile {
 }
 
 pub fn read() -> ServerFile {
-    storage::read().map(|text| decode(&text)).unwrap_or_default()
+    #[allow(unused_mut)]
+    let mut file = storage::read().map(|text| decode(&text)).unwrap_or_default();
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(raw) = file.token.take()
+        && !raw.is_empty()
+    {
+        file.token = crate::master_key::decrypt(&raw);
+    }
+    file
 }
 
 /// `false` when it could not be written.
 pub fn write(file: &ServerFile) -> bool {
-    match serde_json::to_string_pretty(file) {
+    #[cfg(not(target_family = "wasm"))]
+    let stored = {
+        let mut copy = file.clone();
+        if let Some(plain) = copy.token.as_ref()
+            && !plain.is_empty()
+        {
+            copy.token = Some(crate::master_key::encrypt(plain));
+        }
+        copy
+    };
+    #[cfg(target_family = "wasm")]
+    let stored = file;
+    match serde_json::to_string_pretty(&stored) {
         Ok(text) => storage::write(&text),
         Err(error) => {
             warn!(%error, "the server file could not be saved");
@@ -103,6 +123,34 @@ mod storage {
     pub(super) fn write(text: &str) -> bool {
         TEXT.with(|slot| *slot.borrow_mut() = Some(text.to_string()));
         true
+    }
+}
+
+#[cfg(all(not(target_family = "wasm"), test))]
+mod f18_tests {
+    use super::*;
+
+    #[test]
+    fn token_is_encrypted_at_rest_and_legacy_plaintext_still_reads() {
+        let file = ServerFile {
+            address: "https://bridge.test".into(),
+            token: Some("session-secret-xyz".into()),
+            account: Some("acc-1".into()),
+        };
+        assert!(write(&file));
+        let raw = storage::read().expect("written");
+        assert!(
+            !raw.contains("session-secret-xyz"),
+            "plaintext session token must not appear in serialized server.json"
+        );
+        assert!(raw.contains("enc:v1:"), "stored token should carry enc:v1: prefix");
+        assert_eq!(read(), file);
+
+        // Legacy plaintext server.json still reads transparently.
+        assert!(storage::write(
+            r#"{"address":"https://bridge.test","token":"legacy-plain-tok","account":"acc-1"}"#
+        ));
+        assert_eq!(read().token.as_deref(), Some("legacy-plain-tok"));
     }
 }
 

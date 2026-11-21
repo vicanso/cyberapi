@@ -15,6 +15,8 @@ mod drafts_local;
 mod i18n;
 mod json_view_local;
 mod local_items;
+#[cfg(not(target_family = "wasm"))]
+mod master_key;
 mod mcp_local;
 mod pacing;
 #[cfg(not(target_family = "wasm"))]
@@ -224,8 +226,11 @@ fn open_desktop_storage() -> Result<(Storage, Arc<cyberapi_store_turso::TursoSto
         }
     }
     info!(database = %database.display(), "opening the store");
-    let store = pollster::block_on(TursoStore::open(&database))
-        .map_err(|e| format!("{}: {}", database.display(), i18n::store_error(&e)))?;
+    let store = pollster::block_on(TursoStore::open_with_cipher(
+        &database,
+        Arc::new(master_key::MasterKeyCipher),
+    ))
+    .map_err(|e| format!("{}: {}", database.display(), i18n::store_error(&e)))?;
     let storage = store.storage();
     import_legacy_cookies(&storage, &dir);
     let prefs = pollster::block_on(storage.prefs().app()).unwrap_or_else(|e| {

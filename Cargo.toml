@@ -53,7 +53,10 @@ cyberapi-store-bridge = { path = "crates/cyberapi-store-bridge" }
 cyberapi-http = { path = "crates/cyberapi-http" }
 cyberapi-service = { path = "crates/cyberapi-service" }
 async-lock = "3.5.0"
+aes-gcm = "0.11.1"
 base64 = "0.23.1"
+getrandom = "0.4.3"
+keyring = "4.2.0"
 # Parsing and formatting only: what "now" is comes from the caller, so no
 # `tz-system` feature and nothing that needs a wasm time source.
 jiff = { version = "1.0.1", default-features = false, features = ["std", "serde", "perf-inline"] }
@@ -163,8 +166,11 @@ tracing = { workspace = true }
 web-time = "1.1.0"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+aes-gcm = { workspace = true }
+base64 = { workspace = true }
 cyberapi-store-turso = { workspace = true }
 directories = { workspace = true }
+getrandom = { workspace = true }
 # JSON and HTML highlighting in the body editors (HTML's grammar takes XML
 # too; there is none of XML's own). Asked for here only: on wasm,
 # gpui-component drops the grammars but still compiles the features' code.
@@ -191,6 +197,12 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing-appender = "0.2.5"
 # The runtime the HTTP engine sends on; gpui's executor is not tokio.
 tokio = { workspace = true }
+
+# F18: OS keychain for the local master key on macOS and Windows only.
+# Linux uses the 0600 key file directly (no Secret Service / zbus dependency);
+# wasm and bridge never touch a keychain.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+keyring = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 # A file the page saves is a download the browser makes (`this_build`).

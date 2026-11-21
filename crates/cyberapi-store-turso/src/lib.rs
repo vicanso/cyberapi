@@ -48,6 +48,15 @@ use ulid::Ulid;
 
 type Clock = Arc<dyn Fn() -> Timestamp + Send + Sync>;
 
+/// F18: encrypts/decrypts sensitive string values stored in the local database
+/// (secret variables, OAuth tokens, client certificate passwords).
+/// `decrypt` returns `None` when a stored ciphertext cannot be decrypted (e.g.
+/// lost master key), so the store treats that value as unset rather than failing.
+pub trait ValueCipher: Send + Sync {
+    fn encrypt(&self, plaintext: &str) -> String;
+    fn decrypt(&self, stored: &str) -> Option<String>;
+}
+
 /// Stack given to the store's worker thread. On macOS, GPUI's background
 /// executor runs on libdispatch worker threads with ~512 KB stacks (and no
 /// Rust alternate signal stack), which turso's SQL parser and VDBE can
@@ -87,6 +96,7 @@ struct Inner {
     _database: turso::Database,
     conn: Mutex<Connection>,
     clock: Clock,
+    cipher: Option<Arc<dyn ValueCipher>>,
 }
 
 impl Inner {
@@ -116,7 +126,18 @@ impl TursoStore {
     /// The parent directory is created (#41). A file another process still
     /// holds is tried again for a short while (#46).
     pub async fn open(path: &Path) -> Result<Self, StoreError> {
-        Self::open_with_clock(path, || Timestamp::from_zoned(&jiff::ZonedDateTime::now())).await
+        Self::open_with_clock_and_cipher(path, || Timestamp::from_zoned(&jiff::ZonedDateTime::now()), None).await
+    }
+
+    /// F18: [`TursoStore::open`] with a [`ValueCipher`] that encrypts secret
+    /// variables, OAuth tokens, and client certificate passwords at rest.
+    pub async fn open_with_cipher(path: &Path, cipher: Arc<dyn ValueCipher>) -> Result<Self, StoreError> {
+        Self::open_with_clock_and_cipher(
+            path,
+            || Timestamp::from_zoned(&jiff::ZonedDateTime::now()),
+            Some(cipher),
+        )
+        .await
     }
 
     /// [`TursoStore::open`] with "now" read from `clock`, for tests that
@@ -125,10 +146,18 @@ impl TursoStore {
         path: &Path,
         clock: impl Fn() -> Timestamp + Send + Sync + 'static,
     ) -> Result<Self, StoreError> {
+        Self::open_with_clock_and_cipher(path, clock, None).await
+    }
+
+    async fn open_with_clock_and_cipher(
+        path: &Path,
+        clock: impl Fn() -> Timestamp + Send + Sync + 'static,
+        cipher: Option<Arc<dyn ValueCipher>>,
+    ) -> Result<Self, StoreError> {
         let clock: Clock = Arc::new(clock);
         let started = std::time::Instant::now();
         loop {
-            match Self::open_file(path, clock.clone()).await {
+            match Self::open_file(path, clock.clone(), cipher.clone()).await {
                 Ok(store) => return Ok(store),
                 Err(error) if file_is_locked(&error) && started.elapsed() < LOCK_WAIT => {
                     std::thread::sleep(LOCK_PAUSE);
@@ -145,7 +174,11 @@ impl TursoStore {
 
     /// Opens `path`, creating its directory. One try: the lock is retried by
     /// [`TursoStore::open_with_clock`].
-    async fn open_file(path: &Path, clock: Clock) -> Result<TursoStore, StoreError> {
+    async fn open_file(
+        path: &Path,
+        clock: Clock,
+        cipher: Option<Arc<dyn ValueCipher>>,
+    ) -> Result<TursoStore, StoreError> {
         if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)
                 .map_err(|error| backend(format!("could not create {}: {error}", parent.display())))?;
@@ -168,6 +201,7 @@ impl TursoStore {
                         _database: database,
                         conn: Mutex::new(conn),
                         clock,
+                        cipher,
                     }))
                 });
                 let ok = opened.is_ok();
@@ -1558,12 +1592,27 @@ impl PrefStore for TursoStore {
     fn app(&self) -> StoreFuture<AppPrefs> {
         self.run(move |inner, _| async move {
             let conn = inner.conn.lock().await;
-            read_doc(&conn, "app").await
+            let mut prefs: AppPrefs = read_doc(&conn, "app").await?;
+            if let Some(cipher) = &inner.cipher {
+                for client in &mut prefs.sending.certificates.clients {
+                    if !client.password.is_empty() {
+                        client.password = cipher.decrypt(&client.password).unwrap_or_default();
+                    }
+                }
+            }
+            Ok(prefs)
         })
     }
 
-    fn set_app(&self, prefs: AppPrefs) -> StoreFuture<()> {
+    fn set_app(&self, mut prefs: AppPrefs) -> StoreFuture<()> {
         self.run(move |inner, _| async move {
+            if let Some(cipher) = &inner.cipher {
+                for client in &mut prefs.sending.certificates.clients {
+                    if !client.password.is_empty() {
+                        client.password = cipher.encrypt(&client.password);
+                    }
+                }
+            }
             let conn = inner.conn.lock().await;
             write_doc(&conn, "app", &prefs).await
         })
@@ -1597,12 +1646,41 @@ impl PrefStore for TursoStore {
     fn oauth_tokens(&self) -> StoreFuture<KeptTokens> {
         self.run(move |inner, _| async move {
             let conn = inner.conn.lock().await;
-            read_doc(&conn, OAUTH_SCOPE).await
+            let mut tokens: KeptTokens = read_doc(&conn, OAUTH_SCOPE).await?;
+            if let Some(cipher) = &inner.cipher {
+                tokens.0.retain(|_, token| {
+                    if !token.access_token.is_empty() {
+                        match cipher.decrypt(&token.access_token) {
+                            Some(plain) => token.access_token = plain,
+                            None => return false,
+                        }
+                    }
+                    if let Some(refresh) = token.refresh_token.as_ref()
+                        && !refresh.is_empty()
+                    {
+                        token.refresh_token = cipher.decrypt(refresh);
+                    }
+                    true
+                });
+            }
+            Ok(tokens)
         })
     }
 
-    fn set_oauth_tokens(&self, tokens: KeptTokens) -> StoreFuture<()> {
+    fn set_oauth_tokens(&self, mut tokens: KeptTokens) -> StoreFuture<()> {
         self.run(move |inner, _| async move {
+            if let Some(cipher) = &inner.cipher {
+                for token in tokens.0.values_mut() {
+                    if !token.access_token.is_empty() {
+                        token.access_token = cipher.encrypt(&token.access_token);
+                    }
+                    if let Some(refresh) = token.refresh_token.as_mut()
+                        && !refresh.is_empty()
+                    {
+                        *refresh = cipher.encrypt(refresh);
+                    }
+                }
+            }
             let conn = inner.conn.lock().await;
             write_doc(&conn, OAUTH_SCOPE, &tokens).await
         })
@@ -1612,12 +1690,34 @@ impl PrefStore for TursoStore {
         self.run(move |inner, _| async move {
             let conn = inner.conn.lock().await;
             require_collection(&conn, &collection).await?;
-            read_doc(&conn, &secrets_scope(&collection)).await
+            let mut values: SecretValues = read_doc(&conn, &secrets_scope(&collection)).await?;
+            if let Some(cipher) = &inner.cipher {
+                values.0.retain(|_, value| {
+                    if value.is_empty() {
+                        return true;
+                    }
+                    match cipher.decrypt(value) {
+                        Some(plain) => {
+                            *value = plain;
+                            true
+                        }
+                        None => false,
+                    }
+                });
+            }
+            Ok(values)
         })
     }
 
-    fn set_secret_values(&self, collection: CollectionId, values: SecretValues) -> StoreFuture<()> {
+    fn set_secret_values(&self, collection: CollectionId, mut values: SecretValues) -> StoreFuture<()> {
         self.run(move |inner, _| async move {
+            if let Some(cipher) = &inner.cipher {
+                for value in values.0.values_mut() {
+                    if !value.is_empty() {
+                        *value = cipher.encrypt(value);
+                    }
+                }
+            }
             let conn = inner.conn.lock().await;
             require_collection(&conn, &collection).await?;
             write_doc(&conn, &secrets_scope(&collection), &values).await

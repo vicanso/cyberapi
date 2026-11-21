@@ -664,7 +664,14 @@ fn confirm_restore(path: PathBuf, window: &mut Window, cx: &mut App) {
 }
 
 impl Render for CyberApi {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(not(target_family = "wasm"))]
+        if crate::master_key::take_lost_key_notice() {
+            cx.defer_in(window, |_, window, cx| {
+                window.push_notification(Notification::warning(t!("master_key.lost_notice").to_string()), cx);
+            });
+        }
+        let _ = window;
         let page = match &self.page {
             Page::Dashboard(view) => view.clone().into_any_element(),
             Page::Workspace(view) => view.clone().into_any_element(),

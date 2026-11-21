@@ -12,6 +12,9 @@ description = "描述"
 close = "关闭"
 optional = "选填"
 
+[master_key]
+lost_notice = "部分本机保存的秘密变量、令牌或证书密码无法用当前主密钥解密，已按未填写处理，请重新填写。"
+
 [startup]
 failed_title = "Cyber API 无法打开数据"
 failed_hint = "没有改动任何数据。下面是出错的详细信息。"

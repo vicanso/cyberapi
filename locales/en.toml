@@ -12,6 +12,9 @@ description = "Description"
 optional = "Optional"
 close = "Close"
 
+[master_key]
+lost_notice = "Some saved local secrets or tokens could not be decrypted with the current master key and were treated as empty. Please re-enter them."
+
 [startup]
 failed_title = "Cyber API could not open its data"
 failed_hint = "Nothing was changed. The details below say what went wrong."
