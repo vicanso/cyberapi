@@ -15,6 +15,7 @@ use crate::views::settings::Choice;
 use crate::views::template_hints::{self, FieldHints, HintKey, HintSource, Hints};
 use cyberapi_core::ItemId;
 use cyberapi_core::auth::{Auth, AuthKind, KeyPlace};
+use cyberapi_core::aws_sigv4::AwsSigV4;
 use cyberapi_core::inherit::AuthSource;
 use cyberapi_core::model::{HttpMethod, HttpRequest};
 use cyberapi_core::oauth::{ClientAuth, Grant, OAuth2};
@@ -58,10 +59,18 @@ const SCOPE: usize = 7;
 const AUDIENCE: usize = 8;
 const RESOURCE: usize = 9;
 const AUTHORIZATION_URL: usize = 10;
+const AWS_ACCESS_KEY: usize = 11;
+const AWS_SECRET_KEY: usize = 12;
+const AWS_SESSION_TOKEN: usize = 13;
+const AWS_REGION: usize = 14;
+const AWS_SERVICE: usize = 15;
 
 /// The fields whose values are secrets, shown as dots till shown.
 fn secret(field: usize) -> bool {
-    matches!(field, PASSWORD | TOKEN | KEY_VALUE | CLIENT_SECRET)
+    matches!(
+        field,
+        PASSWORD | TOKEN | KEY_VALUE | CLIENT_SECRET | AWS_SECRET_KEY | AWS_SESSION_TOKEN
+    )
 }
 
 /// Whose auth it edits.
@@ -77,13 +86,14 @@ pub enum AuthFor {
 
 /// The project has nothing to inherit: its "none" is kept as inheriting,
 /// which is the same and leaves it nothing to keep.
-const PROJECT_KINDS: [AuthKind; 6] = [
+const PROJECT_KINDS: [AuthKind; 7] = [
     AuthKind::None,
     AuthKind::Basic,
     AuthKind::Bearer,
     AuthKind::ApiKey,
     AuthKind::Digest,
     AuthKind::OAuth2,
+    AuthKind::AwsSigV4,
 ];
 
 pub struct AuthEditor {
@@ -97,8 +107,8 @@ pub struct AuthEditor {
     grant: Choices,
     client_auth: Choices,
     /// Basic's user and password, the token, the key's value, OAuth's
-    /// token URL, client, scope and authorization URL: templates.
-    templated: [Entity<InputState>; 11],
+    /// token URL, client, scope and authorization URL, and AWS SigV4's fields: templates.
+    templated: [Entity<InputState>; 16],
     /// The loopback port. Empty is any free port. Not a template.
     redirect_port: Entity<InputState>,
     key_name: Entity<InputState>,
@@ -124,6 +134,7 @@ fn kind_label(kind: AuthKind) -> String {
         AuthKind::ApiKey => t!("editor.auth_api_key"),
         AuthKind::Digest => t!("editor.auth_digest"),
         AuthKind::OAuth2 => t!("editor.auth_oauth2"),
+        AuthKind::AwsSigV4 => t!("editor.auth_aws_sigv4"),
     }
     .to_string()
 }
@@ -244,6 +255,7 @@ impl AuthEditor {
         let hints = HintSource::new(&workspace);
         let (mut username, mut password, mut token, mut name, mut value, mut place_now) = Default::default();
         let mut oauth = OAuth2::default();
+        let mut aws = AwsSigV4::default();
         match &auth {
             Auth::Basic {
                 username: user,
@@ -262,6 +274,9 @@ impl AuthEditor {
             Auth::OAuth2(own) => {
                 oauth = own.as_ref().clone();
                 (username, password) = (own.username.clone(), own.password.clone());
+            }
+            Auth::AwsSigV4(own) => {
+                aws = own.as_ref().clone();
             }
             Auth::Inherit | Auth::None => {}
         }
@@ -344,6 +359,41 @@ impl AuthEditor {
             field(
                 oauth.authorization_url,
                 t!("editor.auth_authorization_url").to_string(),
+                false,
+                window,
+                cx,
+            ),
+            field(
+                aws.access_key,
+                t!("editor.auth_aws_access_key").to_string(),
+                false,
+                window,
+                cx,
+            ),
+            field(
+                aws.secret_key,
+                t!("editor.auth_aws_secret_key").to_string(),
+                true,
+                window,
+                cx,
+            ),
+            field(
+                aws.session_token,
+                t!("editor.auth_aws_session_token").to_string(),
+                true,
+                window,
+                cx,
+            ),
+            field(
+                aws.region,
+                t!("editor.auth_aws_region_placeholder").to_string(),
+                false,
+                window,
+                cx,
+            ),
+            field(
+                aws.service,
+                t!("editor.auth_aws_service_placeholder").to_string(),
                 false,
                 window,
                 cx,
@@ -492,6 +542,13 @@ impl AuthEditor {
                     client_auth: CLIENT_AUTHS[self.client_auth.read(cx).selected_value().copied().unwrap_or(0).min(1)],
                 })
             }
+            AuthKind::AwsSigV4 => Auth::from(AwsSigV4 {
+                access_key: text(&self.templated[AWS_ACCESS_KEY]),
+                secret_key: text(&self.templated[AWS_SECRET_KEY]),
+                session_token: text(&self.templated[AWS_SESSION_TOKEN]),
+                region: text(&self.templated[AWS_REGION]),
+                service: text(&self.templated[AWS_SERVICE]),
+            }),
         }
     }
 
@@ -792,6 +849,7 @@ impl Render for AuthEditor {
             AuthKind::ApiKey if grpc => t!("editor.auth_api_key_grpc_hint"),
             AuthKind::ApiKey => t!("editor.auth_api_key_hint"),
             AuthKind::OAuth2 => t!("editor.auth_oauth2_hint"),
+            AuthKind::AwsSigV4 => t!("editor.auth_aws_sigv4_hint"),
         }
         .to_string()
         .into();
@@ -915,6 +973,28 @@ impl Render for AuthEditor {
                 rows.push(row(
                     t!("editor.auth_client_auth").to_string(),
                     narrow(Select::new(&self.client_auth)),
+                ));
+            }
+            AuthKind::AwsSigV4 => {
+                rows.push(row(
+                    t!("editor.auth_aws_access_key").to_string(),
+                    self.templated_field(AWS_ACCESS_KEY, cx),
+                ));
+                rows.push(row(
+                    t!("editor.auth_aws_secret_key").to_string(),
+                    self.templated_field(AWS_SECRET_KEY, cx),
+                ));
+                rows.push(row(
+                    t!("editor.auth_aws_session_token").to_string(),
+                    self.templated_field(AWS_SESSION_TOKEN, cx),
+                ));
+                rows.push(row(
+                    t!("editor.auth_aws_region").to_string(),
+                    self.templated_field(AWS_REGION, cx),
+                ));
+                rows.push(row(
+                    t!("editor.auth_aws_service").to_string(),
+                    self.templated_field(AWS_SERVICE, cx),
                 ));
             }
             AuthKind::Inherit | AuthKind::None => {}

@@ -1237,6 +1237,7 @@ fn auth_label(auth: &crate::auth::Auth) -> Option<String> {
             }
         }
         Auth::OAuth2(_) => Some("OAuth 2.0".into()),
+        Auth::AwsSigV4(_) => Some("AWS SigV4".into()),
     }
 }
 
@@ -1275,6 +1276,19 @@ fn masked_auth_signed(auth: &crate::auth::Auth, query: bool) -> Option<crate::au
                 value: format!("Bearer {}", crate::mcp::MASK),
             })
         }
+        Auth::AwsSigV4(aws) if aws.has_credentials() => Some(Signed::Header {
+            name: "Authorization".into(),
+            value: format!(
+                "AWS4-HMAC-SHA256 Credential={}/<date>/{}/{}/aws4_request, ...",
+                masked("access_key", aws.access_key.trim()),
+                if aws.region.trim().is_empty() {
+                    "us-east-1"
+                } else {
+                    aws.region.trim()
+                },
+                aws.service.trim()
+            ),
+        }),
         _ => None,
     }
 }

@@ -55,6 +55,22 @@ pub fn curl(
             quote(&format!("{}:{}", login.username, login.password))
         ));
     }
+    let has_aws_sigv4 = prepared
+        .aws_sigv4
+        .as_ref()
+        .is_some_and(|aws| !aws.access_key.trim().is_empty() && !aws.secret_key.trim().is_empty());
+    if let Some(aws) = prepared.aws_sigv4.as_ref().filter(|_| has_aws_sigv4) {
+        let provider = if aws.effective_service().is_empty() {
+            format!("aws:amz:{}", aws.effective_region())
+        } else {
+            format!("aws:amz:{}:{}", aws.effective_region(), aws.effective_service())
+        };
+        parts.push(format!("--aws-sigv4 {}", quote(&provider)));
+        parts.push(format!(
+            "--user {}",
+            quote(&format!("{}:{}", aws.access_key.trim(), aws.secret_key.trim()))
+        ));
+    }
     // C5: the client certificate, and the authority when it is one file
     // (curl takes one bundle).
     if let Some(client) = &prepared.tls.client {
@@ -124,6 +140,15 @@ pub fn curl(
     for (name, value) in &prepared.headers {
         // curl writes its own multipart type, with the boundary it picks.
         if multipart && name.eq_ignore_ascii_case("content-type") {
+            continue;
+        }
+        // curl's --aws-sigv4 computes Authorization, X-Amz-Date, and X-Amz-Content-Sha256
+        // fresh on each invocation; keep X-Amz-Security-Token if present.
+        if has_aws_sigv4
+            && (name.eq_ignore_ascii_case("authorization")
+                || name.eq_ignore_ascii_case("x-amz-date")
+                || name.eq_ignore_ascii_case("x-amz-content-sha256"))
+        {
             continue;
         }
         parts.push(format!("-H {}", quote(&format!("{name}: {value}"))));

@@ -168,6 +168,13 @@ fn auth(value: &Value) -> Option<Auth> {
                 _ => ClientAuth::Header,
             },
         }),
+        "aws" => Auth::from(crate::aws_sigv4::AwsSigV4 {
+            access_key: field("accessKeyId"),
+            secret_key: field("secretAccessKey"),
+            session_token: field("sessionToken"),
+            region: field("region"),
+            service: field("service"),
+        }),
         _ => return None,
     })
 }

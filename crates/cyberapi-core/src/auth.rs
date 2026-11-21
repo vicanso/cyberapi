@@ -7,6 +7,7 @@
 //! enabled entry was Basic's user and password — reads as `Basic`; nothing
 //! writes it any more.
 
+use crate::aws_sigv4::{AwsSigV4, AwsSigV4Login};
 use crate::digest::DigestLogin;
 use crate::model::KvParam;
 use crate::oauth::{OAuth2, OAuthLogin};
@@ -55,11 +56,21 @@ pub enum Auth {
     /// Boxed: it is several times the size of the others.
     #[serde(rename = "oauth2")]
     OAuth2(Box<OAuth2>),
+    /// C4: AWS Signature Version 4 (`crate::aws_sigv4`), signed as the final
+    /// step of request preparation once templates and body are finalized.
+    #[serde(rename = "awsSigV4")]
+    AwsSigV4(Box<AwsSigV4>),
 }
 
 impl From<OAuth2> for Auth {
     fn from(oauth: OAuth2) -> Self {
         Self::OAuth2(Box::new(oauth))
+    }
+}
+
+impl From<AwsSigV4> for Auth {
+    fn from(aws: AwsSigV4) -> Self {
+        Self::AwsSigV4(Box::new(aws))
     }
 }
 
@@ -81,7 +92,7 @@ pub enum Signed {
 
 impl Auth {
     /// The kinds, in the order the editor offers them.
-    pub const KINDS: [AuthKind; 7] = [
+    pub const KINDS: [AuthKind; 8] = [
         AuthKind::Inherit,
         AuthKind::None,
         AuthKind::Basic,
@@ -89,6 +100,7 @@ impl Auth {
         AuthKind::ApiKey,
         AuthKind::Digest,
         AuthKind::OAuth2,
+        AuthKind::AwsSigV4,
     ];
 
     pub fn is_inherit(&self) -> bool {
@@ -104,6 +116,7 @@ impl Auth {
             Self::ApiKey { .. } => AuthKind::ApiKey,
             Self::Digest { .. } => AuthKind::Digest,
             Self::OAuth2(_) => AuthKind::OAuth2,
+            Self::AwsSigV4(_) => AuthKind::AwsSigV4,
         }
     }
 
@@ -111,7 +124,12 @@ impl Auth {
     pub fn signs(&self) -> bool {
         matches!(
             self,
-            Self::Basic { .. } | Self::Bearer { .. } | Self::ApiKey { .. } | Self::Digest { .. } | Self::OAuth2(_)
+            Self::Basic { .. }
+                | Self::Bearer { .. }
+                | Self::ApiKey { .. }
+                | Self::Digest { .. }
+                | Self::OAuth2(_)
+                | Self::AwsSigV4(_)
         )
     }
 
@@ -126,6 +144,7 @@ impl Auth {
             Self::Bearer { token } => !token.trim().is_empty(),
             Self::ApiKey { name, value, .. } => !name.trim().is_empty() && !value.trim().is_empty(),
             Self::OAuth2(oauth) => !oauth.token_url.trim().is_empty() || !oauth.client_id.trim().is_empty(),
+            Self::AwsSigV4(aws) => aws.has_credentials(),
         }
     }
 
@@ -142,23 +161,28 @@ impl Auth {
     }
 
     /// The texts that are templates: Basic's and Digest's user and
-    /// password, the token, the key's value, OAuth's (`OAuth2::templates`).
+    /// password, the token, the key's value, OAuth's (`OAuth2::templates`),
+    /// AWS SigV4's (`AwsSigV4::templates`).
     pub fn templates(&self) -> Vec<&str> {
         match self {
             Self::Basic { username, password } | Self::Digest { username, password } => vec![username, password],
             Self::Bearer { token } => vec![token],
             Self::ApiKey { value, .. } => vec![value],
             Self::OAuth2(oauth) => oauth.templates(),
+            Self::AwsSigV4(aws) => aws.templates(),
             Self::Inherit | Self::None => Vec::new(),
         }
     }
 
     /// The name of the header it sends, if it sends one — Digest's goes
-    /// once the server asks for it, OAuth's once there is a token. A call
-    /// with no query (gRPC: `query` false) sends its key as a header too.
+    /// once the server asks for it, OAuth's once there is a token, AWS SigV4's
+    /// once the body is finalized. A call with no query (gRPC: `query` false)
+    /// sends its key as a header too.
     pub fn header_name(&self, query: bool) -> Option<&str> {
         match self {
-            Self::Basic { .. } | Self::Bearer { .. } | Self::Digest { .. } | Self::OAuth2(_) => Some("Authorization"),
+            Self::Basic { .. } | Self::Bearer { .. } | Self::Digest { .. } | Self::OAuth2(_) | Self::AwsSigV4(_) => {
+                Some("Authorization")
+            }
             Self::ApiKey { name, place, .. } if *place == KeyPlace::Header || !query => {
                 Some(name.trim()).filter(|name| !name.is_empty())
             }
@@ -190,7 +214,7 @@ impl Auth {
     /// token). A call with no query takes its key as a header.
     pub fn sign<E>(&self, query: bool, render: impl Fn(&str) -> Result<String, E>) -> Result<Option<Signed>, E> {
         Ok(match self {
-            Self::Inherit | Self::None | Self::Digest { .. } | Self::OAuth2(_) => None,
+            Self::Inherit | Self::None | Self::Digest { .. } | Self::OAuth2(_) | Self::AwsSigV4(_) => None,
             Self::Basic { username, password } => {
                 let pair = format!("{}:{}", render(username)?, render(password)?);
                 Some(Signed::Header {
@@ -237,6 +261,14 @@ impl Auth {
             _ => None,
         })
     }
+
+    /// C4: AWS SigV4 credentials, rendered by `render`.
+    pub fn aws_sigv4_login<E>(&self, render: impl Fn(&str) -> Result<String, E>) -> Result<Option<AwsSigV4Login>, E> {
+        Ok(match self {
+            Self::AwsSigV4(aws) => Some(aws.login(render)?),
+            _ => None,
+        })
+    }
 }
 
 /// An [`Auth`]'s kind, without its values: what the editor's list picks.
@@ -249,6 +281,7 @@ pub enum AuthKind {
     ApiKey,
     Digest,
     OAuth2,
+    AwsSigV4,
 }
 
 #[cfg(test)]

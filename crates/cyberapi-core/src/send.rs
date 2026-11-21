@@ -68,6 +68,10 @@ pub struct PreparedRequest {
     /// token request and the token go, as requests and a header.
     #[serde(skip)]
     pub oauth: Option<crate::oauth::OAuthLogin>,
+    /// C4: AWS SigV4 credentials used to sign this request (kept for `--aws-sigv4`
+    /// cURL output and per-request re-signing in load tests; never sent to the bridge).
+    #[serde(skip)]
+    pub aws_sigv4: Option<crate::aws_sigv4::AwsSigV4Login>,
     /// C5: the client certificate and the authorities its handshake takes
     /// (`certificates::tls_for`). Never sent to the bridge, which reads no
     /// files of its own for anyone.
@@ -179,6 +183,10 @@ pub fn sent_request(
             .auth(&request.auth)
             .header_name(takes_query(request))
             .is_some_and(|signed| signed.eq_ignore_ascii_case(name))
+            || (matches!(inherited.auth(&request.auth), crate::auth::Auth::AwsSigV4(_))
+                && (name.eq_ignore_ascii_case("x-amz-security-token")
+                    || name.eq_ignore_ascii_case("x-amz-date")
+                    || name.eq_ignore_ascii_case("x-amz-content-sha256")))
         {
             HeaderSource::Auth
         } else if inherited
@@ -897,6 +905,7 @@ pub fn grpc_call(
         // gRPC servers ask for no Digest.
         digest: None,
         oauth,
+        aws_sigv4: None,
         tls: Default::default(),
     })
 }
@@ -1016,6 +1025,19 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         false => cx.inherited.auth(&request.auth).digest_login(render)?,
     };
     let oauth = oauth_login(request, cx, &headers)?;
+    // C4: AWS SigV4 signs as the final step once templates, URL, headers, and
+    // body are finalized, unless the request names its own Authorization (#3).
+    let aws_sigv4 = match names_authorization(&headers) {
+        true => None,
+        false => cx.inherited.auth(&request.auth).aws_sigv4_login(render)?,
+    };
+    if let Some(login) = &aws_sigv4 {
+        for (name, value) in
+            crate::aws_sigv4::sign(request.method.as_str(), &url, &headers.0, &body, login, cx.template.now)
+        {
+            headers.set(&name, &value);
+        }
+    }
     Ok(PreparedRequest {
         method: request.method,
         url: url.to_string(),
@@ -1029,6 +1051,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         streams: false,
         digest,
         oauth,
+        aws_sigv4,
         // By host, as each hop goes (the service's).
         tls: Default::default(),
     })

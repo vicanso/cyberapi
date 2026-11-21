@@ -501,6 +501,13 @@ fn synced_auth(existing: &crate::auth::Auth, imported: &crate::auth::Auth) -> cr
             resource: given.resource.clone(),
             client_auth: given.client_auth,
         }),
+        (Auth::AwsSigV4(mine), Auth::AwsSigV4(given)) => Auth::from(crate::aws_sigv4::AwsSigV4 {
+            access_key: kept_secret(&mine.access_key, &given.access_key),
+            secret_key: kept_secret(&mine.secret_key, &given.secret_key),
+            session_token: kept_secret(&mine.session_token, &given.session_token),
+            region: given.region.clone(),
+            service: given.service.clone(),
+        }),
         _ => imported.clone(),
     }
 }

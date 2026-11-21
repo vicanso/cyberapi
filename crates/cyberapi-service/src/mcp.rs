@@ -459,6 +459,14 @@ fn auth_json(auth: &Auth) -> Json {
             "password": masked("password", &oauth.password),
             "scope": oauth.scope,
         }),
+        Auth::AwsSigV4(aws) => json!({
+            "type": "awsSigV4",
+            "accessKey": aws.access_key,
+            "secretKey": masked("secret", &aws.secret_key),
+            "sessionToken": masked("token", &aws.session_token),
+            "region": aws.region,
+            "service": aws.service,
+        }),
     }
 }
 

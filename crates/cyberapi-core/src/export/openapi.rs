@@ -494,7 +494,7 @@ fn scopes(auth: &Auth) -> Vec<&str> {
 /// none.
 fn scheme(auth: &Auth) -> Option<(String, Value)> {
     Some(match auth {
-        Auth::Inherit | Auth::None => return None,
+        Auth::Inherit | Auth::None | Auth::AwsSigV4(_) => return None,
         Auth::Basic { .. } => ("basicAuth".into(), json!({"type": "http", "scheme": "basic"})),
         Auth::Bearer { .. } => ("bearerAuth".into(), json!({"type": "http", "scheme": "bearer"})),
         Auth::Digest { .. } => ("digestAuth".into(), json!({"type": "http", "scheme": "digest"})),

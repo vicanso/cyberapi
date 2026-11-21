@@ -89,6 +89,16 @@ fn auth(auth: &Auth) -> Option<Value> {
             }
             fields("oauth2", &pairs)
         }
+        Auth::AwsSigV4(aws) => fields(
+            "awsv4",
+            &[
+                ("accessKey", aws.access_key.as_str()),
+                ("secretKey", aws.secret_key.as_str()),
+                ("sessionToken", aws.session_token.as_str()),
+                ("region", aws.region.as_str()),
+                ("service", aws.service.as_str()),
+            ],
+        ),
         Auth::ApiKey { name, value, place } => fields(
             "apikey",
             &[

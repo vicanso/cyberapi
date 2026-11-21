@@ -67,7 +67,7 @@ pub async fn load(
             if !plan.goes_on(turn, begun.elapsed()) {
                 break;
             }
-            let call_prepared = if turn > 0 && template.dynamic {
+            let call_prepared = if turn > 0 && (template.dynamic || prepared.aws_sigv4.is_some()) {
                 match template.prepare_again(&sender, &request, turn) {
                     Ok(mut next) => {
                         if let Some(cookie) = &jar_cookie

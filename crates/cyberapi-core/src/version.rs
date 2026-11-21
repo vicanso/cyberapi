@@ -58,7 +58,8 @@ pub const VERSION: &str = match option_env!("CYBERAPI_VERSION") {
 /// parameter (`KvParam::schema_type`, `required`, `format`, `schema_enum`).
 /// 24: a project can publish its online documentation
 /// (`ProjectSettings::public_docs`).
-pub const MODEL: u32 = 24;
+/// 25: AWS SigV4 authentication (C4, `Auth::AwsSigV4`).
+pub const MODEL: u32 = 25;
 
 /// The commit's short hash, when the build was told it.
 pub const COMMIT: Option<&str> = match option_env!("CYBERAPI_COMMIT") {
@@ -102,7 +103,7 @@ mod tests {
     #[test]
     fn build_metadata_constants_are_populated() {
         assert!(!VERSION.is_empty());
-        assert_eq!(MODEL, 24);
+        assert_eq!(MODEL, 25);
         assert!(BUILD_TIME.is_some_and(|time| time.ends_with("UTC")));
     }
 

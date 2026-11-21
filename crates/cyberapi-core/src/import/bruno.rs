@@ -250,6 +250,16 @@ fn auth(mode: &str, find: &dyn Fn(&str) -> Vec<KvParam>) -> Auth {
                 },
             })
         }
+        "awsv4" => {
+            let field = fields("auth:awsv4");
+            Auth::from(crate::aws_sigv4::AwsSigV4 {
+                access_key: field("accessKeyId"),
+                secret_key: field("secretAccessKey"),
+                session_token: field("sessionToken"),
+                region: field("region"),
+                service: field("service"),
+            })
+        }
         // `inherit`, and what this app has no counterpart of.
         _ => Auth::Inherit,
     }

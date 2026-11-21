@@ -111,6 +111,7 @@ impl Transport for EngineTransport {
             proxy: Default::default(),
             digest: None,
             oauth: None,
+            aws_sigv4: None,
             tls: Default::default(),
         };
         let call = self.engine.send(request);
@@ -264,6 +265,7 @@ async fn exchange(
         proxy: Default::default(),
         digest: None,
         oauth: None,
+        aws_sigv4: None,
         tls: Default::default(),
     };
     let exchange = engine.send(request).await.map_err(|error| error.to_string())?;

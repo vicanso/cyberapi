@@ -82,7 +82,7 @@ pub fn code(target: CodeTarget, prepared: &PreparedRequest, request: &HttpReques
         return curl(prepared, request, &[], follow_redirects);
     }
     let parts = Parts::of(prepared, request);
-    match target {
+    let generated = match target {
         CodeTarget::Curl => unreachable!("made above"),
         CodeTarget::Httpie => httpie(prepared, &parts, follow_redirects),
         CodeTarget::Fetch => fetch(prepared, &parts, follow_redirects),
@@ -94,6 +94,22 @@ pub fn code(target: CodeTarget, prepared: &PreparedRequest, request: &HttpReques
         CodeTarget::Java => java::http_client(prepared, &parts, follow_redirects),
         CodeTarget::CSharp => csharp::http_client(prepared, &parts, follow_redirects),
         CodeTarget::Swift => swift::url_session(prepared, &parts, follow_redirects),
+    };
+    if prepared.aws_sigv4.is_some() {
+        let prefix = match target {
+            CodeTarget::Httpie | CodeTarget::Python => "#",
+            _ => "//",
+        };
+        let note = format!("{prefix} Note: AWS SigV4 signature headers below are time-limited and will expire.\n");
+        if target == CodeTarget::Php
+            && let Some(rest) = generated.strip_prefix("<?php\n")
+        {
+            format!("<?php\n{note}{rest}")
+        } else {
+            format!("{note}{generated}")
+        }
+    } else {
+        generated
     }
 }
 

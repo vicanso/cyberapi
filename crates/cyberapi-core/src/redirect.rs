@@ -108,6 +108,7 @@ mod tests {
                 password: "b".into(),
             }),
             oauth: None,
+            aws_sigv4: None,
             tls: Default::default(),
         }
     }
