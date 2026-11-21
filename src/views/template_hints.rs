@@ -9,11 +9,13 @@
 //! list's values are single-line fields, which have no such menu, so
 //! [`FieldHints`] draws one under the field.
 
-use crate::states::WorkspaceState;
+use crate::states::{ApiState, WorkspaceState};
 use crate::this_build;
 use cyberapi_core::ItemId;
-use cyberapi_core::template_hints::{self, Field, Hint, HintKind};
-use gpui_kit::component::input::{CompletionProvider, EditorState, Enter, InputEvent, InputState, Rope, RopeExt as _};
+use cyberapi_core::template_hints::{self, Field, Hint, HintKind, ResolvedVar, VarRef, VarSource};
+use gpui_kit::component::input::{
+    CompletionProvider, EditorState, Enter, HoverProvider, InputEvent, InputState, Rope, RopeExt as _,
+};
 use gpui_kit::component::{ActiveTheme as _, ThemeStyled as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -22,9 +24,11 @@ use gpui_kit::{
     deferred, div, px,
 };
 use lsp_types::{
-    CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit, TextEdit,
+    CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit, Hover,
+    HoverContents, MarkupContent, MarkupKind, TextEdit,
 };
 use rust_i18n::t;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 /// The hints for a caret: at once, or once the answer a `get` path reads
@@ -35,19 +39,34 @@ pub enum Hints {
 }
 
 /// Where the hints come from: an open project's custom variables and APIs,
-/// and its APIs' last answers.
+/// and its APIs' last answers. When bound to an `ApiState`, variable previews
+/// follow that API's own variables and effective environment (including in an
+/// apart window).
 #[derive(Clone)]
-pub struct HintSource(WeakEntity<WorkspaceState>);
+pub struct HintSource {
+    workspace: WeakEntity<WorkspaceState>,
+    api: Option<WeakEntity<ApiState>>,
+}
 
 impl HintSource {
     pub fn new(workspace: &Entity<WorkspaceState>) -> Self {
-        Self(workspace.downgrade())
+        Self {
+            workspace: workspace.downgrade(),
+            api: None,
+        }
+    }
+
+    pub fn for_api(workspace: &Entity<WorkspaceState>, api: &Entity<ApiState>) -> Self {
+        Self {
+            workspace: workspace.downgrade(),
+            api: Some(api.downgrade()),
+        }
     }
 
     /// The hints for the caret at byte `caret` of `text`; the file
     /// functions only where this build reads files.
     pub fn hints(&self, text: &str, caret: usize, cx: &mut App) -> Hints {
-        let Some(workspace) = self.0.upgrade() else {
+        let Some(workspace) = self.workspace.upgrade() else {
             return Hints::Now(Vec::new());
         };
         let mut sources = workspace.read(cx).hint_sources(this_build::reads_files());
@@ -64,6 +83,90 @@ impl HintSource {
             sources.response = answer.await;
             template_hints::hints(&text, caret, &sources)
         }))
+    }
+
+    /// UI-9: resolves a variable reference in this source's workspace / API.
+    pub fn resolve(&self, var: &VarRef, cx: &App) -> Option<ResolvedVar> {
+        let workspace = self.workspace.upgrade()?;
+        let ws = workspace.read(cx);
+        if let Some(api) = self.api.as_ref().and_then(WeakEntity::upgrade) {
+            let api = api.read(cx);
+            let env = api.effective_environment(ws).map(|env| &env.id);
+            Some(ws.resolve_var(
+                &var.name,
+                var.kind,
+                Some(api.api()),
+                Some(&api.request().variables),
+                env,
+            ))
+        } else {
+            let env = ws.current_environment().map(|env| &env.id);
+            Some(ws.resolve_var(&var.name, var.kind, None, None, env))
+        }
+    }
+
+    /// UI-9: compact multi-line tooltip for single-line fields (KV values, URI)
+    /// containing `{{value(...)}}` references; `None` when there are none.
+    pub fn preview_tooltip(&self, text: &str, cx: &App) -> Option<String> {
+        let vars = template_hints::referenced_vars(text);
+        if vars.is_empty() {
+            return None;
+        }
+        let mut seen = HashSet::new();
+        let mut lines = Vec::new();
+        for var in vars {
+            if !seen.insert((var.kind, var.name.clone())) {
+                continue;
+            }
+            if let Some(resolved) = self.resolve(&var, cx) {
+                lines.push(format_preview_line(&resolved));
+            }
+        }
+        (!lines.is_empty()).then(|| lines.join("\n"))
+    }
+}
+
+/// UI-9: human-readable source layer label (e.g. `Staging`, `Shared`, `Folder: Auth`, `API`).
+pub fn format_source(source: &VarSource, secret: bool) -> String {
+    let base = match source {
+        VarSource::ApiOwn => t!("hints.source_api").to_string(),
+        VarSource::Folder(name) => t!("hints.source_folder", name = name).to_string(),
+        VarSource::NamedEnv(name) => name.clone(),
+        VarSource::Shared => t!("hints.source_shared").to_string(),
+        VarSource::Undefined => t!("hints.source_undefined").to_string(),
+    };
+    if secret && !matches!(source, VarSource::Undefined) {
+        format!("{base} · {}", t!("hints.source_secret"))
+    } else {
+        base
+    }
+}
+
+/// UI-9: single-line summary for tooltips: `NAME = value (source)` or `NAME — Undefined`.
+pub fn format_preview_line(resolved: &ResolvedVar) -> String {
+    let source = format_source(&resolved.source, resolved.secret);
+    match &resolved.value {
+        Some(value) if value.is_empty() => {
+            format!("{} = {} ({source})", resolved.name, t!("hints.value_empty"))
+        }
+        Some(value) => format!("{} = {value} ({source})", resolved.name),
+        None => format!("{} — {source}", resolved.name),
+    }
+}
+
+/// UI-9: Markdown content for `HoverProvider` popovers in code editors.
+fn format_hover_markdown(resolved: &ResolvedVar) -> String {
+    let source = format_source(&resolved.source, resolved.secret);
+    match &resolved.value {
+        Some(value) if value.is_empty() => {
+            format!("**`{}`** · *{source}*\n\n*{}*", resolved.name, t!("hints.value_empty"))
+        }
+        Some(value) => format!(
+            "**`{}`** · *{source}*\n\n`{}`",
+            resolved.name,
+            value.replace('`', "\\`")
+        ),
+        None => format!("**`{}`** · *{source}*", resolved.name),
     }
 }
 
@@ -157,16 +260,50 @@ impl CompletionProvider for EditorHints {
     }
 }
 
+/// UI-9: hover preview for `{{value(...)}}` expressions in code editors.
+struct EditorHover(HintSource);
+
+impl HoverProvider for EditorHover {
+    fn hover(&self, text: &Rope, offset: usize, _: &mut Window, cx: &mut App) -> Task<gpui_kit::Result<Option<Hover>>> {
+        let (line, start) = caret_line(text, offset);
+        let col = offset.saturating_sub(start);
+        let Some(var_ref) = template_hints::expression_at(&line, col) else {
+            return Task::ready(Ok(None));
+        };
+        let Some(resolved) = self.0.resolve(&var_ref, cx) else {
+            return Task::ready(Ok(None));
+        };
+        let range = lsp_types::Range {
+            start: text.offset_to_position(start + var_ref.range.start),
+            end: text.offset_to_position(start + var_ref.range.end),
+        };
+        let hover = Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format_hover_markdown(&resolved),
+            }),
+            range: Some(range),
+        };
+        Task::ready(Ok(Some(hover)))
+    }
+}
+
 /// The hints as a code editor's completion provider, for one that offers
 /// its own around the expressions (a GraphQL query's fields).
 pub fn provider(source: &HintSource) -> Rc<dyn CompletionProvider> {
     Rc::new(EditorHints(source.clone()))
 }
 
-/// Gives the code editor `editor` the hints, in its own menu. Called as it
-/// is built.
+/// UI-9: registers variable hover preview on `editor`.
+pub fn hover_in(editor: &mut EditorState, source: &HintSource) {
+    editor.lsp_mut().hover_provider = Some(Rc::new(EditorHover(source.clone())));
+}
+
+/// Gives the code editor `editor` the hints, in its own menu, and hover
+/// previews for `{{value(...)}}` variables. Called as it is built.
 pub fn complete_in(editor: &mut EditorState, source: &HintSource) {
     complete_with(editor, provider(source));
+    hover_in(editor, source);
 }
 
 /// Gives the code editor `editor` `provider`'s menu.

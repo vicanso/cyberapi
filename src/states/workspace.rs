@@ -1472,6 +1472,60 @@ impl WorkspaceState {
         }
     }
 
+    /// UI-9: resolves a `{{value(NAME)}}` or leading `{{ENV}}` variable with
+    /// its effective value and source layer for `api` in `environment`, keeping
+    /// secret values masked.
+    pub fn resolve_var(
+        &self,
+        name: &str,
+        kind: template_hints::VarRefKind,
+        api: Option<&ItemId>,
+        api_variables: Option<&[cyberapi_core::model::KvParam]>,
+        environment: Option<&EnvironmentId>,
+    ) -> template_hints::ResolvedVar {
+        let (category, source_vars) = match kind {
+            template_hints::VarRefKind::Value => (VariableCategory::Custom, &self.custom),
+            template_hints::VarRefKind::EnvPrefix => (VariableCategory::Environment, &self.environment),
+        };
+        let masked_vars: Vec<Variable> = source_vars
+            .iter()
+            .cloned()
+            .map(|variable| self.shown_secret(variable))
+            .collect();
+        let active_env = environment.and_then(|id| {
+            self.named
+                .iter()
+                .find(|env| &env.id == id)
+                .map(|env| (&env.id, env.name.as_str()))
+        });
+        let target_api = api.or_else(|| self.opened());
+        let above = target_api
+            .map(|id| inherit::folders_above(&self.data, id))
+            .unwrap_or_default();
+        let folders: Vec<(&str, &[cyberapi_core::model::KvParam])> = above
+            .iter()
+            .map(|folder| (folder.name.as_str(), folder.settings.variables.as_slice()))
+            .collect();
+        let stored_own: Vec<cyberapi_core::model::KvParam> = if api_variables.is_none() {
+            target_api
+                .and_then(|id| self.data.apis.iter().find(|found| &found.id == id))
+                .map(|found| found.request.variables.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let own = api_variables.unwrap_or(&stored_own);
+        template_hints::resolve_with_source(
+            name,
+            category,
+            &masked_vars,
+            self.secret_variables(),
+            active_env,
+            &folders,
+            own,
+        )
+    }
+
     /// M6: the JSON of `api`'s last answer, which a `get` path's fields
     /// come from: as read before, or read now. One that cannot be read is
     /// not kept, so the next asks again.

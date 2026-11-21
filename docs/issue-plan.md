@@ -350,7 +350,7 @@ Query、路径参数和请求头的类型、必填、format 和枚举。已完�
 | 编号 | 优化项 | 规模 | 位置 | 现状问题与优化方案 | 状态 |
 |---|---|---|---|---|---|
 | UI-8 | 参数表（`KvEditor`）支持 `Ctrl + /`（`⌘/`）快捷切换行启用态 | S | [`src/views/kv_editor.rs`](../src/views/kv_editor.rs) | JSON Body 已支持 `Ctrl + /` 注释禁用某行参数；在 `Query`、`Headers`、`Form` 键值表中，当焦点位于某行输入框时按 `Ctrl + /`（`⌘/`）直接切换该行的 `enabled` 勾选状态，统一参数快速开关体验 | 已完成 |
-| UI-9 | 请求编辑器内快速查看 `{{变量}}` 当前环境解析值 | S–M | [`src/views/workspace/request_editor.rs`](../src/views/workspace/request_editor.rs) | 发送前核对 `{{VAR}}` 在当前命名环境下的实际值需点开变量弹窗查找。支持在地址栏或请求体中悬停 / 快捷预览当前环境下变量的实际值与来源层级（或未定义提示） | 待做 |
+| UI-9 | 请求编辑器内快速查看 `{{变量}}` 当前环境解析值 | S–M | [`src/views/workspace/request_editor.rs`](../src/views/workspace/request_editor.rs) | 发送前核对 `{{VAR}}` 在当前命名环境下的实际值需点开变量弹窗查找。支持在地址栏或请求体中悬停 / 快捷预览当前环境下变量的实际值与来源层级（或未定义提示） | 已完成 |
 | F17 | 在线接口文档窄屏自适应与桌面/网页一键导出单文件 HTML 文档 | S | [`crates/cyberapi-core/src/html_docs.rs`](../crates/cyberapi-core/src/html_docs.rs)、[`src/views/workspace/export_dialog.rs`](../src/views/workspace/export_dialog.rs) | `html_docs.rs` 左侧 `.sidebar` 固定 `280px`，补充 `@media (max-width: 860px)` 窄屏/分屏折叠样式；同时在项目导出格式中增加“HTML 文档（`.html`）”，直接复用 `html_docs::render` 让桌面版和未部署 `bridge` 的用户也能一键导出单文件离线接口文档 | 待做 |
 
 ### 三、存储同步与工程化维护

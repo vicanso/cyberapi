@@ -815,11 +815,24 @@ impl Render for KvEditor {
                                     )
                                 }),
                         )
-                        .child(
+                        .child({
+                            let has_menu = menu.is_some_and(|menu| menu.field == index);
+                            let value_tip = (!has_menu)
+                                .then(|| {
+                                    let val = row.value.read(cx).value();
+                                    self.hints.as_ref().and_then(|source| source.preview_tooltip(&val, cx))
+                                })
+                                .flatten();
                             cell()
+                                .id(("kv-value-cell", index))
                                 .flex_1()
                                 .min_w_0()
                                 .relative()
+                                .when_some(value_tip, |cell, tip| {
+                                    cell.tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                                    })
+                                })
                                 .child(Input::new(&row.value).small().appearance(false))
                                 .when_some(menu.filter(|menu| menu.field == index), |cell, menu| {
                                     let view = view.clone();
@@ -833,8 +846,8 @@ impl Render for KvEditor {
                                         },
                                         cx,
                                     ))
-                                }),
-                        )
+                                })
+                        })
                         .child(
                             cell()
                                 .w(relative(0.28))

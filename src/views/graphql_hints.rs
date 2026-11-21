@@ -99,4 +99,5 @@ pub fn complete_in(editor: &mut EditorState, api: &Entity<ApiState>, templates: 
         templates: template_hints::provider(templates),
     };
     template_hints::complete_with(editor, Rc::new(hints));
+    template_hints::hover_in(editor, templates);
 }

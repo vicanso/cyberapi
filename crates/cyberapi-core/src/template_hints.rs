@@ -8,10 +8,12 @@
 //! An expression is one line, as [`crate::template::parse`] reads it, so only
 //! the caret's line is looked at.
 
-use crate::ItemId;
+use crate::model::{KvParam, Variable, VariableCategory};
 use crate::search::matches_text_or_pinyin;
+use crate::secrets;
 use crate::template::json_path;
 use crate::tree::{Node, Tree};
+use crate::{EnvironmentId, ItemId, VariableId};
 use serde_json::Value as Json;
 use std::ops::Range;
 use std::sync::Arc;
@@ -443,6 +445,208 @@ fn closing_braces(after: &str) -> (&'static str, usize) {
     ("}}", if after.starts_with("}}") { 2 } else { 0 })
 }
 
+/// UI-9: what kind of variable reference a `{{...}}` expression is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VarRefKind {
+    /// `{{value(NAME)}}` (custom variable, or folder/API override).
+    Value,
+    /// Leading `{{NAME}}` (environment prefix, or folder/API override).
+    EnvPrefix,
+}
+
+/// UI-9: a variable reference found in text, with its byte range.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VarRef {
+    pub name: String,
+    pub kind: VarRefKind,
+    /// Byte range of the whole `{{...}}` expression in the input string.
+    pub range: Range<usize>,
+}
+
+/// UI-9: which layer a variable's effective value came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VarSource {
+    /// The API's own variable / path parameter.
+    ApiOwn,
+    /// A folder's variable (carrying the folder's name).
+    Folder(String),
+    /// A named environment's variable (carrying the environment's name).
+    NamedEnv(String),
+    /// The project's shared layer (all environments).
+    Shared,
+    /// Not defined or disabled in the active environment.
+    Undefined,
+}
+
+/// UI-9: a variable's effective value and where it came from, with secrets
+/// already masked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedVar {
+    pub name: String,
+    pub value: Option<String>,
+    pub source: VarSource,
+    pub secret: bool,
+}
+
+/// Parses the variable reference inside `inner` (between `{{` and `}}`) whose
+/// full expression spans `range` in the document.
+fn parse_var_ref(inner: &str, range: Range<usize>) -> Option<VarRef> {
+    let trimmed = inner.trim();
+    if let Some(rest) = trimmed.strip_prefix("value(")
+        && let Some(end) = rest.find(')')
+    {
+        let name = rest[..end].trim().trim_matches(['\'', '"']).trim();
+        if !name.is_empty() {
+            return Some(VarRef {
+                name: name.to_string(),
+                kind: VarRefKind::Value,
+                range,
+            });
+        }
+    }
+    if range.start == 0 && !trimmed.is_empty() && !trimmed.contains(['(', ')', '.', ' ']) {
+        return Some(VarRef {
+            name: trimmed.to_string(),
+            kind: VarRefKind::EnvPrefix,
+            range,
+        });
+    }
+    None
+}
+
+/// UI-9: the `{{value(NAME)}}` or leading `{{ENV}}` variable reference at byte
+/// `offset` of `text`, if any.
+pub fn expression_at(text: &str, offset: usize) -> Option<VarRef> {
+    if offset > text.len() || !text.is_char_boundary(offset) {
+        return None;
+    }
+    let line_start = text[..offset].rfind('\n').map_or(0, |at| at + 1);
+    let line_end = text[offset..].find('\n').map_or(text.len(), |at| offset + at);
+    let line = &text[line_start..line_end];
+    let mut cursor = 0;
+    while let Some(rel_open) = line[cursor..].find("{{") {
+        let open = cursor + rel_open;
+        let Some(rel_close) = line[open + 2..].find("}}") else {
+            break;
+        };
+        let close = open + 2 + rel_close + 2;
+        let doc_range = (line_start + open)..(line_start + close);
+        if offset >= doc_range.start && offset <= doc_range.end {
+            return parse_var_ref(&line[open + 2..close - 2], doc_range);
+        }
+        cursor = close;
+    }
+    None
+}
+
+/// UI-9: every `{{value(NAME)}}` or leading `{{ENV}}` variable reference in
+/// `text`, in order of appearance.
+pub fn referenced_vars(text: &str) -> Vec<VarRef> {
+    let mut found = Vec::new();
+    let mut line_start = 0;
+    for line in text.split('\n') {
+        let mut cursor = 0;
+        while let Some(rel_open) = line[cursor..].find("{{") {
+            let open = cursor + rel_open;
+            let Some(rel_close) = line[open + 2..].find("}}") else {
+                break;
+            };
+            let close = open + 2 + rel_close + 2;
+            let doc_range = (line_start + open)..(line_start + close);
+            if let Some(var_ref) = parse_var_ref(&line[open + 2..close - 2], doc_range) {
+                found.push(var_ref);
+            }
+            cursor = close;
+        }
+        line_start += line.len() + 1;
+    }
+    found
+}
+
+/// UI-9: resolves `name` in `category` following CyberAPI's precedence:
+/// API own non-empty variable -> nearest folder variable -> active named
+/// environment -> shared project layer -> undefined.
+///
+/// Secret variables always return a masked value (`secrets::MASK`) when
+/// non-empty, never leaking the underlying secret.
+pub fn resolve_with_source(
+    name: &str,
+    category: VariableCategory,
+    variables: &[Variable],
+    secret_ids: &[VariableId],
+    active_env: Option<(&EnvironmentId, &str)>,
+    folders: &[(&str, &[KvParam])],
+    api_own: &[KvParam],
+) -> ResolvedVar {
+    if let Some(kv) = api_own
+        .iter()
+        .rev()
+        .find(|kv| kv.enabled && kv.key.trim() == name && !kv.value.is_empty())
+    {
+        return ResolvedVar {
+            name: name.to_string(),
+            value: Some(kv.value.clone()),
+            source: VarSource::ApiOwn,
+            secret: false,
+        };
+    }
+    // `folders` is nearest-first (as `inherit::folders_above` returns).
+    for (folder_name, vars) in folders {
+        if let Some(kv) = vars.iter().rev().find(|kv| kv.enabled && kv.key.trim() == name) {
+            return ResolvedVar {
+                name: name.to_string(),
+                value: Some(kv.value.clone()),
+                source: VarSource::Folder((*folder_name).to_string()),
+                secret: false,
+            };
+        }
+    }
+    let mask_if_secret = |v: &Variable| {
+        let secret = secret_ids.contains(&v.id);
+        let value = if secret {
+            if v.value.is_empty() {
+                String::new()
+            } else {
+                secrets::MASK.to_string()
+            }
+        } else {
+            v.value.clone()
+        };
+        (value, secret)
+    };
+    if let Some((env_id, env_name)) = active_env
+        && let Some(v) = variables
+            .iter()
+            .find(|v| v.category == category && v.enabled && v.environment.as_ref() == Some(env_id) && v.name == name)
+    {
+        let (value, secret) = mask_if_secret(v);
+        return ResolvedVar {
+            name: name.to_string(),
+            value: Some(value),
+            source: VarSource::NamedEnv(env_name.to_string()),
+            secret,
+        };
+    }
+    if let Some(v) = variables
+        .iter()
+        .find(|v| v.category == category && v.enabled && v.environment.is_none() && v.name == name)
+    {
+        let (value, secret) = mask_if_secret(v);
+        return ResolvedVar {
+            name: name.to_string(),
+            value: Some(value),
+            source: VarSource::Shared,
+            secret,
+        };
+    }
+    ResolvedVar {
+        name: name.to_string(),
+        value: None,
+        source: VarSource::Undefined,
+        secret: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,5 +973,156 @@ mod tests {
     #[test]
     fn a_caret_inside_a_character_offers_nothing() {
         assert!(hints("{{登", 3, &sources()).is_empty());
+    }
+
+    #[test]
+    fn expression_at_finds_value_and_env_prefix_references() {
+        let body = "{\n  \"token\": \"{{value(API_TOKEN)}}\",\n  \"enc\": \"{{value('SECRET').b64}}\"\n}";
+        let pos = body.find("API_TOKEN").expect("token offset") + 2;
+        let found = expression_at(body, pos).expect("value ref");
+        assert_eq!(found.name, "API_TOKEN");
+        assert_eq!(found.kind, VarRefKind::Value);
+        assert_eq!(&body[found.range], "{{value(API_TOKEN)}}");
+
+        let enc_pos = body.find("SECRET").expect("secret offset");
+        let enc = expression_at(body, enc_pos).expect("chained value ref");
+        assert_eq!(enc.name, "SECRET");
+        assert_eq!(enc.kind, VarRefKind::Value);
+        assert_eq!(&body[enc.range], "{{value('SECRET').b64}}");
+
+        assert_eq!(expression_at(body, 2), None, "outside any expression");
+
+        let uri = "{{PROD}}/v1/users/{{value(UID)}}";
+        let env_ref = expression_at(uri, 3).expect("leading env prefix");
+        assert_eq!(env_ref.name, "PROD");
+        assert_eq!(env_ref.kind, VarRefKind::EnvPrefix);
+        assert_eq!(&uri[env_ref.range], "{{PROD}}");
+
+        let all = referenced_vars(uri);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].name, "PROD");
+        assert_eq!(all[0].kind, VarRefKind::EnvPrefix);
+        assert_eq!(all[1].name, "UID");
+        assert_eq!(all[1].kind, VarRefKind::Value);
+    }
+
+    #[test]
+    fn resolve_with_source_respects_precedence_and_masks_secrets() {
+        let staging_id = EnvironmentId::from("env-staging");
+        let secret_id = VariableId::from("var-secret");
+        let make_var = |id: &str, name: &str, value: &str, enabled: bool, category: VariableCategory, env| Variable {
+            id: VariableId::from(id),
+            collection: crate::CollectionId::from("col-1"),
+            category,
+            name: name.into(),
+            value: value.into(),
+            enabled,
+            environment: env,
+            created_at: crate::Timestamp::default(),
+            updated_at: crate::Timestamp::default(),
+        };
+        let vars = vec![
+            make_var(
+                "v1",
+                "HOST",
+                "https://shared.test",
+                true,
+                VariableCategory::Environment,
+                None,
+            ),
+            make_var(
+                "v2",
+                "HOST",
+                "https://staging.test",
+                true,
+                VariableCategory::Environment,
+                Some(staging_id.clone()),
+            ),
+            make_var(
+                "var-secret",
+                "API_KEY",
+                "super-secret-value",
+                true,
+                VariableCategory::Custom,
+                None,
+            ),
+            make_var("v4", "OFF", "nope", false, VariableCategory::Custom, None),
+        ];
+        let secret_ids = [secret_id];
+        let inner_folder = [KvParam {
+            key: "HOST".into(),
+            value: "https://folder.test".into(),
+            enabled: true,
+            ..Default::default()
+        }];
+        let api_own = [KvParam {
+            key: "HOST".into(),
+            value: "https://api.test".into(),
+            enabled: true,
+            ..Default::default()
+        }];
+
+        // API own overrides folder and env.
+        let r = resolve_with_source(
+            "HOST",
+            VariableCategory::Environment,
+            &vars,
+            &secret_ids,
+            Some((&staging_id, "Staging")),
+            &[("Users", &inner_folder)],
+            &api_own,
+        );
+        assert_eq!(r.value.as_deref(), Some("https://api.test"));
+        assert_eq!(r.source, VarSource::ApiOwn);
+
+        // Folder overrides named env.
+        let r = resolve_with_source(
+            "HOST",
+            VariableCategory::Environment,
+            &vars,
+            &secret_ids,
+            Some((&staging_id, "Staging")),
+            &[("Users", &inner_folder)],
+            &[],
+        );
+        assert_eq!(r.value.as_deref(), Some("https://folder.test"));
+        assert_eq!(r.source, VarSource::Folder("Users".into()));
+
+        // Named env overrides shared.
+        let r = resolve_with_source(
+            "HOST",
+            VariableCategory::Environment,
+            &vars,
+            &secret_ids,
+            Some((&staging_id, "Staging")),
+            &[],
+            &[],
+        );
+        assert_eq!(r.value.as_deref(), Some("https://staging.test"));
+        assert_eq!(r.source, VarSource::NamedEnv("Staging".into()));
+
+        // Shared fallback when no named env active.
+        let r = resolve_with_source(
+            "HOST",
+            VariableCategory::Environment,
+            &vars,
+            &secret_ids,
+            None,
+            &[],
+            &[],
+        );
+        assert_eq!(r.value.as_deref(), Some("https://shared.test"));
+        assert_eq!(r.source, VarSource::Shared);
+
+        // Secret is masked.
+        let r = resolve_with_source("API_KEY", VariableCategory::Custom, &vars, &secret_ids, None, &[], &[]);
+        assert_eq!(r.value.as_deref(), Some(secrets::MASK));
+        assert_eq!(r.source, VarSource::Shared);
+        assert!(r.secret);
+
+        // Disabled variable is undefined.
+        let r = resolve_with_source("OFF", VariableCategory::Custom, &vars, &secret_ids, None, &[], &[]);
+        assert_eq!(r.value, None);
+        assert_eq!(r.source, VarSource::Undefined);
     }
 }

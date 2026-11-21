@@ -35,7 +35,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Task, Window, div, px, relative, rems,
+    ParentElement as _, PathPromptOptions, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    Window, div, px, relative, rems,
 };
 use rust_i18n::t;
 use std::collections::HashMap;
@@ -331,7 +332,7 @@ impl RequestEditor {
                 .placeholder(uri_placeholder(request.method))
                 .default_value(uri_field_text(&request, query_in_url))
         });
-        let hints = HintSource::new(&workspace);
+        let hints = HintSource::for_api(&workspace, &api);
         let body = body_state(&request, &hints, window, cx);
         let graphql = graphql_fields(&request, &api, &hints, window, cx);
         let grpc_message = grpc_message_state(&request, &hints, window, cx);
@@ -1719,14 +1720,42 @@ impl RequestEditor {
         }
         // What the prefix stands for: the address the request goes to.
         // A prefix nothing enabled stands for is sent as it is written.
-        let env_value = env
-            .as_ref()
-            .and_then(|name| environments.iter().find(|(candidate, _)| candidate == name))
-            .map(|(_, value)| value.clone());
-        let env_tooltip = match (&env, &env_value) {
-            (Some(name), Some(value)) => format!("{{{{{name}}}}} = {value}"),
-            (Some(name), None) => t!("editor.environment_missing", name = name).to_string(),
+        let env_resolved = env.as_ref().map(|name| {
+            self.workspace.read(cx).resolve_var(
+                name,
+                cyberapi_core::template_hints::VarRefKind::EnvPrefix,
+                Some(&api_id),
+                Some(&variables),
+                effective_env,
+            )
+        });
+        let env_value = env_resolved.as_ref().and_then(|r| r.value.clone());
+        let env_tooltip = match (&env, &env_resolved) {
+            (Some(name), Some(resolved)) if resolved.value.is_some() => {
+                let source = template_hints::format_source(&resolved.source, resolved.secret);
+                let val = resolved.value.as_deref().unwrap_or_default();
+                format!("{{{{{name}}}}} = {val} ({source})")
+            }
+            (Some(name), _) => t!("editor.environment_missing", name = name).to_string(),
             (None, _) => t!("editor.environment").to_string(),
+        };
+        // UI-9: when the address bar references `{{ENV}}` or `{{value(...)}}`,
+        // hovering over the URI input previews the resolved URL and variable layers.
+        let uri_tooltip = {
+            let var_preview = self.hints.preview_tooltip(&uri, cx);
+            if env.is_some() || var_preview.is_some() {
+                let resolved_uri =
+                    self.workspace
+                        .read(cx)
+                        .resolved_uri_for(&api_id, self.api.read(cx).request(), effective_env);
+                let mut lines = vec![t!("hints.resolved_uri", uri = resolved_uri).to_string()];
+                if let Some(vars) = var_preview {
+                    lines.push(vars);
+                }
+                Some(lines.join("\n"))
+            } else {
+                None
+            }
         };
         let this = cx.entity().downgrade();
         let paste = this.clone();
@@ -1890,8 +1919,14 @@ impl RequestEditor {
                 )
                 .child(
                     div()
+                        .id("request-uri")
                         .flex_1()
                         .min_w_0()
+                        .when_some(uri_tooltip, |el, tip| {
+                            el.tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                            })
+                        })
                         .child(Input::new(&self.uri).small().appearance(false).on_paste(
                             move |clipboard, window, cx| {
                                 // A pasted cURL command fills the request in rather
