@@ -130,6 +130,9 @@ pub fn bind_keys(cx: &mut App) {
         #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-/", ToggleComment, Some("Workspace > Input")),
         super::secondary_binding(cx, "secondary-/", ToggleComment, Some("Workspace > Input")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("ctrl-/", ToggleComment, Some("KvEditor > Input")),
+        super::secondary_binding(cx, "secondary-/", ToggleComment, Some("KvEditor > Input")),
         // #64: to the API search, Enter there opening the first found; a
         // field that cannot search hands the same keys on as its `Search`.
         super::secondary_binding(cx, "secondary-f", FindApi, Some(KEY_CONTEXT)),
@@ -189,6 +192,7 @@ pub fn bind_mac_page_keys(cx: &mut App) {
         KeyBinding::new("cmd-enter", Send, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-enter", Send, Some("Workspace > Input")),
         KeyBinding::new("cmd-/", ToggleComment, Some("Workspace > Input")),
+        KeyBinding::new("cmd-/", ToggleComment, Some("KvEditor > Input")),
         KeyBinding::new("cmd-v", PasteCurl, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-f", Search, INPUT),
         KeyBinding::new("cmd-f", FindApi, Some(KEY_CONTEXT)),

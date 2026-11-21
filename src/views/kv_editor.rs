@@ -10,8 +10,10 @@
 //! the template hints as one types `{{` in a value (M6).
 
 use super::template_hints::{self, FieldHints, HintKey, HintSource, Hints};
+use super::workspace::ToggleComment;
 use crate::this_build;
 use cyberapi_core::model::{KvParam, kv_from_text, kv_text};
+use cyberapi_core::send;
 use gpui_kit::base::input::Position;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -30,6 +32,8 @@ use gpui_kit::{
 use rust_i18n::t;
 use std::collections::HashMap;
 use std::time::Duration;
+
+pub(crate) const KEY_CONTEXT: &str = "KvEditor";
 
 const REPORT_DELAY: Duration = Duration::from_millis(200);
 /// How long a first click on remove waits for the second.
@@ -602,7 +606,9 @@ impl Render for KvEditor {
             .on_click(cx.listener(|this, _, window, cx| this.toggle_bulk(window, cx)));
         if let Some(bulk) = &self.bulk {
             let theme = cx.theme();
+            let bulk_text = bulk.text.clone();
             return v_flex()
+                .key_context(KEY_CONTEXT)
                 .rounded(theme.radius)
                 .border_1()
                 .border_color(theme.border)
@@ -623,6 +629,17 @@ impl Render for KvEditor {
                         .h(px(240.))
                         .border_t_1()
                         .border_color(theme.border)
+                        .on_action(move |_: &ToggleComment, window, cx| {
+                            bulk_text.update(cx, |editor, cx| {
+                                let text = editor.value().to_string();
+                                let selected = editor.selected_range();
+                                let (range, replacement, next_selection) =
+                                    send::toggle_line_comment(&text, selected, "//");
+                                editor.set_selected_range(range, cx);
+                                editor.replace(replacement, window, cx);
+                                editor.set_selected_range(next_selection, cx);
+                            });
+                        })
                         .child(Editor::new(&bulk.text).w_full().h_full().bordered(false)),
                 )
                 .into_any_element();
@@ -713,6 +730,11 @@ impl Render for KvEditor {
                 .items_center()
                 .border_t_1()
                 .border_color(border)
+                .when(!blank, |this| {
+                    this.on_action(cx.listener(move |this, _: &ToggleComment, _, cx| {
+                        this.toggle(index, cx);
+                    }))
+                })
                 .child(
                     div()
                         .w_8()
@@ -844,6 +866,7 @@ impl Render for KvEditor {
                 )
         });
         v_flex()
+            .key_context(KEY_CONTEXT)
             .rounded(theme.radius)
             .border_1()
             .border_color(border)
@@ -851,5 +874,146 @@ impl Render for KvEditor {
             .child(header)
             .children(rows.collect::<Vec<_>>())
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::component::Root;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AnyWindowHandle, TestAppContext, size};
+
+    #[gpui_kit::test]
+    async fn ctrl_slash_toggles_focused_row_and_ignores_blank_row(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::views::workspace::bind_keys(cx);
+        });
+
+        let initial = vec![
+            KvParam {
+                key: "page".into(),
+                value: "1".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            KvParam {
+                key: "limit".into(),
+                value: "20".into(),
+                enabled: true,
+                ..Default::default()
+            },
+        ];
+
+        let mut editor = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(800.), px(400.)), |window, cx| {
+                let kv = cx.new(|cx| KvEditor::new(&initial, KvOptions::default(), window, cx));
+                editor = Some(kv.clone());
+                Root::new(kv, window, cx)
+            })
+            .into();
+        let editor = editor.expect("kv editor built");
+
+        // Focus row 0's value input and press secondary-/ (Cmd-/ on macOS, Ctrl-/ elsewhere).
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let value_input = editor.read(cx).rows[0].value.clone();
+            value_input.update(cx, |input, cx| input.focus(window, cx));
+            window.render_frame(cx);
+            window.press("secondary-/", cx);
+        })
+        .expect("window open");
+
+        let list = cx.read(|cx| editor.read(cx).list(cx));
+        assert!(!list[0].enabled, "row 0 should be disabled after first toggle");
+        assert!(list[1].enabled, "row 1 should remain enabled");
+
+        // Press again from row 0's key input to re-enable row 0.
+        cx.update_window(window, |_, window, cx| {
+            let key_input = editor.read(cx).rows[0].key.clone();
+            key_input.update(cx, |input, cx| input.focus(window, cx));
+            window.render_frame(cx);
+            window.press("secondary-/", cx);
+        })
+        .expect("window open");
+
+        let list = cx.read(|cx| editor.read(cx).list(cx));
+        assert!(list[0].enabled, "row 0 should be re-enabled after second toggle");
+
+        // Focus row 1's description input and toggle row 1 off.
+        cx.update_window(window, |_, window, cx| {
+            let desc_input = editor.read(cx).rows[1].description.clone();
+            desc_input.update(cx, |input, cx| input.focus(window, cx));
+            window.render_frame(cx);
+            window.press("secondary-/", cx);
+        })
+        .expect("window open");
+
+        let list = cx.read(|cx| editor.read(cx).list(cx));
+        assert!(!list[1].enabled, "row 1 should be disabled from description input");
+
+        // Focus the trailing blank row and press secondary-/: its enabled flag stays true.
+        cx.update_window(window, |_, window, cx| {
+            let blank_key = editor.read(cx).rows[2].key.clone();
+            blank_key.update(cx, |input, cx| input.focus(window, cx));
+            window.render_frame(cx);
+            window.press("secondary-/", cx);
+        })
+        .expect("window open");
+
+        let blank_enabled = cx.read(|cx| editor.read(cx).rows[2].enabled);
+        assert!(blank_enabled, "blank trailing row should ignore toggle shortcut");
+    }
+
+    #[gpui_kit::test]
+    async fn ctrl_slash_toggles_comment_in_bulk_mode(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::views::workspace::bind_keys(cx);
+        });
+
+        let initial = vec![
+            KvParam {
+                key: "X-A".into(),
+                value: "1".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            KvParam {
+                key: "X-B".into(),
+                value: "2".into(),
+                enabled: true,
+                ..Default::default()
+            },
+        ];
+
+        let mut editor = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(800.), px(400.)), |window, cx| {
+                let kv = cx.new(|cx| KvEditor::new(&initial, KvOptions::default(), window, cx));
+                editor = Some(kv.clone());
+                Root::new(kv, window, cx)
+            })
+            .into();
+        let editor = editor.expect("kv editor built");
+
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |kv, cx| kv.toggle_bulk(window, cx));
+            window.render_frame(cx);
+            let bulk_text = editor.read(cx).bulk.as_ref().expect("bulk mode").text.clone();
+            bulk_text.update(cx, |input, cx| {
+                input.focus(window, cx);
+                input.set_selected_range(0..0, cx);
+            });
+            window.render_frame(cx);
+            window.press("secondary-/", cx);
+        })
+        .expect("window open");
+
+        let list = cx.read(|cx| editor.read(cx).list(cx));
+        assert!(!list[0].enabled, "first line in bulk editor should be commented out");
+        assert!(list[1].enabled, "second line should remain enabled");
     }
 }
