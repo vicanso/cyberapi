@@ -358,7 +358,7 @@ Query、路径参数和请求头的类型、必填、format 和枚举。已完�
 | 编号 | 优化项 | 规模 | 位置 | 现状问题与优化方案 | 状态 |
 |---|---|---|---|---|---|
 | PERF-9 | `cyberapi-bridge` 请求体解压支持（`RequestDecompressionLayer`） | S | [`cyberapi-bridge/src/lib.rs`](../cyberapi-bridge/src/lib.rs)、[`crates/cyberapi-store-bridge/src/lib.rs`](../crates/cyberapi-store-bridge/src/lib.rs) | 大型项目执行全量替换（`TreeReplace`）、合并（`TreeMerge`）或 OpenAPI 导入时上行 JSON 可达数 MB。在 `cyberapi-bridge` 启用 `RequestDecompressionLayer`（支持 `zstd` / `gzip`），并在客户端上行大请求体时自动压缩 | 已完成 |
-| MAINT-1 | 清理 GitHub Dependabot 依赖安全告警 | S | [`Cargo.lock`](../Cargo.lock) | 排查并升级 GitHub Dependabot 报告的 2 个 moderate 级别依赖包版本 | 待做 |
+| MAINT-1 | 清理 GitHub Dependabot 依赖安全告警 | S | [`Cargo.lock`](../Cargo.lock) | 排查并升级 GitHub Dependabot 报告的 2 个 moderate 级别依赖包版本 | 已完成 |
 
 
 
