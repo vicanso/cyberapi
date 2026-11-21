@@ -308,7 +308,7 @@ A9、A10、F15、F16、B11、G5、A11、F9b 已完成。A4c、G7、Q2、Q8、E4/
 - F4 的 Linux 窗口还原尺寸
 - “从来源同步”的主机检查
 
-此前已经否决的仍然不做：C1 签名类认证、A5 前后置脚本、网页版 WebSocket、插件系统（Q10）、Vim 模式、jq、SAML / LDAP / 审计日志、预览标签，以及内置 AI（H3）。
+此前已经否决的仍然不做：C1 签名类认证（其中的 AWS SigV4 于 2026-11-21 改为要做，见“竞品对照后的候选”的 C4）、A5 前后置脚本、网页版 WebSocket、插件系统（Q10）、Vim 模式、jq、SAML / LDAP / 审计日志、预览标签，以及内置 AI（H3）。
 
 ## 待做（2026-11-01）
 
@@ -362,3 +362,36 @@ Query、路径参数和请求头的类型、必填、format 和枚举。已完�
 
 
 
+## 竞品对照后的候选（2026-11-21 整理）
+
+对照 Postman、Insomnia、Bruno、Hoppscotch、Yaak、Apidog、Kreya、HTTPie、Requestly，并抽查代码后整理，只列还没做的；上面“明确不做”的不再列。编号沿用功能分组字母，一项一个提交，提交信息写编号。
+
+### 一、已定要做
+
+| 编号 | 功能 | 规模 | 数据模型 | 决定的做法 | 状态 |
+|---|---|---|---|---|---|
+| C4 | AWS SigV4 认证 | S–M | +1（`Auth` 多一种） | 在 `cyberapi-core` 自己实现（约 300 行），**不加依赖**：现有的 `hmac`、`sha2`、`percent-encoding`、`url` 足够；不用官方 `aws-sigv4`（带进整串 `aws-smithy-*`，还要顾 wasm）。用 AWS 公开的 SigV4 测试用例验证。字段：Access Key、Secret Key、可选 Session Token、Region、Service，值可用模板函数和秘密变量。签名是发送前的最后一步：模板求值、请求体定下之后再签（要请求体的哈希，S3 另加 `x-amz-content-sha256`）；每次发送重签，运行器、压测每个请求各签一次；桌面、网页（bridge）、命令行、MCP 走同一条路径。可继承目录 / 项目。Postman、Insomnia、Bruno 的 AWS 认证导入时对应进来，Postman 导出写回；复制为 cURL 写成 `--aws-sigv4`，其他语言写当前算出的签名头并注明会过期 | 待做 |
+| F18 | 本机敏感值加密，主密钥放系统密钥管理器（照 zedis 的 `zedis-connection/src/master_key.rs`） | M | 不变（存储内容变成密文） | 现状：秘密变量的值（`secrets/<项目>` 文档）、OAuth 令牌、客户端证书密码在本机库里是明文，`server.json` 的会话令牌是 0600 明文。改为：每台机器一个随机 256 位主密钥，发布版放 macOS 钥匙串 / Windows 凭据管理器（`keyring` 4.x，只在这两个平台引入）；dev 版（`debug_assertions`，同 `paths.rs`）和 Linux 一律用数据目录里的 `master.key`（0600），Linux 不引入 Secret Service / zbus；钥匙串读不到时退回该文件。用 AES-GCM（`aes-gcm` 0.11、`getrandom` 已在 `Cargo.lock`）加密上面四类值后照旧存放。迁移：读到明文照常用，下次写入时加密，不做一次性改写。主密钥丢失（重装系统、手动删掉钥匙串条目）时解不开的值当作“未填写”，提示读者重新填，不报错。正式包用 Developer ID 签名，钥匙串按 Team ID + bundle 标识符认程序，升级不会再弹授权（zedis 一直如此）；只有本地未设 `CYBERAPI_SIGN_IDENTITY` 的 ad-hoc 包会被问。网页版的秘密在服务器上，不在这一项里；bridge 和测试不碰钥匙串 | 待做 |
+
+### 二、其余候选（未排期）
+
+| 编号 | 功能 | 规模 | 现状与说明 |
+|---|---|---|---|
+| R1 | 二进制 / 文件请求体（整个 body 是一个文件） | S–M，+1 | `ContentType` 只有 Json / Form / Multipart / Xml / Plain / GraphQl；Postman、Insomnia、HAR 的 binary 请求导入后丢失 |
+| R2 | 读取系统代理和 PAC（macOS 系统设置、Windows Internet 选项、WPAD） | S–M | 只读 `HTTP_PROXY` 等环境变量和手填；从 Dock 启动的应用通常拿不到 shell 的环境变量 |
+| R3 | Faker 类动态变量（`$randomEmail`、`$randomFirstName`、`$randomPhoneNumber`、`$randomIP` 等） | S | 只有 `$uuid`、`$timestamp`、`$randomInt`、`$randomString` 等几个；导入 Postman 集合后其余原样发出 |
+| R4 | 环境颜色（各环境可选色，不只“生产环境”） | S，+1 | D6 只有生产标记 |
+| R5 | XML 响应的 XPath 过滤与断言 | S–M | JSON 有 JSONPath，XML 只能按文本 |
+| R6 | OAuth 2.0 的 Device Code、Implicit、`private_key_jwt`、Token Exchange；JWT Bearer 认证（现签 JWT） | M | `Grant` 只有客户端凭据、密码、授权码 |
+| R7 | `{{g(接口, 路径)}}` 的依赖响应不存在或过期时先自动发送依赖接口 | M | `g()` 只读已有的最近一次响应（`template::needs`） |
+| R8 | 按响应 Schema 生成数据的 Mock；按 Query / 请求体条件选示例；延迟和状态码 | M | Mock 只回固定示例或 `x-mock-example` 指定的那条 |
+| R10 | 外部密钥库取值（1Password `op read`、HashiCorp Vault、云厂商 Secrets Manager） | M | 无 |
+| R11 | 导出 Insomnia、Bruno、HAR、`.http`（已能导入） | S–M | 只能导出 CyberAPI、Postman v2.1、OpenAPI 3；单文件 HTML 见 F17 |
+| R12 | 导入 Apidog、Thunder Client、Yaak、Paw / RapidAPI、GraphQL SDL | S（每种） | 无 |
+| R13 | SOAP / WSDL：导入 WSDL 生成操作和信封骨架 | M–L | 无 |
+| R14 | gRPC-Web | M | 无 |
+| R15 | 本机代理录制流量，挑选成接口 | L | HAR 导入覆盖一部分 |
+| R16 | 接口上的评论 / @提及，项目变更通知（Webhook、飞书、Slack） | M–L | 有版本对比（G8），没有“为什么改”和通知；与已否决的审计日志不同 |
+| R18 | HTTP/3、Unix Socket、主机映射（DNS 覆盖） | M | 小众，按需求再做 |
+
+优化点（不改数据模型）：全局历史（跨项目、按状态码过滤、耗时趋势）；Cookie 可选按项目隔离（现在所有项目共用）；运行结果保留成报告历史并与上次对比；复制为代码加 Kotlin OkHttp、Dart、Ruby、PowerShell、wget；超过 64 MB 的响应直接流式写文件；屏幕阅读器和全键盘可达性检查。另见上面待做的 UI-8、UI-9、F17、MAINT-1。
