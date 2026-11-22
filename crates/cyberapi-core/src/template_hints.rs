@@ -8,6 +8,7 @@
 //! An expression is one line, as [`crate::template::parse`] reads it, so only
 //! the caret's line is looked at.
 
+pub use crate::faker::{DYNAMIC_VARS, DynCategory, DynamicVar};
 use crate::model::{KvParam, Variable, VariableCategory};
 use crate::search::matches_text_or_pinyin;
 use crate::secrets;
@@ -52,7 +53,7 @@ const fn function(
 
 /// Every function [`crate::template::evaluate`] knows, the ones a request
 /// reaches for most first.
-pub const FUNCTIONS: [Function; 23] = [
+pub const FUNCTIONS: [Function; 26] = [
     function("value", None, true, false),
     function("get", Some("g"), true, false),
     function("timestamp", Some("ts"), false, false),
@@ -60,6 +61,9 @@ pub const FUNCTIONS: [Function; 23] = [
     function("uuid", None, false, false),
     function("random", None, true, false),
     function("randomString", None, true, false),
+    function("cnName", None, false, false),
+    function("cnPhone", None, false, false),
+    function("cnIdCard", None, false, false),
     function("base64", Some("b64"), true, false),
     function("base64Decode", Some("b64d"), true, false),
     function("urlEncode", None, true, false),
@@ -152,6 +156,7 @@ pub struct Sources {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HintKind {
     Function(Function),
+    DynamicVar(DynamicVar),
     /// A custom variable, and its value.
     Custom(String),
     Api(ApiHint),
@@ -188,8 +193,10 @@ pub struct Hint {
 
 /// Where the caret is in an expression.
 enum Spot<'a> {
-    /// Naming a function: `{{md` or `{{b64.r`.
-    Function(&'a str),
+    /// Naming a function (and unchained `$random*` variables): `{{md`, `{{b64.r`.
+    Function { typed: &'a str, chained: bool },
+    /// Naming a `$...` dynamic variable: `{{$` or `{{$randomEm`.
+    DynamicVar(&'a str),
     /// The first parameter of `value(`.
     Custom(&'a str),
     /// The first parameter of `get(`.
@@ -207,7 +214,7 @@ impl<'a> Spot<'a> {
     /// What was typed of the part the caret is in.
     fn typed(&self) -> &'a str {
         match self {
-            Spot::Function(typed) | Spot::Custom(typed) | Spot::Api(typed) => typed,
+            Spot::Function { typed, .. } | Spot::DynamicVar(typed) | Spot::Custom(typed) | Spot::Api(typed) => typed,
             Spot::Path { typed, .. } => typed,
         }
     }
@@ -273,28 +280,88 @@ pub fn hints(text: &str, caret: usize, sources: &Sources) -> Vec<Hint> {
         }
     };
     match spot {
-        // A name is an identifier: its start, or its alias's.
-        Spot::Function(typed) => FUNCTIONS
-            .iter()
-            .filter(|function| sources.machine || !function.on_machine)
-            .filter(|function| {
-                [Some(function.name), function.alias]
-                    .into_iter()
-                    .flatten()
-                    .any(|name| name.to_lowercase().starts_with(&typed.to_lowercase()))
-            })
-            .map(|function| {
-                let edit = if !function.takes_parameter {
-                    let (braces, kept) = closing_braces(after);
-                    (format!("{}(){braces}", function.name), kept)
-                } else if after.starts_with('(') {
-                    (function.name.to_string(), 0)
+        // A name is an identifier: its start, or its alias's, followed by
+        // unchained `$random*` dynamic variables.
+        Spot::Function { typed, chained } => {
+            let lower = typed.to_lowercase();
+            let mut out: Vec<Hint> = FUNCTIONS
+                .iter()
+                .filter(|function| sources.machine || !function.on_machine)
+                .filter(|function| {
+                    [Some(function.name), function.alias]
+                        .into_iter()
+                        .flatten()
+                        .any(|name| name.to_lowercase().starts_with(&lower))
+                })
+                .map(|function| {
+                    let edit = if !function.takes_parameter {
+                        let (braces, kept) = closing_braces(after);
+                        (format!("{}(){braces}", function.name), kept)
+                    } else if after.starts_with('(') {
+                        (function.name.to_string(), 0)
+                    } else {
+                        (format!("{}(", function.name), 0)
+                    };
+                    hint(function.name.to_string(), HintKind::Function(*function), edit)
+                })
+                .collect();
+            if !chained {
+                let (braces, kept) = closing_braces(after);
+                out.extend(
+                    DYNAMIC_VARS
+                        .iter()
+                        .filter(|var| {
+                            typed.is_empty()
+                                || var
+                                    .name
+                                    .strip_prefix('$')
+                                    .is_some_and(|rest| rest.to_lowercase().starts_with(&lower))
+                        })
+                        .map(|var| {
+                            let matched = if var.name.to_lowercase().starts_with(&lower) {
+                                typed.len()
+                            } else {
+                                0
+                            };
+                            Hint {
+                                label: var.name.to_string(),
+                                kind: HintKind::DynamicVar(*var),
+                                replace: start..caret + kept,
+                                insert: format!("{}{braces}", var.name),
+                                matched,
+                            }
+                        }),
+                );
+            }
+            out
+        }
+        Spot::DynamicVar(typed) => {
+            let lower = typed.to_lowercase();
+            let needle = lower.strip_prefix('$').unwrap_or("");
+            let (braces, kept) = closing_braces(after);
+            ranked(DYNAMIC_VARS.iter().filter_map(|var| {
+                let name_lower = var.name.to_lowercase();
+                let (rank, matched) = if typed == "$" {
+                    (0, 1)
+                } else if name_lower.starts_with(&lower) {
+                    (0, typed.len())
+                } else if !needle.is_empty() && name_lower.contains(needle) {
+                    (1, 0)
                 } else {
-                    (format!("{}(", function.name), 0)
+                    return None;
                 };
-                hint(function.name.to_string(), HintKind::Function(*function), edit)
-            })
-            .collect(),
+                Some((
+                    rank,
+                    Hint {
+                        label: var.name.to_string(),
+                        kind: HintKind::DynamicVar(*var),
+                        replace: start..caret + kept,
+                        insert: format!("{}{braces}", var.name),
+                        matched,
+                    },
+                ))
+            }))
+        }
         Spot::Custom(typed) => ranked(sources.custom.iter().filter_map(|(name, value)| {
             let rank = rank(name, typed)?;
             let (closing, kept) = closing(after);
@@ -385,8 +452,15 @@ fn spot<'a>(before: &'a str) -> Option<Spot<'a>> {
     let identifier = |text: &str| text.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
     match inner.find('(') {
         None => {
+            if let Some(rest) = inner.strip_prefix('$') {
+                return rest
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
+                    .then_some(Spot::DynamicVar(inner));
+            }
+            let chained = inner.contains('.');
             let typed = inner.rsplit('.').next().unwrap_or(inner);
-            identifier(typed).then_some(Spot::Function(typed))
+            identifier(typed).then_some(Spot::Function { typed, chained })
         }
         Some(paren) => {
             let name = inner[..paren].rsplit('.').next().unwrap_or_default();
@@ -504,7 +578,7 @@ fn parse_var_ref(inner: &str, range: Range<usize>) -> Option<VarRef> {
             });
         }
     }
-    if range.start == 0 && !trimmed.is_empty() && !trimmed.contains(['(', ')', '.', ' ']) {
+    if range.start == 0 && !trimmed.is_empty() && !trimmed.starts_with('$') && !trimmed.contains(['(', ')', '.', ' ']) {
         return Some(VarRef {
             name: trimmed.to_string(),
             kind: VarRefKind::EnvPrefix,
@@ -712,12 +786,21 @@ mod tests {
     }
 
     #[test]
-    fn braces_open_the_functions() {
-        let all: Vec<&str> = FUNCTIONS.iter().map(|function| function.name).collect();
+    fn braces_open_the_functions_and_dynamic_vars() {
+        let all: Vec<&str> = FUNCTIONS
+            .iter()
+            .map(|function| function.name)
+            .chain(DYNAMIC_VARS.iter().map(|var| var.name))
+            .collect();
         assert_eq!(labels("{{|", &sources()), all);
         assert_eq!(labels(r#"{"a": "{{|"}"#, &sources()), all, "in a JSON string");
         assert_eq!(labels("{{m|", &sources()), ["md5"], "a name's start only");
         assert_eq!(labels("{{RTF|", &sources()), ["readTextFile"], "by its alias, any case");
+        assert_eq!(
+            labels("{{b64.|", &sources()).len(),
+            FUNCTIONS.len(),
+            "dynamic vars do not chain after '.'"
+        );
         assert_eq!(
             labels("{{b64.re|", &sources()),
             ["readTextFile", "readFile"],
@@ -728,7 +811,43 @@ mod tests {
             machine: false,
             ..sources()
         };
-        assert_eq!(labels("{{|", &page).len(), FUNCTIONS.len() - 4);
+        assert_eq!(labels("{{|", &page).len(), FUNCTIONS.len() - 4 + DYNAMIC_VARS.len());
+    }
+
+    #[test]
+    fn dollar_prefix_offers_and_completes_dynamic_vars_and_cn_functions() {
+        let all_dyn: Vec<&str> = DYNAMIC_VARS.iter().map(|var| var.name).collect();
+        assert_eq!(labels("{{$|", &sources()), all_dyn);
+        assert_eq!(labels("{{$|}}", &sources()), all_dyn);
+        assert_eq!(
+            labels("{{$randomEm|", &sources()),
+            ["$randomEmail"],
+            "prefix match with '$'"
+        );
+        assert_eq!(
+            labels("{{$email|", &sources()),
+            ["$randomEmail", "$randomExampleEmail"],
+            "substring match after '$'"
+        );
+        assert_eq!(
+            labels("{{randomEm|", &sources()),
+            ["$randomEmail"],
+            "also matches without typing '$'"
+        );
+        assert_eq!(
+            labels("{{cn|", &sources()),
+            ["cnName", "cnPhone", "cnIdCard"],
+            "Chinese data generators"
+        );
+        assert_eq!(chosen("{{$|}}", "$randomEmail"), "{{$randomEmail}}|");
+        assert_eq!(chosen("{{$randomEm|", "$randomEmail"), "{{$randomEmail}}|");
+        assert_eq!(chosen("{{randomEm|}}", "$randomEmail"), "{{$randomEmail}}|");
+        assert_eq!(chosen("{{cn|", "cnPhone"), "{{cnPhone()}}|");
+        assert_eq!(
+            expression_at("{{$randomUrl}}/v1", 3),
+            None,
+            "dynamic vars are not env prefixes"
+        );
     }
 
     #[test]

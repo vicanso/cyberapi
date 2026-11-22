@@ -5363,7 +5363,7 @@ mod tests {
         let with_lost = cyberapi_core::import::parse(
             r#"{"info": {"name": "Shop"}, "item": [
                 {"name": "ping", "event": [{"listen": "test", "script": {"exec": ["pm.test('ok', () => {});"]}}],
-                 "request": {"method": "GET", "url": "https://a.test/ping?x={{$randomEmail}}"}}
+                 "request": {"method": "GET", "url": "https://a.test/ping?x={{$customUnknown}}"}}
             ]}"#,
         )
         .expect("with lost");
@@ -5380,7 +5380,7 @@ mod tests {
         assert!(seen[0].is_empty());
         assert_eq!(seen[1].len(), 2);
         assert!(matches!(&seen[1][0].kind, LostKind::Script { .. }));
-        assert!(matches!(&seen[1][1].kind, LostKind::Template { expr } if expr == "{{$randomEmail}}"));
+        assert!(matches!(&seen[1][1].kind, LostKind::Template { expr } if expr == "{{$customUnknown}}"));
         assert_eq!(seen[2], seen[1]);
     }
 

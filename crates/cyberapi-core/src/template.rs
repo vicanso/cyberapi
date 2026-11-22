@@ -270,7 +270,7 @@ impl Draws {
     }
 
     /// SplitMix64 of the seed and how many draws came before.
-    fn next(&self) -> u64 {
+    pub(crate) fn next(&self) -> u64 {
         let taken = self.taken.fetch_add(1, Ordering::Relaxed);
         let mut z = self
             .seed
@@ -281,7 +281,7 @@ impl Draws {
     }
 
     /// A whole number from `min` to `max`, both included.
-    fn between(&self, min: i64, max: i64) -> i64 {
+    pub(crate) fn between(&self, min: i64, max: i64) -> i64 {
         let span = (i128::from(max) - i128::from(min) + 1) as u128;
         (i128::from(min) + (u128::from(self.next()) % span) as i128) as i64
     }
@@ -312,6 +312,9 @@ pub(crate) fn parse_inner(whole: &str, inner: &str) -> Option<Expr> {
     let Some(open) = inner.find('(') else {
         return parse_dollar_var(whole, inner.trim());
     };
+    if inner.trim_start().starts_with('$') {
+        return None;
+    }
     let close = open + 1 + inner[open + 1..].find(')')?;
     let names = format!("{}{}", &inner[..open], &inner[close + 1..]);
     Some(Expr {
@@ -354,6 +357,9 @@ pub(crate) fn is_known_function(name: &str) -> bool {
             | "uuid"
             | "random"
             | "randomString"
+            | "cnName"
+            | "cnPhone"
+            | "cnIdCard"
             | "now"
             | "hmacSha256"
             | "urlEncode"
@@ -364,7 +370,8 @@ pub(crate) fn is_known_function(name: &str) -> bool {
 }
 
 /// Postman / HTTP client built-in dynamic variables (`{{$guid}}`,
-/// `{{$timestamp}}`, `{{$randomInt}}`, …) mapped to template functions.
+/// `{{$timestamp}}`, `{{$randomInt}}`, `{{$randomEmail}}`, …) mapped to
+/// template functions or built-in Faker evaluation.
 fn parse_dollar_var(whole: &str, trimmed: &str) -> Option<Expr> {
     let (chain, params) = match trimmed {
         "$guid" | "$uuid" | "$randomUUID" | "$random.uuid" => (vec!["uuid".into()], vec!["".into()]),
@@ -373,6 +380,7 @@ fn parse_dollar_var(whole: &str, trimmed: &str) -> Option<Expr> {
         "$randomInt" => (vec!["random".into()], vec!["0".into(), "1000".into()]),
         "$randomAlphaNumeric" => (vec!["randomString".into()], vec!["1".into()]),
         "$randomString" => (vec!["randomString".into()], vec!["".into()]),
+        name if crate::faker::is_known(name) => (vec![name.into()], vec![String::new()]),
         _ => return None,
     };
     Some(Expr {
@@ -421,16 +429,15 @@ pub fn needs(text: &str) -> Needs {
     needs
 }
 
-/// A7b: whether `text` calls any template function whose result changes from
-/// one send to the next (`uuid`, `random`, `randomString`, `now`,
-/// `timestamp`, `ts`).
+/// A7b / R3: whether `text` calls any template function or `$random*` dynamic
+/// variable whose result changes from one send to the next.
 pub fn has_dynamic(text: &str) -> bool {
     parse(text).iter().any(|expr| {
         expr.chain.iter().any(|name| {
             matches!(
                 name.as_str(),
-                "uuid" | "random" | "randomString" | "now" | "timestamp" | "ts"
-            )
+                "uuid" | "random" | "randomString" | "cnName" | "cnPhone" | "cnIdCard" | "now" | "timestamp" | "ts"
+            ) || crate::faker::is_known(name)
         })
     })
 }
@@ -535,6 +542,13 @@ fn evaluate_depth(expr: &Expr, inputs: &Inputs, files: &dyn FileReader, depth: u
             "uuid" => Value::Text(uuid(&inputs.draws)),
             "random" => Value::Text(random(&value, &inputs.draws)?.to_string()),
             "randomString" => Value::Text(random_string(&value, &inputs.draws)?),
+            "cnName" => Value::Text(crate::faker::cn_name(&inputs.draws)),
+            "cnPhone" => Value::Text(crate::faker::cn_phone(&inputs.draws)),
+            "cnIdCard" => Value::Text(crate::faker::cn_id_card(&inputs.draws)),
+            other if other.starts_with('$') => match crate::faker::eval(other, inputs) {
+                Some(generated) => Value::Text(generated),
+                None => return UnknownSnafu { name: name.clone() }.fail(),
+            },
             "now" => Value::Text(now(&value, inputs)?),
             "hmacSha256" => Value::Text(hmac::<sha2::Sha256>("hmacSha256", &value)?),
             "urlEncode" => Value::Text(crate::send::encode_uri_bytes(&value.into_bytes())),
@@ -1184,6 +1198,11 @@ mod tests {
         assert!(has_dynamic("{{now()}}"));
         assert!(has_dynamic("{{timestamp()}}"));
         assert!(has_dynamic("{{ts()}}"));
+        assert!(has_dynamic("{{$randomEmail}}"));
+        assert!(has_dynamic("{{$randomDatePast}}"));
+        assert!(has_dynamic("{{cnName()}}"));
+        assert!(has_dynamic("{{cnPhone()}}"));
+        assert!(has_dynamic("{{cnIdCard()}}"));
     }
 
     #[test]
@@ -1222,10 +1241,12 @@ mod tests {
             "$randomInt",
             "$randomAlphaNumeric",
             "$randomString",
+            "$randomEmail",
+            "$randomFullName",
+            "$randomLoremSlug",
         ] {
             assert!(is_known_dollar_var(var), "{var}");
         }
-        assert!(!is_known_dollar_var("$randomEmail"));
         assert!(!is_known_dollar_var("$unknown"));
 
         for func in [
@@ -1245,6 +1266,9 @@ mod tests {
             "ts",
             "timestamp",
             "now",
+            "cnName",
+            "cnPhone",
+            "cnIdCard",
         ] {
             assert!(is_known_function(func), "{func}");
         }

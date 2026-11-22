@@ -338,9 +338,9 @@ mod tests {
     fn scan_templates_flags_only_unknown_expressions_and_deduplicates_per_target() {
         let mut bundle = ImportBundle {
             auth: Auth::Bearer {
-                token: "{{$randomEmail}}".into(),
+                token: "{{$unknownBearer}}".into(),
             },
-            environment: vec![("user".into(), "{{$randomUserName}}".into())],
+            environment: vec![("user".into(), "{{$unknownEnvVar}}".into())],
             environments: vec![ImportEnvironment {
                 name: "dev".into(),
                 variables: vec![("ok".into(), "{{uuid()}}".into())],
@@ -356,10 +356,15 @@ mod tests {
                     request: Box::new(HttpRequest {
                         method: HttpMethod::Post,
                         uri: "{{host}}/orders/{{$guid}}/{{user.id}}".into(),
-                        query: vec![kv("email", "{{$randomEmail}}", true)],
-                        headers: vec![kv("X-Email", "{{$randomEmail}}", true)],
+                        query: vec![
+                            kv("email", "{{$unknownQuery}}", true),
+                            kv("ok_faker", "{{$randomEmail}}", true),
+                        ],
+                        headers: vec![kv("X-Email", "{{$unknownQuery}}", true)],
                         content_type: ContentType::Json,
-                        body: r#"{"at":"{{$timestamp}}","fn":"{{b64.uuid()}}","bad":"{{nope(1)}}"}"#.into(),
+                        body:
+                            r#"{"at":"{{$timestamp}}","fn":"{{b64.uuid()}}","name":"{{cnName()}}","bad":"{{nope(1)}}"}"#
+                                .into(),
                         ..Default::default()
                     }),
                 }],
@@ -373,13 +378,13 @@ mod tests {
                 Lost {
                     target: String::new(),
                     kind: LostKind::Template {
-                        expr: "{{$randomEmail}}".into(),
+                        expr: "{{$unknownBearer}}".into(),
                     },
                 },
                 Lost {
                     target: String::new(),
                     kind: LostKind::Template {
-                        expr: "{{$randomUserName}}".into(),
+                        expr: "{{$unknownEnvVar}}".into(),
                     },
                 },
                 Lost {
@@ -391,7 +396,7 @@ mod tests {
                 Lost {
                     target: "Orders / Create".into(),
                     kind: LostKind::Template {
-                        expr: "{{$randomEmail}}".into(),
+                        expr: "{{$unknownQuery}}".into(),
                     },
                 },
                 Lost {

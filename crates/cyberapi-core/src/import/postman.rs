@@ -609,7 +609,7 @@ mod tests {
                     "event": [{"listen": "test", "script": {"exec": ["pm.test('ok', () => {});"]}}],
                     "request": {
                         "method": "POST",
-                        "url": "{{host}}/upload/{{$randomEmail}}",
+                        "url": "{{host}}/upload/{{$customUnknown}}?email={{$randomEmail}}",
                         "auth": {"type": "hawk"},
                         "body": {"mode": "file", "file": {"src": "/tmp/a.bin"}}
                     }
@@ -652,7 +652,7 @@ mod tests {
                 Lost {
                     target: "Auth / Upload".into(),
                     kind: LostKind::Template {
-                        expr: "{{$randomEmail}}".into(),
+                        expr: "{{$customUnknown}}".into(),
                     },
                 },
             ]

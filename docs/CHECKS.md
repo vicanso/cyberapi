@@ -74,7 +74,7 @@ On the desktop, **Load test…** in an API's menu (*0.4.1*) sends that one API o
 
 - 1 to 50 senders at once. A number of times, up to 100,000, or a duration, up to 10 minutes.
 - As it goes: sends per second, the error rate, the mean, the fastest and the slowest, P50 / P90 / P95 / P99, and how many of each status and error. No answer, or an error status, is a failure. Assertions are not checked.
-- Variables, cookies and the token are read once at the start. `{{uuid()}}`, `{{random(…)}}`, `{{randomString(…)}}`, `{{now(…)}}` and `{{timestamp()}}` draw a new value on every send.
+- Variables, cookies and the token are read once at the start. `{{uuid()}}`, `{{random(…)}}`, `{{randomString(…)}}`, `{{cnName()}}`, `{{cnPhone()}}`, `{{cnIdCard()}}`, `{{now(…)}}`, `{{timestamp()}}` and `{{$random*}}` draw a new value on every send.
 - Redirects are not followed. A Digest challenge is not answered. Nothing is written to the history, and cookies the answers set are not kept.
 - In an environment marked as production, it asks first.
 - The web version has none of this. Its sends go through the server, and an account may have only so many at once.

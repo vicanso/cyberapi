@@ -18,6 +18,7 @@ pub mod digest;
 pub mod directory;
 pub mod environments;
 pub mod export;
+pub(crate) mod faker;
 pub mod find_replace;
 pub mod format;
 pub mod graphql;

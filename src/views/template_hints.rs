@@ -182,6 +182,10 @@ fn detail(hint: &Hint) -> String {
                 None => about.to_string(),
             }
         }
+        HintKind::DynamicVar(var) => {
+            let key = format!("hints.dyn_{}", var.category.key());
+            format!("{} · {}", t!(key.as_str()), var.example)
+        }
         HintKind::Custom(value) => value.clone(),
         HintKind::Api(api) => api.place.clone(),
         HintKind::Field(Field::Object(count)) => crate::i18n::counted("hints.object", *count),
@@ -210,6 +214,7 @@ fn menu_item(text: &Rope, start: usize, hint: Hint) -> CompletionItem {
         detail: Some(detail(&hint)),
         kind: Some(match hint.kind {
             HintKind::Function(_) => CompletionItemKind::FUNCTION,
+            HintKind::DynamicVar(_) => CompletionItemKind::CONSTANT,
             HintKind::Custom(_) => CompletionItemKind::VARIABLE,
             HintKind::Api(_) => CompletionItemKind::REFERENCE,
             HintKind::Field(_) => CompletionItemKind::FIELD,

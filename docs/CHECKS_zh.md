@@ -74,7 +74,7 @@ cyberapi-cli run project.json --env staging --data users.csv --junit results.xml
 
 - 1 到 50 个并发。按次数（最多 10 万次）或按时长（最多 10 分钟）。
 - 边发边显示吞吐（次/秒）、错误率、平均和最快 / 最慢、P50 / P90 / P95 / P99，以及各状态码和错误各有多少。没有响应或错误状态码算失败。不检查断言。
-- 变量、Cookie 和令牌在开始时读取一次。`{{uuid()}}`、`{{random(…)}}`、`{{randomString(…)}}`、`{{now(…)}}`、`{{timestamp()}}` 每次发送重新求值。
+- 变量、Cookie 和令牌在开始时读取一次。`{{uuid()}}`、`{{random(…)}}`、`{{randomString(…)}}`、`{{cnName()}}`、`{{cnPhone()}}`、`{{cnIdCard()}}`、`{{now(…)}}`、`{{timestamp()}}` 和 `{{$random*}}` 每次发送重新求值。
 - 不跟随重定向，不应答 Digest 质询，不写入历史，也不保存响应设置的 Cookie。
 - 当前环境标为生产环境时先确认。
 - 网页版没有这一项。请求都经服务器转发，每个账号同时能发出的数量有限。
