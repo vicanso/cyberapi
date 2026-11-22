@@ -39,6 +39,7 @@ use cyberapi_core::prefs::{
 use cyberapi_core::response::{HttpResponse, RECENT_LIMIT};
 use cyberapi_core::secrets::{self, SecretValues};
 use cyberapi_core::sync::{self, ConfigAt, Moment, OutlineAt, ProjectChanges, ProjectConfig, ProjectVersion, Step};
+use cyberapi_core::tab_order;
 use cyberapi_core::template::Answers;
 use cyberapi_core::template_hints;
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
@@ -277,6 +278,8 @@ pub struct WorkspaceState {
     waiting_select: Option<ItemId>,
     /// The reader's state of the tree has been read, or could not be.
     prefs_read: bool,
+    /// F1: initial Stable Top-5 Frecency settlement ran once tree & prefs loaded.
+    tabs_ordered: bool,
     keyword: String,
     /// The tree's changes, one at a time.
     gate: Arc<Mutex<()>>,
@@ -474,6 +477,7 @@ impl WorkspaceState {
             waiting_import: None,
             waiting_select: None,
             prefs_read: false,
+            tabs_ordered: false,
             keyword: String::new(),
             gate: Arc::default(),
             saves: Arc::default(),
@@ -2222,30 +2226,82 @@ impl WorkspaceState {
         }
     }
 
-    /// The opened API's editor, and its tab (F1): one kept from before,
-    /// or a new one beside the tab shown till now. Pinned APIs live in the
-    /// title bar and are not repeated in the open-tabs bar. Tabs of APIs that
-    /// are gone close; a scratch request stays, it is not in the tree. Past
-    /// `MAX_TABS`, the one shown longest ago does.
+    fn now_secs() -> i64 {
+        jiff::Timestamp::now().as_second()
+    }
+
+    fn reorder_tabs(&mut self, now: i64) {
+        self.prefs.open = tab_order::reorder(&self.prefs.open, &self.prefs.tab_usage, now, tab_order::TOP_STABLE);
+    }
+
+    /// F1: updates tab usage on send and reorders with Stable Top-5 Frecency.
+    pub fn record_tab_send(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        if !self.tab_lives(id) {
+            return;
+        }
+        let now = Self::now_secs();
+        tab_order::record(&mut self.prefs.tab_usage, id, tab_order::SEND_WEIGHT, now);
+        if !self.prefs.pinned.contains(id) && self.prefs.open.contains(id) {
+            self.reorder_tabs(now);
+        }
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
+    fn id_lives(apis: &[ApiSetting], scratches: &[Scratch], id: &ItemId) -> bool {
+        apis.iter().any(|api| &api.id == id) || scratches.iter().any(|scratch| &scratch.id == id)
+    }
+
+    /// The opened API's editor, and its tab (F1): one kept from before, or a
+    /// new tab ordered by Stable Top-5 Frecency. Pinned APIs live in the title
+    /// bar and are not repeated in the open-tabs bar. Tabs of APIs that are
+    /// gone close; a scratch request stays, it is not in the tree. Past
+    /// `MAX_TABS`, the lowest-Frecency unprotected tab closes.
     fn sync_api(&mut self, cx: &mut Context<Self>) {
+        self.sync_api_with(false, false, cx);
+    }
+
+    fn sync_api_with(&mut self, record_open: bool, allow_reorder: bool, cx: &mut Context<Self>) {
+        let mut prefs_dirty = false;
         if self.load == Load::Loaded {
             let before = self.prefs.open.len();
-            // Collected first: `retain` borrows each list while `tab_lives`
+            let before_usage = self.prefs.tab_usage.len();
+            // Collected first: `retain` borrows each list while `id_lives`
             // reads the tree and the scratches.
             let open: Vec<ItemId> = self
                 .prefs
                 .open
                 .iter()
-                .filter(|id| self.tab_lives(id) && !self.prefs.pinned.contains(id))
+                .filter(|id| {
+                    Self::id_lives(&self.data.apis, &self.prefs.scratches, id) && !self.prefs.pinned.contains(id)
+                })
                 .cloned()
                 .collect();
-            let kept: HashSet<ItemId> = self.kept.keys().filter(|id| self.tab_lives(id)).cloned().collect();
-            let shown: Vec<ItemId> = self.shown.iter().filter(|id| self.tab_lives(id)).cloned().collect();
+            let kept: HashSet<ItemId> = self
+                .kept
+                .keys()
+                .filter(|id| Self::id_lives(&self.data.apis, &self.prefs.scratches, id))
+                .cloned()
+                .collect();
+            let shown: Vec<ItemId> = self
+                .shown
+                .iter()
+                .filter(|id| Self::id_lives(&self.data.apis, &self.prefs.scratches, id))
+                .cloned()
+                .collect();
             self.prefs.open = open;
             self.kept.retain(|id, _| kept.contains(id));
             self.shown = shown;
-            if self.prefs.open.len() != before {
-                self.save_prefs(cx);
+            let apis = &self.data.apis;
+            let scratches = &self.prefs.scratches;
+            tab_order::prune_usage(
+                &mut self.prefs.tab_usage,
+                |id| Self::id_lives(apis, scratches, id),
+                Self::now_secs(),
+                tab_order::MAX_USAGE_RECORDS,
+            );
+            if self.prefs.open.len() != before || self.prefs.tab_usage.len() != before_usage {
+                prefs_dirty = true;
             }
         }
         let selected = self.opened_setting();
@@ -2254,24 +2310,42 @@ impl WorkspaceState {
             if let Some(left) = &self.api {
                 left.update(cx, |left, cx| left.save_now(cx));
             }
+            if prefs_dirty {
+                self.save_prefs(cx);
+            }
             self.api = None;
             return;
         };
+        if record_open && self.load == Load::Loaded {
+            tab_order::record(
+                &mut self.prefs.tab_usage,
+                &api.id,
+                tab_order::OPEN_WEIGHT,
+                Self::now_secs(),
+            );
+            prefs_dirty = true;
+        }
         if !self.prefs.open.contains(&api.id) && !self.prefs.pinned.contains(&api.id) {
-            let beside = current
-                .as_ref()
-                .and_then(|current| self.prefs.open.iter().position(|open| open == current))
-                .map_or(self.prefs.open.len(), |at| at + 1);
-            self.prefs.open.insert(beside, api.id.clone());
-            self.save_prefs(cx);
+            self.prefs.open.push(api.id.clone());
+            prefs_dirty = true;
         }
         self.shown.retain(|shown| shown != &api.id);
         self.shown.push(api.id.clone());
+        self.limit_tabs(&api.id, cx);
+        if allow_reorder && self.load == Load::Loaded {
+            let before = self.prefs.open.clone();
+            self.reorder_tabs(Self::now_secs());
+            if self.prefs.open != before {
+                prefs_dirty = true;
+            }
+        }
+        if prefs_dirty {
+            self.save_prefs(cx);
+        }
         // A request that has not been read yet is a stub. The editor opens
         // once the document arrives, not in this same turn.
         if !self.is_scratch(&api.id) && !self.loaded.contains_key(&api.id) {
             if current.as_ref() == Some(&api.id) && self.api.is_some() {
-                self.limit_tabs(&api.id, cx);
                 return;
             }
             self.fetch_body(api.id.clone(), cx);
@@ -2285,7 +2359,6 @@ impl WorkspaceState {
             let state = self.ensure_kept(&api, cx);
             self.api = Some(state);
         }
-        self.limit_tabs(&api.id, cx);
     }
 
     fn ensure_kept(&mut self, api: &ApiSetting, cx: &mut Context<Self>) -> Entity<ApiState> {
@@ -2303,7 +2376,7 @@ impl WorkspaceState {
 
     /// An open tab's id still names an API, or a scratch request.
     fn tab_lives(&self, id: &ItemId) -> bool {
-        self.data.apis.iter().any(|api| &api.id == id) || self.is_scratch(id)
+        Self::id_lives(&self.data.apis, &self.prefs.scratches, id)
     }
 
     fn is_scratch(&self, id: &ItemId) -> bool {
@@ -2333,39 +2406,48 @@ impl WorkspaceState {
         self.api_setting(id)
     }
 
-    /// F1: past `MAX_TABS`, the tab shown longest ago closes — one never
-    /// shown this session first — but not `opened`, nor one whose request
-    /// is on its way.
+    /// F1: past `MAX_TABS`, the lowest-Frecency unprotected tab closes — never
+    /// `opened`, one whose request is on its way, or one in an apart window.
     fn limit_tabs(&mut self, opened: &ItemId, cx: &mut Context<Self>) {
+        let now = Self::now_secs();
         while self.prefs.open.len() > MAX_TABS {
-            let shown_at = |id: &ItemId| self.shown.iter().position(|shown| shown == id);
             let sending = |id: &ItemId| {
                 self.kept
                     .get(id)
                     .is_some_and(|api| api.read(cx).sending_since().is_some())
             };
-            let oldest = self
-                .prefs
-                .open
-                .iter()
-                // F7: nor one in a window of its own.
-                .filter(|id| *id != opened && !sending(id) && !self.apart.contains(*id))
-                .min_by_key(|id| shown_at(id).map_or(0, |at| at + 1))
-                .cloned();
-            let Some(oldest) = oldest else { return };
+            let shown = &self.shown;
+            let open = &self.prefs.open;
+            let recency_rank = |id: &ItemId| {
+                shown.iter().position(|shown| shown == id).map_or_else(
+                    || open.iter().position(|open| open == id).unwrap_or(0),
+                    |pos| pos + MAX_TABS,
+                )
+            };
+            let protected = |id: &ItemId| id == opened || sending(id) || self.apart.contains(id);
+            let Some(oldest) =
+                tab_order::pick_eviction(&self.prefs.open, &self.prefs.tab_usage, now, protected, recency_rank)
+                    .cloned()
+            else {
+                return;
+            };
             self.forget_tab(&oldest, cx);
             self.save_prefs(cx);
         }
     }
 
     /// F1: the tab and its editor gone. A project's API saves what it still
-    /// held; a scratch request is dropped with the tab.
+    /// held and retains its usage history; a scratch request is dropped with
+    /// the tab.
     fn forget_tab(&mut self, id: &ItemId, cx: &mut Context<Self>) {
         let scratch = self.is_scratch(id);
         self.apart.remove(id);
         self.prefs.open.retain(|open| open != id);
         self.shown.retain(|shown| shown != id);
         self.prefs.scratches.retain(|scratch| &scratch.id != id);
+        if scratch {
+            self.prefs.tab_usage.remove(id);
+        }
         if let Some(api) = self.kept.remove(id) {
             // A scratch's release would write it back. Closing drops it.
             if scratch {
@@ -2545,6 +2627,32 @@ impl WorkspaceState {
         cx.notify();
     }
 
+    /// F1: closes every tab to the right of `id`, activating `id` if the active
+    /// tab was closed. Usage history is preserved.
+    pub fn close_right_tabs(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        let Some(at) = self.prefs.open.iter().position(|open| open == id) else {
+            return;
+        };
+        if at + 1 >= self.prefs.open.len() {
+            return;
+        }
+        let trailing: Vec<ItemId> = self.prefs.open[at + 1..].to_vec();
+        let opened_closed = self.opened().is_some_and(|opened| trailing.contains(opened));
+        for other in &trailing {
+            self.forget_tab(other, cx);
+        }
+        if opened_closed || self.prefs.selected.as_ref().is_some_and(|sel| trailing.contains(sel)) {
+            if opened_closed {
+                self.pin_open = None;
+                self.api = None;
+            }
+            self.prefs.selected = Some(id.clone());
+            self.sync_api(cx);
+        }
+        self.save_prefs(cx);
+        cx.notify();
+    }
+
     /// F1: every tab closed; nothing is open.
     pub fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
         for id in self.prefs.open.clone() {
@@ -2558,7 +2666,7 @@ impl WorkspaceState {
     }
 
     /// F1: the tab `by` places after the opened one (before it, below
-    /// zero), round the ends.
+    /// zero), round the ends, switching in place without reordering tabs.
     pub fn step_tab(&mut self, by: isize, cx: &mut Context<Self>) {
         let count = self.prefs.open.len() as isize;
         if count == 0 {
@@ -2579,7 +2687,7 @@ impl WorkspaceState {
             }
         };
         let id = self.prefs.open[next].clone();
-        self.select(&id, cx);
+        self.select_tab(&id, cx);
     }
 
     /// An API's request was saved: the tree's copy follows (its method label).
@@ -2786,6 +2894,28 @@ impl WorkspaceState {
     fn select_waiting(&mut self, cx: &mut Context<Self>) {
         if self.load != Load::Loaded || !self.prefs_read {
             return;
+        }
+        if !self.tabs_ordered {
+            self.tabs_ordered = true;
+            let now = Self::now_secs();
+            let before_open = self.prefs.open.clone();
+            let before_usage = self.prefs.tab_usage.len();
+            let apis = &self.data.apis;
+            let scratches = &self.prefs.scratches;
+            let pinned = &self.prefs.pinned;
+            self.prefs
+                .open
+                .retain(|id| Self::id_lives(apis, scratches, id) && !pinned.contains(id));
+            tab_order::prune_usage(
+                &mut self.prefs.tab_usage,
+                |id| Self::id_lives(apis, scratches, id),
+                now,
+                tab_order::MAX_USAGE_RECORDS,
+            );
+            self.reorder_tabs(now);
+            if self.prefs.open != before_open || self.prefs.tab_usage.len() != before_usage {
+                self.save_prefs(cx);
+            }
         }
         if !self.sources_booted {
             self.sources_booted = true;
@@ -3013,8 +3143,18 @@ impl WorkspaceState {
 
     /// F3.8: an API is selected, and opened in the editor over any pin; a
     /// folder is opened or closed instead. The folders it sits in open, so
-    /// its row shows.
+    /// its row shows. Reorders tabs with Stable Top-5 Frecency.
     pub fn select(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        self.select_with(id, true, cx);
+    }
+
+    /// F1: selects an open tab in place, updating usage history without
+    /// reshuffling tabs underneath the cursor.
+    pub fn select_tab(&mut self, id: &ItemId, cx: &mut Context<Self>) {
+        self.select_with(id, false, cx);
+    }
+
+    fn select_with(&mut self, id: &ItemId, allow_reorder: bool, cx: &mut Context<Self>) {
         // Close the pin before the `||`. When the tree row changes, the
         // left side is already true and a `take` on the right never runs:
         // the row looks selected while the editor keeps the pin, until the
@@ -3031,7 +3171,7 @@ impl WorkspaceState {
             }
         }
         if changed {
-            self.sync_api(cx);
+            self.sync_api_with(true, allow_reorder, cx);
             self.save_prefs(cx);
             cx.notify();
         }
@@ -3152,6 +3292,9 @@ impl WorkspaceState {
                         if this.prefs.selected.as_ref() == Some(&id) {
                             this.prefs.selected = Some(new_id.clone());
                         }
+                        if let Some(usage) = this.prefs.tab_usage.remove(&id) {
+                            this.prefs.tab_usage.insert(new_id.clone(), usage);
+                        }
                         this.prefs.scratches.retain(|scratch| scratch.id != id);
                         if let Some(old) = this.kept.remove(&id) {
                             old.update(cx, |api, _| api.forget_unsaved());
@@ -3196,7 +3339,7 @@ impl WorkspaceState {
                 this.created = Some(inserted.item.id.clone());
                 this.prefs.selected = Some(inserted.item.id);
                 this.pin_open = None;
-                this.sync_api(cx);
+                this.sync_api_with(true, true, cx);
                 this.save_prefs(cx);
                 cx.notify();
             }
@@ -6939,31 +7082,32 @@ mod tests {
         state.update(cx, |state, cx| state.select(&a, cx));
         assert_eq!(editor(&state, cx).entity_id(), editor_a.entity_id());
 
-        // A new one goes beside the one open.
+        // Under Stable Top-5, a new fourth tab joins without displacing the first three.
         state.update(cx, |state, cx| state.create_api(None, "d".into(), cx));
         cx.run_until_parked();
         let d = find(&state, "d", cx);
-        assert_eq!(tabs(&state, cx), ["a", "d", "b", "c"]);
+        assert_eq!(tabs(&state, cx), ["a", "b", "c", "d"]);
 
-        // Next and previous, round the ends.
-        state.update(cx, |state, cx| state.step_tab(2, cx));
+        // Next and previous, round the ends, without reshuffling the strip.
+        state.update(cx, |state, cx| state.step_tab(-1, cx));
         assert_eq!(opened(&state, cx), Some(c.clone()));
-        state.update(cx, |state, cx| state.step_tab(1, cx));
+        state.update(cx, |state, cx| state.step_tab(2, cx));
         assert_eq!(opened(&state, cx), Some(a.clone()));
+        assert_eq!(tabs(&state, cx), ["a", "b", "c", "d"]);
 
         // Closing the open one opens the one after it, else the one before.
         state.update(cx, |state, cx| state.close_tab(&a, cx));
         assert_eq!(
             (tabs(&state, cx), opened(&state, cx)),
-            (vec!["d".into(), "b".into(), "c".into()], Some(d.clone()))
+            (vec!["b".into(), "c".into(), "d".into()], Some(b.clone()))
         );
+        state.update(cx, |state, cx| state.close_tab(&d, cx));
+        assert_eq!(opened(&state, cx), Some(b.clone()), "not the open one");
+        state.update(cx, |state, cx| state.select(&c, cx));
         state.update(cx, |state, cx| state.close_tab(&c, cx));
-        assert_eq!(opened(&state, cx), Some(d.clone()), "not the open one");
-        state.update(cx, |state, cx| state.select(&b, cx));
-        state.update(cx, |state, cx| state.close_tab(&b, cx));
         assert_eq!(
             (tabs(&state, cx), opened(&state, cx)),
-            (vec!["d".to_string()], Some(d.clone()))
+            (vec!["b".to_string()], Some(b.clone()))
         );
         // What its editor held is saved as it closes.
         cx.run_until_parked();
@@ -6971,13 +7115,13 @@ mod tests {
 
         // They come back with the project.
         let again = open(&storage, collection.clone(), cx);
-        assert_eq!(tabs(&again, cx), ["d"]);
-        assert_eq!(opened(&again, cx), Some(d.clone()));
+        assert_eq!(tabs(&again, cx), ["b"]);
+        assert_eq!(opened(&again, cx), Some(b.clone()));
 
         // The others, or all.
         state.update(cx, |state, cx| state.select(&a, cx));
         state.update(cx, |state, cx| state.select(&c, cx));
-        assert_eq!(tabs(&state, cx), ["d", "a", "c"]);
+        assert_eq!(tabs(&state, cx), ["b", "a", "c"]);
         state.update(cx, |state, cx| state.close_other_tabs(&a, cx));
         assert_eq!(
             (tabs(&state, cx), opened(&state, cx)),
@@ -8674,6 +8818,79 @@ mod tests {
         assert!(!http_text.contains("top-secret-value"));
         assert!(http_text.contains("GET {{HOST}}/health"));
         assert!(http_text.contains("X-Client: cyber"));
+    }
+
+    #[gpui_kit::test]
+    async fn stable_top5_frecency_keeps_top5_order_promotes_sixth_and_retains_history(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection.clone(), cx);
+        for name in ["a", "b", "c", "d", "e", "f"] {
+            state.update(cx, |state, cx| state.create_api(None, name.into(), cx));
+            cx.run_until_parked();
+        }
+        let ids: Vec<ItemId> = ["a", "b", "c", "d", "e", "f"]
+            .iter()
+            .map(|name| find(&state, name, cx))
+            .collect();
+        let (a, _b, c, d, e, f) = (&ids[0], &ids[1], &ids[2], &ids[3], &ids[4], &ids[5]);
+        let tab_names = |state: &Entity<WorkspaceState>, cx: &mut TestAppContext| -> Vec<String> {
+            state.read_with(cx, |state, _| state.tabs().into_iter().map(|tab| tab.name).collect())
+        };
+        assert_eq!(tab_names(&state, cx), ["a", "b", "c", "d", "e", "f"]);
+
+        // Boosting `a`, `c`, `d`, `e` leaves `b` strictly weakest in Top-5 while
+        // keeping all Top-5 positions completely frozen.
+        state.update(cx, |state, cx| {
+            state.record_tab_send(a, cx);
+            state.record_tab_send(d, cx);
+            state.record_tab_send(c, cx);
+            state.record_tab_send(c, cx);
+            state.record_tab_send(e, cx);
+            state.record_tab_send(e, cx);
+        });
+        assert_eq!(tab_names(&state, cx), ["a", "b", "c", "d", "e", "f"]);
+
+        // Switching to `f` via `select_tab` updates usage without jumping position.
+        state.update(cx, |state, cx| state.select_tab(f, cx));
+        assert_eq!(tab_names(&state, cx), ["a", "b", "c", "d", "e", "f"]);
+
+        // Sending `f` until it outscores weakest Top-5 (`b`, score 1.0) promotes `f`
+        // to slot #5 and demotes `b` to #6.
+        state.update(cx, |state, cx| state.record_tab_send(f, cx));
+        assert_eq!(tab_names(&state, cx), ["a", "c", "d", "e", "f", "b"]);
+
+        // Closing a tab preserves its recorded Frecency history for reopening.
+        state.update(cx, |state, cx| state.close_tab(f, cx));
+        state.read_with(cx, |state, _| assert!(state.prefs.tab_usage.contains_key(f)));
+        cx.run_until_parked();
+
+        // Reopening the project keeps Frecency order.
+        let reopened = open(&storage, collection, cx);
+        assert_eq!(tab_names(&reopened, cx), ["a", "c", "d", "e", "b"]);
+        reopened.update(cx, |state, cx| state.select(f, cx));
+        assert_eq!(tab_names(&reopened, cx), ["a", "c", "d", "e", "f", "b"]);
+    }
+
+    #[gpui_kit::test]
+    async fn close_right_tabs_closes_trailing_tabs_and_preserves_usage(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection, cx);
+        for name in ["a", "b", "c", "d"] {
+            state.update(cx, |state, cx| state.create_api(None, name.into(), cx));
+            cx.run_until_parked();
+        }
+        let b = find(&state, "b", cx);
+        let d = find(&state, "d", cx);
+        // Currently opened is `d` (to the right of `b`).
+        assert_eq!(state.read_with(cx, |state, _| state.opened().cloned()), Some(d.clone()));
+
+        state.update(cx, |state, cx| state.close_right_tabs(&b, cx));
+        let names: Vec<String> = state.read_with(cx, |state, _| state.tabs().into_iter().map(|t| t.name).collect());
+        assert_eq!(names, ["a", "b"]);
+        assert_eq!(state.read_with(cx, |state, _| state.opened().cloned()), Some(b));
+        state.read_with(cx, |state, _| assert!(state.prefs.tab_usage.contains_key(&d)));
     }
 
     /// Server-sync §3–4: a server project in a page.

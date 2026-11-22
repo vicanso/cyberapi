@@ -1,31 +1,62 @@
 //! F1: the open APIs as tabs above the request editor: 36 px tall (aligned
 //! with the tree's search header), showing the method and name on a single
 //! line — plus the enclosing folder when two open tabs share a name — a dot
-//! while its request is on its way, and the one in the editor drawn as the
-//! page. A click opens one; the close button (on the open tab and the one
-//! under the pointer) or a middle click closes it, and its menu closes the
-//! others or all. More than the row holds scroll sideways, the open one
-//! brought into view, and a button at the row's end lists them all (UI-1).
+//! while its request is on its way, an inline close button, and the active
+//! tab styled seamlessly into the editor pane (modeled on zedis's workspace
+//! tab strip). Clicking a tab selects it in place without reshuffling the
+//! bar; a middle click closes it, and its context menu closes it, the
+//! others, those to the right, or all. More than the row holds scroll
+//! sideways with trackpad or vertical mouse wheel, the open one brought into
+//! view, and a button at the row's end lists them all (UI-1).
 
 use super::{method_color, method_label};
 use crate::states::WorkspaceState;
 use cyberapi_core::ItemId;
+use gpui_kit::base::InteractiveElementExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::scroll::ScrollableMask;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Colorize as _, IconName, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px, rems,
+    Anchor, App, Context, Entity, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels,
+    Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px, rems,
 };
 use rust_i18n::t;
+
+/// Height aligned with the left tree panel's search header (`36 px`).
+const TAB_BAR_HEIGHT: Pixels = px(36.);
+
+/// Width cap so a long API name truncates cleanly without pushing sibling tabs
+/// off screen (matching zedis's compact pill cap).
+const TAB_TITLE_MAX_WIDTH: Pixels = px(160.);
+
+/// Thickness of the active tab's top brand-accent indicator bar.
+const TAB_ACTIVE_ACCENT_HEIGHT: Pixels = px(2.);
+
+/// Recessed trough background for the tab bar so inactive tabs read clearly
+/// distinct from the active tab's `background` fill in both light and dark
+/// themes (modeled on zedis `workspace_tab_bar_background`).
+fn tab_bar_background(cx: &App) -> Hsla {
+    let theme = cx.theme();
+    let bg = theme.background;
+    let tab_bar = theme.tab_bar;
+    if (tab_bar.l - bg.l).abs() >= 0.03 {
+        tab_bar
+    } else if theme.is_dark() {
+        if bg.l > 0.08 { bg.darken(0.22) } else { bg.lighten(0.6) }
+    } else {
+        bg.darken(0.04)
+    }
+}
 
 pub struct TabsBar {
     state: Entity<WorkspaceState>,
     scroll: ScrollHandle,
-    /// The tab open when last drawn: another one is scrolled into view.
-    shown: Option<ItemId>,
+    /// The tab open and its index when last drawn: a selection or reorder
+    /// change scrolls it back into view.
+    shown: Option<(ItemId, usize)>,
     /// UI-1: some tabs are past the row's end, as last laid out.
     overflowing: bool,
     _subscription: Subscription,
@@ -60,8 +91,8 @@ impl TabsBar {
     }
 
     /// UI-1: every open tab, for when some are past the row's end: a choice
-    /// opens it and brings it into view; closing the others or all of them
-    /// is there too.
+    /// opens it in place and brings it into view; closing the others, those
+    /// to the right, or all of them is there too.
     fn render_all(&self) -> impl IntoElement + use<> {
         let state = self.state.downgrade();
         let scroll = self.scroll.clone();
@@ -93,7 +124,11 @@ impl TabsBar {
                     }
                     dup
                 };
-                let opened_in_tabs = opened.clone().filter(|opened| tabs.iter().any(|(id, ..)| id == opened));
+                let tab_count = tabs.len();
+                let opened_pos = opened
+                    .as_ref()
+                    .and_then(|opened| tabs.iter().position(|(id, ..)| id == opened));
+                let opened_in_tabs = opened_pos.and_then(|pos| tabs.get(pos).map(|(id, ..)| (id.clone(), pos)));
                 let menu =
                     tabs.into_iter()
                         .enumerate()
@@ -138,17 +173,33 @@ impl TabsBar {
                             });
                             menu.item(item.checked(checked).on_click(move |_, _, cx| {
                                 scroll.scroll_to_item(index);
-                                let _ = state.update(cx, |state, cx| state.select(&id, cx));
+                                let _ = state.update(cx, |state, cx| state.select_tab(&id, cx));
                             }))
                         });
-                let (others, all) = (state.clone(), state.clone());
+                let (others, right, all) = (state.clone(), state.clone(), state.clone());
                 let menu = menu.separator();
                 let menu = match opened_in_tabs {
-                    Some(opened) => menu.item(
-                        PopupMenuItem::new(t!("workspace.close_other_tabs").to_string()).on_click(move |_, _, cx| {
-                            let _ = others.update(cx, |state, cx| state.close_other_tabs(&opened, cx));
-                        }),
-                    ),
+                    Some((opened, pos)) => {
+                        let others_id = opened.clone();
+                        let menu = menu.item(
+                            PopupMenuItem::new(t!("workspace.close_other_tabs").to_string()).on_click(
+                                move |_, _, cx| {
+                                    let _ = others.update(cx, |state, cx| state.close_other_tabs(&others_id, cx));
+                                },
+                            ),
+                        );
+                        if pos + 1 < tab_count {
+                            menu.item(
+                                PopupMenuItem::new(t!("workspace.close_right_tabs").to_string()).on_click(
+                                    move |_, _, cx| {
+                                        let _ = right.update(cx, |state, cx| state.close_right_tabs(&opened, cx));
+                                    },
+                                ),
+                            )
+                        } else {
+                            menu
+                        }
+                    }
                     None => menu,
                 };
                 menu.item(
@@ -183,11 +234,16 @@ impl Render for TabsBar {
                 )
             })
             .collect();
-        if opened != self.shown {
-            if let Some(at) = tabs.iter().position(|(id, ..)| Some(id) == opened.as_ref()) {
-                self.scroll.scroll_to_item(at);
+        let current_pos = opened.as_ref().and_then(|id| {
+            tabs.iter()
+                .position(|(tab_id, ..)| tab_id == id)
+                .map(|at| (id.clone(), at))
+        });
+        if current_pos != self.shown {
+            if let Some((_, at)) = &current_pos {
+                self.scroll.scroll_to_item(*at);
             }
-            self.shown = opened.clone();
+            self.shown = current_pos;
         }
         let shared_names: std::collections::HashSet<String> = {
             let mut seen = std::collections::HashSet::new();
@@ -199,18 +255,22 @@ impl Render for TabsBar {
             }
             dup
         };
+        let tab_bar_bg = tab_bar_background(cx);
         let theme = cx.theme();
-        let (border, muted) = (theme.border, theme.muted_foreground);
-        // UI-1: between two tabs neither of which is open (a pin is), the
-        // theme's border sits on the same grey as the tabs in the dark
-        // theme: a stronger line keeps each one apart.
-        let divider = muted.opacity(0.3);
+        let (border, muted, active_bg, foreground, primary, hover_bg) = (
+            theme.border,
+            theme.muted_foreground,
+            theme.background,
+            theme.foreground,
+            theme.primary,
+            theme.list_hover,
+        );
+        let tab_count = tabs.len();
         let row = tabs
             .into_iter()
             .enumerate()
             .map(|(index, (id, method, name, folders, path, sending, scratch))| {
                 let active = opened.as_ref() == Some(&id);
-                let group = SharedString::from(format!("api-tab-{index}"));
                 let (open_id, close_id, middle_id) = (id.clone(), id.clone(), id.clone());
                 let menu_state = self.state.downgrade();
                 let disambiguate =
@@ -228,63 +288,79 @@ impl Render for TabsBar {
                 } else {
                     name.clone()
                 };
+                let label_color = if active { foreground } else { muted.opacity(0.88) };
+                let method_tint = if active {
+                    method_color(method, cx)
+                } else {
+                    method_color(method, cx).opacity(0.72)
+                };
                 h_flex()
                     .id(("api-tab", index))
-                    .group(group.clone())
                     .relative()
                     .flex_none()
-                    .max_w(px(240.))
                     .h_full()
-                    .px_4()
+                    .pl_2p5()
+                    .pr_1()
                     .gap_1p5()
                     .items_center()
                     .border_r_1()
-                    .border_color(divider)
+                    .border_color(border)
                     .text_xs()
                     .cursor_pointer()
                     .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                    .map(|tab| {
-                        if active {
-                            tab.bg(theme.background).text_color(theme.foreground)
-                        } else {
-                            tab.bg(theme.secondary)
-                                .text_color(theme.secondary_foreground)
-                                .hover(|style| style.bg(theme.secondary_hover))
-                        }
-                    })
+                    // Active tab merges into the editor surface below without a
+                    // bottom hairline; inactive tabs keep a 1px boundary on the trough.
                     .when(active, |tab| {
-                        tab.child(div().absolute().top_0().left_0().right_0().h(px(2.)).bg(theme.primary))
+                        tab.bg(active_bg).child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .h(TAB_ACTIVE_ACCENT_HEIGHT)
+                                .bg(primary),
+                        )
+                    })
+                    .when(!active, |tab| {
+                        tab.border_b_1()
+                            .border_color(border)
+                            .hover(move |style| style.bg(hover_bg))
                     })
                     .child(
                         div()
                             .flex_none()
                             .text_size(rems(0.7))
                             .font_bold()
-                            .text_color(method_color(method, cx))
+                            .text_color(method_tint)
                             .child(method_label(method)),
                     )
-                    .child(div().min_w_0().truncate().child(name.clone()))
+                    .child(
+                        div()
+                            .max_w(TAB_TITLE_MAX_WIDTH)
+                            .min_w_0()
+                            .truncate()
+                            .text_color(label_color)
+                            .when(active, |this| this.font_semibold())
+                            .child(name.clone()),
+                    )
                     .when_some(disambiguate, |tab, folder| {
                         tab.child(
                             div()
                                 .flex_none()
-                                .max_w(px(72.))
+                                .max_w(px(64.))
                                 .truncate()
                                 .text_size(rems(0.68))
-                                .text_color(muted)
+                                .text_color(muted.opacity(0.75))
                                 .child(folder),
                         )
                     })
                     .when(sending, |tab| {
-                        tab.child(div().flex_none().size(px(6.)).rounded_full().bg(theme.primary))
+                        tab.child(div().flex_none().size(px(6.)).rounded_full().bg(primary))
                     })
                     .child(
                         div()
-                            .absolute()
-                            .top(px(2.))
-                            .right(px(2.))
-                            .invisible()
-                            .group_hover(group, |style| style.visible())
+                            .flex_none()
+                            .when(!active, |this| this.opacity(0.45).hover(|style| style.opacity(1.0)))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .child(
                                 Button::new(("close-api-tab", index))
@@ -299,14 +375,8 @@ impl Render for TabsBar {
                                     })),
                             ),
                     )
-                    .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
-                        this.state.update(cx, |state, cx| {
-                            if event.click_count() == 2 {
-                                state.close_tab(&open_id, cx);
-                            } else {
-                                state.select(&open_id, cx);
-                            }
-                        });
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state.update(cx, |state, cx| state.select_tab(&open_id, cx));
                     }))
                     .on_mouse_down(
                         MouseButton::Middle,
@@ -316,8 +386,13 @@ impl Render for TabsBar {
                         }),
                     )
                     .context_menu(move |menu, _, _| {
-                        let (close, others, all) = (menu_state.clone(), menu_state.clone(), menu_state.clone());
-                        let (close_id, others_id) = (id.clone(), id.clone());
+                        let (close, others, right, all) = (
+                            menu_state.clone(),
+                            menu_state.clone(),
+                            menu_state.clone(),
+                            menu_state.clone(),
+                        );
+                        let (close_id, others_id, right_id) = (id.clone(), id.clone(), id.clone());
                         let menu = if scratch && editable {
                             let (save, save_id, save_name) = (menu_state.clone(), id.clone(), name.clone());
                             menu.item(PopupMenuItem::new(t!("workspace.save_scratch").to_string()).on_click(
@@ -346,47 +421,79 @@ impl Render for TabsBar {
                         } else {
                             menu
                         };
-                        menu.item(PopupMenuItem::new(t!("workspace.close_tab").to_string()).on_click(
+                        let menu = menu
+                            .item(PopupMenuItem::new(t!("workspace.close_tab").to_string()).on_click(
+                                move |_, _, cx| {
+                                    let _ = close.update(cx, |state, cx| state.close_tab(&close_id, cx));
+                                },
+                            ))
+                            .item(
+                                PopupMenuItem::new(t!("workspace.close_other_tabs").to_string()).on_click(
+                                    move |_, _, cx| {
+                                        let _ = others.update(cx, |state, cx| state.close_other_tabs(&others_id, cx));
+                                    },
+                                ),
+                            );
+                        let menu = if index + 1 < tab_count {
+                            menu.item(
+                                PopupMenuItem::new(t!("workspace.close_right_tabs").to_string()).on_click(
+                                    move |_, _, cx| {
+                                        let _ = right.update(cx, |state, cx| state.close_right_tabs(&right_id, cx));
+                                    },
+                                ),
+                            )
+                        } else {
+                            menu
+                        };
+                        menu.item(PopupMenuItem::new(t!("workspace.close_all_tabs").to_string()).on_click(
                             move |_, _, cx| {
-                                let _ = close.update(cx, |state, cx| state.close_tab(&close_id, cx));
+                                let _ = all.update(cx, |state, cx| state.close_all_tabs(cx));
                             },
                         ))
-                        .item(
-                            PopupMenuItem::new(t!("workspace.close_other_tabs").to_string()).on_click(
-                                move |_, _, cx| {
-                                    let _ = others.update(cx, |state, cx| state.close_other_tabs(&others_id, cx));
-                                },
-                            ),
-                        )
-                        .item(
-                            PopupMenuItem::new(t!("workspace.close_all_tabs").to_string()).on_click(move |_, _, cx| {
-                                let _ = all.update(cx, |state, cx| state.close_all_tabs(cx));
-                            }),
-                        )
                     })
             });
+
+        let pills = h_flex()
+            .id("api-tabs")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .items_center()
+            .overflow_x_scroll()
+            .lock_scroll_axis()
+            .track_scroll(&self.scroll)
+            .children(row.collect::<Vec<_>>())
+            // Continues the bottom 1px boundary across unused trough width.
+            .child(div().flex_1().h_full().border_b_1().border_color(border));
+
         h_flex()
             .flex_none()
             .w_full()
-            .h(px(36.))
+            .h(TAB_BAR_HEIGHT)
             .items_center()
-            .border_b_1()
-            .border_color(border)
-            .bg(theme.secondary)
+            .bg(tab_bar_bg)
             .text_color(muted)
             .child(
                 h_flex()
-                    .id("api-tabs")
+                    .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()
                     .items_center()
-                    .overflow_x_scroll()
-                    .track_scroll(&self.scroll)
-                    .children(row.collect::<Vec<_>>()),
+                    .child(pills)
+                    .child(ScrollableMask::vertical_wheel(&self.scroll)),
             )
             .when_some(all, |bar, all| {
-                bar.child(div().flex_none().w(px(1.)).h_full().bg(divider)).child(all)
+                bar.child(
+                    h_flex()
+                        .flex_none()
+                        .h_full()
+                        .items_center()
+                        .border_l_1()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(all),
+                )
             })
     }
 }

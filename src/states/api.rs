@@ -1122,6 +1122,13 @@ impl ApiState {
         });
     }
 
+    fn note_tab_send(&self, cx: &mut Context<Self>) {
+        let (workspace, api_id) = (self.workspace.clone(), self.api.clone());
+        cx.defer(move |cx| {
+            let _ = workspace.update(cx, |workspace, cx| workspace.record_tab_send(&api_id, cx));
+        });
+    }
+
     /// F5.1: sends, or cancels the request on its way. `answers` are the
     /// reader's to the `openFile` and the `prompt`s the request needs; what
     /// was typed is kept for the next time.
@@ -1169,6 +1176,7 @@ impl ApiState {
         }
         self.save_now(cx);
         remember_typed(&self.collection, &answers.prompts, cx);
+        self.note_tab_send(cx);
         if self.request.method == HttpMethod::WebSocket {
             return self.connect(answers, cx);
         }
@@ -1492,6 +1500,7 @@ impl ApiState {
         }
         self.save_now(cx);
         remember_typed(&self.collection, &answers.prompts, cx);
+        self.note_tab_send(cx);
         let call = socket::message(self.sender(cx), self.collection.clone(), self.request.clone(), answers);
         cx.spawn(async move |this, cx| {
             let rendered = cx.background_spawn(call).await;
@@ -1721,6 +1730,7 @@ impl ApiState {
         }
         self.save_now(cx);
         remember_typed(&self.collection, &answers.prompts, cx);
+        self.note_tab_send(cx);
         let call = grpc_stream::message(self.sender(cx), self.collection.clone(), self.request.clone(), answers);
         cx.spawn(async move |this, cx| {
             let rendered = cx.background_spawn(call).await;

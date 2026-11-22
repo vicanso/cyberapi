@@ -51,6 +51,7 @@ pub mod secrets;
 pub mod send;
 pub mod sse;
 pub mod sync;
+pub mod tab_order;
 pub mod template;
 pub mod template_hints;
 mod time;

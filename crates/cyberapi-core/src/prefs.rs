@@ -558,6 +558,9 @@ pub struct WorkspacePrefs {
     /// is here too, and also in [`WorkspacePrefs::scratches`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub open: Vec<ItemId>,
+    /// F1: per-API usage scores for Stable Top-5 Frecency tab ordering.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tab_usage: BTreeMap<ItemId, crate::tab_order::TabUsage>,
     /// F1: requests that are not in the tree. The reader's own — not project
     /// content, so they are not synced — and still here after a restart.
     /// Closing the tab drops the request.

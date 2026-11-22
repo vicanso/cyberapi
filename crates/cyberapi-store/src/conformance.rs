@@ -1447,8 +1447,17 @@ async fn workspace_prefs_are_per_collection(storage: &Storage) {
     let prefs = WorkspacePrefs {
         expanded: vec![ItemId::from("f1"), ItemId::from("f2")],
         selected: Some(login.item.id.clone()),
-        // F1: the open tabs, in order.
+        // F1: the open tabs, in order, and their usage history.
         open: vec![ItemId::from("a2"), login.item.id.clone()],
+        tab_usage: [(
+            ItemId::from("a2"),
+            cyberapi_core::tab_order::TabUsage {
+                score_millis: 4_000,
+                last_used: 1_700_000_000,
+            },
+        )]
+        .into_iter()
+        .collect(),
         scratches: Vec::new(),
         pinned: vec![login.item.id.clone()],
         filters: [(login.item.id.clone(), "$.data[*].name".to_string())]
