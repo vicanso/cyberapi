@@ -443,6 +443,141 @@ pub fn needs(request: &HttpRequest, variables: &[Variable], inherited: &Inherite
     needs
 }
 
+/// R7: finds variables referenced by `request` (leading URI `{{ENV}}`,
+/// path params `:p`/`{p}`, `{{value(name)}}` including chains like
+/// `{{b64.value(name)}}`, and bare `{{name}}` across URI, query, headers,
+/// body, path param values, global/inherited headers, and effective auth)
+/// that currently have no non-empty value from session `extracted`, API own,
+/// folder, active environment, or shared variables, and are produced by another
+/// API's enabled extraction.
+///
+/// `variables` must already be filtered for the active environment with
+/// secrets filled (empty string when a secret has no value).
+/// `producers` must be ordered by preference (nearest in tree first, excluding
+/// the current API itself): `(api_id, api_name, enabled_extraction_names)`.
+pub fn missing_extractions(
+    request: &HttpRequest,
+    variables: &[Variable],
+    inherited: &Inherited,
+    extracted: &[(String, String)],
+    producers: &[(crate::ItemId, String, Vec<String>)],
+) -> Vec<crate::assertions::MissingExtraction> {
+    if producers.is_empty() {
+        return Vec::new();
+    }
+    let any_missing_candidate = producers
+        .iter()
+        .flat_map(|(_, _, names)| names.iter())
+        .any(|name| !extracted.iter().any(|(known, _)| known == name));
+    if !any_missing_candidate {
+        return Vec::new();
+    }
+
+    let has_value = |name: &str, env_only: bool| -> bool {
+        if extracted.iter().any(|(known, _)| known == name) {
+            return true;
+        }
+        if request
+            .variables
+            .iter()
+            .any(|kv| kv.enabled && kv.key.trim() == name && !kv.value.is_empty())
+        {
+            return true;
+        }
+        if inherited
+            .variables
+            .iter()
+            .any(|kv| kv.enabled && kv.key.trim() == name && !kv.value.is_empty())
+        {
+            return true;
+        }
+        variables.iter().any(|v| {
+            v.enabled
+                && v.name == name
+                && !v.value.is_empty()
+                && if env_only {
+                    v.category == VariableCategory::Environment
+                } else {
+                    matches!(v.category, VariableCategory::Custom | VariableCategory::Environment)
+                }
+        })
+    };
+
+    let mut refs: Vec<(String, bool)> = Vec::new();
+    let push_ref = |refs: &mut Vec<(String, bool)>, name: &str, env_only: bool| {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        if let Some(existing) = refs.iter_mut().find(|(seen, _)| seen == name) {
+            if !env_only {
+                existing.1 = false;
+            }
+        } else {
+            refs.push((name.to_string(), env_only));
+        }
+    };
+
+    if let (Some(name), _) = split_env_prefix(request.uri.trim()) {
+        push_ref(&mut refs, name, true);
+    }
+    for name in path_param_names(&request.uri) {
+        push_ref(&mut refs, &name, false);
+    }
+    for text in templated_texts(request, variables, inherited) {
+        let mut rest = text.as_ref();
+        while let Some(start) = rest.find("{{") {
+            let after = &rest[start + 2..];
+            let Some(end) = after.get(1..).and_then(|tail| tail.find("}}")).map(|at| at + 1) else {
+                break;
+            };
+            let inner = &after[..end];
+            let whole = &rest[start..start + 2 + end + 2];
+            if let Some(expr) = template::parse_inner(whole, inner) {
+                if expr.chain.last().map(String::as_str) == Some("value")
+                    && let Some(param) = expr.params.first()
+                {
+                    push_ref(&mut refs, param, false);
+                }
+            } else {
+                let trimmed = inner.trim();
+                if !trimmed.is_empty()
+                    && !trimmed.starts_with('$')
+                    && !trimmed.contains(['(', ')', '.', ' ', '\t', '\r', '\n', '{', '}'])
+                {
+                    push_ref(&mut refs, trimmed, false);
+                }
+            }
+            rest = &rest[start + 2 + end + 2..];
+        }
+    }
+
+    let mut out: Vec<crate::assertions::MissingExtraction> = Vec::new();
+    for (name, env_only) in refs {
+        if has_value(&name, env_only) {
+            continue;
+        }
+        let Some((producer_id, producer_name, _)) = producers
+            .iter()
+            .find(|(_, _, names)| names.iter().any(|candidate| candidate == &name))
+        else {
+            continue;
+        };
+        if let Some(existing) = out.iter_mut().find(|entry| &entry.producer_id == producer_id) {
+            if !existing.variables.contains(&name) {
+                existing.variables.push(name);
+            }
+        } else {
+            out.push(crate::assertions::MissingExtraction {
+                producer_id: producer_id.clone(),
+                producer_name: producer_name.clone(),
+                variables: vec![name],
+            });
+        }
+    }
+    out
+}
+
 /// A7b: whether `request` or any header/auth/variable it sends calls a
 /// dynamic template function (`uuid`, `random`, `randomString`, `now`,
 /// `timestamp`, `ts`).
@@ -2327,6 +2462,108 @@ mod tests {
                     message: "missing file".into(),
                 }
             })
+        );
+    }
+
+    #[test]
+    fn missing_extractions_detects_unresolved_references_and_clears_when_provided() {
+        let login_id = crate::ItemId::new("login");
+        let refresh_id = crate::ItemId::new("refresh");
+        let producers = vec![
+            (
+                login_id.clone(),
+                "Login".to_string(),
+                vec!["token".to_string(), "baseUrl".to_string(), "userId".to_string()],
+            ),
+            (
+                refresh_id.clone(),
+                "Refresh".to_string(),
+                vec!["refreshToken".to_string()],
+            ),
+        ];
+        let req = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "{{baseUrl}}/users/:userId".into(),
+            headers: vec![kv("X-Refresh", "{{value(refreshToken)}}")],
+            body: r#"{"sig": "{{b64.value(sig)}}", "id": "{{$randomUUID}}", "now": "{{timestamp()}}"}"#.into(),
+            auth: Auth::Bearer {
+                token: "{{token}}".into(),
+            },
+            ..Default::default()
+        };
+
+        let found = missing_extractions(&req, &[], &Inherited::default(), &[], &producers);
+        assert_eq!(
+            found,
+            vec![
+                crate::assertions::MissingExtraction {
+                    producer_id: login_id.clone(),
+                    producer_name: "Login".into(),
+                    variables: vec!["baseUrl".into(), "userId".into(), "token".into()],
+                },
+                crate::assertions::MissingExtraction {
+                    producer_id: refresh_id.clone(),
+                    producer_name: "Refresh".into(),
+                    variables: vec!["refreshToken".into()],
+                },
+            ]
+        );
+
+        // Empty placeholder variables in the project do not hide the prompt,
+        // while non-empty variables or extracted values suppress it.
+        let var = |category, name: &str, value: &str| Variable {
+            id: crate::VariableId::new(name),
+            collection: crate::CollectionId::new("col"),
+            category,
+            name: name.into(),
+            value: value.into(),
+            enabled: true,
+            environment: None,
+            created_at: crate::Timestamp::default(),
+            updated_at: crate::Timestamp::default(),
+        };
+        let empty_env = var(VariableCategory::Custom, "token", "");
+        let non_empty_env = var(VariableCategory::Environment, "baseUrl", "https://api.example.com");
+        let partially_satisfied = missing_extractions(
+            &req,
+            &[empty_env, non_empty_env],
+            &Inherited::default(),
+            &[("userId".into(), "42".into()), ("refreshToken".into(), "r1".into())],
+            &producers,
+        );
+        assert_eq!(
+            partially_satisfied,
+            vec![crate::assertions::MissingExtraction {
+                producer_id: login_id.clone(),
+                producer_name: "Login".into(),
+                variables: vec!["token".into()],
+            }]
+        );
+
+        // Chained {{b64.value(...)}} is detected too when a producer owns it.
+        let chain_req = HttpRequest {
+            method: HttpMethod::Get,
+            uri: "https://api.example.com/me".into(),
+            headers: vec![kv("X-Sig", "{{b64.value(token)}}")],
+            ..Default::default()
+        };
+        assert_eq!(
+            missing_extractions(&chain_req, &[], &Inherited::default(), &[], &producers),
+            vec![crate::assertions::MissingExtraction {
+                producer_id: login_id,
+                producer_name: "Login".into(),
+                variables: vec!["token".into()],
+            }]
+        );
+        assert!(
+            missing_extractions(
+                &chain_req,
+                &[],
+                &Inherited::default(),
+                &[("token".into(), "abc".into())],
+                &producers
+            )
+            .is_empty()
         );
     }
 }

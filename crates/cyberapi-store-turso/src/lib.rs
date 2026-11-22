@@ -378,14 +378,15 @@ async fn tree_data(conn: &Connection, id: &CollectionId) -> Result<TreeData, Sto
     })
 }
 
-/// Method and URI out of `setting`, not the request document.
+/// Method, URI and extractions out of `setting`, not the rest of the request document.
 async fn api_heads(conn: &Connection, id: &CollectionId) -> Result<Vec<ApiHead>, StoreError> {
     query_all(
         conn,
         "SELECT id, name, \
          CASE WHEN json_valid(setting) THEN json_extract(setting, '$.method') ELSE '' END, \
          CASE WHEN json_valid(setting) THEN json_extract(setting, '$.uri') ELSE '' END, \
-         updated_at \
+         updated_at, \
+         CASE WHEN json_valid(setting) THEN COALESCE(json_extract(setting, '$.extractions'), '') ELSE '' END \
          FROM api_settings WHERE collection = ?1 ORDER BY rowid",
         (id.as_str(),),
         rows::api_head,

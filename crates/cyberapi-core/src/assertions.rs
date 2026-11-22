@@ -491,6 +491,38 @@ pub fn extract(
     Ok(found(extraction.subject, &extraction.target, response, json)?.map(|found| found.text().into_owned()))
 }
 
+/// M2: a session-level runtime value extracted from an API's response.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtractedValue {
+    pub name: String,
+    pub value: String,
+    /// The API whose response produced this value.
+    pub api: crate::ItemId,
+}
+
+/// R7: one producer API whose extraction(s) are referenced by a request
+/// without any currently available value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingExtraction {
+    pub producer_id: crate::ItemId,
+    pub producer_name: String,
+    /// Distinct missing variable names produced by `producer_id`, in order of appearance.
+    pub variables: Vec<String>,
+}
+
+/// M2 / R7: distinct trimmed non-empty variable names produced by `extractions`
+/// that are currently enabled, in order of appearance.
+pub fn enabled_extraction_names(extractions: &[Extraction]) -> Vec<String> {
+    let mut names = Vec::new();
+    for extraction in extractions {
+        let name = extraction.name.trim();
+        if extraction.enabled && !name.is_empty() && !names.iter().any(|seen| seen == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
 /// A2: what every enabled, named extraction takes from `response`, by name;
 /// what is not there, or cannot be read, is left out.
 pub fn extract_all(extractions: &[Extraction], response: &HttpResponse) -> Vec<(String, String)> {

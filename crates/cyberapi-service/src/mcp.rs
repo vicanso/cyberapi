@@ -774,6 +774,7 @@ pub async fn execute_send_api(
             .await
             .unwrap_or_default()
             .of(&settings.secret_variables),
+        runtime: Vec::new(),
     };
     let assertions = api.request.assertions.clone();
     let examples = api.request.examples.clone();

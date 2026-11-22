@@ -21,6 +21,7 @@ use super::{ApiState, AppStore, GrpcDefinitions, Load, MockState, ServerStatus, 
 use crate::pacing;
 use async_lock::Mutex;
 use cyberapi_core::Timestamp;
+use cyberapi_core::assertions::{self, ExtractedValue, MissingExtraction, enabled_extraction_names};
 use cyberapi_core::auth::Auth;
 use cyberapi_core::code::CodeTarget;
 use cyberapi_core::environments;
@@ -43,7 +44,7 @@ use cyberapi_core::template_hints;
 use cyberapi_core::tree::{Placement, Row, Tree, TreeData};
 use cyberapi_core::undo;
 use cyberapi_core::{EnvironmentId, ItemId, VariableId};
-use cyberapi_service::Sender;
+use cyberapi_service::{SendFailure, Sender};
 use cyberapi_store::{Storage, StoreError, StoreFuture};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
@@ -244,6 +245,18 @@ struct CopyState {
 /// What to do once the requests a call asked for are in the tree.
 type BodyReady = Box<dyn FnOnce(&mut WorkspaceState, &mut Context<WorkspaceState>) + 'static>;
 
+/// R7: outcome of sending a producer API directly from a missing-extraction banner.
+#[derive(Debug)]
+pub enum ProducerSendResult {
+    Answered {
+        status: Option<u16>,
+        error: Option<String>,
+        extracted: Vec<String>,
+    },
+    Failed(SendFailure),
+    Missing,
+}
+
 pub struct WorkspaceState {
     sender: Sender,
     collection: Collection,
@@ -304,6 +317,17 @@ pub struct WorkspaceState {
     /// offers (M6): `None` for one with no JSON answer. Kept until the API
     /// answers again.
     answers: HashMap<ItemId, Option<Arc<serde_json::Value>>>,
+    /// M2: session-level runtime variables extracted from responses in this
+    /// project (never persisted, never synced; re-derived on open from latest
+    /// responses of APIs that define extractions).
+    extracted: Vec<ExtractedValue>,
+    /// Monotonic counter so an older background hydration cannot clobber a
+    /// newer manual send or clear.
+    extracted_gen: u64,
+    /// Whether initial hydration has been triggered for the loaded project.
+    extracted_hydrated: bool,
+    /// R7: producer APIs currently being sent from a missing-extraction banner.
+    sending_producers: HashMap<ItemId, Task<()>>,
     /// GraphQL endpoints' schemas, by the URI as the APIs write it: asked
     /// for by one API, offered to every API sent there, until the project
     /// is left.
@@ -464,6 +488,10 @@ impl WorkspaceState {
             custom: Vec::new(),
             named: Vec::new(),
             answers: HashMap::new(),
+            extracted: Vec::new(),
+            extracted_gen: 0,
+            extracted_hydrated: false,
+            sending_producers: HashMap::new(),
             schemas: HashMap::new(),
             grpc: HashMap::new(),
             recent: None,
@@ -1377,12 +1405,13 @@ impl WorkspaceState {
     }
 
     /// #81: `request.uri` with its leading `{{VARIABLE}}` and path parameters
-    /// resolved in `environment` (after folder and API variable overrides,
-    /// with secrets masked), so the production confirmation dialog shows where
-    /// the request will go.
+    /// resolved in `environment` (after folder, API, and session extracted
+    /// variable overrides, with secrets masked), so the production confirmation
+    /// dialog shows where the request will go.
     pub fn resolved_uri_for(&self, api: &ItemId, request: &HttpRequest, environment: Option<&EnvironmentId>) -> String {
         let mut variables = self.environments_for(environment);
-        let values = self.inherited(api).values(&request.variables, &[]);
+        let runtime = self.runtime_values();
+        let values = self.inherited(api).values(&request.variables, &runtime);
         if !values.is_empty() {
             variables = cyberapi_core::run::with_values(&variables, &values);
         }
@@ -1440,9 +1469,10 @@ impl WorkspaceState {
         &self.data.settings
     }
 
-    /// M6: what a template's `{{` offers: the enabled custom variables and
-    /// the APIs, the ones near the opened API first. `machine`: whether
-    /// this build reads this machine's files and environment variables.
+    /// M6 / M2: what a template's `{{` offers: the enabled custom variables,
+    /// folder/API overrides, session-extracted runtime variables, and the APIs,
+    /// the ones near the opened API first. `machine`: whether this build reads
+    /// this machine's files and environment variables.
     pub fn hint_sources(&self, machine: bool) -> template_hints::Sources {
         let mut custom: Vec<(String, String)> = self
             .in_environment(&self.custom)
@@ -1452,8 +1482,9 @@ impl WorkspaceState {
             .map(|variable| (variable.name, variable.value))
             .collect();
         // D5: the opened API's folders' variables and its own, in place of
-        // the project's of the same names.
-        if let Some(api) = self.opened() {
+        // the project's of the same names, plus M2 session extracted values.
+        let runtime = self.runtime_values();
+        let extra = if let Some(api) = self.opened() {
             let own = self
                 .data
                 .apis
@@ -1461,9 +1492,19 @@ impl WorkspaceState {
                 .find(|found| &found.id == api)
                 .map(|found| found.request.variables.clone())
                 .unwrap_or_default();
-            for (name, value) in self.inherited(api).values(&own, &[]) {
-                custom.retain(|(given, _)| *given != name);
-                custom.push((name, value));
+            self.inherited(api).values(&own, &runtime)
+        } else {
+            runtime
+        };
+        for (name, value) in extra {
+            custom.retain(|(given, _)| *given != name);
+            custom.push((name, value));
+        }
+        for api in &self.data.apis {
+            for name in enabled_extraction_names(&api.request.extractions) {
+                if !custom.iter().any(|(given, _)| given == &name) {
+                    custom.push((name, String::new()));
+                }
             }
         }
         template_hints::Sources {
@@ -1474,9 +1515,9 @@ impl WorkspaceState {
         }
     }
 
-    /// UI-9: resolves a `{{value(NAME)}}` or leading `{{ENV}}` variable with
-    /// its effective value and source layer for `api` in `environment`, keeping
-    /// secret values masked.
+    /// UI-9 / M2: resolves a `{{value(NAME)}}`, bare `{{NAME}}`, or leading
+    /// `{{ENV}}` variable with its effective value and source layer for `api` in
+    /// `environment`, keeping secret values masked.
     pub fn resolve_var(
         &self,
         name: &str,
@@ -1517,6 +1558,25 @@ impl WorkspaceState {
             Vec::new()
         };
         let own = api_variables.unwrap_or(&stored_own);
+        let extracted_named: Vec<(String, String, String)> = self
+            .extracted
+            .iter()
+            .map(|entry| {
+                (
+                    entry.name.clone(),
+                    entry.value.clone(),
+                    self.api_display_name(&entry.api),
+                )
+            })
+            .collect();
+        let extracted_preview: Vec<template_hints::ExtractedPreview<'_>> = extracted_named
+            .iter()
+            .map(|(name, value, api_name)| template_hints::ExtractedPreview {
+                name: name.as_str(),
+                value: value.as_str(),
+                api_name: api_name.as_str(),
+            })
+            .collect();
         template_hints::resolve_with_source(
             name,
             category,
@@ -1525,6 +1585,7 @@ impl WorkspaceState {
             active_env,
             &folders,
             own,
+            &extracted_preview,
         )
     }
 
@@ -1580,11 +1641,13 @@ impl WorkspaceState {
         }
         sender.environment = self.current_environment().cloned();
         sender.secrets = self.secrets();
+        sender.runtime = self.runtime_values();
         sender
     }
 
     /// A3: a run sent `apis`: their last answers are new, and those open
-    /// read their history again.
+    /// read their history again. M2: re-extract session runtime values from the
+    /// sent APIs that define extractions.
     pub fn ran(&mut self, apis: &[ItemId], cx: &mut Context<Self>) {
         for api in apis {
             self.answers.remove(api);
@@ -1592,6 +1655,310 @@ impl WorkspaceState {
                 state.update(cx, |state, cx| state.reload_history(cx));
             }
         }
+        self.hydrate_extractions(Some(apis.to_vec()), false, cx);
+    }
+
+    /// M2: session-level runtime variables currently active in this project.
+    pub fn extracted_values(&self) -> &[ExtractedValue] {
+        &self.extracted
+    }
+
+    /// M2: runtime variables as `(name, value)` pairs for `Sender::runtime`.
+    pub fn runtime_values(&self) -> cyberapi_core::run::Values {
+        self.extracted
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.value.clone()))
+            .collect()
+    }
+
+    /// M2 / R7: human-readable API name (including scratch tabs).
+    pub fn api_display_name(&self, id: &ItemId) -> String {
+        self.data
+            .apis
+            .iter()
+            .find(|api| &api.id == id)
+            .map(|api| api.name.clone())
+            .or_else(|| {
+                self.prefs
+                    .scratches
+                    .iter()
+                    .find(|scratch| &scratch.id == id)
+                    .map(|scratch| scratch.name.clone())
+            })
+            .unwrap_or_else(|| id.as_str().to_string())
+    }
+
+    /// M2: records extracted values produced by `api`, overriding any prior
+    /// values of the same variable names.
+    pub fn record_extractions(&mut self, api: &ItemId, values: Vec<(String, String)>, cx: &mut Context<Self>) {
+        if values.is_empty() {
+            return;
+        }
+        self.extracted_gen += 1;
+        for (name, value) in values {
+            self.extracted.retain(|entry| entry.name != name);
+            self.extracted.push(ExtractedValue {
+                name,
+                value,
+                api: api.clone(),
+            });
+        }
+        cx.notify();
+    }
+
+    /// M2: replaces all session extracted entries owned by `api` with `values`
+    /// (for instance when the reader toggles or edits an extraction row).
+    pub fn replace_api_extractions(&mut self, api: &ItemId, values: Vec<(String, String)>, cx: &mut Context<Self>) {
+        let mut next = self.extracted.clone();
+        next.retain(|entry| &entry.api != api);
+        for (name, value) in values {
+            next.retain(|entry| entry.name != name);
+            next.push(ExtractedValue {
+                name,
+                value,
+                api: api.clone(),
+            });
+        }
+        if next != self.extracted {
+            self.extracted = next;
+            self.extracted_gen += 1;
+            cx.notify();
+        }
+    }
+
+    /// M2: removes all session extracted entries produced by `api`.
+    pub fn clear_api_extractions(&mut self, api: &ItemId, cx: &mut Context<Self>) {
+        let before = self.extracted.len();
+        self.extracted.retain(|entry| &entry.api != api);
+        if self.extracted.len() != before {
+            self.extracted_gen += 1;
+            cx.notify();
+        }
+    }
+
+    /// M2: clears all session extracted variables in this project.
+    pub fn clear_extracted(&mut self, cx: &mut Context<Self>) {
+        self.extracted_gen += 1;
+        if !self.extracted.is_empty() {
+            self.extracted.clear();
+            cx.notify();
+        }
+    }
+
+    /// R7: whether `api` is currently being sent either via the banner or its tab.
+    pub fn is_sending_producer(&self, api: &ItemId, cx: &App) -> bool {
+        self.sending_producers.contains_key(api) || self.tab_sending(api, cx)
+    }
+
+    /// R7: returns missing extractions that `request` (belonging to `api_id`)
+    /// references without any current runtime/variable value, grouped by
+    /// nearest producer API.
+    pub fn missing_extractions(
+        &self,
+        api_id: &ItemId,
+        request: &HttpRequest,
+        environment: Option<&EnvironmentId>,
+        cx: &App,
+    ) -> Vec<MissingExtraction> {
+        let ordered = template_hints::apis(&self.tree, Some(api_id));
+        let mut producers: Vec<(ItemId, String, Vec<String>)> = Vec::new();
+        for hint in ordered {
+            let producer_id = ItemId::from(hint.id.as_str());
+            if &producer_id == api_id {
+                continue;
+            }
+            let extractions = if let Some(open) = self.kept.get(&producer_id) {
+                open.read(cx).request().extractions.as_slice()
+            } else if let Some(stored) = self.data.apis.iter().find(|api| api.id == producer_id) {
+                stored.request.extractions.as_slice()
+            } else {
+                continue;
+            };
+            let names = enabled_extraction_names(extractions);
+            if !names.is_empty() {
+                producers.push((producer_id, hint.name, names));
+            }
+        }
+        if producers.is_empty() {
+            return Vec::new();
+        }
+        let mut raw_vars: Vec<Variable> =
+            Vec::with_capacity(self.environment.len() + self.custom.len() + self.global_headers.len());
+        raw_vars.extend(self.environment.iter().cloned());
+        raw_vars.extend(self.custom.iter().cloned());
+        raw_vars.extend(self.global_headers.iter().cloned());
+        let secrets = self.secrets();
+        let filled = secrets::fill(raw_vars, &secrets);
+        let effective = environments::effective(&filled, environment);
+        let runtime = self.runtime_values();
+        cyberapi_core::send::missing_extractions(request, &effective, &self.inherited(api_id), &runtime, &producers)
+    }
+
+    /// R7: returns the latest request definition of `producer_id` (preferring an
+    /// open editor tab if any).
+    pub fn producer_request(&self, producer_id: &ItemId, cx: &App) -> Option<HttpRequest> {
+        self.kept
+            .get(producer_id)
+            .map(|open| open.read(cx).request().clone())
+            .or_else(|| {
+                self.data
+                    .apis
+                    .iter()
+                    .find(|api| &api.id == producer_id)
+                    .map(|api| api.request.clone())
+            })
+    }
+
+    /// R7: sends `producer_id` in `environment` to refresh session extractions,
+    /// without changing the current selection.
+    pub fn send_producer(
+        &mut self,
+        producer_id: ItemId,
+        answers: Answers,
+        environment: Option<Environment>,
+        cx: &mut Context<Self>,
+    ) -> Task<ProducerSendResult> {
+        if self.sending_producers.contains_key(&producer_id) {
+            return Task::ready(ProducerSendResult::Missing);
+        }
+        let Some(request) = self.producer_request(&producer_id, cx) else {
+            return Task::ready(ProducerSendResult::Missing);
+        };
+        let mut sender = self.run_sender(cx);
+        sender.inherited = self.inherited(&producer_id);
+        sender.environment = environment;
+        let collection = self.collection.id.clone();
+        let id = producer_id.clone();
+        let call_request = request.clone();
+        let (done_tx, done_rx) = futures::channel::oneshot::channel();
+        let task = cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(cyberapi_service::send(
+                    sender,
+                    collection,
+                    id.clone(),
+                    call_request,
+                    answers,
+                ))
+                .await;
+            let outcome = match this.update(cx, |this, cx| {
+                this.sending_producers.remove(&id);
+                match result {
+                    Ok(response) => {
+                        this.forget_answer(&id);
+                        let extracted = assertions::extract_all(&request.extractions, &response);
+                        let names: Vec<String> = extracted.iter().map(|(name, _)| name.clone()).collect();
+                        this.record_extractions(&id, extracted, cx);
+                        if let Some(open) = this.kept.get(&id) {
+                            open.update(cx, |api, cx| api.reload_history(cx));
+                        }
+                        cx.notify();
+                        ProducerSendResult::Answered {
+                            status: response.status,
+                            error: response.error,
+                            extracted: names,
+                        }
+                    }
+                    Err(failure) => {
+                        cx.notify();
+                        ProducerSendResult::Failed(failure)
+                    }
+                }
+            }) {
+                Ok(outcome) => outcome,
+                Err(_) => ProducerSendResult::Missing,
+            };
+            let _ = done_tx.send(outcome);
+        });
+        self.sending_producers.insert(producer_id, task);
+        cx.notify();
+        cx.foreground_executor()
+            .spawn(async move { done_rx.await.unwrap_or(ProducerSendResult::Missing) })
+    }
+
+    /// M2: hydrates session extracted runtime variables from the latest saved
+    /// responses of APIs that define enabled extractions.
+    fn hydrate_extractions(&mut self, only: Option<Vec<ItemId>>, replace_all: bool, cx: &mut Context<Self>) {
+        let mut extractor_ids: Vec<ItemId> = Vec::new();
+        let mut order: HashMap<ItemId, usize> = HashMap::new();
+        for (idx, api) in self.data.apis.iter().enumerate() {
+            if only.as_ref().is_some_and(|list| !list.contains(&api.id)) {
+                continue;
+            }
+            let extractions = if let Some(open) = self.kept.get(&api.id) {
+                open.read(cx).request().extractions.clone()
+            } else {
+                api.request.extractions.clone()
+            };
+            if !enabled_extraction_names(&extractions).is_empty() {
+                order.insert(api.id.clone(), idx);
+                extractor_ids.push(api.id.clone());
+            }
+        }
+        if extractor_ids.is_empty() {
+            if replace_all && !self.extracted.is_empty() {
+                self.extracted.clear();
+                self.extracted_gen += 1;
+                cx.notify();
+            }
+            return;
+        }
+        if replace_all {
+            self.extracted_gen += 1;
+        }
+        let generation = self.extracted_gen;
+        let call = self
+            .sender
+            .storage
+            .history()
+            .latest(self.collection.id.clone(), extractor_ids);
+        run_store(cx, call, move |this, result, cx| {
+            let Ok(mut responses) = result else {
+                return;
+            };
+            // Process older responses first so newer sends override earlier ones.
+            responses.sort_by_key(|response| {
+                (
+                    response.created_at,
+                    order.get(&response.api).copied().unwrap_or(usize::MAX),
+                )
+            });
+            let mut pairs: Vec<(ItemId, String, String)> = Vec::new();
+            for response in &responses {
+                let extractions = if let Some(open) = this.kept.get(&response.api) {
+                    open.read(cx).request().extractions.clone()
+                } else if let Some(api) = this.data.apis.iter().find(|api| api.id == response.api) {
+                    api.request.extractions.clone()
+                } else {
+                    continue;
+                };
+                for (name, value) in assertions::extract_all(&extractions, response) {
+                    pairs.retain(|(_, existing, _)| existing != &name);
+                    pairs.push((response.api.clone(), name, value));
+                }
+            }
+            if replace_all {
+                if this.extracted_gen == generation {
+                    this.extracted = pairs
+                        .into_iter()
+                        .map(|(api, name, value)| ExtractedValue { name, value, api })
+                        .collect();
+                } else {
+                    for (api, name, value) in pairs {
+                        if !this.extracted.iter().any(|entry| entry.name == name) {
+                            this.extracted.push(ExtractedValue { name, value, api });
+                        }
+                    }
+                }
+            } else {
+                for (api, name, value) in pairs {
+                    this.extracted.retain(|entry| entry.name != name);
+                    this.extracted.push(ExtractedValue { name, value, api });
+                }
+                this.extracted_gen += 1;
+            }
+            cx.notify();
+        });
     }
 
     /// The schema of the GraphQL endpoint at `uri`, if an API asked for it.
@@ -2496,6 +2863,12 @@ impl WorkspaceState {
             self.start_again(id, cx);
         }
         self.set_data(next, cx);
+        self.extracted
+            .retain(|entry| self.data.apis.iter().any(|api| api.id == entry.api));
+        if !self.extracted_hydrated || forget {
+            self.extracted_hydrated = true;
+            self.hydrate_extractions(None, true, cx);
+        }
         for id in refetch {
             self.fetch_body(id, cx);
         }
@@ -4033,6 +4406,7 @@ impl WorkspaceState {
             inherited: self.inherited(id),
             environment: self.current_environment().cloned(),
             secrets: self.secrets(),
+            runtime: self.runtime_values(),
             ..self.sender.clone()
         };
         let answers = Answers {
@@ -4199,6 +4573,7 @@ impl WorkspaceState {
                 this.apart.retain(|id| !gone(id));
                 this.prefs.pinned.retain(|id| !gone(id));
                 this.prefs.expanded.retain(|id| !gone(id));
+                this.extracted.retain(|entry| !gone(&entry.api));
                 this.sync_api(cx);
                 this.save_prefs(cx);
                 cx.notify();
@@ -4686,6 +5061,7 @@ mod tests {
             environment: None,
             tokens: Default::default(),
             secrets: Default::default(),
+            runtime: Vec::new(),
         }
     }
 
@@ -7844,6 +8220,161 @@ mod tests {
             4,
             "the last run still shown"
         );
+    }
+
+    /// M2 / R7: manual sends extract into the session runtime layer (never
+    /// saved into variables/project), re-hydrate on reopen without opening the
+    /// extractor tab, and can be triggered directly from a dependent API.
+    #[gpui_kit::test]
+    async fn manual_send_extractions_apply_rehydrate_and_send_producer(cx: &mut TestAppContext) {
+        use cyberapi_core::assertions::{Extraction, Subject};
+        use std::sync::Mutex;
+
+        struct AuthFlowEngine {
+            token: &'static str,
+            seen: Mutex<Vec<PreparedRequest>>,
+        }
+        impl HttpEngine for AuthFlowEngine {
+            fn send(&self, req: PreparedRequest) -> SendFuture {
+                self.seen.lock().expect("seen").push(req.clone());
+                let token = self.token;
+                let body = if req.url.ends_with("/login") {
+                    format!(r#"{{"token":"{token}"}}"#).into_bytes()
+                } else {
+                    b"{}".to_vec()
+                };
+                Box::pin(async move {
+                    Ok(Exchange {
+                        status: 200,
+                        body,
+                        ..Default::default()
+                    })
+                })
+            }
+        }
+
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let engine = Arc::new(AuthFlowEngine {
+            token: "jwt-xyz",
+            seen: Mutex::new(Vec::new()),
+        });
+        let make_sender = |eng: Arc<AuthFlowEngine>| Sender {
+            engine: eng,
+            ..sender(&storage, true)
+        };
+        let state = cx.new(|cx| WorkspaceState::new(make_sender(engine.clone()), collection.clone(), cx));
+        cx.run_until_parked();
+
+        // Create Login (extracts `token`) and Profile (`Authorization: Bearer {{token}}`).
+        state.update(cx, |state, cx| state.create_api(None, "Login".into(), cx));
+        cx.run_until_parked();
+        let login_id = find(&state, "Login", cx);
+        let login_editor = editor(&state, cx);
+        login_editor.update(cx, |api, cx| {
+            api.set_uri("https://api.test/login".into(), cx);
+            api.set_extractions(
+                vec![Extraction {
+                    enabled: true,
+                    name: "token".into(),
+                    subject: Subject::Json,
+                    target: "$.token".into(),
+                }],
+                cx,
+            );
+            api.save_now(cx);
+        });
+        cx.run_until_parked();
+
+        state.update(cx, |state, cx| state.create_api(None, "Profile".into(), cx));
+        cx.run_until_parked();
+        let profile_id = find(&state, "Profile", cx);
+        let profile_editor = editor(&state, cx);
+        profile_editor.update(cx, |api, cx| {
+            api.set_uri("https://api.test/profile".into(), cx);
+            api.set_auth(
+                Auth::Bearer {
+                    token: "{{token}}".into(),
+                },
+                cx,
+            );
+            api.save_now(cx);
+        });
+        cx.run_until_parked();
+
+        // Before sending Login, Profile detects Login as the missing producer.
+        let missing = state.read_with(cx, |ws, cx| {
+            ws.missing_extractions(&profile_id, profile_editor.read(cx).request(), None, cx)
+        });
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].producer_id, login_id);
+        assert_eq!(missing[0].variables, ["token"]);
+
+        // Trigger producer send directly from Profile without changing selection.
+        let send_task = state.update(cx, |ws, cx| {
+            ws.send_producer(login_id.clone(), Answers::default(), None, cx)
+        });
+        let outcome = send_task.await;
+        assert!(matches!(
+            outcome,
+            ProducerSendResult::Answered {
+                status: Some(200),
+                ref extracted,
+                ..
+            } if extracted == &vec!["token".to_string()]
+        ));
+        cx.run_until_parked();
+        state.read_with(cx, |ws, cx| {
+            assert_eq!(ws.selected(), Some(&profile_id), "selection stays on Profile");
+            assert_eq!(ws.runtime_values(), [("token".into(), "jwt-xyz".into())]);
+            assert!(
+                ws.missing_extractions(&profile_id, profile_editor.read(cx).request(), None, cx)
+                    .is_empty()
+            );
+        });
+
+        // Manual send of Profile uses extracted runtime token, without writing any project variables.
+        profile_editor.update(cx, |api, cx| api.send_or_cancel(Answers::default(), cx));
+        cx.run_until_parked();
+        {
+            let seen = engine.seen.lock().expect("seen");
+            assert_eq!(seen.len(), 2);
+            assert_eq!(seen[1].header("authorization"), Some("Bearer jwt-xyz"));
+        }
+        assert!(
+            storage
+                .variables()
+                .list(collection.id.clone(), VariableCategory::Custom)
+                .await
+                .expect("custom")
+                .is_empty(),
+            "extractions are never written to project variables"
+        );
+
+        // Simulate restart: reopen WorkspaceState on the same storage (Profile was last selected,
+        // so Login is NOT opened in a tab yet). Re-hydration recovers `token` from Login's latest response.
+        drop(profile_editor);
+        drop(login_editor);
+        drop(state);
+        let reopened = cx.new(|cx| WorkspaceState::new(make_sender(engine.clone()), collection.clone(), cx));
+        cx.run_until_parked();
+        reopened.read_with(cx, |ws, cx| {
+            assert_eq!(ws.selected(), Some(&profile_id));
+            assert_eq!(ws.runtime_values(), [("token".into(), "jwt-xyz".into())]);
+            let resolved = ws.resolve_var(
+                "token",
+                template_hints::VarRefKind::Value,
+                Some(&profile_id),
+                None,
+                None,
+            );
+            assert_eq!(resolved.value.as_deref(), Some("jwt-xyz"));
+            assert_eq!(resolved.source, template_hints::VarSource::Extracted("Login".into()));
+            assert!(
+                ws.missing_extractions(&profile_id, &ws.opened_api().expect("profile").request, None, cx)
+                    .is_empty()
+            );
+        });
     }
 
     /// A7: a load test sends the API so many times and counts them; none

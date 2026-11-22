@@ -126,16 +126,18 @@ impl HintSource {
     }
 }
 
-/// UI-9: human-readable source layer label (e.g. `Staging`, `Shared`, `Folder: Auth`, `API`).
+/// UI-9 / M2: human-readable source layer label (e.g. `From: Login`, `Staging`,
+/// `Shared`, `Folder: Auth`, `API`).
 pub fn format_source(source: &VarSource, secret: bool) -> String {
     let base = match source {
+        VarSource::Extracted(api) => t!("hints.source_extracted", name = api).to_string(),
         VarSource::ApiOwn => t!("hints.source_api").to_string(),
         VarSource::Folder(name) => t!("hints.source_folder", name = name).to_string(),
         VarSource::NamedEnv(name) => name.clone(),
         VarSource::Shared => t!("hints.source_shared").to_string(),
         VarSource::Undefined => t!("hints.source_undefined").to_string(),
     };
-    if secret && !matches!(source, VarSource::Undefined) {
+    if secret && !matches!(source, VarSource::Undefined | VarSource::Extracted(_)) {
         format!("{base} · {}", t!("hints.source_secret"))
     } else {
         base

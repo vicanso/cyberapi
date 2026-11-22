@@ -100,15 +100,23 @@ pub fn api(row: &Row) -> ApiSetting {
     }
 }
 
-/// `id, name, method, uri, updated_at` taken out of `setting` without the rest
-/// of the request. A value that is not JSON reads as GET and an empty URI.
+/// `id, name, method, uri, updated_at, extractions` taken out of `setting`
+/// without the rest of the request. A value that is not JSON reads as GET, an
+/// empty URI and no extractions.
 pub fn api_head(row: &Row) -> ApiHead {
+    let raw_extractions = text(row, 5);
+    let extractions = if raw_extractions.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&raw_extractions).unwrap_or_default()
+    };
     ApiHead {
         id: ItemId::new(text(row, 0)),
         name: text(row, 1),
         method: HttpMethod::parse_lenient(&text(row, 2)),
         uri: text(row, 3),
         updated_at: time(row, 4),
+        extractions,
     }
 }
 

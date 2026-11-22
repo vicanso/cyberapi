@@ -234,6 +234,7 @@ mod tests {
                 environment: None,
                 tokens: Default::default(),
                 secrets: Default::default(),
+                runtime: Vec::new(),
             };
             let step = |id: &str| RunStep {
                 api: ItemId::new(id),

@@ -1182,6 +1182,7 @@ mod tests {
             environment: None,
             tokens: Default::default(),
             secrets: Default::default(),
+            runtime: Vec::new(),
         };
         let state = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
         let window = cx.open_window(size(px(800.), px(600.)), |window, cx| {

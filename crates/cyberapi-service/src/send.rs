@@ -110,6 +110,10 @@ pub struct Sender {
     /// in as it is sent and masked in what the history keeps. The caller
     /// fills it, as `inherited`.
     pub secrets: SecretValues,
+    /// M2: session-level runtime variables extracted from responses in this
+    /// project (below a run's pass values, above path/folder/env/shared).
+    /// Never persisted or synced.
+    pub runtime: cyberapi_core::run::Values,
 }
 
 impl Sender {
@@ -739,10 +743,15 @@ pub(crate) async fn prepare(
 
     // D3: the reader's values of the secret ones; #61: the shared
     // variables, and the environment's in their place; D5: the folders'
-    // and the API's own in theirs; A3: a run's in all of theirs.
+    // and the API's own in theirs; M2: session extracted runtime values;
+    // A3: a run's in all of theirs.
     let variables = secrets::fill(variables, &sender.secrets);
     let variables = environments::effective(&variables, sender.environment.as_ref().map(|found| &found.id));
-    let values = sender.inherited.values(&request.variables, values);
+    let mut given = sender.runtime.clone();
+    for (name, value) in values {
+        cyberapi_core::run::set(&mut given, name, value.clone());
+    }
+    let values = sender.inherited.values(&request.variables, &given);
     let variables = if values.is_empty() {
         variables
     } else {
@@ -883,7 +892,7 @@ pub(crate) async fn prepare_load(
     }
     let variables = secrets::fill(variables, &sender.secrets);
     let variables = environments::effective(&variables, sender.environment.as_ref().map(|found| &found.id));
-    let values = sender.inherited.values(&request.variables, &[]);
+    let values = sender.inherited.values(&request.variables, &sender.runtime);
     let variables = if values.is_empty() {
         variables
     } else {
@@ -1023,6 +1032,7 @@ mod tests {
             environment: None,
             tokens: Default::default(),
             secrets: Default::default(),
+            runtime: Vec::new(),
         };
         Setup {
             storage,
@@ -2773,5 +2783,70 @@ mod tests {
         assert_ne!(first.id, second.id);
         assert!(!first.kept() && !second.kept());
         assert!(first.created_at >= before, "{:?}", first.created_at);
+    }
+
+    #[test]
+    fn runtime_extracted_values_apply_to_manual_sends_and_code_and_yield_to_run_values() {
+        let mut setup = setup(ok(200, "{}"));
+        variable(&setup, VariableCategory::Environment, "HOST", "https://env.test");
+        variable(&setup, VariableCategory::Custom, "token", "env-token");
+        setup.sender.inherited = Inherited {
+            variables: vec![kv("token", "folder-token")],
+            ..Default::default()
+        };
+        setup.sender.runtime = vec![
+            ("HOST".into(), "https://runtime.test".into()),
+            ("token".into(), "runtime-token".into()),
+            ("id".into(), "42".into()),
+        ];
+        let api = new_api(&setup, "profile");
+        let request = HttpRequest {
+            uri: "{{HOST}}/users/:id".into(),
+            headers: vec![kv("X-Bare", "{{token}}"), kv("X-Fn", "{{value(token)}}")],
+            variables: vec![kv("id", "99")],
+            ..Default::default()
+        };
+
+        // Manual send: runtime values override API own (:id), folder, env, and shared.
+        pollster::block_on(send(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            api.clone(),
+            request.clone(),
+            Answers::default(),
+        ))
+        .expect("sent");
+        let sent = setup.engine.sent.lock().expect("sent")[0].clone();
+        assert_eq!(sent.url, "https://runtime.test/users/42");
+        assert_eq!(sent.header("x-bare"), Some("runtime-token"));
+        assert_eq!(sent.header("x-fn"), Some("runtime-token"));
+
+        // Copy as Code uses runtime values too.
+        let curl = pollster::block_on(code(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            request.clone(),
+            Answers::default(),
+            CodeTarget::Curl,
+        ))
+        .expect("code");
+        assert!(curl.contains("https://runtime.test/users/42"), "{curl}");
+        assert!(curl.contains("runtime-token"), "{curl}");
+
+        // Runner pass values override session runtime values.
+        pollster::block_on(send_with(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            api,
+            request,
+            Answers::default(),
+            None,
+            &[("token".into(), "pass-token".into())],
+        ))
+        .expect("sent with run values");
+        let sent_run = setup.engine.sent.lock().expect("sent")[1].clone();
+        assert_eq!(sent_run.header("x-bare"), Some("pass-token"));
+        assert_eq!(sent_run.header("x-fn"), Some("pass-token"));
+        assert_eq!(sent_run.url, "https://runtime.test/users/42");
     }
 }

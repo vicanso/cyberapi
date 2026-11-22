@@ -786,6 +786,7 @@ impl ApiState {
         if !exists {
             self.request.extractions.push(extraction);
             self.prewarm_shown_json(cx);
+            self.sync_extractions_to_workspace(cx);
             self.save_later(cx);
         }
     }
@@ -919,13 +920,34 @@ impl ApiState {
         }
     }
 
-    /// A2: the API's extractions, as the editor has them.
+    /// A2 / M2: the API's extractions, as the editor has them.
     pub fn set_extractions(&mut self, extractions: Vec<Extraction>, cx: &mut Context<Self>) {
         if self.request.extractions != extractions {
             self.request.extractions = extractions;
             self.prewarm_shown_json(cx);
+            self.sync_extractions_to_workspace(cx);
             self.save_later(cx);
         }
+    }
+
+    /// M2: recomputes session extracted values for this API from its newest
+    /// full response (or clears them when extractions were removed/disabled).
+    fn sync_extractions_to_workspace(&self, cx: &mut Context<Self>) {
+        let extracted = self
+            .responses
+            .first()
+            .filter(|newest| !self.partial.contains(&newest.id))
+            .map(|newest| assertions::extract_all(&self.request.extractions, newest))
+            .unwrap_or_default();
+        let api = self.api.clone();
+        let workspace = self.workspace.clone();
+        // Deferred so callers inside an outer `workspace.update` do not panic
+        // on GPUI entity re-entrancy.
+        cx.defer(move |cx| {
+            let _ = workspace.update(cx, |workspace, cx| {
+                workspace.replace_api_extractions(&api, extracted, cx)
+            });
+        });
     }
 
     /// A2: what `extraction` would take from the shown response, for the
@@ -1767,6 +1789,12 @@ impl ApiState {
                 if response.error.is_none() && !response.body.is_empty() && response.attachment_name().is_some() {
                     self.save(response.file_name(), response.body.clone(), cx);
                 }
+                let api = self.api.clone();
+                let extracted = if self.request.extractions.is_empty() {
+                    Vec::new()
+                } else {
+                    assertions::extract_all(&self.request.extractions, &response)
+                };
                 self.responses.insert(0, Arc::new(response));
                 self.responses.truncate(self.sender.sending.history_size());
                 // PERF-8: only the newest keeps its whole body; the one it
@@ -1782,9 +1810,14 @@ impl ApiState {
                 }
                 self.shown = None;
                 self.prewarm_shown_json(cx);
-                // What a `get` path's fields were read from is not the last.
-                let api = self.api.clone();
-                let _ = self.workspace.update(cx, |workspace, _| workspace.forget_answer(&api));
+                // What a `get` path's fields were read from is not the last,
+                // and M2 extracted values update the session runtime layer.
+                let _ = self.workspace.update(cx, |workspace, cx| {
+                    workspace.forget_answer(&api);
+                    if !extracted.is_empty() {
+                        workspace.record_extractions(&api, extracted, cx);
+                    }
+                });
             }
             Err(failure) => cx.emit(not_sent(failure)),
         }
@@ -1941,6 +1974,8 @@ impl ApiState {
             self.sender.environment = self.effective_environment(workspace).cloned();
             // D3: the reader's values of the secret ones.
             self.sender.secrets = workspace.secrets();
+            // M2: session runtime values extracted from responses.
+            self.sender.runtime = workspace.runtime_values();
         }
         self.sender.clone()
     }
@@ -2204,6 +2239,11 @@ impl ApiState {
                     this.responses.clear();
                     this.partial.clear();
                     this.shown = None;
+                    let api = this.api.clone();
+                    let _ = this.workspace.update(cx, |workspace, cx| {
+                        workspace.forget_answer(&api);
+                        workspace.clear_api_extractions(&api, cx);
+                    });
                 }
                 Err(error) => cx.emit(ApiEvent::Failed(error)),
             }

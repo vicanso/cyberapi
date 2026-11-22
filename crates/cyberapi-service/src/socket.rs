@@ -291,6 +291,7 @@ mod tests {
             environment: None,
             tokens: Default::default(),
             secrets: Default::default(),
+            runtime: Vec::new(),
         };
         (storage, engine, sender, collection, api)
     }

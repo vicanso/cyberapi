@@ -20,7 +20,7 @@ mod update;
 mod variables;
 mod workspace;
 
-pub use api::{ApiEvent, ApiState, GrpcDefinitions, typed_prompts};
+pub use api::{ApiEvent, ApiState, GrpcDefinitions, remember_typed, typed_prompts};
 pub use app::{AppEvent, AppState, AppStore, Route};
 pub use cookies::{CookieKey, CookiesEvent, CookiesState, cookie_key};
 pub use copy::{ServerCopy, keep_due_drafts};
@@ -34,7 +34,7 @@ pub use run::{Planned, RunState};
 pub use server::{ServerEvent, ServerState, ServerStatus, SignInFailure};
 pub use update::{Delivery, Installer, UpdateEvent, UpdateInfo, UpdatePhase, UpdateState};
 pub use variables::{VariablesEvent, VariablesState};
-pub use workspace::{WorkspaceEvent, WorkspaceState};
+pub use workspace::{ProducerSendResult, WorkspaceEvent, WorkspaceState};
 
 use async_lock::Mutex;
 use cyberapi_store::{StoreError, StoreFuture};

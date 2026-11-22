@@ -540,6 +540,8 @@ pub struct VarRef {
 /// UI-9: which layer a variable's effective value came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VarSource {
+    /// M2: extracted from an API response in this session (carrying the API's name).
+    Extracted(String),
     /// The API's own variable / path parameter.
     ApiOwn,
     /// A folder's variable (carrying the folder's name).
@@ -550,6 +552,14 @@ pub enum VarSource {
     Shared,
     /// Not defined or disabled in the active environment.
     Undefined,
+}
+
+/// M2: a session-level extracted value passed to [`resolve_with_source`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtractedPreview<'a> {
+    pub name: &'a str,
+    pub value: &'a str,
+    pub api_name: &'a str,
 }
 
 /// UI-9: a variable's effective value and where it came from, with secrets
@@ -566,7 +576,14 @@ pub struct ResolvedVar {
 /// full expression spans `range` in the document.
 fn parse_var_ref(inner: &str, range: Range<usize>) -> Option<VarRef> {
     let trimmed = inner.trim();
-    if let Some(rest) = trimmed.strip_prefix("value(")
+    let after_value = trimmed.strip_prefix("value(").or_else(|| {
+        let (prefix, rest) = trimmed.rsplit_once(".value(")?;
+        prefix
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
+            .then_some(rest)
+    });
+    if let Some(rest) = after_value
         && let Some(end) = rest.find(')')
     {
         let name = rest[..end].trim().trim_matches(['\'', '"']).trim();
@@ -578,10 +595,17 @@ fn parse_var_ref(inner: &str, range: Range<usize>) -> Option<VarRef> {
             });
         }
     }
-    if range.start == 0 && !trimmed.is_empty() && !trimmed.starts_with('$') && !trimmed.contains(['(', ')', '.', ' ']) {
+    if !trimmed.is_empty()
+        && !trimmed.starts_with('$')
+        && !trimmed.contains(['(', ')', '.', ' ', '\t', '\r', '\n', '{', '}'])
+    {
         return Some(VarRef {
             name: trimmed.to_string(),
-            kind: VarRefKind::EnvPrefix,
+            kind: if range.start == 0 {
+                VarRefKind::EnvPrefix
+            } else {
+                VarRefKind::Value
+            },
             range,
         });
     }
@@ -637,12 +661,13 @@ pub fn referenced_vars(text: &str) -> Vec<VarRef> {
     found
 }
 
-/// UI-9: resolves `name` in `category` following CyberAPI's precedence:
-/// API own non-empty variable -> nearest folder variable -> active named
-/// environment -> shared project layer -> undefined.
+/// UI-9 / M2: resolves `name` in `category` following CyberAPI's precedence:
+/// session extracted value -> API own non-empty variable -> nearest folder
+/// variable -> active named environment -> shared project layer -> undefined.
 ///
 /// Secret variables always return a masked value (`secrets::MASK`) when
 /// non-empty, never leaking the underlying secret.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_with_source(
     name: &str,
     category: VariableCategory,
@@ -651,7 +676,16 @@ pub fn resolve_with_source(
     active_env: Option<(&EnvironmentId, &str)>,
     folders: &[(&str, &[KvParam])],
     api_own: &[KvParam],
+    extracted: &[ExtractedPreview<'_>],
 ) -> ResolvedVar {
+    if let Some(entry) = extracted.iter().rev().find(|entry| entry.name == name) {
+        return ResolvedVar {
+            name: name.to_string(),
+            value: Some(entry.value.to_string()),
+            source: VarSource::Extracted(entry.api_name.to_string()),
+            secret: false,
+        };
+    }
     if let Some(kv) = api_own
         .iter()
         .rev()
@@ -1096,7 +1130,7 @@ mod tests {
 
     #[test]
     fn expression_at_finds_value_and_env_prefix_references() {
-        let body = "{\n  \"token\": \"{{value(API_TOKEN)}}\",\n  \"enc\": \"{{value('SECRET').b64}}\"\n}";
+        let body = "{\n  \"token\": \"{{value(API_TOKEN)}}\",\n  \"enc\": \"{{value('SECRET').b64}}\",\n  \"bare\": \"{{SESSION_TOKEN}}\",\n  \"chain\": \"{{b64.value(RAW)}}\"\n}";
         let pos = body.find("API_TOKEN").expect("token offset") + 2;
         let found = expression_at(body, pos).expect("value ref");
         assert_eq!(found.name, "API_TOKEN");
@@ -1108,6 +1142,18 @@ mod tests {
         assert_eq!(enc.name, "SECRET");
         assert_eq!(enc.kind, VarRefKind::Value);
         assert_eq!(&body[enc.range], "{{value('SECRET').b64}}");
+
+        let bare_pos = body.find("SESSION_TOKEN").expect("bare offset");
+        let bare = expression_at(body, bare_pos).expect("bare ref");
+        assert_eq!(bare.name, "SESSION_TOKEN");
+        assert_eq!(bare.kind, VarRefKind::Value);
+        assert_eq!(&body[bare.range], "{{SESSION_TOKEN}}");
+
+        let chain_pos = body.find("RAW").expect("chain offset");
+        let chain = expression_at(body, chain_pos).expect("b64.value ref");
+        assert_eq!(chain.name, "RAW");
+        assert_eq!(chain.kind, VarRefKind::Value);
+        assert_eq!(&body[chain.range], "{{b64.value(RAW)}}");
 
         assert_eq!(expression_at(body, 2), None, "outside any expression");
 
@@ -1123,6 +1169,12 @@ mod tests {
         assert_eq!(all[0].kind, VarRefKind::EnvPrefix);
         assert_eq!(all[1].name, "UID");
         assert_eq!(all[1].kind, VarRefKind::Value);
+
+        let header = "Bearer {{token}}";
+        let refs = referenced_vars(header);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, "token");
+        assert_eq!(refs[0].kind, VarRefKind::Value);
     }
 
     #[test]
@@ -1180,6 +1232,25 @@ mod tests {
             enabled: true,
             ..Default::default()
         }];
+        let extracted = [ExtractedPreview {
+            name: "HOST",
+            value: "https://extracted.test",
+            api_name: "Login",
+        }];
+
+        // Extracted value overrides API own, folder, and env.
+        let r = resolve_with_source(
+            "HOST",
+            VariableCategory::Environment,
+            &vars,
+            &secret_ids,
+            Some((&staging_id, "Staging")),
+            &[("Users", &inner_folder)],
+            &api_own,
+            &extracted,
+        );
+        assert_eq!(r.value.as_deref(), Some("https://extracted.test"));
+        assert_eq!(r.source, VarSource::Extracted("Login".into()));
 
         // API own overrides folder and env.
         let r = resolve_with_source(
@@ -1190,6 +1261,7 @@ mod tests {
             Some((&staging_id, "Staging")),
             &[("Users", &inner_folder)],
             &api_own,
+            &[],
         );
         assert_eq!(r.value.as_deref(), Some("https://api.test"));
         assert_eq!(r.source, VarSource::ApiOwn);
@@ -1203,6 +1275,7 @@ mod tests {
             Some((&staging_id, "Staging")),
             &[("Users", &inner_folder)],
             &[],
+            &[],
         );
         assert_eq!(r.value.as_deref(), Some("https://folder.test"));
         assert_eq!(r.source, VarSource::Folder("Users".into()));
@@ -1214,6 +1287,7 @@ mod tests {
             &vars,
             &secret_ids,
             Some((&staging_id, "Staging")),
+            &[],
             &[],
             &[],
         );
@@ -1229,18 +1303,28 @@ mod tests {
             None,
             &[],
             &[],
+            &[],
         );
         assert_eq!(r.value.as_deref(), Some("https://shared.test"));
         assert_eq!(r.source, VarSource::Shared);
 
         // Secret is masked.
-        let r = resolve_with_source("API_KEY", VariableCategory::Custom, &vars, &secret_ids, None, &[], &[]);
+        let r = resolve_with_source(
+            "API_KEY",
+            VariableCategory::Custom,
+            &vars,
+            &secret_ids,
+            None,
+            &[],
+            &[],
+            &[],
+        );
         assert_eq!(r.value.as_deref(), Some(secrets::MASK));
         assert_eq!(r.source, VarSource::Shared);
         assert!(r.secret);
 
         // Disabled variable is undefined.
-        let r = resolve_with_source("OFF", VariableCategory::Custom, &vars, &secret_ids, None, &[], &[]);
+        let r = resolve_with_source("OFF", VariableCategory::Custom, &vars, &secret_ids, None, &[], &[], &[]);
         assert_eq!(r.value, None);
         assert_eq!(r.source, VarSource::Undefined);
     }

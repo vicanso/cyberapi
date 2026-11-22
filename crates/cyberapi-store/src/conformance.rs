@@ -2639,6 +2639,11 @@ async fn outlines_omit_bodies_and_merges_keep_the_rest(storage: &Storage) {
         method: HttpMethod::Post,
         uri: "/login".into(),
         body: "secret-body".into(),
+        extractions: vec![cyberapi_core::assertions::Extraction {
+            name: "token".into(),
+            target: "$.token".into(),
+            ..Default::default()
+        }],
         ..HttpRequest::default()
     };
     storage
@@ -2674,6 +2679,7 @@ async fn outlines_omit_bodies_and_merges_keep_the_rest(storage: &Storage) {
         (login_head.method, login_head.uri.as_str()),
         (HttpMethod::Post, "/login")
     );
+    assert_eq!(login_head.extractions, request.extractions);
     let whole = storage
         .tree()
         .api(collection.id.clone(), login.item.id.clone())

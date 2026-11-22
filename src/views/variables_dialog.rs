@@ -15,7 +15,9 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -924,6 +926,74 @@ impl Render for VariablesEditor {
                         .child(div().flex_1().min_w_0().px_2().truncate().child(value))
                 }))
         });
+        let session_extracted = {
+            let category = self.state.read(cx).category();
+            let theme = cx.theme();
+            let (border, foreground, mono) = (theme.border, theme.foreground, theme.mono_font_family.clone());
+            let ws = self.workspace.read(cx);
+            if matches!(category, VariableCategory::Custom | VariableCategory::Environment) {
+                let list = ws.extracted_values();
+                (!list.is_empty()).then(|| {
+                    v_flex()
+                        .gap_1p5()
+                        .pt_1()
+                        .border_t_1()
+                        .border_color(border)
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .text_color(muted)
+                                        .child(t!("variables.session_extracted").to_string()),
+                                )
+                                .child(
+                                    Button::new("clear-extracted")
+                                        .ghost()
+                                        .xsmall()
+                                        .label(t!("variables.clear_extracted").to_string())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.workspace.update(cx, |ws, cx| ws.clear_extracted(cx));
+                                        })),
+                                ),
+                        )
+                        .children(list.iter().map(|entry| {
+                            let from = t!(
+                                "variables.session_extracted_from",
+                                api = ws.api_display_name(&entry.api)
+                            )
+                            .to_string();
+                            h_flex()
+                                .gap_2()
+                                .text_xs()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .w(px(160.))
+                                        .flex_none()
+                                        .truncate()
+                                        .font_family(mono.clone())
+                                        .child(entry.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(foreground)
+                                        .child(entry.value.clone()),
+                                )
+                                .child(div().flex_none().text_color(muted).child(from))
+                        }))
+                        .into_any_element()
+                })
+            } else {
+                None
+            }
+        };
         v_flex()
             .gap_3()
             .child(layers)
@@ -946,6 +1016,7 @@ impl Render for VariablesEditor {
                 )
             })
             .children(compared)
+            .children(session_extracted)
             .child(if editable {
                 h_flex()
                     .child(

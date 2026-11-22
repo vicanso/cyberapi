@@ -101,12 +101,17 @@ pub struct ApiHead {
     pub method: HttpMethod,
     pub uri: String,
     pub updated_at: Timestamp,
+    /// M2 / R7: the API's extractions, kept on the head so opening a project
+    /// can re-extract from latest responses and detect missing pre-request
+    /// extractions without loading every request document.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extractions: Vec<crate::assertions::Extraction>,
 }
 
 impl ApiHead {
-    /// The API as the outline knows it: method and URI, and an empty request
-    /// beside them. A stored request that is empty looks the same; the caller
-    /// remembers which APIs it has actually read.
+    /// The API as the outline knows it: method, URI and extractions, with
+    /// an empty body beside them. A stored request that is empty looks the
+    /// same; the caller remembers which APIs it has actually read.
     pub fn stub(&self, collection: &CollectionId) -> ApiSetting {
         ApiSetting {
             id: self.id.clone(),
@@ -116,6 +121,7 @@ impl ApiHead {
             request: HttpRequest {
                 method: self.method,
                 uri: self.uri.clone(),
+                extractions: self.extractions.clone(),
                 ..HttpRequest::default()
             },
             created_at: self.updated_at,
@@ -130,6 +136,7 @@ impl ApiHead {
             method: api.request.method,
             uri: api.request.uri.clone(),
             updated_at: api.updated_at,
+            extractions: api.request.extractions.clone(),
         }
     }
 }
@@ -656,10 +663,17 @@ mod tests {
 
     #[test]
     fn an_outline_stub_keeps_the_method_and_drops_the_body() {
-        let head = ApiHead::from_api(&api("login", "secret-body"));
+        let mut login = api("login", "secret-body");
+        login.request.extractions = vec![crate::assertions::Extraction {
+            name: "token".into(),
+            target: "$.token".into(),
+            ..Default::default()
+        }];
+        let head = ApiHead::from_api(&login);
         let stub = head.stub(&CollectionId::from("shop"));
         assert_eq!(stub.request.method, HttpMethod::Post);
         assert_eq!(stub.request.uri, "/login");
+        assert_eq!(stub.request.extractions, login.request.extractions);
         assert!(stub.request.body.is_empty());
         let outline = ProjectOutline {
             name: "shop".into(),
@@ -669,5 +683,6 @@ mod tests {
         let config = outline.config(&CollectionId::from("shop"));
         assert_eq!(config.apis.len(), 1);
         assert!(config.apis[0].request.body.is_empty());
+        assert_eq!(config.apis[0].request.extractions, login.request.extractions);
     }
 }

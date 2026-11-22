@@ -1846,7 +1846,13 @@ impl RequestEditor {
         // D5: the folders' variables and the API's own stand in for the
         // environment's of the same names.
         let api_id = self.api.read(cx).api().clone();
-        for (name, value) in self.workspace.read(cx).inherited(&api_id).values(&variables, &[]) {
+        let runtime_values = self.workspace.read(cx).runtime_values();
+        for (name, value) in self
+            .workspace
+            .read(cx)
+            .inherited(&api_id)
+            .values(&variables, &runtime_values)
+        {
             environments.retain(|(given, _)| *given != name);
             environments.push((name, value));
         }
@@ -2864,6 +2870,308 @@ impl RequestEditor {
                 )
             })
     }
+
+    /// R7: missing extractions referenced by this request that come from
+    /// another API's enabled extraction and currently have no value.
+    fn missing_extractions(&self, cx: &App) -> Vec<cyberapi_core::assertions::MissingExtraction> {
+        let api = self.api.read(cx);
+        let workspace = self.workspace.read(cx);
+        let effective_env = api.effective_environment(workspace).map(|env| &env.id);
+        let full_uri = self.current_full_uri(cx);
+        let request = api.request();
+        if full_uri == request.uri {
+            workspace.missing_extractions(api.api(), request, effective_env, cx)
+        } else {
+            let mut draft = request.clone();
+            draft.uri = full_uri;
+            workspace.missing_extractions(api.api(), &draft, effective_env, cx)
+        }
+    }
+
+    /// R7: compact bar under the URI bar offering to send a producer API
+    /// when a referenced variable has not yet been extracted (never auto-sends).
+    fn render_missing_extractions(
+        &self,
+        missing: &[cyberapi_core::assertions::MissingExtraction],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        let (border, muted, warning) = (theme.border, theme.muted_foreground, theme.warning);
+        let workspace = self.workspace.read(cx);
+        v_flex()
+            .flex_none()
+            .border_b_1()
+            .border_color(border)
+            .bg(warning.opacity(0.06))
+            .children(missing.iter().take(3).enumerate().map(|(index, item)| {
+                let producer_id = item.producer_id.clone();
+                let producer_name = item.producer_name.clone();
+                let expected_vars = item.variables.clone();
+                let sending = workspace.is_sending_producer(&producer_id, cx);
+                let vars_text = item
+                    .variables
+                    .iter()
+                    .map(|name| format!("{{{{{name}}}}}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                h_flex()
+                    .id(("missing-extraction", index))
+                    .h(px(28.))
+                    .px_3()
+                    .gap_2()
+                    .items_center()
+                    .when(index > 0, |row| row.border_t_1().border_color(border.opacity(0.6)))
+                    .child(Icon::new(IconName::TriangleAlert).xsmall().text_color(warning))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(t!("editor.missing_extraction", vars = vars_text, api = producer_name).to_string()),
+                    )
+                    .child(
+                        Button::new(("send-producer", index))
+                            .outline()
+                            .xsmall()
+                            .flex_none()
+                            .loading(sending)
+                            .disabled(sending)
+                            .label(t!("editor.send_producer", api = producer_name).to_string())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.send_producer(producer_id.clone(), expected_vars.clone(), window, cx);
+                            })),
+                    )
+            }))
+    }
+
+    fn send_producer(
+        &mut self,
+        producer_id: cyberapi_core::ItemId,
+        expected_vars: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workspace.read(cx).is_sending_producer(&producer_id, cx) {
+            return;
+        }
+        if !self
+            .workspace
+            .read(cx)
+            .bodies_present(std::slice::from_ref(&producer_id))
+        {
+            let handle = window.window_handle();
+            let editor = cx.entity().downgrade();
+            self.workspace.update(cx, |workspace, cx| {
+                workspace.with_bodies(
+                    vec![producer_id.clone()],
+                    Box::new(move |_, cx| {
+                        let pid = producer_id;
+                        let expected = expected_vars;
+                        cx.defer(move |cx| {
+                            let _ = handle.update(cx, |_, window, cx| {
+                                let _ = editor.update(cx, |editor, cx| {
+                                    editor.send_producer_loaded(pid, expected, window, cx);
+                                });
+                            });
+                        });
+                    }),
+                    cx,
+                );
+            });
+            return;
+        }
+        self.send_producer_loaded(producer_id, expected_vars, window, cx);
+    }
+
+    fn send_producer_loaded(
+        &mut self,
+        producer_id: cyberapi_core::ItemId,
+        expected_vars: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = self.workspace.read(cx);
+        let Some(producer_request) = workspace.producer_request(&producer_id, cx) else {
+            return;
+        };
+        let effective_env = self.api.read(cx).effective_environment(workspace);
+        if workspace.asks_before_in(&producer_request, effective_env.map(|env| &env.id), cx) {
+            let resolved_uri =
+                workspace.resolved_uri_for(&producer_id, &producer_request, effective_env.map(|env| &env.id));
+            let what = match (producer_request.content_type, producer_request.method) {
+                (ContentType::GraphQl, HttpMethod::Get | HttpMethod::Post) => format!("mutation {resolved_uri}"),
+                (_, method) => format!("{} {resolved_uri}", method.as_str()),
+            };
+            let environment = effective_env
+                .map(|environment| environment.name.clone())
+                .unwrap_or_default();
+            let (editor, workspace_weak) = (cx.entity().downgrade(), self.workspace.downgrade());
+            super::production_confirm::confirm_production(environment, what, window, cx, move |stop, window, cx| {
+                if stop {
+                    let _ = workspace_weak.update(cx, |workspace, cx| workspace.stop_asking(cx));
+                }
+                let _ = editor.update(cx, |editor, cx| {
+                    editor.send_producer_unasked(producer_id.clone(), expected_vars.clone(), window, cx);
+                });
+            });
+            return;
+        }
+        self.send_producer_unasked(producer_id, expected_vars, window, cx);
+    }
+
+    fn send_producer_unasked(
+        &mut self,
+        producer_id: cyberapi_core::ItemId,
+        expected_vars: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = self.workspace.read(cx);
+        let Some(producer_request) = workspace.producer_request(&producer_id, cx) else {
+            return;
+        };
+        let inherited = workspace.inherited(&producer_id);
+        let effective_env = self.api.read(cx).effective_environment(workspace).map(|env| &env.id);
+        let needs = send::needs(
+            &producer_request,
+            &workspace.global_headers_for(effective_env),
+            &inherited,
+        );
+        let picks_file = needs.picks_file && this_build::reads_files();
+        if needs.prompts.is_empty() {
+            self.pick_and_send_producer(producer_id, expected_vars, picks_file, HashMap::new(), window, cx);
+            return;
+        }
+        let typed = crate::states::typed_prompts(&workspace.collection().id, cx);
+        let editor = cx.entity().downgrade();
+        open_prompt_dialog(window, cx, needs.prompts, &typed, move |prompts, window, cx| {
+            let _ = editor.update(cx, |editor, cx| {
+                editor.pick_and_send_producer(
+                    producer_id.clone(),
+                    expected_vars.clone(),
+                    picks_file,
+                    prompts,
+                    window,
+                    cx,
+                );
+            });
+        });
+    }
+
+    fn pick_and_send_producer(
+        &mut self,
+        producer_id: cyberapi_core::ItemId,
+        expected_vars: Vec<String>,
+        picks_file: bool,
+        prompts: HashMap<String, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !picks_file {
+            self.execute_producer_send(producer_id, expected_vars, Answers { file: None, prompts }, window, cx);
+            return;
+        }
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let file = match picked.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                _ => None,
+            };
+            let file = file.map(|path| path.display().to_string());
+            let _ = this.update_in(cx, |editor, window, cx| {
+                editor.execute_producer_send(producer_id, expected_vars, Answers { file, prompts }, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn execute_producer_send(
+        &mut self,
+        producer_id: cyberapi_core::ItemId,
+        expected_vars: Vec<String>,
+        answers: Answers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (collection, producer_name, effective_env) = {
+            let workspace = self.workspace.read(cx);
+            let api = self.api.read(cx);
+            (
+                workspace.collection().id.clone(),
+                workspace.api_display_name(&producer_id),
+                api.effective_environment(workspace).cloned(),
+            )
+        };
+        crate::states::remember_typed(&collection, &answers.prompts, cx);
+        let task = self
+            .workspace
+            .update(cx, |ws, cx| ws.send_producer(producer_id, answers, effective_env, cx));
+        let handle = window.window_handle();
+        cx.spawn(async move |_, cx| {
+            let outcome = task.await;
+            let _ = handle.update(cx, |_, window, cx| match outcome {
+                crate::states::ProducerSendResult::Answered {
+                    status,
+                    error,
+                    extracted,
+                } => {
+                    let got_expected = expected_vars.iter().any(|name| extracted.contains(name));
+                    if !extracted.is_empty() && (got_expected || expected_vars.is_empty()) {
+                        window.push_notification(
+                            Notification::success(
+                                t!(
+                                    "editor.producer_extracted",
+                                    api = producer_name,
+                                    vars = extracted.join(", ")
+                                )
+                                .to_string(),
+                            ),
+                            cx,
+                        );
+                    } else {
+                        let status_text = status
+                            .map(|code| code.to_string())
+                            .or(error)
+                            .unwrap_or_else(|| "—".to_string());
+                        window.push_notification(
+                            Notification::warning(
+                                t!(
+                                    "editor.producer_no_extract",
+                                    api = producer_name,
+                                    status = status_text,
+                                    vars = expected_vars.join(", ")
+                                )
+                                .to_string(),
+                            ),
+                            cx,
+                        );
+                    }
+                }
+                crate::states::ProducerSendResult::Failed(failure) => {
+                    window.push_notification(
+                        Notification::warning(
+                            t!(
+                                "editor.producer_failed",
+                                api = producer_name,
+                                reason = failure.to_string()
+                            )
+                            .to_string(),
+                        ),
+                        cx,
+                    );
+                }
+                crate::states::ProducerSendResult::Missing => {}
+            });
+        })
+        .detach();
+    }
 }
 
 impl Render for RequestEditor {
@@ -2953,9 +3261,13 @@ impl Render for RequestEditor {
                 .into_any_element(),
         };
         let scratch = self.api.read(cx).is_scratch();
+        let missing = self.missing_extractions(cx);
         v_flex()
             .size_full()
             .child(self.render_bar(cx))
+            .when(!missing.is_empty(), |column| {
+                column.child(self.render_missing_extractions(&missing, cx))
+            })
             .when(scratch, |column| column.child(self.scratch_note(cx)))
             .child(self.render_tabs(tab, cx))
             .child(v_flex().flex_1().min_h_0().child(content))
@@ -3041,6 +3353,7 @@ mod tests {
             environment: None,
             tokens: Default::default(),
             secrets: Default::default(),
+            runtime: Vec::new(),
         };
         let workspace = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
         cx.run_until_parked();
@@ -3220,5 +3533,79 @@ mod tests {
             });
         })
         .expect("window");
+    }
+
+    #[gpui_kit::test]
+    async fn missing_extraction_banner_renders_and_clears_when_extracted(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+
+        let profile_req = HttpRequest {
+            method: HttpMethod::Get,
+            uri: "https://api.test/me".into(),
+            auth: cyberapi_core::auth::Auth::Bearer {
+                token: "{{token}}".into(),
+            },
+            ..Default::default()
+        };
+        let (workspace, _profile, editor, _window) = setup_editor(false, profile_req, cx);
+
+        // Add Login API with an enabled `token` extraction.
+        workspace.update(cx, |ws, cx| ws.create_api(None, "Login".into(), cx));
+        cx.run_until_parked();
+        let login_id = workspace
+            .read_with(cx, |ws, _| {
+                ws.tree_data()
+                    .apis
+                    .iter()
+                    .find(|api| api.name == "Login")
+                    .map(|api| api.id.clone())
+            })
+            .expect("login api");
+        // Save via the open Login editor so WorkspaceState holds the updated extractions.
+        workspace.update(cx, |ws, cx| ws.select(&login_id, cx));
+        cx.run_until_parked();
+        if let Some(login_state) = workspace.read_with(cx, |ws, _| ws.api().cloned()) {
+            login_state.update(cx, |api, cx| {
+                api.set_extractions(
+                    vec![cyberapi_core::assertions::Extraction {
+                        enabled: true,
+                        name: "token".into(),
+                        subject: cyberapi_core::assertions::Subject::Json,
+                        target: "$.token".into(),
+                    }],
+                    cx,
+                );
+                api.save_now(cx);
+            });
+        }
+        cx.run_until_parked();
+
+        // Missing extraction is detected on the `users` RequestEditor and renders cleanly.
+        let missing = editor.read_with(cx, |ed, cx| ed.missing_extractions(cx));
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].producer_name, "Login");
+        assert_eq!(missing[0].variables, ["token"]);
+
+        let render_window: AnyWindowHandle = cx
+            .open_window(size(px(800.), px(600.)), |window, cx| {
+                Root::new(editor.clone(), window, cx)
+            })
+            .into();
+        cx.update_window(render_window, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("render with missing banner");
+
+        // Once Login extracts `token`, the missing banner clears cleanly.
+        workspace.update(cx, |ws, cx| {
+            ws.record_extractions(&login_id, vec![("token".into(), "jwt-123".into())], cx);
+        });
+        cx.run_until_parked();
+        let after = editor.read_with(cx, |ed, cx| ed.missing_extractions(cx));
+        assert!(after.is_empty());
+        cx.update_window(render_window, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .expect("render after extraction");
     }
 }

@@ -599,6 +599,7 @@ mod tests {
             environment: None,
             tokens: Default::default(),
             secrets: Default::default(),
+            runtime: Vec::new(),
         };
         let workspace = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
         cx.run_until_parked();
@@ -787,6 +788,7 @@ mod tests {
             environment: None,
             tokens: Default::default(),
             secrets: Default::default(),
+            runtime: Vec::new(),
         };
         let workspace = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
         cx.run_until_parked();

@@ -52,8 +52,8 @@ A row can require the answer to match one example kept on the API: the status an
 - Each send shows its answer and how its assertions held. The dialog tallies what held and what failed. With no assertions, an error status is a failure.
 - Export the result as JUnit XML or a self-contained HTML report. Pick a send afterwards to open that API there.
 - Give data — a CSV with a header row (a leading UTF-8 BOM is ignored), a JSON array of objects, or one JSON object — pasted, or picked on the desktop. The APIs run once for each row, and once for that one object. A column is `{{value(column)}}`.
-- Under the assertions, **Extract** takes a value from the answer (a JSONPath, a header, the status) for later requests in the same run to read as `{{value(name)}}`. Log in once, then send the token.
-- Those values belong to the run. Nothing is written to the project. What was sent is kept in each API's history, as any send is.
+- Under the assertions, **Extract** takes a value from the answer (a JSONPath, a header, the status) into a per-project session runtime layer so subsequent manual sends or requests later in a run can read it as `{{value(name)}}`, `{{name}}`, or an address's `{{name}}`. Log in once (manually or in a run), then send the token.
+- Session extracted values live in memory and are recomputed from each API's latest response when the project reopens; nothing is written into environments, the project, or sync. If another API references a variable that can only come from an extraction and has no value yet, a prompt below the address bar lets you send that producer API in one click. What was sent is kept in each API's history, as any send is.
 - In an environment marked as production, the run asks once before it starts.
 
 ## The command line

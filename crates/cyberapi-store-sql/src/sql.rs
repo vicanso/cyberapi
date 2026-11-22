@@ -252,12 +252,14 @@ pub const API_HEADS: Pair = Pair {
     pg: "SELECT id, name, \
          COALESCE(substring(request from '\"method\"[[:space:]]*:[[:space:]]*\"([^\"]*)\"'), ''), \
          COALESCE(substring(request from '\"uri\"[[:space:]]*:[[:space:]]*\"([^\"]*)\"'), ''), \
-         updated_at \
+         updated_at, \
+         CASE WHEN request LIKE '%\"extractions\"%' THEN request ELSE '' END \
          FROM apis WHERE collection = $1 ORDER BY seq",
     my: "SELECT id, name, \
          CASE WHEN JSON_VALID(request) THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(request, '$.method')), '') ELSE '' END, \
          CASE WHEN JSON_VALID(request) THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(request, '$.uri')), '') ELSE '' END, \
-         updated_at \
+         updated_at, \
+         CASE WHEN JSON_VALID(request) THEN COALESCE(CAST(JSON_EXTRACT(request, '$.extractions') AS CHAR), '') ELSE '' END \
          FROM apis WHERE collection = ? ORDER BY seq",
 };
 pub const TOP_ORDER_OF: &str = "SELECT items FROM top_orders WHERE collection = $1";

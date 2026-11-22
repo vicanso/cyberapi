@@ -59,14 +59,27 @@ pub fn api(row: &AnyRow) -> Result<ApiSetting, StoreError> {
     })
 }
 
-/// `id, name, method, uri, updated_at`.
+fn parse_head_extractions(raw: &str) -> Vec<cyberapi_core::assertions::Extraction> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        Vec::new()
+    } else if trimmed.starts_with('[') {
+        serde_json::from_str(trimmed).unwrap_or_default()
+    } else {
+        HttpRequest::from_json_lenient(trimmed).extractions
+    }
+}
+
+/// `id, name, method, uri, updated_at, extractions`.
 pub fn api_head(row: &AnyRow) -> Result<ApiHead, StoreError> {
+    let raw_extractions = text(row, 5)?;
     Ok(ApiHead {
         id: ItemId::new(text(row, 0)?),
         name: text(row, 1)?,
         method: HttpMethod::parse_lenient(&text(row, 2)?),
         uri: text(row, 3)?,
         updated_at: time(row, 4)?,
+        extractions: parse_head_extractions(&raw_extractions),
     })
 }
 

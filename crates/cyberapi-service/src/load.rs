@@ -187,6 +187,7 @@ mod tests {
                 environment: None,
                 tokens: Default::default(),
                 secrets: Default::default(),
+                runtime: Vec::new(),
             };
             let request = HttpRequest {
                 method: HttpMethod::Post,
@@ -280,6 +281,7 @@ mod tests {
                 environment: None,
                 tokens: Default::default(),
                 secrets: Default::default(),
+                runtime: Vec::new(),
             };
             let request = HttpRequest {
                 method: HttpMethod::Get,
