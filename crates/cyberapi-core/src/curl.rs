@@ -102,6 +102,7 @@ pub fn curl(
     }
     parts.push(format!("-X{}", prepared.method.as_str()));
     let multipart = prepared.method.has_body() && request.content_type == ContentType::Multipart;
+    let binary = prepared.method.has_body() && request.content_type == ContentType::Binary;
 
     if multipart {
         for kv in form_fields(&request.body)
@@ -113,6 +114,10 @@ pub fn curl(
                 None => format!("{}={}", kv.key, kv.value),
             };
             parts.push(format!("-F {}", quote(&field)));
+        }
+    } else if binary {
+        if let Some(path) = crate::send::binary_display_path(&request.body) {
+            parts.push(format!("--data-binary {}", quote(&format!("@{path}"))));
         }
     } else if !prepared.body.is_empty() {
         let text = String::from_utf8_lossy(&prepared.body);
@@ -266,5 +271,35 @@ mod tests {
                 format!("curl -v {flag} -XGET '{url}'")
             );
         }
+    }
+
+    #[test]
+    fn binary_body_uses_data_binary_with_path_or_page_filename() {
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            content_type: ContentType::Binary,
+            body: "file:///tmp/photo.png".into(),
+            ..Default::default()
+        };
+        let prepared = PreparedRequest {
+            method: HttpMethod::Post,
+            url: "https://api.test/upload".into(),
+            headers: vec![("Content-Type".into(), "image/png".into())],
+            body: vec![0x89, 0x50, 0x4e, 0x47],
+            ..Default::default()
+        };
+        assert_eq!(
+            curl(&prepared, &request, &[], false),
+            "curl -v -XPOST --data-binary '@/tmp/photo.png' -H 'Content-Type: image/png' 'https://api.test/upload'"
+        );
+
+        let web_request = HttpRequest {
+            body: "webfile://abc/report.pdf".into(),
+            ..request
+        };
+        assert_eq!(
+            curl(&prepared, &web_request, &[], false),
+            "curl -v -XPOST --data-binary '@report.pdf' -H 'Content-Type: image/png' 'https://api.test/upload'"
+        );
     }
 }

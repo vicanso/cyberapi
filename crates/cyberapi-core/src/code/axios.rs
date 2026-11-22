@@ -6,8 +6,15 @@ use crate::send::PreparedRequest;
 
 pub(super) fn axios(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool) -> String {
     let mut lines = vec!["import axios from \"axios\";".to_string()];
+    let mut node_fs = Vec::new();
     if sends_files(parts) {
-        lines.push("import { openAsBlob } from \"node:fs\";".into());
+        node_fs.push("openAsBlob");
+    }
+    if parts.binary_file.is_some() {
+        node_fs.push("readFileSync");
+    }
+    if !node_fs.is_empty() {
+        lines.push(format!("import {{ {} }} from \"node:fs\";", node_fs.join(", ")));
     }
     if prepared.accept_invalid_certs {
         lines.push("import https from \"node:https\";".into());
@@ -43,6 +50,8 @@ pub(super) fn axios(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redire
     }
     if parts.fields.is_some() {
         lines.push("    data: body,".into());
+    } else if let Some(path) = &parts.binary_file {
+        lines.push(format!("    data: readFileSync({}),", string(path)));
     } else if let Some(body) = &parts.body {
         lines.push(format!("    data: {},", string(body)));
     }

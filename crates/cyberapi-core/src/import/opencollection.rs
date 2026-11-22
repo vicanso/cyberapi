@@ -205,10 +205,44 @@ fn request(item: &Value, prefix: &str, lost: &mut Vec<Lost>) -> Option<ImportIte
             "text" | "sparql" => built.content_type = ContentType::Plain,
             "form-urlencoded" => built.content_type = ContentType::Form,
             "multipart-form" => built.content_type = ContentType::Multipart,
+            "file" => built.content_type = ContentType::Binary,
             "" | "none" => {}
             other => lost::push_body(lost, &target, other),
         }
         match (body_type, data) {
+            ("file", Some(Value::String(path))) => {
+                built.body = format!("file://{}", variables(path).trim());
+            }
+            ("file", Some(Value::Array(files))) => {
+                let picked = files
+                    .iter()
+                    .find(|item| item.get("selected").and_then(Value::as_bool) == Some(true))
+                    .or_else(|| files.iter().find(|item| enabled(item)))
+                    .or_else(|| files.first());
+                if let Some(file) = picked {
+                    let path = ["filePath", "value", "src", "path"]
+                        .iter()
+                        .map(|key| text(file, key).trim())
+                        .find(|val| !val.is_empty())
+                        .unwrap_or_default();
+                    built.body = format!("file://{path}");
+                    let mime = text(file, "contentType").trim();
+                    if !mime.is_empty()
+                        && !mime.eq_ignore_ascii_case(ContentType::Binary.as_str())
+                        && !built
+                            .headers
+                            .iter()
+                            .any(|header| header.key.eq_ignore_ascii_case("content-type"))
+                    {
+                        built.headers.push(kv("Content-Type", mime, true));
+                    }
+                } else {
+                    built.body = "file://".to_string();
+                }
+            }
+            ("file", _) => {
+                built.body = "file://".to_string();
+            }
             ("form-urlencoded", _) => built.body = serde_json::to_string(&pairs(data)).unwrap_or_default(),
             ("multipart-form", _) => {
                 let fields: Vec<KvParam> = list(data)
@@ -569,7 +603,7 @@ items:
       method: POST
       url: https://a.test/up
       body:
-        type: file
+        type: custom
       auth:
         type: oauth2
     runtime:
@@ -597,7 +631,7 @@ items:
                 },
                 Lost {
                     target: "Upload".into(),
-                    kind: LostKind::Body { kind: "file".into() },
+                    kind: LostKind::Body { kind: "custom".into() },
                 },
                 Lost {
                     target: "Upload".into(),
@@ -605,5 +639,32 @@ items:
                 },
             ]
         );
+
+        let file_doc = r#"
+opencollection: 1.0.0
+info:
+  name: Files
+items:
+  - info:
+      name: Upload
+      type: http
+    http:
+      method: POST
+      url: https://a.test/up
+      body:
+        type: file
+        data:
+          - filePath: /tmp/a.png
+            contentType: image/png
+            selected: true
+"#;
+        let file_bundle = super::super::parse(file_doc).expect("file doc");
+        assert!(file_bundle.lost.is_empty());
+        let ImportItem::Api { request, .. } = &file_bundle.items[0] else {
+            panic!("api");
+        };
+        assert_eq!(request.content_type, ContentType::Binary);
+        assert_eq!(request.body, "file:///tmp/a.png");
+        assert_eq!(request.headers, vec![kv("Content-Type", "image/png", true)]);
     }
 }

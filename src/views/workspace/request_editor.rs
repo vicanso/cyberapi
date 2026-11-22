@@ -76,6 +76,9 @@ pub struct RequestEditor {
     api: Entity<ApiState>,
     uri: Entity<InputState>,
     body: Entity<EditorState>,
+    /// R1: editable `Content-Type` header override for `ContentType::Binary`
+    /// (placeholder shows the MIME type guessed from the selected filename).
+    binary_content_type: Entity<InputState>,
     /// A GraphQL body's query, variables and operation, edited apart and
     /// kept together (`cyberapi_core::graphql::GraphQlBody`).
     graphql: GraphQlFields,
@@ -178,7 +181,7 @@ fn body_state(
         ContentType::Xml => "html",
         _ => "text",
     };
-    let text = if request.content_type.is_key_value() {
+    let text = if request.content_type.is_key_value() || request.content_type == ContentType::Binary {
         String::new()
     } else {
         request.body.clone()
@@ -197,13 +200,23 @@ fn body_state(
     })
 }
 
-/// What the body type menu calls a content type: its MIME type, or GraphQL
-/// by name, since a GraphQL body is sent as JSON.
-fn content_type_label(content_type: ContentType) -> &'static str {
+/// What the body type menu calls a content type: its MIME type, GraphQL, or
+/// Binary / File (since a binary file's MIME follows its filename).
+fn content_type_label(content_type: ContentType) -> String {
     match content_type {
-        ContentType::GraphQl => "GraphQL",
-        other => other.as_str(),
+        ContentType::Binary => t!("editor.body_binary").to_string(),
+        ContentType::GraphQl => "GraphQL".to_string(),
+        other => other.as_str().to_string(),
     }
+}
+
+fn content_type_header(headers: &[cyberapi_core::model::KvParam]) -> String {
+    headers
+        .iter()
+        .rev()
+        .find(|kv| kv.enabled && kv.key.trim().eq_ignore_ascii_case("content-type"))
+        .map(|kv| kv.value.clone())
+        .unwrap_or_default()
 }
 
 /// A gRPC call's message editor: JSON, with the template hints.
@@ -334,6 +347,11 @@ impl RequestEditor {
         });
         let hints = HintSource::for_api(&workspace, &api);
         let body = body_state(&request, &hints, window, cx);
+        let binary_content_type = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(send::guessed_binary_content_type(&request.body))
+                .default_value(content_type_header(&request.headers))
+        });
         let graphql = graphql_fields(&request, &api, &hints, window, cx);
         let grpc_message = grpc_message_state(&request, &hints, window, cx);
         // Values that are templates offer the hints.
@@ -525,9 +543,24 @@ impl RequestEditor {
             cx.subscribe(&query, |this, _, KvEvent::Changed(list), cx| {
                 this.api.update(cx, |api, cx| api.set_query(list.clone(), cx));
             }),
-            cx.subscribe(&headers, |this, _, KvEvent::Changed(list), cx| {
+            cx.subscribe_in(&headers, window, |this, _, KvEvent::Changed(list), window, cx| {
                 this.api.update(cx, |api, cx| api.set_headers(list.clone(), cx));
+                let next = content_type_header(list);
+                this.binary_content_type.update(cx, |input, cx| {
+                    if input.value() != next {
+                        input.set_value(next, window, cx);
+                    }
+                });
             }),
+            cx.subscribe_in(
+                &binary_content_type,
+                window,
+                |this, _, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.sync_binary_content_type_to_headers(window, cx);
+                    }
+                },
+            ),
             cx.subscribe(&form, |this, _, KvEvent::Changed(list), cx| {
                 this.api.update(cx, |api, cx| api.set_form(list.clone(), cx));
             }),
@@ -565,6 +598,7 @@ impl RequestEditor {
             api,
             uri,
             body,
+            binary_content_type,
             graphql,
             marked: None,
             settings,
@@ -1164,6 +1198,7 @@ impl RequestEditor {
             .update(cx, |kv, cx| kv.set_list(&request.headers, window, cx));
         self.check_json(cx);
         self.sync_body_tree_if_shown(cx);
+        self.sync_binary_content_type_input(&request, window, cx);
         cx.notify();
     }
 
@@ -1193,6 +1228,7 @@ impl RequestEditor {
             // A gRPC call's body is its message's, whatever the type.
             _ if method == HttpMethod::Grpc => Some(self.grpc_body(cx)),
             ContentType::GraphQl => Some(self.graphql_body(cx)),
+            ContentType::Binary => None,
             _ if content_type.is_key_value() => None,
             _ => Some(self.body.read(cx).value().to_string()),
         };
@@ -1486,7 +1522,103 @@ impl RequestEditor {
             .push(cx.subscribe(&self.form, |this, _, KvEvent::Changed(list), cx| {
                 this.api.update(cx, |api, cx| api.set_form(list.clone(), cx));
             }));
+        self.sync_binary_content_type_input(&request, window, cx);
         cx.notify();
+    }
+
+    fn sync_binary_content_type_input(&self, request: &HttpRequest, window: &mut Window, cx: &mut Context<Self>) {
+        let header_mime = content_type_header(&request.headers);
+        let placeholder = send::guessed_binary_content_type(&request.body);
+        self.binary_content_type.update(cx, |input, cx| {
+            if input.value() != header_mime {
+                input.set_value(header_mime, window, cx);
+            }
+            input.set_placeholder(placeholder, window, cx);
+        });
+    }
+
+    fn sync_binary_content_type_to_headers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let typed = self.binary_content_type.read(cx).value().trim().to_string();
+        let mut headers = self.api.read(cx).request().headers.clone();
+        let mut updated = false;
+        if typed.is_empty() {
+            let before = headers.len();
+            headers.retain(|kv| !(kv.enabled && kv.key.trim().eq_ignore_ascii_case("content-type")));
+            updated = headers.len() != before;
+        } else if let Some(existing) = headers
+            .iter_mut()
+            .rev()
+            .find(|kv| kv.enabled && kv.key.trim().eq_ignore_ascii_case("content-type"))
+        {
+            if existing.value != typed {
+                existing.value = typed;
+                updated = true;
+            }
+        } else {
+            headers.push(cyberapi_core::model::KvParam {
+                key: "Content-Type".into(),
+                value: typed,
+                enabled: true,
+                ..Default::default()
+            });
+            updated = true;
+        }
+        if updated {
+            self.headers.update(cx, |kv, cx| kv.set_list(&headers, window, cx));
+            self.api.update(cx, |api, cx| api.set_headers(headers, cx));
+        }
+    }
+
+    fn set_binary_file(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
+        let placeholder = send::guessed_binary_content_type(&value);
+        self.api.update(cx, |api, cx| api.set_body(value, cx));
+        self.binary_content_type
+            .update(cx, |input, cx| input.set_placeholder(placeholder, window, cx));
+    }
+
+    /// R1: picks a single file for a `ContentType::Binary` body (`file://` path
+    /// on desktop, `webfile://<id>/<name>` in the browser).
+    fn pick_binary_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if this_build::picks_page_files() {
+            let picked = this_build::pick_file_bytes();
+            cx.spawn_in(window, async move |this, cx| {
+                let Ok(Some(picked)) = picked.await else {
+                    return;
+                };
+                let _ = this.update_in(cx, |this, window, cx| match picked {
+                    this_build::PageFile::TooBig => {
+                        window.push_notification(Notification::warning(t!("editor.file_too_big").to_string()), cx);
+                    }
+                    this_build::PageFile::Chosen { marker } => {
+                        this.set_binary_file(marker, window, cx);
+                    }
+                });
+            })
+            .detach();
+            return;
+        }
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.set_binary_file(format!("file://{}", path.display()), window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn clear_binary_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_binary_file(String::new(), window, cx);
     }
 
     /// F4.7: JSON indented by two spaces, its templates as written.
@@ -2518,6 +2650,8 @@ impl RequestEditor {
         });
         let content: AnyElement = if current == ContentType::GraphQl {
             self.render_graphql(cx)
+        } else if current == ContentType::Binary {
+            self.render_binary(cx)
         } else if current.is_key_value() {
             div()
                 .id("request-form")
@@ -2548,6 +2682,137 @@ impl RequestEditor {
             .min_h_0()
             .child(toolbar)
             .child(content)
+            .into_any_element()
+    }
+
+    /// R1: file picker card + guessed/overridden `Content-Type` input for a
+    /// `ContentType::Binary` request body.
+    fn render_binary(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (border, muted, secondary, radius, foreground) = (
+            theme.border,
+            theme.muted_foreground,
+            theme.secondary,
+            theme.radius,
+            theme.foreground,
+        );
+        let body = self.api.read(cx).request().body.clone();
+        let trimmed = body.trim();
+        let file_info: AnyElement = if trimmed.is_empty() {
+            div()
+                .text_xs()
+                .text_color(muted)
+                .child(t!("editor.binary_no_file").to_string())
+                .into_any_element()
+        } else if trimmed == "file://" {
+            div()
+                .text_xs()
+                .text_color(muted)
+                .child(t!("editor.binary_unpicked").to_string())
+                .into_any_element()
+        } else if let Some((_, name)) = send::page_file(trimmed) {
+            h_flex()
+                .gap_2()
+                .items_center()
+                .min_w_0()
+                .child(
+                    Icon::new(gpui_kit::assets::IconName::Paperclip)
+                        .small()
+                        .text_color(muted),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .text_color(foreground)
+                        .child(t!("editor.page_file", name = name).to_string()),
+                )
+                .into_any_element()
+        } else {
+            let name = send::binary_file_name(trimmed).unwrap_or(trimmed).to_string();
+            let path = send::binary_display_path(trimmed).unwrap_or(trimmed).to_string();
+            v_flex()
+                .gap_0p5()
+                .min_w_0()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .min_w_0()
+                        .child(
+                            Icon::new(gpui_kit::assets::IconName::Paperclip)
+                                .small()
+                                .text_color(muted),
+                        )
+                        .child(div().min_w_0().truncate().text_sm().font_medium().child(name)),
+                )
+                .child(div().min_w_0().truncate().text_xs().text_color(muted).child(path))
+                .when(this_build::picks_page_files(), |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(t!("editor.binary_desktop_path").to_string()),
+                    )
+                })
+                .into_any_element()
+        };
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .p_3()
+            .gap_3()
+            .child(
+                v_flex()
+                    .gap_2()
+                    .p_3()
+                    .rounded(radius)
+                    .border_1()
+                    .border_color(border)
+                    .bg(secondary.opacity(0.3))
+                    .child(file_info)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("binary-pick")
+                                    .outline()
+                                    .xsmall()
+                                    .icon(Icon::new(gpui_kit::assets::IconName::Paperclip))
+                                    .label(t!("editor.choose_file").to_string())
+                                    .on_click(cx.listener(|this, _, window, cx| this.pick_binary_file(window, cx))),
+                            )
+                            .when(!trimmed.is_empty(), |this| {
+                                this.child(
+                                    Button::new("binary-clear")
+                                        .ghost()
+                                        .xsmall()
+                                        .label(t!("editor.binary_clear").to_string())
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| this.clear_binary_file(window, cx)),
+                                        ),
+                                )
+                            }),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().text_xs().text_color(muted).child("Content-Type"))
+                            .child(div().w(px(260.)).child(Input::new(&self.binary_content_type).small())),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(t!("editor.binary_content_type_hint").to_string()),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -2911,5 +3176,49 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(editor.read_with(cx, |ed, cx| ed.shown_uri(cx)), "/users");
         assert!(editor.read_with(cx, |ed, cx| ed.visible_tabs(cx).contains(&RequestTab::Query)));
+    }
+
+    #[gpui_kit::test]
+    async fn test_binary_content_type_and_flush_preservation(cx: &mut TestAppContext) {
+        let initial = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "{{HOST}}/upload".into(),
+            content_type: ContentType::Binary,
+            body: "file:///tmp/photo.png".into(),
+            ..Default::default()
+        };
+        let (_workspace, api, editor, window) = setup_editor(false, initial, cx);
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |ed, cx| {
+                // Flushing preserves file:// paths rather than overwriting them with an empty code editor.
+                ed.flush(cx);
+                assert_eq!(api.read(cx).request().body, "file:///tmp/photo.png");
+
+                // Setting an override MIME updates headers.
+                ed.binary_content_type
+                    .update(cx, |input, cx| input.set_value("image/webp", window, cx));
+                ed.sync_binary_content_type_to_headers(window, cx);
+                assert!(
+                    api.read(cx)
+                        .request()
+                        .headers
+                        .iter()
+                        .any(|kv| kv.enabled && kv.key == "Content-Type" && kv.value == "image/webp")
+                );
+
+                // Clearing the override removes the enabled Content-Type header.
+                ed.binary_content_type
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                ed.sync_binary_content_type_to_headers(window, cx);
+                assert!(
+                    !api.read(cx)
+                        .request()
+                        .headers
+                        .iter()
+                        .any(|kv| kv.enabled && kv.key.eq_ignore_ascii_case("content-type"))
+                );
+            });
+        })
+        .expect("window");
     }
 }

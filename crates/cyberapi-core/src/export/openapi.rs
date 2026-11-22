@@ -426,10 +426,21 @@ fn request_body(request: &HttpRequest) -> Option<Value> {
     let content = match request.content_type {
         _ if request.content_type != ContentType::GraphQl
             && !request.content_type.is_key_value()
+            && request.content_type != ContentType::Binary
             && request.body.trim().is_empty()
             && written_schema.is_none() =>
         {
             return None;
+        }
+        ContentType::Binary => {
+            let mime = request
+                .headers
+                .iter()
+                .find(|kv| kv.enabled && kv.key.trim().eq_ignore_ascii_case("content-type"))
+                .map(|kv| kv.value.trim().to_string())
+                .filter(|mime| !mime.is_empty())
+                .unwrap_or_else(|| crate::send::guessed_binary_content_type(&request.body));
+            json!({ mime: {"schema": {"type": "string", "format": "binary"}} })
         }
         ContentType::Json if request.body.trim().is_empty() => {
             json!({"application/json": {"schema": written_schema.unwrap_or_else(|| json!({"type": "object"}))}})
@@ -887,5 +898,39 @@ mod tests {
         assert_eq!(fields[0].name, "email");
         assert!(fields[0].required);
         assert_eq!(fields[0].description, "Primary email");
+    }
+
+    #[test]
+    fn binary_body_exports_and_imports_round_trip() {
+        let data = TreeData {
+            folders: Vec::new(),
+            apis: vec![api(
+                "a1",
+                "uploadBinary",
+                HttpRequest {
+                    method: HttpMethod::Post,
+                    uri: "{{HOST}}/upload".into(),
+                    content_type: ContentType::Binary,
+                    body: "file:///tmp/photo.png".into(),
+                    ..Default::default()
+                },
+            )],
+            top_order: vec![ItemId::new("a1")],
+            settings: ProjectSettings::default(),
+        };
+        let yaml = openapi(&data, None, "Files", &[("HOST".into(), "https://files.test".into())]);
+        let bundle = crate::import::parse(&yaml).expect("document");
+        assert!(bundle.lost.is_empty());
+        let crate::import::ImportItem::Api { request, .. } = &bundle.items[0] else {
+            panic!("api");
+        };
+        assert_eq!(request.content_type, ContentType::Binary);
+        assert_eq!(request.body, "file://");
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|h| h.key == "Content-Type" && h.value == "image/png")
+        );
     }
 }

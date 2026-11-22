@@ -309,6 +309,14 @@ fn item(value: &Value, prefix: &str, lost: &mut Vec<Lost>) -> Option<ImportItem>
                     .unwrap_or_default();
                 built.body = serde_json::to_string(&fields).unwrap_or_default();
             }
+            "file" => {
+                built.content_type = ContentType::Binary;
+                let src = body
+                    .get("file")
+                    .map(|file| text(file, "src").trim())
+                    .unwrap_or_default();
+                built.body = format!("file://{src}");
+            }
             "" | "none" => {}
             other => lost::push_body(lost, &target, other),
         }
@@ -613,10 +621,25 @@ mod tests {
                         "auth": {"type": "hawk"},
                         "body": {"mode": "file", "file": {"src": "/tmp/a.bin"}}
                     }
+                }, {
+                    "name": "WeirdBody",
+                    "request": {
+                        "method": "POST",
+                        "url": "{{host}}/weird",
+                        "body": {"mode": "custom"}
+                    }
                 }]
             }]
         }"#;
         let bundle = super::super::parse(doc).expect("parsed");
+        let ImportItem::Folder { children, .. } = &bundle.items[0] else {
+            panic!("folder");
+        };
+        let ImportItem::Api { request: upload, .. } = &children[0] else {
+            panic!("upload");
+        };
+        assert_eq!(upload.content_type, ContentType::Binary);
+        assert_eq!(upload.body, "file:///tmp/a.bin");
         assert_eq!(
             bundle.lost,
             vec![
@@ -643,11 +666,11 @@ mod tests {
                 },
                 Lost {
                     target: "Auth / Upload".into(),
-                    kind: LostKind::Body { kind: "file".into() },
+                    kind: LostKind::Auth { kind: "hawk".into() },
                 },
                 Lost {
-                    target: "Auth / Upload".into(),
-                    kind: LostKind::Auth { kind: "hawk".into() },
+                    target: "Auth / WeirdBody".into(),
+                    kind: LostKind::Body { kind: "custom".into() },
                 },
                 Lost {
                     target: "Auth / Upload".into(),

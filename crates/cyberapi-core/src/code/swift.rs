@@ -108,6 +108,11 @@ pub(super) fn url_session(prepared: &PreparedRequest, parts: &Parts<'_>, follow_
             "request.setValue(\"multipart/form-data; boundary={BOUNDARY}\", forHTTPHeaderField: \"Content-Type\")"
         ));
         lines.push("request.httpBody = body".into());
+    } else if let Some(path) = &parts.binary_file {
+        lines.push(format!(
+            "request.httpBody = try Data(contentsOf: URL(fileURLWithPath: {}))",
+            swift_string(path)
+        ));
     } else if let Some(body) = &parts.body {
         lines.push(format!("request.httpBody = Data({}.utf8)", swift_string(body)));
     }

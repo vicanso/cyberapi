@@ -534,6 +534,9 @@ pub enum ContentType {
     Json,
     Form,
     Multipart,
+    /// R1: the entire request body is a single file (`file://…` on desktop,
+    /// `webfile://<id>/<name>` in the browser).
+    Binary,
     Xml,
     Plain,
     /// A GraphQL request: the body keeps a [`crate::graphql::GraphQlBody`],
@@ -543,10 +546,11 @@ pub enum ContentType {
 
 impl ContentType {
     /// The choices the editor offers, in its order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Json,
         Self::Form,
         Self::Multipart,
+        Self::Binary,
         Self::Xml,
         Self::Plain,
         Self::GraphQl,
@@ -557,6 +561,7 @@ impl ContentType {
             Self::Json => "application/json",
             Self::Form => "application/x-www-form-urlencoded",
             Self::Multipart => "multipart/form-data",
+            Self::Binary => "application/octet-stream",
             Self::Xml => "application/xml",
             Self::Plain => "text/plain",
             // What is stored; the request goes as `application/json`.
@@ -568,6 +573,7 @@ impl ContentType {
         match text.trim() {
             "application/x-www-form-urlencoded" => Self::Form,
             "multipart/form-data" => Self::Multipart,
+            "application/octet-stream" => Self::Binary,
             "application/xml" => Self::Xml,
             "text/plain" => Self::Plain,
             "application/graphql" => Self::GraphQl,

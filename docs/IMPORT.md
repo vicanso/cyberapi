@@ -22,7 +22,7 @@ Paste, pick a file, or fetch an address (the web version fetches through its ser
 
 Auth that has a matching kind comes along: Basic, Bearer, an API key, Digest, OAuth 2.0 client credentials, password and authorization code (*0.3.1*), and AWS SigV4 (Postman, Insomnia, Bruno). A kind the app does not have is left as "inherit".
 
-If the project already signs in, that auth is kept. A named environment that is already there (names compared without case) only gains variables it did not have.
+If the project already signs in, that auth is kept. A named environment that is already there (names compared without case) only gains variables it did not have. Binary / file bodies (`mode: file` in Postman, Insomnia, HAR, Bruno, OpenAPI, and `-T` / `--data-binary @` in cURL) import as binary bodies.
 
 A line that is only an address is not a `.http` file. Fetch it instead.
 

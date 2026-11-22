@@ -642,7 +642,8 @@ impl ApiState {
             // E1: a WebSocket's message is text; a form or a GraphQL body
             // reads as the text it is kept as.
             if method == HttpMethod::WebSocket
-                && (self.request.content_type.is_key_value() || self.request.content_type == ContentType::GraphQl)
+                && (self.request.content_type.is_key_value()
+                    || matches!(self.request.content_type, ContentType::GraphQl | ContentType::Binary))
             {
                 self.request.content_type = ContentType::Json;
                 replaced = true;

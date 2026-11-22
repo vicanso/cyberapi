@@ -2403,7 +2403,7 @@ mod tests {
                 "/upload": {
                     "post": {
                         "summary": "Upload",
-                        "requestBody": {"content": {"application/octet-stream": {"schema": {"type": "string"}}}}
+                        "requestBody": {"content": {"application/cbor": {"schema": {"type": "object"}}}}
                     }
                 }
             }

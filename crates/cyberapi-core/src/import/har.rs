@@ -107,16 +107,33 @@ fn entry(entry: &Value) -> Option<(String, ImportItem, Option<String>)> {
                 let encoding = text(data, "encoding");
                 let raw_text = text(data, "text");
                 let params_empty = params.is_none_or(Vec::is_empty);
-                if encoding == "base64" || (!mime.is_empty() && raw_text.is_empty() && params_empty) {
-                    lost_body = Some(if mime.is_empty() {
-                        format!("binary ({encoding})")
-                    } else {
-                        mime.to_string()
-                    });
-                }
-                built.body = raw_text.to_string();
-                if content_type_of(mime).is_none() && !built.body.is_empty() {
-                    built.content_type = guess_content_type(&built.body);
+                let is_binary = built.content_type == ContentType::Binary
+                    || encoding == "base64"
+                    || (!mime.is_empty() && raw_text.is_empty() && params_empty);
+                if is_binary {
+                    built.content_type = ContentType::Binary;
+                    built.body = "file://".to_string();
+                    if !mime.is_empty()
+                        && !mime.eq_ignore_ascii_case(ContentType::Binary.as_str())
+                        && !built
+                            .headers
+                            .iter()
+                            .any(|header| header.key.eq_ignore_ascii_case("content-type"))
+                    {
+                        built.headers.push(kv("Content-Type", mime, true));
+                    }
+                    if encoding == "base64" && !raw_text.is_empty() {
+                        lost_body = Some(if mime.is_empty() {
+                            "binary (base64 inline data)".to_string()
+                        } else {
+                            format!("{mime} (base64 inline data)")
+                        });
+                    }
+                } else {
+                    built.body = raw_text.to_string();
+                    if content_type_of(mime).is_none() && !built.body.is_empty() {
+                        built.content_type = guess_content_type(&built.body);
+                    }
                 }
             }
         }
@@ -320,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn binary_and_base64_bodies_are_reported() {
+    fn binary_and_base64_bodies_are_imported_and_inline_base64_is_reported() {
         use super::super::LostKind;
         let json = r#"{"log": {"version": "1.2", "entries": [
             {"request": {"method": "POST", "url": "https://a.test/bin", "headers": [],
@@ -329,22 +346,30 @@ mod tests {
                 "postData": {"mimeType": "application/pdf"}}}
         ]}}"#;
         let bundle = super::super::parse(json).expect("parsed");
+        let ImportItem::Folder { children: a, .. } = &bundle.items[0] else {
+            panic!("folder a");
+        };
+        let ImportItem::Folder { children: b, .. } = &bundle.items[1] else {
+            panic!("folder b");
+        };
+        assert_eq!(request(&a[0]).content_type, ContentType::Binary);
+        assert_eq!(request(&a[0]).body, "file://");
+        assert_eq!(request(&b[0]).content_type, ContentType::Binary);
+        assert_eq!(request(&b[0]).body, "file://");
+        assert!(
+            request(&b[0])
+                .headers
+                .iter()
+                .any(|h| h.key == "Content-Type" && h.value == "application/pdf")
+        );
         assert_eq!(
             bundle.lost,
-            vec![
-                Lost {
-                    target: "a.test / /bin".into(),
-                    kind: LostKind::Body {
-                        kind: "application/octet-stream".into(),
-                    },
+            vec![Lost {
+                target: "a.test / /bin".into(),
+                kind: LostKind::Body {
+                    kind: "application/octet-stream (base64 inline data)".into(),
                 },
-                Lost {
-                    target: "b.test / /empty".into(),
-                    kind: LostKind::Body {
-                        kind: "application/pdf".into(),
-                    },
-                },
-            ]
+            }]
         );
     }
 }

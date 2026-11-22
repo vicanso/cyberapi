@@ -380,6 +380,10 @@ fn templated_texts<'a>(
     } else if request.method.has_body() {
         if request.content_type.is_key_value() {
             texts.extend(form_fields(&request.body).into_iter().map(|kv| kv.value.into()));
+        } else if request.content_type == ContentType::Binary {
+            if let Some(path) = request.body.trim().strip_prefix("file://") {
+                texts.push(path.into());
+            }
         } else {
             texts.push(strip_json_comments(&request.body).into());
         }
@@ -424,14 +428,15 @@ pub fn needs(request: &HttpRequest, variables: &[Variable], inherited: &Inherite
     for text in templated_texts(request, variables, inherited) {
         needs.add(template::needs(&text));
     }
-    // F9: an imported `file://` multipart field with no path yet asks for one
-    // as `{{openFile()}}` does.
+    // F9 / R1: an imported `file://` multipart field or binary body with no
+    // path yet asks for one as `{{openFile()}}` does.
     if request.method != HttpMethod::Grpc
         && request.method.has_body()
-        && request.content_type == ContentType::Multipart
-        && form_fields(&request.body)
-            .iter()
-            .any(|kv| kv.enabled && !kv.key.is_empty() && kv.value.trim() == "file://")
+        && ((request.content_type == ContentType::Multipart
+            && form_fields(&request.body)
+                .iter()
+                .any(|kv| kv.enabled && !kv.key.is_empty() && kv.value.trim() == "file://"))
+            || (request.content_type == ContentType::Binary && request.body.trim() == "file://"))
     {
         needs.picks_file = true;
     }
@@ -986,6 +991,11 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
                 body = multipart(&request.body, cx, &render)?;
                 format!("multipart/form-data; boundary={}", cx.boundary)
             }
+            ContentType::Binary => {
+                let (bytes, mime) = binary_body(&request.body, cx, &render)?;
+                body = bytes;
+                mime
+            }
             ContentType::GraphQl => {
                 // A subscription is answered as an event stream by the
                 // servers that answer it over HTTP (graphql-sse asks for it).
@@ -1008,7 +1018,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
                 request.content_type.as_str().to_string()
             }
         };
-        if !body.is_empty() {
+        if !body.is_empty() || request.content_type == ContentType::Binary {
             // A Content-Type the request names itself stays.
             headers.set_default("Content-Type", &content_type);
         }
@@ -1098,6 +1108,74 @@ pub fn page_file(value: &str) -> Option<(&str, &str)> {
 /// A multipart field that sends a file: a desktop path, or a page's pick.
 pub fn is_file_value(value: &str) -> bool {
     value.trim().starts_with("file://") || page_file(value).is_some()
+}
+
+/// R1: the display file name of a `ContentType::Binary` body (`file://` path
+/// or `webfile://<id>/<name>` marker); `None` when no file is picked.
+pub fn binary_file_name(body: &str) -> Option<&str> {
+    if let Some((_, name)) = page_file(body) {
+        return Some(name);
+    }
+    let trimmed = body.trim();
+    let path = trimmed.strip_prefix("file://").unwrap_or(trimmed).trim();
+    path.rsplit(['/', '\\']).next().filter(|name| !name.is_empty())
+}
+
+/// R1: the user-visible path (on desktop) or filename (for an in-page file)
+/// of a `ContentType::Binary` body, without internal `file://` or `webfile://`
+/// markers; `None` when empty or unpicked (`"file://"`).
+pub fn binary_display_path(body: &str) -> Option<&str> {
+    if let Some((_, name)) = page_file(body) {
+        return Some(name);
+    }
+    let trimmed = body.trim();
+    let path = trimmed.strip_prefix("file://").unwrap_or(trimmed).trim();
+    (!path.is_empty()).then_some(path)
+}
+
+/// R1: default `Content-Type` guessed from the filename of a `ContentType::Binary`
+/// body, falling back to `application/octet-stream`.
+pub fn guessed_binary_content_type(body: &str) -> String {
+    binary_file_name(body)
+        .map(|name| mime_guess::from_path(name).first_or_octet_stream().to_string())
+        .unwrap_or_else(|| ContentType::Binary.as_str().to_string())
+}
+
+/// R1: reads a `ContentType::Binary` body file (`webfile://` or `file://`)
+/// and guesses its default MIME type from the file name.
+fn binary_body(
+    raw: &str,
+    cx: &Context<'_>,
+    render: &dyn Fn(&str) -> Result<String, PrepareError>,
+) -> Result<(Vec<u8>, String), PrepareError> {
+    if let Some((id, name)) = page_file(raw) {
+        let bytes = cx
+            .files
+            .read(&format!("{PAGE_FILE}{id}"), None)
+            .map_err(|message| PrepareError::Template {
+                source: TemplateError::ReadFile {
+                    file: name.to_string(),
+                    message,
+                },
+            })?;
+        let mime = mime_guess::from_path(name).first_or_octet_stream().to_string();
+        return Ok((bytes, mime));
+    }
+    let trimmed = raw.trim();
+    let raw_path = trimmed.strip_prefix("file://").unwrap_or(trimmed);
+    let rendered = render(raw_path)?;
+    let path = match rendered.trim() {
+        "" => cx.template.answers.file.as_deref().unwrap_or_default(),
+        other => other,
+    };
+    let bytes = cx.files.read(path, None).map_err(|message| PrepareError::Template {
+        source: TemplateError::ReadFile {
+            file: path.to_string(),
+            message,
+        },
+    })?;
+    let mime = mime_guess::from_path(path).first_or_octet_stream().to_string();
+    Ok((bytes, mime))
 }
 
 /// F5.3: enabled fields with a name; a `file://` value is the file's bytes,
@@ -2142,5 +2220,113 @@ mod tests {
         )
         .expect("direct prepared");
         assert_eq!(direct_prepared.url, "https://api.example.com/orders/9/items/direct-9");
+    }
+
+    #[test]
+    fn binary_body_sends_file_bytes_with_guessed_or_overridden_content_type() {
+        assert_eq!(binary_file_name("file:///tmp/photo.png"), Some("photo.png"));
+        assert_eq!(binary_file_name("webfile://abc/report.pdf"), Some("report.pdf"));
+        assert_eq!(binary_file_name("file://"), None);
+        assert_eq!(binary_display_path("file:///tmp/photo.png"), Some("/tmp/photo.png"));
+        assert_eq!(binary_display_path("webfile://abc/report.pdf"), Some("report.pdf"));
+        assert_eq!(binary_display_path("file://"), None);
+        assert_eq!(guessed_binary_content_type("file:///tmp/photo.png"), "image/png");
+        assert_eq!(guessed_binary_content_type(""), "application/octet-stream");
+
+        struct FakeFiles;
+        impl FileReader for FakeFiles {
+            fn read(&self, file: &str, _: Option<template::BaseDir>) -> Result<Vec<u8>, String> {
+                match file {
+                    "/tmp/photo.png" => Ok(vec![0x89, 0x50, 0x4e, 0x47]),
+                    "/picked/data.bin" => Ok(vec![1, 2, 3]),
+                    "webfile://abc" => Ok(b"%PDF-1.4".to_vec()),
+                    _ => Err("missing file".into()),
+                }
+            }
+        }
+        let run_prepare = |req: &HttpRequest, answers: template::Answers| {
+            let inputs = Inputs {
+                answers,
+                ..Default::default()
+            };
+            let proxy = ProxyPrefs::default();
+            let inherited = Inherited::default();
+            prepare(
+                req,
+                &Context {
+                    variables: &[],
+                    template: &inputs,
+                    files: &FakeFiles,
+                    user_agent: "CyberAPI/test",
+                    timeouts: Timeouts::default(),
+                    accept_invalid_certs: false,
+                    http_version: HttpVersion::Auto,
+                    proxy: &proxy,
+                    boundary: "B",
+                    inherited: &inherited,
+                    environment: None,
+                },
+            )
+        };
+
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "https://api.test/upload".into(),
+            content_type: ContentType::Binary,
+            body: "file:///tmp/photo.png".into(),
+            ..Default::default()
+        };
+        assert!(!needs(&request, &[], &Inherited::default()).picks_file);
+        let prepared = run_prepare(&request, Default::default()).expect("prepared");
+        assert_eq!(prepared.body, vec![0x89, 0x50, 0x4e, 0x47]);
+        assert_eq!(prepared.header("content-type"), Some("image/png"));
+        let sent = sent_request(&prepared, &request, &Inherited::default(), &[], false, "HTTP/2");
+        assert_eq!(sent.body, None);
+        assert_eq!(sent.body_size, 4);
+
+        let custom = HttpRequest {
+            headers: vec![kv("Content-Type", "image/webp")],
+            ..request.clone()
+        };
+        let custom_prepared = run_prepare(&custom, Default::default()).expect("custom");
+        assert_eq!(custom_prepared.header("content-type"), Some("image/webp"));
+
+        let web = HttpRequest {
+            body: "webfile://abc/report.pdf".into(),
+            ..request.clone()
+        };
+        let web_prepared = run_prepare(&web, Default::default()).expect("web");
+        assert_eq!(web_prepared.body, b"%PDF-1.4");
+        assert_eq!(web_prepared.header("content-type"), Some("application/pdf"));
+
+        let unpicked = HttpRequest {
+            body: "file://".into(),
+            ..request.clone()
+        };
+        assert!(needs(&unpicked, &[], &Inherited::default()).picks_file);
+        let picked = run_prepare(
+            &unpicked,
+            template::Answers {
+                file: Some("/picked/data.bin".into()),
+                ..Default::default()
+            },
+        )
+        .expect("picked");
+        assert_eq!(picked.body, vec![1, 2, 3]);
+        assert_eq!(picked.header("content-type"), Some("application/octet-stream"));
+
+        let missing = HttpRequest {
+            body: "file:///nope.bin".into(),
+            ..request
+        };
+        assert_eq!(
+            run_prepare(&missing, Default::default()),
+            Err(PrepareError::Template {
+                source: TemplateError::ReadFile {
+                    file: "/nope.bin".into(),
+                    message: "missing file".into(),
+                }
+            })
+        );
     }
 }

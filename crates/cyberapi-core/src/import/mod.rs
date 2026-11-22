@@ -643,6 +643,7 @@ fn content_type_of(value: &str) -> Option<ContentType> {
         "application/json" => Some(ContentType::Json),
         "application/x-www-form-urlencoded" => Some(ContentType::Form),
         "multipart/form-data" => Some(ContentType::Multipart),
+        "application/octet-stream" => Some(ContentType::Binary),
         "application/xml" | "text/xml" => Some(ContentType::Xml),
         "text/plain" => Some(ContentType::Plain),
         "application/graphql" => Some(ContentType::GraphQl),

@@ -82,7 +82,7 @@ fn split_attached(word: &str) -> (String, Option<String>) {
     {
         return (format!("--{flag}"), Some(value.to_string()));
     }
-    let short_with_value = ['X', 'H', 'd', 'u', 'A', 'b', 'F', 'e'];
+    let short_with_value = ['X', 'H', 'd', 'u', 'A', 'b', 'F', 'e', 'T'];
     let mut chars = word.chars();
     if chars.next() == Some('-')
         && let Some(flag) = chars.next()
@@ -100,8 +100,9 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     let mut url: Option<String> = None;
     let mut headers: Vec<KvParam> = Vec::new();
     let mut data: Vec<String> = Vec::new();
+    let mut binary_files: Vec<String> = Vec::new();
+    let mut upload_file: Option<String> = None;
     let mut form: Vec<KvParam> = Vec::new();
-    let mut lost_bodies: Vec<String> = Vec::new();
     let mut auth = Auth::Inherit;
     let mut head = false;
     let mut get = false;
@@ -126,9 +127,10 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
             "-d" | "--data" | "--data-ascii" | "--data-binary" => {
                 if let Some(val) = value() {
                     if let Some(path) = val.strip_prefix('@').map(str::trim).filter(|path| !path.is_empty()) {
-                        lost_bodies.push(format!("file ({path})"));
+                        binary_files.push(path.to_string());
+                    } else {
+                        data.push(val);
                     }
-                    data.push(val);
                 }
             }
             "--data-raw" => data.extend(value()),
@@ -182,7 +184,7 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
                 if let Some(path) = value() {
                     let path = path.trim();
                     if !path.is_empty() {
-                        lost_bodies.push(format!("--upload-file {path}"));
+                        upload_file = Some(path.to_string());
                     }
                 }
             }
@@ -205,20 +207,34 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     }
     let body = if get { String::new() } else { body };
 
+    let binary_path = if !get && form.is_empty() {
+        upload_file
+            .as_deref()
+            .or_else(|| (data.is_empty() && binary_files.len() == 1).then(|| binary_files[0].as_str()))
+            .map(str::to_string)
+    } else {
+        None
+    };
+
     // Content-Type becomes the body's type when it is one the editor has.
+    // For binary file bodies, preserve any non-default Content-Type header.
     let mut content_type = None;
     headers.retain(|header| {
         if header.key.eq_ignore_ascii_case("content-type")
             && let Some(known) = content_type_of(&header.value)
         {
+            if binary_path.is_some() && known != ContentType::Binary {
+                return true;
+            }
             content_type = Some(known);
             return false;
         }
         true
     });
-    let has_body = !body.is_empty() || !form.is_empty();
-    // A body makes a GET a POST, even a GET asked for (F10.3).
+    let has_body = !body.is_empty() || !form.is_empty() || binary_path.is_some();
+    // `-T` defaults to PUT; any body turns an implicit GET into POST (#F10.3).
     let method = match (method.map(|method| HttpMethod::parse_lenient(&method)), head) {
+        (None, false) if upload_file.is_some() => HttpMethod::Put,
         (Some(HttpMethod::Get) | None, false) if has_body => HttpMethod::Post,
         (Some(method), _) => method,
         (None, true) => HttpMethod::Head,
@@ -226,6 +242,8 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     };
     let (content_type, body) = if !form.is_empty() {
         (ContentType::Multipart, serde_json::to_string(&form).unwrap_or_default())
+    } else if let Some(path) = &binary_path {
+        (ContentType::Binary, format!("file://{path}"))
     } else {
         let content_type = content_type.unwrap_or_else(|| match guess_content_type(&body) {
             ContentType::Json => ContentType::Json,
@@ -248,8 +266,10 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
         .unwrap_or(&uri)
         .to_string();
     let mut lost = Vec::new();
-    for kind in lost_bodies {
-        lost::push_body(&mut lost, &name, &kind);
+    if binary_path.is_none() {
+        for path in &binary_files {
+            lost::push_body(&mut lost, &name, &format!("file ({path})"));
+        }
     }
     Ok(ImportBundle {
         items: vec![ImportItem::Api {
@@ -357,28 +377,28 @@ mod tests {
     }
 
     #[test]
-    fn file_upload_and_binary_file_flags_are_reported() {
-        use super::super::{Lost, LostKind};
+    fn file_upload_and_binary_file_flags_import_as_binary_bodies() {
         let upload = super::super::parse("curl -T /tmp/blob.bin https://a.test/upload").expect("parsed");
-        assert_eq!(
-            upload.lost,
-            vec![Lost {
-                target: "upload".into(),
-                kind: LostKind::Body {
-                    kind: "--upload-file /tmp/blob.bin".into(),
-                },
-            }]
-        );
-        let binary = super::super::parse("curl --data-binary @payload.bin https://a.test/bin").expect("parsed");
-        assert_eq!(
-            binary.lost,
-            vec![Lost {
-                target: "bin".into(),
-                kind: LostKind::Body {
-                    kind: "file (payload.bin)".into(),
-                },
-            }]
-        );
+        assert!(upload.lost.is_empty());
+        let ImportItem::Api { request: put_req, .. } = &upload.items[0] else {
+            panic!("api");
+        };
+        assert_eq!(put_req.method, HttpMethod::Put);
+        assert_eq!(put_req.content_type, ContentType::Binary);
+        assert_eq!(put_req.body, "file:///tmp/blob.bin");
+
+        let binary =
+            super::super::parse("curl -H 'Content-Type: image/png' --data-binary @payload.png https://a.test/bin")
+                .expect("parsed");
+        assert!(binary.lost.is_empty());
+        let ImportItem::Api { request: bin_req, .. } = &binary.items[0] else {
+            panic!("api");
+        };
+        assert_eq!(bin_req.method, HttpMethod::Post);
+        assert_eq!(bin_req.content_type, ContentType::Binary);
+        assert_eq!(bin_req.body, "file://payload.png");
+        assert_eq!(bin_req.headers, vec![kv("Content-Type", "image/png", true)]);
+
         // `--data-raw` takes `@` literally, not as a file reference.
         let raw = super::super::parse("curl --data-raw '@literal' https://a.test/raw").expect("parsed");
         assert!(raw.lost.is_empty());

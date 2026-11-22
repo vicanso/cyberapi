@@ -50,6 +50,8 @@ pub(super) fn guzzle(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redir
             });
         }
         lines.push("    ],".into());
+    } else if let Some(path) = &parts.binary_file {
+        lines.push(format!("    'body' => fopen({}, 'r'),", php_string(path)));
     } else if let Some(body) = &parts.body {
         lines.push(format!("    'body' => {},", php_string(body)));
     }

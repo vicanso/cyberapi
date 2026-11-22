@@ -1696,7 +1696,11 @@ fn sample_prepared(
                     .collect::<Vec<_>>()
                     .join("&");
                 let req_body = serde_json::to_string(&masked_fields).unwrap_or_default();
-                (encoded.into_bytes(), req_body, Some(req.content_type.as_str()))
+                (
+                    encoded.into_bytes(),
+                    req_body,
+                    Some(req.content_type.as_str().to_string()),
+                )
             }
             ContentType::Multipart => {
                 let masked_fields: Vec<KvParam> = form_fields(&req.body)
@@ -1709,6 +1713,16 @@ fn sample_prepared(
                 let req_body = serde_json::to_string(&masked_fields).unwrap_or_default();
                 (Vec::new(), req_body, None)
             }
+            ContentType::Binary => {
+                let shown = crate::send::binary_file_name(&req.body)
+                    .map(|name| format!("file://{name}"))
+                    .unwrap_or_default();
+                (
+                    Vec::new(),
+                    shown,
+                    Some(crate::send::guessed_binary_content_type(&req.body)),
+                )
+            }
             ContentType::GraphQl => {
                 let gql = crate::graphql::GraphQlBody::read(&req.body);
                 let masked_gql = crate::graphql::GraphQlBody {
@@ -1720,14 +1734,18 @@ fn sample_prepared(
                     .payload()
                     .map(|v| v.to_string())
                     .unwrap_or_else(|_| masked_gql.to_body());
-                (payload.into_bytes(), masked_gql.to_body(), Some("application/json"))
+                (
+                    payload.into_bytes(),
+                    masked_gql.to_body(),
+                    Some("application/json".to_string()),
+                )
             }
             _ => {
                 let masked_str = masked_body(&req.body);
                 (
                     masked_str.clone().into_bytes(),
                     masked_str,
-                    Some(req.content_type.as_str()),
+                    Some(req.content_type.as_str().to_string()),
                 )
             }
         }
@@ -1736,7 +1754,7 @@ fn sample_prepared(
     if let Some(ct) = auto_content_type
         && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
     {
-        headers.push(("Content-Type".into(), ct.into()));
+        headers.push(("Content-Type".into(), ct));
     }
 
     let masked_req = HttpRequest {

@@ -22,7 +22,7 @@
 
 对得上的认证会一起进来：Basic、Bearer、API Key、Digest、OAuth 2.0 的客户端凭据、密码和授权码（*0.3.1*），以及 AWS SigV4（Postman、Insomnia、Bruno）。没有对应种类的按继承处理。
 
-项目已经有认证时，保留项目的。同名环境（不分大小写）只补上还没有的变量。
+项目已经有认证时，保留项目的。同名环境（不分大小写）只补上还没有的变量。二进制 / 文件请求体（Postman `mode: file`、Insomnia、HAR、Bruno、OpenAPI 以及 cURL 的 `-T` / `--data-binary @`）导入为二进制请求体。
 
 只有一行地址的文本不当作 `.http` 文件，用“获取”。
 

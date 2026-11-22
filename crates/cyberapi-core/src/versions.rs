@@ -104,6 +104,10 @@ pub fn request_text(request: &HttpRequest) -> String {
             part("call", &told);
             part("message", &indented(&call.message));
         }
+        _ if request.content_type == crate::model::ContentType::Binary => part(
+            "body",
+            crate::send::binary_display_path(&request.body).unwrap_or(&request.body),
+        ),
         _ if request.content_type == crate::model::ContentType::GraphQl => {
             let body = crate::graphql::GraphQlBody::read(&request.body);
             part("query", &body.query);

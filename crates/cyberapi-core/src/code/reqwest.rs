@@ -72,6 +72,8 @@ pub(super) fn reqwest(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redi
     }
     if parts.fields.is_some() {
         lines.push("        .multipart(form)".into());
+    } else if let Some(path) = &parts.binary_file {
+        lines.push(format!("        .body(std::fs::File::open({})?)", rust_string(path)));
     } else if let Some(body) = &parts.body {
         lines.push(format!("        .body({})", rust_string(body)));
     }

@@ -493,6 +493,11 @@ pub async fn get_api(storage: &Storage, arguments: &Json) -> Result<Json, String
             let fields: Vec<KvParam> = serde_json::from_str(&request.body).unwrap_or_default();
             params_json(&fields)
         }
+        ContentType::Binary => Json::String(
+            cyberapi_core::send::binary_display_path(&request.body)
+                .unwrap_or_default()
+                .to_string(),
+        ),
         ContentType::GraphQl => {
             let graphql = GraphQlBody::read(&request.body);
             json!({

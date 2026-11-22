@@ -209,6 +209,8 @@ pub fn preview(data: &TreeData, folder: Option<&ItemId>, find: &str, replace: &s
                     after.body = gql.to_body();
                     body_matches = count;
                 }
+            } else if after.content_type == crate::model::ContentType::Binary {
+                // Keep file:// and webfile:// markers untouched by text find/replace.
             } else if after.content_type.is_key_value() {
                 let mut fields = form_fields(&after.body);
                 let count = replace_kv_list(&mut fields, find, replace, scope.case_sensitive);

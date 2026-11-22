@@ -114,17 +114,24 @@ fn request(resource: &Value, prefix: &str, lost: &mut Vec<Lost>) -> ImportItem {
             }
             _ => {
                 let file_name = text(body, "fileName").trim();
-                if !file_name.is_empty() {
-                    let kind = if mime.is_empty() {
-                        "file".to_string()
-                    } else {
-                        format!("file ({mime})")
-                    };
-                    lost::push_body(lost, &target, &kind);
-                }
-                built.body = variables(text(body, "text"));
-                if mime.is_empty() && !built.body.is_empty() {
-                    built.content_type = guess_content_type(&built.body);
+                let raw_text = variables(text(body, "text"));
+                if !file_name.is_empty() || (built.content_type == ContentType::Binary && raw_text.is_empty()) {
+                    built.content_type = ContentType::Binary;
+                    built.body = format!("file://{file_name}");
+                    if !mime.is_empty()
+                        && !mime.eq_ignore_ascii_case(ContentType::Binary.as_str())
+                        && !built
+                            .headers
+                            .iter()
+                            .any(|header| header.key.eq_ignore_ascii_case("content-type"))
+                    {
+                        built.headers.push(kv("Content-Type", mime, true));
+                    }
+                } else {
+                    built.body = raw_text;
+                    if mime.is_empty() && !built.body.is_empty() {
+                        built.content_type = guess_content_type(&built.body);
+                    }
                 }
             }
         }
@@ -472,13 +479,27 @@ mod tests {
                 {"_id": "req_1", "_type": "request", "parentId": "fld_1", "name": "Upload", "method": "POST",
                  "url": "https://a.test/{% uuid 'v4' %}",
                  "headers": [{"name": "X-A", "value": "{% now 'iso-8601' %}"}],
-                 "body": {"mimeType": "application/octet-stream", "fileName": "/tmp/a.bin"},
+                 "body": {"mimeType": "image/png", "fileName": "/tmp/a.bin"},
                  "authentication": {"type": "oauth2", "grantType": "implicit"},
                  "preRequestScript": "console.log('req');",
                  "afterResponseScript": "insomnia.test('ok', () => {});"}
             ]
         }"#;
         let bundle = super::super::parse(doc).expect("parsed");
+        let ImportItem::Folder { children, .. } = &bundle.items[0] else {
+            panic!("folder");
+        };
+        let ImportItem::Api { request: upload, .. } = &children[0] else {
+            panic!("upload");
+        };
+        assert_eq!(upload.content_type, ContentType::Binary);
+        assert_eq!(upload.body, "file:///tmp/a.bin");
+        assert!(
+            upload
+                .headers
+                .iter()
+                .any(|h| h.key == "Content-Type" && h.value == "image/png")
+        );
         assert_eq!(
             bundle.lost,
             vec![
@@ -508,12 +529,6 @@ mod tests {
                     kind: LostKind::Script {
                         phase: ScriptPhase::PostResponse,
                         source: "insomnia.test('ok', () => {});".into(),
-                    },
-                },
-                Lost {
-                    target: "Auth / Upload".into(),
-                    kind: LostKind::Body {
-                        kind: "file (application/octet-stream)".into(),
                     },
                 },
                 Lost {

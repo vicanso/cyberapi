@@ -69,6 +69,11 @@ pub(super) fn http_client(prepared: &PreparedRequest, parts: &Parts<'_>, follow_
             });
         }
         lines.push("request.Content = form;".into());
+    } else if let Some(path) = &parts.binary_file {
+        lines.push(format!(
+            "request.Content = new StreamContent(File.OpenRead({}));",
+            string(path)
+        ));
     } else if let Some(body) = &parts.body {
         lines.push(format!(
             "request.Content = new ByteArrayContent(System.Text.Encoding.UTF8.GetBytes({}));",

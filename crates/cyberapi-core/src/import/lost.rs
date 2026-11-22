@@ -205,6 +205,10 @@ fn walk_items(items: &[ImportItem], prefix: &str, existing_lost: &[Lost], scanne
                         scanner(&target, &kv.key, &mut seen, added);
                         scanner(&target, &kv.value, &mut seen, added);
                     }
+                } else if request.content_type == ContentType::Binary {
+                    if let Some(path) = request.body.trim().strip_prefix("file://") {
+                        scanner(&target, path, &mut seen, added);
+                    }
                 } else {
                     scanner(&target, &request.body, &mut seen, added);
                 }

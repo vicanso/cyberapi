@@ -259,6 +259,10 @@ fn request(request: &HttpRequest) -> Value {
                 let graphql = GraphQlBody::read(&request.body);
                 Some(json!({"mode": "graphql", "graphql": {"query": graphql.query, "variables": graphql.variables}}))
             }
+            ContentType::Binary if !request.body.trim().is_empty() => {
+                let src = crate::send::binary_display_path(&request.body).unwrap_or_default();
+                Some(json!({"mode": "file", "file": {"src": src}}))
+            }
             _ => None,
         }
     } else {
@@ -520,5 +524,39 @@ mod tests {
         assert!(text.contains("status"));
         assert!(!text.contains("uuid"));
         assert!(!text.contains("schema_type"));
+    }
+
+    #[test]
+    fn binary_body_exports_and_imports_round_trip() {
+        let data = TreeData {
+            folders: Vec::new(),
+            apis: vec![api(
+                "a1",
+                "upload",
+                HttpRequest {
+                    method: HttpMethod::Post,
+                    uri: "https://files.test/upload".into(),
+                    headers: vec![kv("Content-Type", "image/png", true)],
+                    content_type: ContentType::Binary,
+                    body: "file:///tmp/photo.png".into(),
+                    ..Default::default()
+                },
+            )],
+            top_order: vec![ItemId::new("a1")],
+            settings: ProjectSettings::default(),
+        };
+        let text = postman(&data, None, "Files", &[]);
+        let bundle = crate::import::parse(&text).expect("collection");
+        let crate::import::ImportItem::Api { request, .. } = &bundle.items[0] else {
+            panic!("api");
+        };
+        assert_eq!(request.content_type, ContentType::Binary);
+        assert_eq!(request.body, "file:///tmp/photo.png");
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|h| h.key == "Content-Type" && h.value == "image/png")
+        );
     }
 }

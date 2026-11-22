@@ -719,6 +719,28 @@ fn operation(
                 ContentType::Form
             };
             request.body = serde_json::to_string(&fields).unwrap_or_default();
+        } else if let Some((kind, _)) = content.iter().find(|(kind, media)| {
+            kind.split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .eq_ignore_ascii_case("application/octet-stream")
+                || media
+                    .get("schema")
+                    .is_some_and(|schema| is_binary_property(json, schema))
+        }) {
+            request.content_type = ContentType::Binary;
+            request.body = "file://".to_string();
+            let mime = kind.split(';').next().unwrap_or_default().trim();
+            if !mime.is_empty()
+                && !mime.eq_ignore_ascii_case(ContentType::Binary.as_str())
+                && !request
+                    .headers
+                    .iter()
+                    .any(|header| header.key.eq_ignore_ascii_case("content-type"))
+            {
+                request.headers.push(kv("Content-Type", mime, true));
+            }
         } else if let Some((kind, _)) = content.iter().next() {
             lost::push_body(ctx.lost, &target, kind);
         }
@@ -1276,10 +1298,25 @@ mod tests {
                         "security": [{"cookieKey": []}],
                         "requestBody": {"content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}}
                     }
+                },
+                "/cbor": {
+                    "post": {
+                        "tags": ["Files"],
+                        "summary": "Send cbor",
+                        "requestBody": {"content": {"application/cbor": {"schema": {"type": "object"}}}}
+                    }
                 }
             }
         }"#;
         let bundle = super::super::parse(doc).expect("parsed");
+        let ImportItem::Folder { children, .. } = &bundle.items[0] else {
+            panic!("files folder");
+        };
+        let ImportItem::Api { request: upload, .. } = &children[0] else {
+            panic!("upload");
+        };
+        assert_eq!(upload.content_type, ContentType::Binary);
+        assert_eq!(upload.body, "file://");
         assert_eq!(
             bundle.lost,
             vec![
@@ -1291,14 +1328,14 @@ mod tests {
                 },
                 Lost {
                     target: "Files / Upload binary".into(),
-                    kind: LostKind::Body {
-                        kind: "application/octet-stream".into(),
+                    kind: LostKind::Auth {
+                        kind: "apiKey (cookie)".into(),
                     },
                 },
                 Lost {
-                    target: "Files / Upload binary".into(),
-                    kind: LostKind::Auth {
-                        kind: "apiKey (cookie)".into(),
+                    target: "Files / Send cbor".into(),
+                    kind: LostKind::Body {
+                        kind: "application/cbor".into(),
                     },
                 },
             ]

@@ -164,6 +164,7 @@ pub fn masked_request_body(method: HttpMethod, content_type: ContentType, body: 
                 masked_body(body)
             }
         }
+        ContentType::Binary => crate::send::binary_display_path(body).unwrap_or_default().to_string(),
         ContentType::GraphQl => {
             let gql = crate::graphql::GraphQlBody::read(body);
             crate::graphql::GraphQlBody {
@@ -326,10 +327,11 @@ fn params(value: &Value, what: &str) -> Result<Vec<KvParam>, String> {
 }
 
 /// H1: the content types an assistant names, as it names them.
-const CONTENT_TYPES: [(&str, ContentType); 6] = [
+const CONTENT_TYPES: [(&str, ContentType); 7] = [
     ("json", ContentType::Json),
     ("form", ContentType::Form),
     ("multipart", ContentType::Multipart),
+    ("binary", ContentType::Binary),
     ("xml", ContentType::Xml),
     ("text", ContentType::Plain),
     ("graphql", ContentType::GraphQl),

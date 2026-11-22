@@ -24,6 +24,8 @@ pub(super) fn http_client(prepared: &PreparedRequest, parts: &Parts<'_>, follow_
     }
     if sends_files(parts) {
         imports.extend(["java.nio.file.Files", "java.nio.file.Path"]);
+    } else if parts.binary_file.is_some() {
+        imports.push("java.nio.file.Path");
     }
     if prepared.accept_invalid_certs {
         imports.extend([
@@ -86,6 +88,8 @@ pub(super) fn http_client(prepared: &PreparedRequest, parts: &Parts<'_>, follow_
         }
         lines.push(bytes(&format!("--{BOUNDARY}--\r\n")));
         "HttpRequest.BodyPublishers.ofByteArrays(form)".to_string()
+    } else if let Some(path) = &parts.binary_file {
+        format!("HttpRequest.BodyPublishers.ofFile(Path.of({}))", string(path))
     } else if let Some(body) = &parts.body {
         format!("HttpRequest.BodyPublishers.ofString({})", string(body))
     } else {

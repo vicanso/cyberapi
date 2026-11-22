@@ -370,6 +370,36 @@ pub(super) fn parse(text: &str) -> ImportBundle {
                 .collect();
             built.body = serde_json::to_string(&fields).unwrap_or_default();
         }
+        "file" => {
+            built.content_type = ContentType::Binary;
+            let entries = dict("body:file");
+            if let Some(entry) = entries.iter().find(|kv| kv.enabled).or_else(|| entries.first()) {
+                let raw = entry.value.trim();
+                let path = if let Some(rest) = raw.strip_prefix("@file(") {
+                    let files = rest.split(')').next().unwrap_or_default();
+                    files.split('|').next().unwrap_or_default().trim()
+                } else {
+                    raw.split("@contentType(").next().unwrap_or_default().trim()
+                };
+                built.body = format!("file://{path}");
+                if let Some(at) = raw.find("@contentType(") {
+                    let mime = raw[at + "@contentType(".len()..]
+                        .split(')')
+                        .next()
+                        .unwrap_or_default()
+                        .trim();
+                    if !mime.is_empty()
+                        && !mime.eq_ignore_ascii_case(ContentType::Binary.as_str())
+                        && !built
+                            .headers
+                            .iter()
+                            .any(|header| header.key.eq_ignore_ascii_case("content-type"))
+                    {
+                        built.headers.push(kv("Content-Type", mime, true));
+                    }
+                }
+            }
+        }
         "graphql" => {
             built.content_type = ContentType::GraphQl;
             built.body = GraphQlBody {
@@ -586,15 +616,37 @@ body:form-urlencoded {
     }
 
     #[test]
-    fn scripts_assertions_and_unsupported_auth_or_body_are_reported() {
+    fn file_body_and_unsupported_auth_or_body_are_reported() {
         use super::super::{LostKind, ScriptPhase};
+        let file_bru = r#"meta {
+  name: Photo
+}
+
+post {
+  url: https://a.test/photo
+  body: file
+}
+
+body:file {
+  file: @file(/tmp/a.png) @contentType(image/png)
+}
+"#;
+        let file_bundle = super::super::parse(file_bru).expect("file bru");
+        assert!(file_bundle.lost.is_empty());
+        let ImportItem::Api { request: photo, .. } = &file_bundle.items[0] else {
+            panic!("api");
+        };
+        assert_eq!(photo.content_type, ContentType::Binary);
+        assert_eq!(photo.body, "file:///tmp/a.png");
+        assert_eq!(photo.headers, vec![kv("Content-Type", "image/png", true)]);
+
         let bru = r#"meta {
   name: Upload
 }
 
 post {
   url: https://a.test/upload
-  body: file
+  body: custom
   auth: wsse
 }
 
@@ -624,7 +676,7 @@ assert {
             vec![
                 Lost {
                     target: "Upload".into(),
-                    kind: LostKind::Body { kind: "file".into() },
+                    kind: LostKind::Body { kind: "custom".into() },
                 },
                 Lost {
                     target: "Upload".into(),

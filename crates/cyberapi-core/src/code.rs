@@ -123,14 +123,18 @@ enum Field {
 struct Parts<'a> {
     headers: Vec<(&'a str, &'a str)>,
     /// The body as text, JSON on one line; `None` for none, or a
-    /// multipart body, whose fields stand for it.
+    /// multipart / binary-file body, whose fields / path stand for it.
     body: Option<String>,
     fields: Option<Vec<(String, Field)>>,
+    binary_file: Option<String>,
 }
 
 impl<'a> Parts<'a> {
     fn of(prepared: &'a PreparedRequest, request: &HttpRequest) -> Self {
         let multipart = prepared.method.has_body() && request.content_type == ContentType::Multipart;
+        let binary_file = (prepared.method.has_body() && request.content_type == ContentType::Binary)
+            .then(|| crate::send::binary_display_path(&request.body).map(str::to_string))
+            .flatten();
         let fields = multipart.then(|| {
             form_fields(&request.body)
                 .into_iter()
@@ -144,7 +148,11 @@ impl<'a> Parts<'a> {
                 })
                 .collect()
         });
-        let body = (!multipart && !prepared.body.is_empty()).then(|| {
+        let body = (!multipart
+            && binary_file.is_none()
+            && request.content_type != ContentType::Binary
+            && !prepared.body.is_empty())
+        .then(|| {
             let text = String::from_utf8_lossy(&prepared.body);
             serde_json::from_str::<serde_json::Value>(&text)
                 .ok()
@@ -159,7 +167,12 @@ impl<'a> Parts<'a> {
             .filter(|(name, _)| !(multipart && name.eq_ignore_ascii_case("content-type")))
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect();
-        Self { headers, body, fields }
+        Self {
+            headers,
+            body,
+            fields,
+            binary_file,
+        }
     }
 }
 
@@ -246,16 +259,15 @@ fn httpie(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool)
         };
         words.push(shell(&item));
     }
+    if let Some(path) = &parts.binary_file {
+        words.push(format!("< {}", shell(path)));
+    }
     words.join(" ")
 }
 
 fn fetch(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool) -> String {
     let mut lines = Vec::new();
-    let files = parts
-        .fields
-        .iter()
-        .flatten()
-        .any(|(_, field)| matches!(field, Field::File(_)));
+    let files = sends_files(parts) || parts.binary_file.is_some();
     if files {
         lines.push("import { openAsBlob } from \"node:fs\";".to_string());
         lines.push(String::new());
@@ -299,6 +311,8 @@ fn fetch(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool) 
     }
     if parts.fields.is_some() {
         lines.push("    body,".into());
+    } else if let Some(path) = &parts.binary_file {
+        lines.push(format!("    body: await openAsBlob({}),", string(path)));
     } else if let Some(body) = &parts.body {
         lines.push(format!("    body: {},", string(body)));
     }
@@ -353,6 +367,8 @@ fn python(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool)
             });
         }
         lines.push("    },".into());
+    } else if let Some(path) = &parts.binary_file {
+        lines.push(format!("    data=open({}, \"rb\"),", string(path)));
     } else if let Some(body) = &parts.body {
         lines.push(format!("    data={}.encode(),", string(body)));
     }
@@ -389,7 +405,7 @@ fn go(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool) -> 
     if multipart {
         imports.extend(["\"bytes\"", "\"mime/multipart\""]);
     }
-    if files {
+    if files || parts.binary_file.is_some() {
         imports.push("\"os\"");
     }
     if parts.body.is_some() {
@@ -430,6 +446,11 @@ fn go(prepared: &PreparedRequest, parts: &Parts<'_>, follow_redirects: bool) -> 
         }
         lines.push("\tform.Close()".into());
         "&body".to_string()
+    } else if let Some(path) = &parts.binary_file {
+        lines.push(format!("\tfile, err := os.Open({})", string(path)));
+        lines.extend(check.clone());
+        lines.push("\tdefer file.Close()".into());
+        "file".to_string()
     } else if let Some(body) = &parts.body {
         format!("strings.NewReader({})", go_string(body))
     } else {
@@ -1051,5 +1072,44 @@ print(String(decoding: data, as: UTF8.self))"#
         for target in CodeTarget::ALL {
             assert!(code(target, &prepared, &request, false).starts_with("grpcurl "));
         }
+    }
+
+    #[test]
+    fn binary_body_reads_file_across_all_targets() {
+        let prepared = PreparedRequest {
+            method: HttpMethod::Post,
+            url: "https://api.test/upload".into(),
+            headers: vec![("Content-Type".into(), "image/png".into())],
+            body: vec![0x89, 0x50, 0x4e, 0x47],
+            ..Default::default()
+        };
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            content_type: ContentType::Binary,
+            body: "file:///tmp/photo.png".into(),
+            ..Default::default()
+        };
+        let of = |target| code(target, &prepared, &request, true);
+        assert!(of(CodeTarget::Curl).contains("--data-binary '@/tmp/photo.png'"));
+        assert!(of(CodeTarget::Httpie).ends_with(" < '/tmp/photo.png'"));
+        assert!(of(CodeTarget::Fetch).contains("body: await openAsBlob(\"/tmp/photo.png\")"));
+        assert!(of(CodeTarget::Axios).contains("import { readFileSync } from \"node:fs\";"));
+        assert!(of(CodeTarget::Axios).contains("data: readFileSync(\"/tmp/photo.png\")"));
+        assert!(of(CodeTarget::Python).contains("data=open(\"/tmp/photo.png\", \"rb\")"));
+        assert!(of(CodeTarget::Php).contains("'body' => fopen('/tmp/photo.png', 'r')"));
+        assert!(of(CodeTarget::Go).contains("os.Open(\"/tmp/photo.png\")"));
+        assert!(of(CodeTarget::Rust).contains(".body(std::fs::File::open(\"/tmp/photo.png\")?)"));
+        assert!(of(CodeTarget::Java).contains("import java.nio.file.Path;"));
+        assert!(of(CodeTarget::Java).contains("BodyPublishers.ofFile(Path.of(\"/tmp/photo.png\"))"));
+        assert!(of(CodeTarget::CSharp).contains("new StreamContent(File.OpenRead(\"/tmp/photo.png\"))"));
+        assert!(of(CodeTarget::Swift).contains("try Data(contentsOf: URL(fileURLWithPath: \"/tmp/photo.png\"))"));
+
+        let web_request = HttpRequest {
+            body: "webfile://id1/shot.png".into(),
+            ..request
+        };
+        let web_axios = code(CodeTarget::Axios, &prepared, &web_request, true);
+        assert!(web_axios.contains("readFileSync(\"shot.png\")"));
+        assert!(!web_axios.contains("webfile://"));
     }
 }
