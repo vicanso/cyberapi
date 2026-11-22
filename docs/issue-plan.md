@@ -373,21 +373,33 @@ Query、路径参数和请求头的类型、必填、format 和枚举。已完�
 | C4 | AWS SigV4 认证 | S–M | +1（`Auth` 多一种） | 在 `cyberapi-core` 自己实现（约 300 行），**不加依赖**：现有的 `hmac`、`sha2`、`percent-encoding`、`url` 足够；不用官方 `aws-sigv4`（带进整串 `aws-smithy-*`，还要顾 wasm）。用 AWS 公开的 SigV4 测试用例验证。字段：Access Key、Secret Key、可选 Session Token、Region、Service，值可用模板函数和秘密变量。签名是发送前的最后一步：模板求值、请求体定下之后再签（要请求体的哈希，S3 另加 `x-amz-content-sha256`）；每次发送重签，运行器、压测每个请求各签一次；桌面、网页（bridge）、命令行、MCP 走同一条路径。可继承目录 / 项目。Postman、Insomnia、Bruno 的 AWS 认证导入时对应进来，Postman 导出写回；复制为 cURL 写成 `--aws-sigv4`，其他语言写当前算出的签名头并注明会过期 | 已完成 |
 | F18 | 本机敏感值加密，主密钥放系统密钥管理器（照 zedis 的 `zedis-connection/src/master_key.rs`） | M | 不变（存储内容变成密文） | 现状：秘密变量的值（`secrets/<项目>` 文档）、OAuth 令牌、客户端证书密码在本机库里是明文，`server.json` 的会话令牌是 0600 明文。改为：每台机器一个随机 256 位主密钥，发布版放 macOS 钥匙串 / Windows 凭据管理器（`keyring` 4.x，只在这两个平台引入）；dev 版（`debug_assertions`，同 `paths.rs`）和 Linux 一律用数据目录里的 `master.key`（0600），Linux 不引入 Secret Service / zbus；钥匙串读不到时退回该文件。用 AES-GCM（`aes-gcm` 0.11、`getrandom` 已在 `Cargo.lock`）加密上面四类值后照旧存放。迁移：读到明文照常用，下次写入时加密，不做一次性改写。主密钥丢失（重装系统、手动删掉钥匙串条目）时解不开的值当作“未填写”，提示读者重新填，不报错。正式包用 Developer ID 签名，钥匙串按 Team ID + bundle 标识符认程序，升级不会再弹授权（zedis 一直如此）；只有本地未设 `CYBERAPI_SIGN_IDENTITY` 的 ad-hoc 包会被问。网页版的秘密在服务器上，不在这一项里；bridge 和测试不碰钥匙串 | 已完成 |
 
+### 一点五、迁移批（2026-11-22 定）
+
+排序标准是**从 Postman / Insomnia / Bruno 等迁过来不丢东西**：导入后原样能用，丢了的要说出来。按下表顺序做，一项一个提交。A5 前后置脚本仍然不做，脚本按模式转换（M3），转不了的进导入报告。
+
+| 顺序 | 编号 | 功能 | 规模 | 数据模型 | 决定的做法 | 状态 |
+|---|---|---|---|---|---|---|
+| 1 | M1 | 导入报告 | S–M | 不变 | 导入（首页导入为新项目、接口树 **+**、从来源同步）结束后列出没能原样带进来的东西，按接口分组：没导入的脚本（原文可展开）、不认识的模板变量（如未实现的 `$randomXxx`）、不支持的认证类型和请求体。规则在 `cyberapi_core::import`：各导入器除了结果还返回一份 `Lost` 列表，后面各项“转不了”的都往这里报。没有丢失时不显示 | 待做 |
+| 2 | R3 | Faker 类动态变量 | S | 不变 | 自己实现 Postman 的完整 `$random*` 名单（约 100 个），小词表内置（英文名、姓、城市、街道、公司、职位、颜色等各几十个），**不加依赖**、不追求真实度，目标是导入后不再原样发出。另加几个本应用自己的函数：中文姓名、中国大陆手机号、身份证号（校验位正确）。输入提示列出全部；每次发送重新求值（同 `uuid()`） | 待做 |
+| 3 | R1 | 二进制 / 文件请求体 | S–M | +1（`ContentType` 多一种） | 整个请求体是一个文件。照 F9b：桌面存 `file://` 路径，网页的字节只在页面内存、同步的值是 `webfile://` 标记；Content-Type 默认按扩展名猜，可改。Postman `mode: file`、Insomnia、HAR、Bruno 的 binary 导入时对应进来；复制为代码写 `--data-binary @路径` 等 | 待做 |
+| 4 | M2（含 R7） | 手动发送也生效的提取 | M | 不变（提取已在断言上） | 现在“提取”只在运行器的同一次运行里有效。改为手动发送后也算出提取值，写进一层**会话级运行时变量**（类似 Bruno 的 `vars:post-response`）：每个项目一份，不进环境、不保存进项目、不同步；重启后由各接口最近一次响应重新算出。优先级沿用运行器的规则（运行数据与提取值最高，在路径参数、目录变量、环境之上）。R7 降级为 S：发送前发现某个 `{{名称}}` 只能来自某接口的提取而它还没值时，在地址栏下提示“来自「登录」的提取，尚未发送”，给「先发送登录」按钮；**不自动发送、不判断过期**（令牌有效期各不相同，做不对） | 待做 |
+| 5 | M3 | 脚本按模式转成断言和提取 | M | 不变 | Postman（`event` 的 `test` / `prerequest`）、Bruno（`tests`、`script:post-response`）、Insomnia（after-response）里常见的写法按模式识别：`pm.response.to.have.status(200)`、`pm.expect(pm.response.code).to.eql(…)`、`pm.expect(json.a.b).to.eql(…)`、`pm.expect(pm.response.responseTime).to.be.below(…)`、`pm.response.to.have.header(…)`、`res.status`、`expect(res.body.a).to.equal(…)` 等转成已有断言；`pm.environment.set` / `pm.collectionVariables.set` / `bru.setVar` 的值是响应 JSON 路径或响应头时转成提取（M2 使它在手动发送时也生效，其他接口里的 `{{名称}}` 不用改）。转不了的语句原文追加到接口说明（代码块），并进 M1 的报告。不执行任何 JS | 待做 |
+| 6 | R6（部分） | JWT Bearer 认证；OAuth 2.0 Implicit | M | +1（`Auth` 多一种、`Grant` 多一种） | JWT Bearer：发送前现签，算法 HS256/384/512、RS256/384/512、PS256、ES256/384、EdDSA，header 和 payload 是 JSON、可用模板函数和秘密变量（`iat` / `exp` 常用 `{{timestamp()}}`），密钥可放秘密变量，可放进请求头或 Query、前缀可改。在 `cyberapi-core` 复用 bridge 已用的 `jsonwebtoken` 10（rust_crypto 后端，`rsa` / `p256` / `p384` 已在 `Cargo.lock`）；先确认 `make check-web` 能过、记下 wasm 体积变化。Implicit 与授权码共用浏览器回调，从片段里取 `access_token`。两者可继承目录 / 项目，Postman、Insomnia、Bruno 导入时对应进来、Postman 导出写回。Device Code、`private_key_jwt`、Token Exchange 不在这一批 | 待做 |
+| 7 | R12（部分） | 导入 Thunder Client、Yaak、Apidog | S（每种） | 不变 | 各一个导入器，一种一个提交：Thunder Client 的集合与环境导出；Yaak 的导出 JSON（工作区、目录、请求、环境）；Apidog 的项目导出（带环境和示例，比它导出的 OpenAPI 多）。都接 M1 报告。Paw / RapidAPI、GraphQL SDL 不在这一批 | 待做 |
+| 8 | R2 | 读取系统代理和 PAC | S–M | 不变 | 交给系统算，**不引入 JS 引擎**：macOS 用 SystemConfiguration 读静态代理、PAC 用 `CFNetworkCopyProxiesForAutoConfigurationScript`；Windows 用 `WinHttpGetIEProxyConfigForCurrentUser` + `WinHttpGetProxyForUrl`（含 WPAD）；Linux 只读环境变量和手填。优先级：接口 / 项目手填 > 环境变量 > 系统；设置里可关。只在桌面，网页版由 bridge 代发不涉及 | 待做 |
+| 9 | R11（部分） | 导出 HAR、`.http` | S | 不变 | 项目导出多两种格式（与已有的导入对称）；Insomnia、Bruno 导出不做 | 待做 |
+
 ### 二、其余候选（未排期）
 
 | 编号 | 功能 | 规模 | 现状与说明 |
 |---|---|---|---|
-| R1 | 二进制 / 文件请求体（整个 body 是一个文件） | S–M，+1 | `ContentType` 只有 Json / Form / Multipart / Xml / Plain / GraphQl；Postman、Insomnia、HAR 的 binary 请求导入后丢失 |
-| R2 | 读取系统代理和 PAC（macOS 系统设置、Windows Internet 选项、WPAD） | S–M | 只读 `HTTP_PROXY` 等环境变量和手填；从 Dock 启动的应用通常拿不到 shell 的环境变量 |
-| R3 | Faker 类动态变量（`$randomEmail`、`$randomFirstName`、`$randomPhoneNumber`、`$randomIP` 等） | S | 只有 `$uuid`、`$timestamp`、`$randomInt`、`$randomString` 等几个；导入 Postman 集合后其余原样发出 |
 | R4 | 环境颜色（各环境可选色，不只“生产环境”） | S，+1 | D6 只有生产标记 |
 | R5 | XML 响应的 XPath 过滤与断言 | S–M | JSON 有 JSONPath，XML 只能按文本 |
-| R6 | OAuth 2.0 的 Device Code、Implicit、`private_key_jwt`、Token Exchange；JWT Bearer 认证（现签 JWT） | M | `Grant` 只有客户端凭据、密码、授权码 |
-| R7 | `{{g(接口, 路径)}}` 的依赖响应不存在或过期时先自动发送依赖接口 | M | `g()` 只读已有的最近一次响应（`template::needs`） |
+| R6（其余） | OAuth 2.0 的 Device Code、`private_key_jwt`、Token Exchange | M | JWT Bearer 和 Implicit 在迁移批；`private_key_jwt` 可复用那里的 JWT 签名 |
 | R8 | 按响应 Schema 生成数据的 Mock；按 Query / 请求体条件选示例；延迟和状态码 | M | Mock 只回固定示例或 `x-mock-example` 指定的那条 |
 | R10 | 外部密钥库取值（1Password `op read`、HashiCorp Vault、云厂商 Secrets Manager） | M | 无 |
-| R11 | 导出 Insomnia、Bruno、HAR、`.http`（已能导入） | S–M | 只能导出 CyberAPI、Postman v2.1、OpenAPI 3；单文件 HTML 见 F17 |
-| R12 | 导入 Apidog、Thunder Client、Yaak、Paw / RapidAPI、GraphQL SDL | S（每种） | 无 |
+| R11（其余） | 导出 Insomnia、Bruno | S–M | 不做（2026-11-22）；HAR、`.http` 在迁移批 |
+| R12（其余） | 导入 Paw / RapidAPI、GraphQL SDL | S（每种） | Thunder Client、Yaak、Apidog 在迁移批 |
 | R13 | SOAP / WSDL：导入 WSDL 生成操作和信封骨架 | M–L | 无 |
 | R14 | gRPC-Web | M | 无 |
 | R15 | 本机代理录制流量，挑选成接口 | L | HAR 导入覆盖一部分 |
