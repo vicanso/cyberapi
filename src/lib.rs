@@ -174,12 +174,16 @@ fn init_logger() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 
     let filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let file = paths::logs_dir().map(|dir| {
-        tracing_appender::rolling::Builder::new()
-            .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .filename_prefix(paths::LOG_PREFIX)
-            .max_log_files(paths::LOG_DAYS)
-            .build(&dir)
+        std::fs::create_dir_all(&dir)
             .map_err(|error| format!("{}: {error}", dir.display()))
+            .and_then(|()| {
+                tracing_appender::rolling::Builder::new()
+                    .rotation(tracing_appender::rolling::Rotation::DAILY)
+                    .filename_prefix(paths::LOG_PREFIX)
+                    .max_log_files(paths::LOG_DAYS)
+                    .build(&dir)
+                    .map_err(|error| format!("{}: {error}", dir.display()))
+            })
     });
     let (file, guard, failed) = match file {
         Some(Ok(appender)) => {

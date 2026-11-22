@@ -11,3 +11,4 @@ cyberapi-web/www/fonts/JetBrainsMono-*
 
 .DS_Store
 .gstack/
+.agents/
