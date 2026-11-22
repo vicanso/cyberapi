@@ -111,7 +111,7 @@
 
 粘贴 cURL 即新建接口。任何请求都能复制为 cURL、HTTPie、JavaScript `fetch`、Node axios、Python `requests`、PHP Guzzle、Go `net/http`、Rust reqwest、Java 或 C# `HttpClient`、Swift `URLSession`。
 
-可导入 Postman、Insomnia、Hoppscotch、Bruno、Swagger 2 / OpenAPI 3、HAR、`.http` 文件和 cURL。重新导入时默认更新已有的接口，并保留你填写的值；如果有脚本、不认识的模板或不支持的认证与请求体没能原样带进来，导入后会给出导入报告。项目或目录可以记住来源地址，以后再同步。
+可导入 Postman、Insomnia、Hoppscotch、Bruno、Swagger 2 / OpenAPI 3、HAR、`.http` 文件和 cURL。Postman、Bruno 和 Insomnia 里常见的测试与后置脚本会按模式转为原生断言与提取（转不了的语句追加到接口说明）。重新导入时默认更新已有的接口，并保留你填写的值；如果有未转换的脚本、不认识的模板或不支持的认证与请求体没能原样带进来，导入后会给出导入报告。项目或目录可以记住来源地址，以后再同步。
 
 [导入与导出](./IMPORT_zh.md)：格式、更新时保留什么、导出。[从来源同步](./SOURCE_zh.md)：绑定的文档，包括定时同步——跟文档走，参数值和密钥留下。
 

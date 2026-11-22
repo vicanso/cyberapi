@@ -11,10 +11,10 @@
 | 来源 | 读进来的内容 |
 | --- | --- |
 | CyberAPI | 应用自己的导出。 |
-| Postman | 集合。保存的响应成为示例。环境文件成为命名环境。条目上的变量也会进来。 |
-| Insomnia | 请求、目录认证、子环境。 |
+| Postman | 集合。保存的响应成为示例。环境文件成为命名环境。条目上的变量也会进来。常见的 `test` 脚本转为断言和提取。 |
+| Insomnia | 请求、目录认证、子环境。常见的 `afterResponseScript` 断言和变量提取也会转换。 |
 | Hoppscotch | 单个集合、“全部导出”，或环境。 |
-| Bruno | `.bru` 请求或环境，或 OpenCollection 的 YAML 导出。`{{process.env.NAME}}` 变成 `{{env(NAME)}}`。 |
+| Bruno | `.bru` 请求或环境，或 OpenCollection 的 YAML 导出。`{{process.env.NAME}}` 变成 `{{env(NAME)}}`。常见的 `tests`、`script:post-response`、`vars:post-response` 和 `assert` 块转为断言和提取。 |
 | Swagger 2 / OpenAPI 3 | JSON 或 YAML。安全方案成为项目认证，值由你填。操作自己的方案写在那个接口上。第一个 2xx 的 JSON 响应 Schema 成为一条来自导入的 Schema 检查。 |
 | HAR | 浏览器开发者工具里的接口调用。页面加载的图片、脚本和样式不算。每个主机一个目录。 |
 | `.http` | VS Code REST Client 和 JetBrains HTTP Client（*0.4.1*）。`###` 分隔请求。`@名称 = 值` 成为各环境共用的变量。`http-client.env.json` 或 `rest-client.environmentVariables` 成为命名环境。`{{$uuid}}`、`{{$timestamp}}`、`{{$randomInt 1 10}}`、`{{$processEnv NAME}}` 等换成本应用的模板函数。`# @prompt` 在发送时询问。响应处理脚本不导入。私有文件 `http-client.private.env.json` 的值以明文导入，不要放进团队共用的项目。 |
@@ -26,7 +26,9 @@
 
 只有一行地址的文本不当作 `.http` 文件，用“获取”。
 
-导入或从来源同步完成后，如果有没能原样带进来的内容（未导入的脚本、不认识的模板表达式、不支持的认证类型或请求体），会弹出**导入报告**按位置列出（脚本可展开并复制原文）；全部原样导入时不显示。
+Postman、Bruno（`.bru` 与 OpenCollection）和 Insomnia 里常见的测试与后置脚本（状态码、响应头、JSONPath、响应体文本与耗时检查，以及从响应 JSON、请求头、状态或正文提取变量）会不执行 JS 地按模式转为原生断言与提取；转不了的语句（含前置脚本）会以代码块追加到接口说明，并在下方列出。
+
+导入或从来源同步完成后，如果有没能原样带进来或转不了的内容（未转换的脚本、不认识的模板表达式、不支持的认证类型或请求体），会弹出**导入报告**按位置列出（脚本可展开并复制原文）；全部原样导入时则不显示。
 
 ## 怎样算同一个接口
 

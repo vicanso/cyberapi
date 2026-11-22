@@ -11,10 +11,10 @@ Paste, pick a file, or fetch an address (the web version fetches through its ser
 | Source | What comes in |
 | --- | --- |
 | CyberAPI | The app's own export. |
-| Postman | A collection. Saved responses become examples. An environment file becomes named environments. Item variables come in. |
-| Insomnia | Requests, folder auth, sub-environments. |
+| Postman | A collection. Saved responses become examples. An environment file becomes named environments. Item variables come in. Common `test` scripts convert to assertions and extractions. |
+| Insomnia | Requests, folder auth, sub-environments. Common `afterResponseScript` assertions and variable sets convert. |
 | Hoppscotch | One collection, an "export all", or an environment. |
-| Bruno | A `.bru` request or environment, or an OpenCollection YAML export. `{{process.env.NAME}}` becomes `{{env(NAME)}}`. |
+| Bruno | A `.bru` request or environment, or an OpenCollection YAML export. `{{process.env.NAME}}` becomes `{{env(NAME)}}`. Common `tests`, `script:post-response`, `vars:post-response` and `assert` blocks convert to assertions and extractions. |
 | Swagger 2 / OpenAPI 3 | JSON or YAML. Security schemes become the project's auth, values left for you. An operation's own scheme is written on that API. The first 2xx JSON response schema becomes an imported schema check. |
 | HAR | Calls from a browser's developer tools. Images, scripts and styles a page loads are left out. One folder per host. |
 | `.http` | VS Code REST Client and JetBrains HTTP Client (*0.4.1*). Requests parted by `###`. `@name = value` is a variable every environment shares. `http-client.env.json` or `rest-client.environmentVariables` become named environments. `{{$uuid}}`, `{{$timestamp}}`, `{{$randomInt 1 10}}`, `{{$processEnv NAME}}` and the like become this app's template functions. `# @prompt` asks as the request is sent. Response-handler scripts are left behind. `http-client.private.env.json` comes in as plain text, so keep it out of a project the team shares. |
@@ -26,7 +26,9 @@ If the project already signs in, that auth is kept. A named environment that is 
 
 A line that is only an address is not a `.http` file. Fetch it instead.
 
-After importing or syncing from a source, if anything could not be imported as-is (unimported scripts, unrecognized template expressions, unsupported authentication kinds or unsupported request bodies), an **Import report** lists those items by location (scripts expand inline and can be copied); nothing is shown when everything came through cleanly.
+Common test and post-response scripts in Postman, Bruno (`.bru` and OpenCollection) and Insomnia — checks on status codes, headers, JSONPath values, body text and response time, as well as variable extractions from response JSON, headers, status or body — are converted statically to native assertions and extractions without running JavaScript. Statements that cannot be converted (including pre-request scripts) are appended to the API's description as code blocks and reported below.
+
+After importing or syncing from a source, if anything could not be imported or converted as-is (unconverted scripts, unrecognized template expressions, unsupported authentication kinds or unsupported request bodies), an **Import report** lists those items by location (scripts expand inline and can be copied); nothing is shown when everything came through cleanly.
 
 ## Where a request matches
 

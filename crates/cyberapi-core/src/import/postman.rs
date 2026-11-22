@@ -11,11 +11,11 @@
 //! environment file is a named environment.
 
 use super::lost::{self, Lost, ScriptPhase};
+use super::script;
 use super::{ImportBundle, ImportEnvironment, ImportItem, api, content_type_of, guess_content_type, kv};
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
-use crate::model::FolderSettings;
-use crate::model::{ContentType, Example, KvParam};
+use crate::model::{ContentType, Example, FolderSettings, HttpRequest, KvParam};
 use crate::oauth::{ClientAuth, Grant, OAuth2};
 use serde_json::Value;
 
@@ -53,9 +53,22 @@ fn as_text(value: Option<&Value>) -> String {
 }
 
 fn collect_events(value: &Value, target: &str, lost: &mut Vec<Lost>) {
+    for (phase, source) in event_sources(value) {
+        lost::push_script(lost, target, phase, &source);
+    }
+}
+
+fn collect_item_events(value: &Value, target: &str, built: &mut HttpRequest, lost: &mut Vec<Lost>) {
+    for (phase, source) in event_sources(value) {
+        script::apply_script(built, lost, target, phase, &source);
+    }
+}
+
+fn event_sources(value: &Value) -> Vec<(ScriptPhase, String)> {
     let Some(events) = value.get("event").and_then(Value::as_array) else {
-        return;
+        return Vec::new();
     };
+    let mut out = Vec::new();
     for event in events {
         if event.get("disabled").and_then(Value::as_bool) == Some(true) {
             continue;
@@ -65,16 +78,17 @@ fn collect_events(value: &Value, target: &str, lost: &mut Vec<Lost>) {
             "test" => ScriptPhase::Test,
             _ => ScriptPhase::Other,
         };
-        let Some(script) = event.get("script") else {
+        let Some(script_obj) = event.get("script") else {
             continue;
         };
-        let source = match script.get("exec") {
+        let source = match script_obj.get("exec") {
             Some(Value::Array(lines)) => lines.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n"),
             Some(Value::String(text)) => text.clone(),
             _ => String::new(),
         };
-        lost::push_script(lost, target, phase, &source);
+        out.push((phase, source));
     }
+    out
 }
 
 /// B4: an `auth` object as this app's; `None` for a kind it has no
@@ -222,9 +236,9 @@ fn item(value: &Value, prefix: &str, lost: &mut Vec<Lost>) -> Option<ImportItem>
     };
     // A request may be just its URL.
     if let Some(url) = request.as_str() {
-        let (name, request) = api(name, "GET", url);
+        let (name, mut request) = api(name, "GET", url);
         let target = lost::join_path(prefix, &name);
-        collect_events(value, &target, lost);
+        collect_item_events(value, &target, &mut request, lost);
         return Some(ImportItem::Api {
             name,
             request: Box::new(request),
@@ -236,8 +250,9 @@ fn item(value: &Value, prefix: &str, lost: &mut Vec<Lost>) -> Option<ImportItem>
         None => String::new(),
     };
     let (name, mut built) = api(name, text(request, "method"), &url);
+    built.description = description(request.get("description"));
     let target = lost::join_path(prefix, &name);
-    collect_events(value, &target, lost);
+    collect_item_events(value, &target, &mut built, lost);
     // The query list, where the URL object has one, says which are off.
     let listed = pairs(request.get("url").and_then(|url| url.get("query")), "key");
     if !listed.is_empty() {
@@ -334,8 +349,7 @@ fn item(value: &Value, prefix: &str, lost: &mut Vec<Lost>) -> Option<ImportItem>
         }
     }
     built.variables = variables;
-    // F3: what it is for, and its saved responses as examples.
-    built.description = description(request.get("description"));
+    // F3: saved responses as examples.
     built.examples = value
         .get("response")
         .and_then(Value::as_array)
@@ -640,6 +654,7 @@ mod tests {
         };
         assert_eq!(upload.content_type, ContentType::Binary);
         assert_eq!(upload.body, "file:///tmp/a.bin");
+        assert!(upload.description.contains("pm.test('ok', () => {});"));
         assert_eq!(
             bundle.lost,
             vec![
@@ -679,6 +694,80 @@ mod tests {
                     },
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn item_scripts_convert_to_assertions_and_extractions_with_fallback() {
+        use super::super::{LostKind, ScriptPhase};
+        let doc = r#"{
+            "info": {"name": "Shop"},
+            "item": [{
+                "name": "Login",
+                "event": [{
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "const json = pm.response.json();",
+                            "pm.test('ok', () => {",
+                            "  pm.response.to.have.status(200);",
+                            "  pm.expect(pm.response.responseTime).to.be.below(400);",
+                            "});",
+                            "pm.environment.set('token', json.token);"
+                        ]
+                    }
+                }],
+                "request": {
+                    "method": "POST",
+                    "url": "https://a.test/login",
+                    "description": "Sign in."
+                }
+            }, {
+                "name": "Mixed",
+                "event": [{
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "pm.response.to.have.status(201);",
+                            "customAudit();"
+                        ]
+                    }
+                }],
+                "request": {
+                    "method": "POST",
+                    "url": "https://a.test/items",
+                    "description": "Create item."
+                }
+            }]
+        }"#;
+        let bundle = super::super::parse(doc).expect("parsed");
+        let ImportItem::Api { request: login, .. } = &bundle.items[0] else {
+            panic!("login");
+        };
+        assert_eq!(login.assertions.len(), 2);
+        assert_eq!(login.extractions.len(), 1);
+        assert_eq!(login.extractions[0].name, "token");
+        assert_eq!(login.description, "Sign in.");
+
+        let ImportItem::Api { request: mixed, .. } = &bundle.items[1] else {
+            panic!("mixed");
+        };
+        assert_eq!(mixed.assertions.len(), 1);
+        assert!(
+            mixed
+                .description
+                .starts_with("Create item.\n\n#### Test script (not converted)")
+        );
+        assert!(mixed.description.contains("customAudit();"));
+        assert_eq!(
+            bundle.lost,
+            vec![Lost {
+                target: "Mixed".into(),
+                kind: LostKind::Script {
+                    phase: ScriptPhase::Test,
+                    source: "customAudit();".into(),
+                },
+            }]
         );
     }
 }

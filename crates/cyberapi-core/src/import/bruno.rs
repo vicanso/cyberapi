@@ -11,10 +11,13 @@
 //! it uses, which the `body:…` and `auth:…` blocks hold. `params:path`
 //! fills the URL's `:name`s, this app having none of its own. Bruno's
 //! `{{process.env.NAME}}` is this app's `{{env(NAME)}}` (D2);
-//! `vars:pre-request` are the request's own variables (D5); scripts, tests,
-//! `vars:post-response` and the docs stay behind.
+//! `vars:pre-request` are the request's own variables (D5); M3 converts common
+//! patterns in `tests`, `script:post-response`, `vars:post-response` and `assert`
+//! into assertions and extractions, keeping anything unconverted in the
+//! description and import report.
 
 use super::lost::{self, Lost, ScriptPhase};
+use super::script;
 use super::{ImportBundle, ImportItem, api, content_type_of, kv};
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
@@ -417,12 +420,16 @@ pub(super) fn parse(text: &str) -> ImportBundle {
         ("script:pre-request", ScriptPhase::PreRequest),
         ("script:post-response", ScriptPhase::PostResponse),
         ("tests", ScriptPhase::Test),
-        ("vars:post-response", ScriptPhase::PostResponse),
-        ("assert", ScriptPhase::Test),
     ] {
         if let Some(block) = find(block_name) {
-            lost::push_script(&mut lost, &name, phase, &text_of(block));
+            script::apply_script(&mut built, &mut lost, &name, phase, &text_of(block));
         }
+    }
+    if let Some(block) = find("vars:post-response") {
+        script::apply_bru_post_vars(&mut built, &mut lost, &name, &pairs(block));
+    }
+    if let Some(block) = find("assert") {
+        script::apply_bru_asserts(&mut built, &mut lost, &name, &pairs(block));
     }
     ImportBundle {
         items: vec![ImportItem::Api {
@@ -664,13 +671,41 @@ tests {
 
 vars:post-response {
   token: res.body.token
+  count: res.body.items.length
 }
 
 assert {
   res.status: eq 200
+  res.body.items: length 2
 }
 "#;
         let bundle = super::super::parse(bru).expect("parsed");
+        let ImportItem::Api { request: upload, .. } = &bundle.items[0] else {
+            panic!("upload");
+        };
+        assert_eq!(
+            upload.extractions,
+            vec![crate::assertions::Extraction {
+                enabled: true,
+                name: "token".into(),
+                subject: crate::assertions::Subject::Json,
+                target: "$.token".into(),
+            }]
+        );
+        assert_eq!(
+            upload.assertions,
+            vec![crate::assertions::Assertion {
+                enabled: true,
+                subject: crate::assertions::Subject::Status,
+                target: String::new(),
+                op: crate::assertions::Op::Equals,
+                expected: "200".into(),
+                imported: false,
+            }]
+        );
+        assert!(upload.description.contains("count: res.body.items.length"));
+        assert!(upload.description.contains("res.body.items: length 2"));
+        assert!(upload.description.contains("console.log(res.status);"));
         assert_eq!(
             bundle.lost,
             vec![
@@ -707,17 +742,55 @@ assert {
                     target: "Upload".into(),
                     kind: LostKind::Script {
                         phase: ScriptPhase::PostResponse,
-                        source: "token: res.body.token".into(),
+                        source: "count: res.body.items.length".into(),
                     },
                 },
                 Lost {
                     target: "Upload".into(),
                     kind: LostKind::Script {
                         phase: ScriptPhase::Test,
-                        source: "res.status: eq 200".into(),
+                        source: "res.body.items: length 2".into(),
                     },
                 },
             ]
         );
+    }
+
+    #[test]
+    fn scripts_post_vars_and_asserts_convert_cleanly() {
+        let bru = r#"meta {
+  name: Login
+}
+
+post {
+  url: https://a.test/login
+}
+
+script:post-response {
+  bru.setVar("authToken", res.body.data.token);
+}
+
+tests {
+  test("login succeeds", () => {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().data.token).to.be.a("string");
+  });
+}
+
+assert {
+  res.responseTime: lt 500
+}
+"#;
+        let bundle = super::super::parse(bru).expect("parsed");
+        assert!(bundle.lost.is_empty(), "{:?}", bundle.lost);
+        let (_, req) = only(&bundle);
+        assert!(req.description.is_empty());
+        assert_eq!(req.extractions.len(), 1);
+        assert_eq!(req.extractions[0].name, "authToken");
+        assert_eq!(req.extractions[0].target, "$.data.token");
+        assert_eq!(req.assertions.len(), 3);
+        assert_eq!(req.assertions[0].subject, crate::assertions::Subject::Status);
+        assert_eq!(req.assertions[1].subject, crate::assertions::Subject::Json);
+        assert_eq!(req.assertions[2].subject, crate::assertions::Subject::Latency);
     }
 }

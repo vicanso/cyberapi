@@ -41,6 +41,7 @@ mod openapi;
 mod opencollection;
 mod own;
 mod postman;
+mod script;
 
 pub use lost::{Lost, LostGroup, LostKind, ScriptPhase, group as group_lost};
 pub use own::{api_config, export, parse_own, tree_data};

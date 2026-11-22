@@ -10,11 +10,11 @@
 //! a named environment.
 
 use super::lost::{self, Lost, ScriptPhase};
+use super::script;
 use super::{ImportBundle, ImportEnvironment, ImportItem, api, content_type_of, guess_content_type, kv};
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
-use crate::model::FolderSettings;
-use crate::model::{ContentType, KvParam};
+use crate::model::{ContentType, FolderSettings, HttpRequest, KvParam};
 use crate::oauth::{ClientAuth, Grant, OAuth2};
 use serde_json::Value;
 
@@ -80,14 +80,34 @@ fn collect_scripts(resource: &Value, target: &str, lost: &mut Vec<Lost>) {
     );
 }
 
+fn collect_item_scripts(resource: &Value, target: &str, built: &mut HttpRequest, lost: &mut Vec<Lost>) {
+    script::apply_script(
+        built,
+        lost,
+        target,
+        ScriptPhase::PreRequest,
+        text(resource, "preRequestScript"),
+    );
+    script::apply_script(
+        built,
+        lost,
+        target,
+        ScriptPhase::PostResponse,
+        text(resource, "afterResponseScript"),
+    );
+}
+
 fn request(resource: &Value, prefix: &str, lost: &mut Vec<Lost>) -> ImportItem {
     let (name, mut built) = api(
         text(resource, "name"),
         text(resource, "method"),
         &variables(text(resource, "url")),
     );
+    // F3: initialize description before script conversion so unconverted
+    // statements append cleanly below it.
+    built.description = text(resource, "description").trim().to_string();
     let target = lost::join_path(prefix, &name);
-    collect_scripts(resource, &target, lost);
+    collect_item_scripts(resource, &target, &mut built, lost);
     built.query.extend(pairs(resource.get("parameters")));
     built.headers = pairs(resource.get("headers"));
     built.headers.retain(|header| {
@@ -142,8 +162,6 @@ fn request(resource: &Value, prefix: &str, lost: &mut Vec<Lost>) -> ImportItem {
     {
         built.auth = own;
     }
-    // F3.
-    built.description = text(resource, "description").trim().to_string();
     ImportItem::Api {
         name,
         request: Box::new(built),
@@ -550,6 +568,46 @@ mod tests {
                     },
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn after_response_script_converts_and_keeps_unconverted_below_description() {
+        use super::super::{LostKind, ScriptPhase};
+        let doc = r#"{
+            "_type": "export",
+            "__export_format": 4,
+            "resources": [
+                {"_id": "wrk_1", "_type": "workspace", "name": "Shop"},
+                {"_id": "req_1", "_type": "request", "parentId": "wrk_1", "name": "Login", "method": "POST",
+                 "url": "https://a.test/login", "description": "Sign in.",
+                 "afterResponseScript": "const json = insomnia.response.json();\ninsomnia.response.to.have.status(200);\ninsomnia.environment.set('token', json.token);\nconsole.log('logged in');"}
+            ]
+        }"#;
+        let bundle = super::super::parse(doc).expect("parsed");
+        let ImportItem::Api { request: login, .. } = &bundle.items[0] else {
+            panic!("api");
+        };
+        assert_eq!(login.assertions.len(), 1);
+        assert_eq!(login.assertions[0].expected, "200");
+        assert_eq!(login.extractions.len(), 1);
+        assert_eq!(login.extractions[0].name, "token");
+        assert_eq!(login.extractions[0].target, "$.token");
+        assert!(
+            login
+                .description
+                .starts_with("Sign in.\n\n#### Post-response script (not converted)")
+        );
+        assert!(login.description.contains("console.log('logged in');"));
+        assert_eq!(
+            bundle.lost,
+            vec![Lost {
+                target: "Login".into(),
+                kind: LostKind::Script {
+                    phase: ScriptPhase::PostResponse,
+                    source: "console.log('logged in');".into(),
+                },
+            }]
         );
     }
 }

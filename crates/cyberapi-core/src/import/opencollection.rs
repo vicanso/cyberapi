@@ -15,10 +15,11 @@
 
 use super::bruno::{fill_path, variables};
 use super::lost::{self, Lost, ScriptPhase};
+use super::script;
 use super::{ImportBundle, ImportEnvironment, ImportItem, api, content_type_of, guess_content_type, kv};
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
-use crate::model::{ContentType, FolderSettings, KvParam};
+use crate::model::{ContentType, FolderSettings, HttpRequest, KvParam};
 use serde_json::Value;
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -76,15 +77,28 @@ fn variables_of(value: Option<&Value>) -> Vec<(String, String)> {
 }
 
 fn collect_scripts(value: &Value, target: &str, lost: &mut Vec<Lost>) {
-    for script in list(value.pointer("/runtime/scripts")) {
-        let phase = match text(script, "type") {
+    for script_entry in list(value.pointer("/runtime/scripts")) {
+        let phase = match text(script_entry, "type") {
             "before-request" | "pre-request" => ScriptPhase::PreRequest,
             "after-response" | "post-response" => ScriptPhase::PostResponse,
             "tests" | "test" => ScriptPhase::Test,
             _ => ScriptPhase::Other,
         };
-        lost::push_script(lost, target, phase, text(script, "code"));
+        lost::push_script(lost, target, phase, text(script_entry, "code"));
     }
+}
+
+fn collect_item_scripts(value: &Value, target: &str, built: &mut HttpRequest, lost: &mut Vec<Lost>) {
+    for script_entry in list(value.pointer("/runtime/scripts")) {
+        let phase = match text(script_entry, "type") {
+            "before-request" | "pre-request" => ScriptPhase::PreRequest,
+            "after-response" | "post-response" => ScriptPhase::PostResponse,
+            "tests" | "test" => ScriptPhase::Test,
+            _ => ScriptPhase::Other,
+        };
+        script::apply_script(built, lost, target, phase, text(script_entry, "code"));
+    }
+    script::apply_opencollection_asserts(built, lost, target, list(value.pointer("/runtime/assertions")));
 }
 
 /// An `auth` as this app's: an object, or the words `inherit` / `none`;
@@ -173,7 +187,7 @@ fn request(item: &Value, prefix: &str, lost: &mut Vec<Lost>) -> Option<ImportIte
     };
     let (name, mut built) = api(name, method, &url);
     let target = lost::join_path(prefix, &name);
-    collect_scripts(item, &target, lost);
+    collect_item_scripts(item, &target, &mut built, lost);
     let listed = of_type("query");
     if !listed.is_empty() {
         built.query = listed;
@@ -666,5 +680,43 @@ items:
         assert_eq!(request.content_type, ContentType::Binary);
         assert_eq!(request.body, "file:///tmp/a.png");
         assert_eq!(request.headers, vec![kv("Content-Type", "image/png", true)]);
+    }
+
+    #[test]
+    fn runtime_scripts_and_assertions_convert() {
+        let doc = r#"
+opencollection: 1.0.0
+info:
+  name: Shop
+items:
+  - info:
+      name: Token
+      type: http
+    http:
+      method: POST
+      url: https://a.test/token
+    runtime:
+      scripts:
+        - type: after-response
+          code: bru.setVar('token', res.body.token);
+        - type: tests
+          code: |
+            test('ok', () => {
+              expect(res.status).to.equal(200);
+            });
+      assertions:
+        - expression: res.body.ok
+          operator: eq
+          value: "true"
+"#;
+        let bundle = super::super::parse(doc).expect("parsed");
+        assert!(bundle.lost.is_empty(), "{:?}", bundle.lost);
+        let req = request(&bundle.items[0]);
+        assert!(req.description.is_empty());
+        assert_eq!(req.extractions.len(), 1);
+        assert_eq!(req.extractions[0].name, "token");
+        assert_eq!(req.assertions.len(), 2);
+        assert_eq!(req.assertions[0].subject, crate::assertions::Subject::Status);
+        assert_eq!(req.assertions[1].target, "$.ok");
     }
 }
