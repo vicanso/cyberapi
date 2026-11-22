@@ -72,6 +72,10 @@ pub struct PreparedRequest {
     /// cURL output and per-request re-signing in load tests; never sent to the bridge).
     #[serde(skip)]
     pub aws_sigv4: Option<crate::aws_sigv4::AwsSigV4Login>,
+    /// R6: whether JWT Bearer signing contributed to this prepared request
+    /// (kept for Copy-as-Code expiry notes and per-request re-signing in load tests).
+    #[serde(skip)]
+    pub jwt_bearer: bool,
     /// C5: the client certificate and the authorities its handshake takes
     /// (`certificates::tls_for`). Never sent to the bridge, which reads no
     /// files of its own for anyone.
@@ -107,6 +111,9 @@ pub enum PrepareError {
     /// message they do not read.
     #[snafu(display("{message}"))]
     Grpc { message: String },
+    /// R6: signing a JWT Bearer token failed (missing secret, bad JSON, bad PEM).
+    #[snafu(display("{message}"))]
+    Jwt { message: String },
 }
 
 /// What [`prepare`] takes besides the request.
@@ -988,7 +995,8 @@ fn takes_query(request: &HttpRequest) -> bool {
 /// The headers every request sends, each replacing a same-named one
 /// before it (#3): the User-Agent, the project's global headers, its
 /// folders' (the outermost's first), its auth (#66), the request's own.
-fn sent_headers(request: &HttpRequest, cx: &Context<'_>) -> Result<Headers, PrepareError> {
+/// Also returns whether JWT Bearer signed the `Authorization` header.
+fn sent_headers(request: &HttpRequest, cx: &Context<'_>) -> Result<(Headers, bool), PrepareError> {
     let mut headers = Headers::default();
     headers.set("User-Agent", cx.user_agent);
     for variable in global_headers(cx.variables) {
@@ -1001,6 +1009,20 @@ fn sent_headers(request: &HttpRequest, cx: &Context<'_>) -> Result<Headers, Prep
     if let Some(Signed::Header { name, value }) = auth.sign(takes_query(request), |text| rendered(text, cx))? {
         headers.set(&name, &value);
     }
+    let request_has_auth_header = request
+        .headers
+        .iter()
+        .any(|kv| kv.enabled && kv.key.trim().eq_ignore_ascii_case("authorization"));
+    let mut jwt_signed = false;
+    if !request_has_auth_header
+        && let crate::auth::Auth::JwtBearer(jwt) = auth
+        && (jwt.place == crate::auth::KeyPlace::Header || !takes_query(request))
+    {
+        let login = jwt.login(|text| rendered(text, cx))?;
+        let token = crate::jwt_bearer::sign(&login).map_err(|message| PrepareError::Jwt { message })?;
+        headers.set("Authorization", &crate::jwt_bearer::header_value(&login.prefix, &token));
+        jwt_signed = true;
+    }
     for kv in request
         .headers
         .iter()
@@ -1008,7 +1030,7 @@ fn sent_headers(request: &HttpRequest, cx: &Context<'_>) -> Result<Headers, Prep
     {
         headers.set(kv.key.trim(), &rendered(&kv.value, cx)?);
     }
-    Ok(headers)
+    Ok((headers, jwt_signed))
 }
 
 /// A gRPC call of `path` (`/package.Service/Method`) at the request's
@@ -1028,7 +1050,7 @@ pub fn grpc_call(
     })?;
     let base = url.path().trim_end_matches('/').to_string();
     url.set_path(&format!("{base}{path}"));
-    let mut headers = sent_headers(request, cx)?;
+    let (mut headers, jwt_bearer) = sent_headers(request, cx)?;
     headers.set("Content-Type", "application/grpc");
     headers.set("TE", "trailers");
     let oauth = oauth_login(request, cx, &headers)?;
@@ -1046,6 +1068,7 @@ pub fn grpc_call(
         digest: None,
         oauth,
         aws_sigv4: None,
+        jwt_bearer,
         tls: Default::default(),
     })
 }
@@ -1085,6 +1108,18 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
     {
         url.query_pairs_mut().append_pair(&name, &value);
     }
+    let mut jwt_bearer = false;
+    if let crate::auth::Auth::JwtBearer(jwt) = cx.inherited.auth(&request.auth)
+        && jwt.place == crate::auth::KeyPlace::Query
+    {
+        let login = jwt.login(render)?;
+        let param = login.effective_query_param().to_string();
+        if !url.query_pairs().any(|(key, _)| key == param) {
+            let token = crate::jwt_bearer::sign(&login).map_err(|message| PrepareError::Jwt { message })?;
+            url.query_pairs_mut().append_pair(&param, &token);
+            jwt_bearer = true;
+        }
+    }
     // GraphQL over HTTP: a GET asks with parameters, a POST with a body.
     let graphql = (request.content_type == ContentType::GraphQl)
         .then(|| -> Result<GraphQlBody, PrepareError> {
@@ -1103,7 +1138,8 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         }
     }
 
-    let mut headers = sent_headers(request, cx)?;
+    let (mut headers, jwt_header_signed) = sent_headers(request, cx)?;
+    jwt_bearer |= jwt_header_signed;
 
     // F5.3: only POST, PUT, PATCH and DELETE carry a body and its type; a
     // request with an empty body sends no automatic Content-Type (#62, #83).
@@ -1197,6 +1233,7 @@ pub fn prepare(request: &HttpRequest, cx: &Context<'_>) -> Result<PreparedReques
         digest,
         oauth,
         aws_sigv4,
+        jwt_bearer,
         // By host, as each hop goes (the service's).
         tls: Default::default(),
     })
@@ -2565,5 +2602,113 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn jwt_bearer_signs_header_and_query_with_templates_and_respects_overrides() {
+        use crate::auth::{Auth, KeyPlace};
+        use crate::jwt_bearer::{JwtAlgorithm, JwtBearer};
+        use jsonwebtoken::{DecodingKey, Validation, decode};
+
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            uri: "https://api.test/orders".into(),
+            auth: Auth::from(JwtBearer {
+                algorithm: JwtAlgorithm::HS256,
+                secret: "{{jwt_secret}}".into(),
+                secret_base64: false,
+                payload: r#"{"sub":"{{user}}","iat":{{timestamp()}}}"#.into(),
+                header: r#"{"kid":"k1"}"#.into(),
+                place: KeyPlace::Header,
+                prefix: "JWT".into(),
+                query_param: "token".into(),
+            }),
+            ..Default::default()
+        };
+        let inputs = Inputs {
+            now: 7,
+            custom: vec![
+                ("jwt_secret".into(), "super-secret".into()),
+                ("user".into(), "alice".into()),
+            ],
+            ..Default::default()
+        };
+        let run_prepare = |req: &HttpRequest| {
+            let proxy = ProxyPrefs::default();
+            let inherited = Inherited::default();
+            prepare(
+                req,
+                &Context {
+                    variables: &[],
+                    template: &inputs,
+                    files: &OneFile,
+                    user_agent: "CyberAPI/test",
+                    timeouts: Timeouts::default(),
+                    accept_invalid_certs: false,
+                    http_version: HttpVersion::Auto,
+                    proxy: &proxy,
+                    boundary: "XYZ",
+                    inherited: &inherited,
+                    environment: None,
+                },
+            )
+        };
+        let prepared = run_prepare(&request).expect("prepared");
+        assert!(prepared.jwt_bearer);
+        let auth_header = prepared.header("authorization").expect("Authorization");
+        let token = auth_header.strip_prefix("JWT ").expect("JWT prefix");
+        let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
+        validation.validate_exp = false;
+        validation.required_spec_claims.clear();
+        let decoded = decode::<serde_json::Value>(token, &DecodingKey::from_secret(b"super-secret"), &validation)
+            .expect("valid jwt");
+        assert_eq!(decoded.header.kid.as_deref(), Some("k1"));
+        assert_eq!(decoded.claims["sub"], serde_json::json!("alice"));
+        assert_eq!(decoded.claims["iat"], serde_json::json!(7));
+
+        // Query placement with empty secret errors cleanly; query placement with secret appends query param.
+        let empty_query_req = HttpRequest {
+            auth: Auth::from(JwtBearer {
+                place: KeyPlace::Query,
+                query_param: "access_token".into(),
+                ..Default::default()
+            }),
+            ..request.clone()
+        };
+        assert!(matches!(run_prepare(&empty_query_req), Err(PrepareError::Jwt { .. })));
+
+        let query_req = HttpRequest {
+            auth: Auth::from(JwtBearer {
+                algorithm: JwtAlgorithm::HS256,
+                secret: "super-secret".into(),
+                payload: r#"{"scope":"read"}"#.into(),
+                place: KeyPlace::Query,
+                query_param: "access_token".into(),
+                ..Default::default()
+            }),
+            ..request.clone()
+        };
+        let query_prepared = run_prepare(&query_req).expect("query prepared");
+        assert!(query_prepared.jwt_bearer);
+        assert!(query_prepared.header("authorization").is_none());
+        let parsed = url::Url::parse(&query_prepared.url).expect("url");
+        let (_, q_tok) = parsed
+            .query_pairs()
+            .find(|(k, _)| k == "access_token")
+            .expect("query jwt");
+        let decoded_q =
+            decode::<serde_json::Value>(q_tok.as_ref(), &DecodingKey::from_secret(b"super-secret"), &validation)
+                .expect("valid query jwt");
+        assert_eq!(decoded_q.claims["scope"], serde_json::json!("read"));
+
+        // Explicit Authorization header on the request wins (#3) without failing on missing secret.
+        let override_req = HttpRequest {
+            headers: vec![kv("Authorization", "Bearer manual")],
+            auth: Auth::from(JwtBearer::default()),
+            ..request
+        };
+        let override_prepared = run_prepare(&override_req).expect("override ok");
+        assert!(!override_prepared.jwt_bearer);
+        assert_eq!(override_prepared.header("authorization"), Some("Bearer manual"));
     }
 }

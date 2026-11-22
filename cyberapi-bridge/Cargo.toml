@@ -28,7 +28,7 @@ getrandom = "0.4.3"
 hex = "0.4.3"
 ipnet = "2.12.2"
 # 10.3.0 fixes GHSA-h395-gr6q-cpjc; `rust_crypto` avoids aws-lc-rs C/CMake deps.
-jsonwebtoken = { version = "10.3.0", default-features = false, features = ["use_pem", "rust_crypto"] }
+jsonwebtoken = { workspace = true }
 mime_guess = { workspace = true }
 # The page, compiled into a release binary (`static_files::WebBuild`) so a
 # deployment is one file. No `debug-embed`: a debug bridge reads

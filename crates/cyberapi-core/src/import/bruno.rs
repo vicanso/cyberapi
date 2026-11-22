@@ -232,6 +232,7 @@ fn auth(mode: &str, find: &dyn Fn(&str) -> Vec<KvParam>, target: &str, lost: &mu
                 "client_credentials" => Grant::ClientCredentials,
                 "password" => Grant::Password,
                 "authorization_code" => Grant::AuthorizationCode,
+                "implicit" => Grant::Implicit,
                 _ => {
                     let kind = if grant_type.trim().is_empty() {
                         "oauth2".to_string()
@@ -272,6 +273,59 @@ fn auth(mode: &str, find: &dyn Fn(&str) -> Vec<KvParam>, target: &str, lost: &mu
                 session_token: field("sessionToken"),
                 region: field("region"),
                 service: field("service"),
+            })
+        }
+        "jwt" => {
+            use crate::jwt_bearer::{JwtAlgorithm, JwtBearer};
+            let jwt_fields = find("auth:jwt");
+            let opt_field = |key: &str| jwt_fields.iter().find(|f| f.key == key).map(|f| f.value.clone());
+            let field = |key: &str| opt_field(key).unwrap_or_default();
+            let raw_alg = field("algorithm");
+            let algorithm = if raw_alg.trim().is_empty() {
+                JwtAlgorithm::HS256
+            } else if let Some(alg) = JwtAlgorithm::parse(&raw_alg) {
+                alg
+            } else {
+                lost::push_auth(lost, target, &format!("jwt ({})", raw_alg.trim()));
+                return Auth::Inherit;
+            };
+            let payload = {
+                let p = field("payload");
+                if p.trim().is_empty() { "{}".into() } else { p }
+            };
+            let place = if matches!(
+                field("placement").trim(),
+                "query" | "queryParam" | "queryparams" | "query_param"
+            ) || matches!(field("addTokenTo").trim(), "query" | "queryParam" | "query_param")
+            {
+                KeyPlace::Query
+            } else {
+                KeyPlace::Header
+            };
+            let prefix = opt_field("headerPrefix")
+                .or_else(|| opt_field("prefix"))
+                .unwrap_or_else(|| "Bearer".into());
+            let secret_base64 = opt_field("isSecretBase64Encoded")
+                .or_else(|| opt_field("secretBase64"))
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("true"));
+            let query_param = {
+                let q = field("queryParamKey");
+                if !q.trim().is_empty() {
+                    q
+                } else {
+                    let q2 = field("queryParam");
+                    if q2.trim().is_empty() { "token".into() } else { q2 }
+                }
+            };
+            Auth::from(JwtBearer {
+                algorithm,
+                secret: field("secret"),
+                secret_base64,
+                payload,
+                header: field("header"),
+                place,
+                prefix,
+                query_param,
             })
         }
         other => {
@@ -792,5 +846,75 @@ assert {
         assert_eq!(req.assertions[0].subject, crate::assertions::Subject::Status);
         assert_eq!(req.assertions[1].subject, crate::assertions::Subject::Json);
         assert_eq!(req.assertions[2].subject, crate::assertions::Subject::Latency);
+    }
+
+    #[test]
+    fn jwt_and_implicit_oauth_import() {
+        use crate::jwt_bearer::{JwtAlgorithm, JwtBearer};
+        let jwt_bru = r#"meta {
+  name: JwtCall
+}
+
+get {
+  url: https://a.test/jwt
+  auth: jwt
+}
+
+auth:jwt {
+  algorithm: RS256
+  secret: {{privKey}}
+  payload: {"sub":"u1"}
+  header: {"kid":"k1"}
+  placement: header
+  headerPrefix: JWT
+}
+"#;
+        let bundle = super::super::parse(jwt_bru).expect("jwt bru");
+        assert!(bundle.lost.is_empty(), "{:?}", bundle.lost);
+        assert_eq!(
+            only(&bundle).1.auth,
+            Auth::from(JwtBearer {
+                algorithm: JwtAlgorithm::RS256,
+                secret: "{{privKey}}".into(),
+                secret_base64: false,
+                payload: r#"{"sub":"u1"}"#.into(),
+                header: r#"{"kid":"k1"}"#.into(),
+                place: KeyPlace::Header,
+                prefix: "JWT".into(),
+                query_param: "token".into(),
+            })
+        );
+
+        let imp_bru = r#"meta {
+  name: ImplicitCall
+}
+
+get {
+  url: https://a.test/imp
+  auth: oauth2
+}
+
+auth:oauth2 {
+  grant_type: implicit
+  authorization_url: https://id.test/authorize
+  callback_url: http://127.0.0.1:8888/callback
+  client_id: spa
+  scope: openid
+}
+"#;
+        let imp_bundle = super::super::parse(imp_bru).expect("imp bru");
+        assert!(imp_bundle.lost.is_empty(), "{:?}", imp_bundle.lost);
+        assert_eq!(
+            only(&imp_bundle).1.auth,
+            Auth::from(OAuth2 {
+                grant: Grant::Implicit,
+                authorization_url: "https://id.test/authorize".into(),
+                redirect_port: 8888,
+                client_id: "spa".into(),
+                scope: "openid".into(),
+                client_auth: ClientAuth::Body,
+                ..Default::default()
+            })
+        );
     }
 }

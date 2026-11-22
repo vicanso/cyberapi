@@ -2849,4 +2849,106 @@ mod tests {
         assert_eq!(sent_run.header("x-fn"), Some("pass-token"));
         assert_eq!(sent_run.url, "https://runtime.test/users/42");
     }
+
+    #[test]
+    fn oauth_implicit_requires_browser_authorize_then_keeps_token() {
+        let setup = setup(ok(200, "{}"));
+        let api = new_api(&setup, "implicit");
+        let request = HttpRequest {
+            uri: "https://api.test/me".into(),
+            auth: cyberapi_core::auth::Auth::from(cyberapi_core::oauth::OAuth2 {
+                grant: cyberapi_core::oauth::Grant::Implicit,
+                authorization_url: "https://id.test/authorize".into(),
+                client_id: "spa".into(),
+                scope: "read".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let sender = Sender {
+            tokens: Default::default(),
+            ..setup.sender.clone()
+        };
+
+        let unauthorized = pollster::block_on(send(
+            sender.clone(),
+            setup.collection.clone(),
+            api.clone(),
+            request.clone(),
+            Answers::default(),
+        ))
+        .expect("send");
+        assert_eq!(unauthorized.status, None);
+        assert_eq!(
+            unauthorized.error.as_deref(),
+            Some("OAuth 2.0: authorize this API in the desktop app first")
+        );
+
+        let grant = pollster::block_on(crate::oauth::prepare_code(
+            &sender,
+            &setup.collection,
+            &request,
+            &Answers::default(),
+        ))
+        .expect("prepared");
+        assert!(grant.is_implicit());
+        let url = grant.authorize_url(9123).expect("url");
+        assert!(url.contains("response_type=token"), "{url}");
+        assert!(!url.contains("code_challenge"), "{url}");
+
+        pollster::block_on(crate::oauth::keep_token(
+            &sender,
+            &grant,
+            cyberapi_core::oauth::Token {
+                access_token: "imp-tok".into(),
+                expires_in: Some(3600),
+                refresh_token: None,
+            },
+        ));
+        let authorized = pollster::block_on(send(sender, setup.collection.clone(), api, request, Answers::default()))
+            .expect("sent with token");
+        assert_eq!(authorized.status, Some(200));
+        let sent_reqs = setup.engine.sent.lock().expect("sent");
+        assert_eq!(sent_reqs.len(), 1);
+        assert_eq!(sent_reqs[0].header("authorization"), Some("Bearer imp-tok"));
+    }
+
+    #[test]
+    fn jwt_bearer_sends_signed_token_with_expiry_note_in_code() {
+        let setup = setup(ok(200, "{}"));
+        let api = new_api(&setup, "jwt");
+        let request = HttpRequest {
+            uri: "https://api.test/orders".into(),
+            auth: cyberapi_core::auth::Auth::from(cyberapi_core::jwt_bearer::JwtBearer {
+                algorithm: cyberapi_core::jwt_bearer::JwtAlgorithm::HS256,
+                secret: "s3cr3t".into(),
+                payload: r#"{"sub":"u1","iat":{{timestamp()}}}"#.into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let res = pollster::block_on(send(
+            setup.sender.clone(),
+            setup.collection.clone(),
+            api,
+            request.clone(),
+            Answers::default(),
+        ))
+        .expect("sent");
+        assert_eq!(res.status, Some(200));
+        let sent_req = &setup.engine.sent.lock().expect("sent")[0];
+        let header = sent_req.header("authorization").expect("Authorization");
+        assert!(header.starts_with("Bearer "), "{header}");
+        assert_eq!(header.matches('.').count(), 2);
+
+        let fetch_code = pollster::block_on(code(
+            setup.sender,
+            setup.collection,
+            request,
+            Answers::default(),
+            CodeTarget::Fetch,
+        ))
+        .expect("code");
+        assert!(fetch_code.contains("signed at copy time"), "{fetch_code}");
+    }
 }

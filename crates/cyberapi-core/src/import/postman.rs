@@ -97,16 +97,15 @@ fn event_sources(value: &Value) -> Vec<(ScriptPhase, String)> {
 fn auth(value: &Value, target: &str, lost: &mut Vec<Lost>) -> Option<Auth> {
     let kind = text(value, "type");
     let fields = value.get(kind);
-    let field = |key: &str| match fields {
-        Some(Value::Array(items)) => as_text(
-            items
-                .iter()
-                .find(|item| text(item, "key") == key)
-                .and_then(|item| item.get("value")),
-        ),
-        Some(object) => as_text(object.get(key)),
-        None => String::new(),
+    let opt_field = |key: &str| match fields {
+        Some(Value::Array(items)) => items
+            .iter()
+            .find(|item| text(item, "key") == key)
+            .map(|item| as_text(item.get("value"))),
+        Some(object) => object.get(key).map(|val| as_text(Some(val))),
+        None => None,
     };
+    let field = |key: &str| opt_field(key).unwrap_or_default();
     // C4: an extra parameter of the token request, as newer Postman keeps
     // its audience and resource; else one of the fields.
     let token_param = |name: &str| {
@@ -158,6 +157,7 @@ fn auth(value: &Value, target: &str, lost: &mut Vec<Lost>) -> Option<Auth> {
                 "client_credentials" => Grant::ClientCredentials,
                 "password_credentials" => Grant::Password,
                 "authorization_code" | "authorization_code_with_pkce" => Grant::AuthorizationCode,
+                "implicit" => Grant::Implicit,
                 _ => {
                     let kind = if grant_type.trim().is_empty() {
                         "oauth2".to_string()
@@ -200,6 +200,46 @@ fn auth(value: &Value, target: &str, lost: &mut Vec<Lost>) -> Option<Auth> {
             region: field("region"),
             service: field("service"),
         }),
+        "jwt" => {
+            use crate::jwt_bearer::{JwtAlgorithm, JwtBearer};
+            let raw_alg = field("algorithm");
+            let algorithm = if raw_alg.trim().is_empty() {
+                JwtAlgorithm::HS256
+            } else if let Some(alg) = JwtAlgorithm::parse(&raw_alg) {
+                alg
+            } else {
+                lost::push_auth(lost, target, &format!("jwt ({})", raw_alg.trim()));
+                return None;
+            };
+            let payload = {
+                let p = field("payload");
+                if p.trim().is_empty() { "{}".into() } else { p }
+            };
+            let header = opt_field("header")
+                .filter(|h| !h.is_empty())
+                .or_else(|| opt_field("headers"))
+                .unwrap_or_default();
+            let place = if matches!(field("addTokenTo").trim(), "query" | "queryParam" | "query_param") {
+                KeyPlace::Query
+            } else {
+                KeyPlace::Header
+            };
+            let prefix = opt_field("headerPrefix").unwrap_or_else(|| "Bearer".into());
+            let query_param = {
+                let q = field("queryParamKey");
+                if q.trim().is_empty() { "token".into() } else { q }
+            };
+            Auth::from(JwtBearer {
+                algorithm,
+                secret: field("secret"),
+                secret_base64: field("isSecretBase64Encoded").eq_ignore_ascii_case("true"),
+                payload,
+                header,
+                place,
+                prefix,
+                query_param,
+            })
+        }
         _ => {
             lost::push_auth(lost, target, kind);
             return None;

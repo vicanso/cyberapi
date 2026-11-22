@@ -20,7 +20,7 @@ Paste, pick a file, or fetch an address (the web version fetches through its ser
 | `.http` | VS Code REST Client and JetBrains HTTP Client (*0.4.1*). Requests parted by `###`. `@name = value` is a variable every environment shares. `http-client.env.json` or `rest-client.environmentVariables` become named environments. `{{$uuid}}`, `{{$timestamp}}`, `{{$randomInt 1 10}}`, `{{$processEnv NAME}}` and the like become this app's template functions. `# @prompt` asks as the request is sent. Response-handler scripts are left behind. `http-client.private.env.json` comes in as plain text, so keep it out of a project the team shares. |
 | cURL | A pasted command becomes an API. |
 
-Auth that has a matching kind comes along: Basic, Bearer, an API key, Digest, OAuth 2.0 client credentials, password and authorization code (*0.3.1*), and AWS SigV4 (Postman, Insomnia, Bruno). A kind the app does not have is left as "inherit".
+Auth that has a matching kind comes along: Basic, Bearer, JWT Bearer, an API key, Digest, OAuth 2.0 (client credentials, password, authorization code (*0.3.1*), and implicit), and AWS SigV4 (Postman, Insomnia, Bruno). A kind the app does not have is left as "inherit".
 
 If the project already signs in, that auth is kept. A named environment that is already there (names compared without case) only gains variables it did not have. Binary / file bodies (`mode: file` in Postman, Insomnia, HAR, Bruno, OpenAPI, and `-T` / `--data-binary @` in cURL) import as binary bodies.
 

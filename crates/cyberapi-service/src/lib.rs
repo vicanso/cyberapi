@@ -13,6 +13,6 @@ mod send;
 pub mod socket;
 
 pub use load::load;
-pub use oauth::{CodeGrant, Tokens, exchange_code, prepare_code};
+pub use oauth::{CodeGrant, Tokens, exchange_code, keep_token, prepare_code};
 pub use run::{RunStep, StepResult, run, run_with_options};
 pub use send::{SendFailure, Sender, code, fetch_text, introspect, reflect, send, send_watched};

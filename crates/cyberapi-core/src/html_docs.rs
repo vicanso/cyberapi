@@ -1224,6 +1224,7 @@ fn auth_label(auth: &crate::auth::Auth) -> Option<String> {
         Auth::Basic { .. } => Some("Basic".into()),
         Auth::Digest { .. } => Some("Digest".into()),
         Auth::Bearer { .. } => Some("Bearer".into()),
+        Auth::JwtBearer(jwt) => Some(format!("JWT Bearer ({})", jwt.algorithm.as_str())),
         Auth::ApiKey { name, place, .. } => {
             let trimmed = name.trim();
             let where_str = match place {
@@ -1261,6 +1262,19 @@ fn masked_auth_signed(auth: &crate::auth::Auth, query: bool) -> Option<crate::au
             name: "Authorization".into(),
             value: format!("Bearer {}", masked("token", token.trim())),
         }),
+        Auth::JwtBearer(jwt) if jwt.has_credentials() => {
+            if jwt.place == KeyPlace::Query && query {
+                Some(Signed::Query {
+                    name: jwt.effective_query_param().to_string(),
+                    value: crate::mcp::MASK.into(),
+                })
+            } else {
+                Some(Signed::Header {
+                    name: "Authorization".into(),
+                    value: crate::jwt_bearer::header_value(&jwt.prefix, crate::mcp::MASK),
+                })
+            }
+        }
         Auth::ApiKey { name, value, place } if !name.trim().is_empty() => {
             let name = name.trim().to_string();
             let value = masked("api_key", value.trim());
@@ -1270,7 +1284,11 @@ fn masked_auth_signed(auth: &crate::auth::Auth, query: bool) -> Option<crate::au
                 Some(Signed::Header { name, value })
             }
         }
-        Auth::OAuth2(oauth) if !oauth.token_url.trim().is_empty() || !oauth.client_id.trim().is_empty() => {
+        Auth::OAuth2(oauth)
+            if !oauth.token_url.trim().is_empty()
+                || !oauth.authorization_url.trim().is_empty()
+                || !oauth.client_id.trim().is_empty() =>
+        {
             Some(Signed::Header {
                 name: "Authorization".into(),
                 value: format!("Bearer {}", crate::mcp::MASK),

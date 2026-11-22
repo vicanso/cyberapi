@@ -508,6 +508,10 @@ fn synced_auth(existing: &crate::auth::Auth, imported: &crate::auth::Auth) -> cr
             region: given.region.clone(),
             service: given.service.clone(),
         }),
+        (Auth::JwtBearer(mine), Auth::JwtBearer(given)) => Auth::from(crate::jwt_bearer::JwtBearer {
+            secret: kept_secret(&mine.secret, &given.secret),
+            ..(**given).clone()
+        }),
         _ => imported.clone(),
     }
 }

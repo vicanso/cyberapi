@@ -95,18 +95,28 @@ pub fn code(target: CodeTarget, prepared: &PreparedRequest, request: &HttpReques
         CodeTarget::CSharp => csharp::http_client(prepared, &parts, follow_redirects),
         CodeTarget::Swift => swift::url_session(prepared, &parts, follow_redirects),
     };
-    if prepared.aws_sigv4.is_some() {
+    if prepared.aws_sigv4.is_some() || prepared.jwt_bearer {
         let prefix = match target {
             CodeTarget::Httpie | CodeTarget::Python => "#",
             _ => "//",
         };
-        let note = format!("{prefix} Note: AWS SigV4 signature headers below are time-limited and will expire.\n");
+        let mut notes = String::new();
+        if prepared.aws_sigv4.is_some() {
+            notes.push_str(&format!(
+                "{prefix} Note: AWS SigV4 signature headers below are time-limited and will expire.\n"
+            ));
+        }
+        if prepared.jwt_bearer {
+            notes.push_str(&format!(
+                "{prefix} Note: JWT token below was signed at copy time and may expire.\n"
+            ));
+        }
         if target == CodeTarget::Php
             && let Some(rest) = generated.strip_prefix("<?php\n")
         {
-            format!("<?php\n{note}{rest}")
+            format!("<?php\n{notes}{rest}")
         } else {
-            format!("{note}{generated}")
+            format!("{notes}{generated}")
         }
     } else {
         generated

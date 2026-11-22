@@ -42,6 +42,16 @@ pub enum Grant {
     /// The desktop opens the browser and listens on `127.0.0.1`; a page
     /// cannot. Data model 14.
     AuthorizationCode,
+    /// R6: a user's, in their browser: the implicit flow (`response_type=token`),
+    /// returning `access_token` in the `#fragment`. Data model 26.
+    Implicit,
+}
+
+impl Grant {
+    /// Whether this grant opens the system browser and receives a loopback redirect.
+    pub fn uses_browser(self) -> bool {
+        matches!(self, Self::AuthorizationCode | Self::Implicit)
+    }
 }
 
 /// Where the client's id and secret go in the token request.
@@ -95,20 +105,17 @@ fn port_is_zero(port: &u16) -> bool {
 
 impl OAuth2 {
     /// The texts that are templates: all of them. The user's name and
-    /// password only for the grant that sends them.
+    /// password only for the grant that sends them; `token_url` and
+    /// `client_secret` only when a token endpoint is called.
     pub fn templates(&self) -> Vec<&str> {
-        let mut texts = vec![
-            self.token_url.as_str(),
-            &self.client_id,
-            &self.client_secret,
-            &self.scope,
-            &self.audience,
-            &self.resource,
-        ];
+        let mut texts = vec![&*self.client_id, &self.scope, &self.audience, &self.resource];
+        if self.grant != Grant::Implicit {
+            texts.extend([self.token_url.as_str(), &self.client_secret]);
+        }
         if self.grant == Grant::Password {
             texts.extend([self.username.as_str(), &self.password]);
         }
-        if self.grant == Grant::AuthorizationCode {
+        if self.grant.uses_browser() {
             texts.push(self.authorization_url.as_str());
         }
         texts
@@ -116,24 +123,21 @@ impl OAuth2 {
 
     /// Rendered by `render`. The user's name and password only for the
     /// password grant; the authorization URL and the callback port only
-    /// for the authorization code.
+    /// for browser grants.
     pub fn login<E>(&self, render: impl Fn(&str) -> Result<String, E>) -> Result<OAuthLogin, E> {
         let password = self.grant == Grant::Password;
-        let code = self.grant == Grant::AuthorizationCode;
-        let only = |text: &str| if password { render(text) } else { Ok(String::new()) };
+        let browser = self.grant.uses_browser();
+        let implicit = self.grant == Grant::Implicit;
+        let only = |flag: bool, text: &str| if flag { render(text) } else { Ok(String::new()) };
         Ok(OAuthLogin {
             grant: self.grant,
-            token_url: render(self.token_url.trim())?,
-            authorization_url: if code {
-                render(self.authorization_url.trim())?
-            } else {
-                String::new()
-            },
-            redirect_port: if code { self.redirect_port } else { 0 },
+            token_url: only(!implicit, self.token_url.trim())?,
+            authorization_url: only(browser, self.authorization_url.trim())?,
+            redirect_port: if browser { self.redirect_port } else { 0 },
             client_id: render(&self.client_id)?,
-            client_secret: render(&self.client_secret)?,
-            username: only(&self.username)?,
-            password: only(&self.password)?,
+            client_secret: only(!implicit, &self.client_secret)?,
+            username: only(password, &self.username)?,
+            password: only(password, &self.password)?,
             scope: render(self.scope.trim())?,
             audience: render(self.audience.trim())?,
             resource: render(self.resource.trim())?,
@@ -177,13 +181,14 @@ impl OAuthLogin {
             Grant::ClientCredentials => "client_credentials",
             Grant::Password => "password",
             Grant::AuthorizationCode => "authorization_code",
+            Grant::Implicit => "implicit",
         };
         let client_auth = match self.client_auth {
             ClientAuth::Header => "header",
             ClientAuth::Body => "body",
         };
         // The authorization URL and the port the reader set join the hash
-        // only for that grant, so a client-credentials token kept before
+        // only for browser grants, so a client-credentials token kept before
         // they existed is still the same token.
         let port = self.redirect_port.to_string();
         let mut fields = vec![
@@ -198,7 +203,7 @@ impl OAuthLogin {
             &self.resource,
             client_auth,
         ];
-        if self.grant == Grant::AuthorizationCode {
+        if self.grant.uses_browser() {
             fields.push(&self.authorization_url);
             fields.push(&port);
         }
@@ -233,6 +238,9 @@ impl OAuthLogin {
             // Not a token request. The code is exchanged with [`Self::code_form`].
             (None, Grant::AuthorizationCode) => {
                 form.append_pair("grant_type", "authorization_code");
+            }
+            (None, Grant::Implicit) => {
+                form.append_pair("grant_type", "implicit");
             }
         }
         if !self.scope.is_empty() {
@@ -359,8 +367,9 @@ pub fn code_challenge(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(verifier.as_bytes()))
 }
 
-/// The browser's authorization URL: `authorization_url` with the code
-/// grant's query added to whatever query it already has.
+/// The browser's authorization URL: `authorization_url` with the browser
+/// grant's query (`response_type=code` + PKCE for authorization code, or
+/// `response_type=token` for implicit) added to whatever query it already has.
 pub fn authorize_url(login: &OAuthLogin, redirect_uri: &str, state: &str, challenge: &str) -> Result<String, String> {
     let mut url = url::Url::parse(login.authorization_url.trim()).map_err(|error| {
         format!(
@@ -376,12 +385,18 @@ pub fn authorize_url(login: &OAuthLogin, redirect_uri: &str, state: &str, challe
     }
     {
         let mut query = url.query_pairs_mut();
-        query.append_pair("response_type", "code");
+        let response_type = match login.grant {
+            Grant::Implicit => "token",
+            _ => "code",
+        };
+        query.append_pair("response_type", response_type);
         query.append_pair("client_id", &login.client_id);
         query.append_pair("redirect_uri", redirect_uri);
         query.append_pair("state", state);
-        query.append_pair("code_challenge", challenge);
-        query.append_pair("code_challenge_method", "S256");
+        if login.grant != Grant::Implicit {
+            query.append_pair("code_challenge", challenge);
+            query.append_pair("code_challenge_method", "S256");
+        }
         if !login.scope.is_empty() {
             query.append_pair("scope", &login.scope);
         }
@@ -393,6 +408,33 @@ pub fn authorize_url(login: &OAuthLogin, redirect_uri: &str, state: &str, challe
         }
     }
     Ok(url.to_string())
+}
+
+/// R6: parses the URL `#fragment` from an OAuth 2.0 Implicit callback and
+/// verifies `state`, returning the access token (with optional `expires_in`).
+pub fn read_implicit_fragment(fragment: &str, expected_state: &str) -> Result<Token, String> {
+    let raw = fragment.trim().trim_start_matches('#');
+    let pairs: std::collections::HashMap<String, String> =
+        url::form_urlencoded::parse(raw.as_bytes()).into_owned().collect();
+    if let Some(error) = pairs.get("error").filter(|e| !e.is_empty()) {
+        return Err(match pairs.get("error_description").filter(|d| !d.is_empty()) {
+            Some(description) => format!("OAuth 2.0: {error}: {description}"),
+            None => format!("OAuth 2.0: {error}"),
+        });
+    }
+    match pairs.get("state") {
+        Some(got) if got == expected_state => {}
+        _ => return Err("OAuth 2.0: the callback's state did not match".into()),
+    }
+    let Some(access_token) = pairs.get("access_token").filter(|t| !t.is_empty()) else {
+        return Err("OAuth 2.0: the callback had no access_token".into());
+    };
+    let expires_in = pairs.get("expires_in").and_then(|raw| raw.trim().parse::<u64>().ok());
+    Ok(Token {
+        access_token: access_token.clone(),
+        expires_in,
+        refresh_token: None,
+    })
 }
 
 /// C4: the reader's tokens, by [`OAuthLogin::key`].
@@ -782,5 +824,63 @@ mod tests {
             other
         };
         assert_ne!(other_port.key(), code.key());
+    }
+
+    #[test]
+    fn implicit_grant_url_and_fragment_parsing() {
+        let oauth = OAuth2 {
+            grant: Grant::Implicit,
+            authorization_url: "https://id.test/authorize".into(),
+            token_url: "https://ignored.test/token".into(),
+            redirect_port: 8899,
+            client_id: "spa-client".into(),
+            client_secret: "ignored-secret".into(),
+            scope: "openid profile".into(),
+            audience: "https://api.test".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&oauth)
+                .expect("json")
+                .contains(r#""grant":"implicit""#),
+            true
+        );
+        let login = oauth.login(|s| Ok::<_, Infallible>(s.into())).expect("login");
+        assert!(login.token_url.is_empty());
+        assert!(login.client_secret.is_empty());
+        assert_eq!(login.redirect_port, 8899);
+
+        let url = authorize_url(&login, &redirect_uri(8899), "st-1", "unused-challenge").expect("url");
+        let parsed = url::Url::parse(&url).expect("parsed");
+        let query: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+        assert_eq!(query.get("response_type").map(String::as_str), Some("token"));
+        assert_eq!(query.get("client_id").map(String::as_str), Some("spa-client"));
+        assert_eq!(query.get("state").map(String::as_str), Some("st-1"));
+        assert!(!query.contains_key("code_challenge"));
+        assert!(!query.contains_key("code_challenge_method"));
+
+        assert_eq!(
+            read_implicit_fragment(
+                "#access_token=tok-1&token_type=Bearer&expires_in=3600&state=st-1",
+                "st-1"
+            ),
+            Ok(Token {
+                access_token: "tok-1".into(),
+                expires_in: Some(3600),
+                refresh_token: None,
+            })
+        );
+        assert_eq!(
+            read_implicit_fragment("access_token=tok-1&state=wrong", "st-1"),
+            Err("OAuth 2.0: the callback's state did not match".into())
+        );
+        assert_eq!(
+            read_implicit_fragment("error=access_denied&error_description=no+way&state=st-1", "st-1"),
+            Err("OAuth 2.0: access_denied: no way".into())
+        );
+        assert_eq!(
+            read_implicit_fragment("state=st-1", "st-1"),
+            Err("OAuth 2.0: the callback had no access_token".into())
+        );
     }
 }

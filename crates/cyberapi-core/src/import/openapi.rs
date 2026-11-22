@@ -457,6 +457,7 @@ fn oauth(scheme: &Value, scopes: &Value) -> Option<Auth> {
             ("clientCredentials", Grant::ClientCredentials),
             ("password", Grant::Password),
             ("authorizationCode", Grant::AuthorizationCode),
+            ("implicit", Grant::Implicit),
         ]
         .into_iter()
         .find_map(|(name, grant)| Some((grant, flows.get(name)?)))?,
@@ -464,6 +465,7 @@ fn oauth(scheme: &Value, scopes: &Value) -> Option<Auth> {
             "application" => (Grant::ClientCredentials, scheme),
             "password" => (Grant::Password, scheme),
             "accessCode" => (Grant::AuthorizationCode, scheme),
+            "implicit" => (Grant::Implicit, scheme),
             _ => return None,
         },
     };

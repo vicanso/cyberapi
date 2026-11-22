@@ -2088,11 +2088,13 @@ name = "cyberapi-core"
 version = "0.6.3"
 dependencies = [
  "base64 0.23.1",
+ "getrandom 0.2.17",
  "hmac 0.13.0",
  "imagesize 0.15.0",
  "jiff",
  "jsonpath-rust",
  "jsonschema",
+ "jsonwebtoken",
  "md-5 0.11.0",
  "mime_guess",
  "percent-encoding",

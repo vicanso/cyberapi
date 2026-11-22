@@ -56,7 +56,23 @@ fn auth(auth: &Auth) -> Option<Value> {
         Auth::Basic { username, password } => fields("basic", &[("username", username), ("password", password)]),
         Auth::Digest { username, password } => fields("digest", &[("username", username), ("password", password)]),
         Auth::Bearer { token } => fields("bearer", &[("token", token)]),
-        // C4: the grant Postman asks with. The authorization code is the
+        Auth::JwtBearer(jwt) => {
+            let listed = vec![
+                json!({"key": "algorithm", "value": jwt.algorithm.as_str(), "type": "string"}),
+                json!({"key": "secret", "value": jwt.secret, "type": "string"}),
+                json!({"key": "isSecretBase64Encoded", "value": jwt.secret_base64, "type": "boolean"}),
+                json!({"key": "payload", "value": jwt.payload, "type": "string"}),
+                json!({"key": "header", "value": jwt.header, "type": "string"}),
+                json!({"key": "addTokenTo", "value": match jwt.place {
+                    KeyPlace::Header => "header",
+                    KeyPlace::Query => "queryParam",
+                }, "type": "string"}),
+                json!({"key": "headerPrefix", "value": jwt.prefix, "type": "string"}),
+                json!({"key": "queryParamKey", "value": jwt.query_param, "type": "string"}),
+            ];
+            json!({"type": "jwt", "jwt": listed})
+        }
+        // C4 / R6: the grant Postman asks with. The authorization code is the
         // PKCE one: the desktop opens the browser. A fixed callback port
         // goes out as the loopback URI it listens on.
         Auth::OAuth2(oauth) => {
@@ -64,6 +80,7 @@ fn auth(auth: &Auth) -> Option<Value> {
                 Grant::ClientCredentials => "client_credentials",
                 Grant::Password => "password_credentials",
                 Grant::AuthorizationCode => "authorization_code_with_pkce",
+                Grant::Implicit => "implicit",
             };
             let client = match oauth.client_auth {
                 ClientAuth::Header => "header",
@@ -558,5 +575,56 @@ mod tests {
                 .iter()
                 .any(|h| h.key == "Content-Type" && h.value == "image/png")
         );
+    }
+
+    #[test]
+    fn jwt_bearer_and_oauth_implicit_round_trip() {
+        use crate::jwt_bearer::{JwtAlgorithm, JwtBearer};
+        use crate::oauth::OAuth2;
+
+        let jwt = Auth::from(JwtBearer {
+            algorithm: JwtAlgorithm::ES256,
+            secret: "{{private_key}}".into(),
+            secret_base64: false,
+            payload: r#"{"sub":"123"}"#.into(),
+            header: r#"{"kid":"k1"}"#.into(),
+            place: KeyPlace::Header,
+            prefix: String::new(),
+            query_param: "token".into(),
+        });
+        let implicit = Auth::from(OAuth2 {
+            grant: Grant::Implicit,
+            authorization_url: "https://id.test/authorize".into(),
+            redirect_port: 8765,
+            client_id: "spa".into(),
+            scope: "read".into(),
+            ..Default::default()
+        });
+        let data = TreeData {
+            folders: Vec::new(),
+            apis: vec![api(
+                "a1",
+                "imp",
+                HttpRequest {
+                    method: HttpMethod::Get,
+                    uri: "https://api.test/imp".into(),
+                    auth: implicit.clone(),
+                    ..Default::default()
+                },
+            )],
+            top_order: vec![ItemId::new("a1")],
+            settings: ProjectSettings {
+                auth: jwt.clone(),
+                ..Default::default()
+            },
+        };
+        let text = postman(&data, None, "AuthTest", &[]);
+        let bundle = crate::import::parse(&text).expect("collection");
+        assert!(bundle.lost.is_empty(), "{:?}", bundle.lost);
+        assert_eq!(bundle.auth, jwt);
+        let crate::import::ImportItem::Api { request, .. } = &bundle.items[0] else {
+            panic!("api");
+        };
+        assert_eq!(request.auth, implicit);
     }
 }

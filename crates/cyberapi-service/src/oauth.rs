@@ -174,10 +174,15 @@ pub(crate) async fn sign(sender: &Sender, prepared: &mut PreparedRequest, anew: 
 pub(crate) async fn sign_kept(sender: &Sender, prepared: &mut PreparedRequest) {
     if let Some(login) = &prepared.oauth {
         sender.tokens.load(sender).await;
+        let source = if login.grant == Grant::Implicit {
+            &login.authorization_url
+        } else {
+            &login.token_url
+        };
         let token = sender
             .tokens
             .current(&login.key())
-            .unwrap_or_else(|| format!("<an access token from {}>", login.token_url));
+            .unwrap_or_else(|| format!("<an access token from {source}>"));
         authorize(prepared, &token);
     }
 }
@@ -193,6 +198,9 @@ fn authorize(prepared: &mut PreparedRequest, token: &str) {
 /// kept: with the refresh token kept, if there is one and it still works;
 /// else with the grant.
 async fn ask(sender: &Sender, login: &OAuthLogin, api: &PreparedRequest) -> Result<String, String> {
+    if login.grant == Grant::Implicit {
+        return Err("OAuth 2.0: authorize this API in the desktop app first".into());
+    }
     let at = login.token_url.as_str();
     if !matches!(url::Url::parse(at), Ok(url) if matches!(url.scheme(), "http" | "https")) {
         return Err(match at.is_empty() {
@@ -264,6 +272,10 @@ impl CodeGrant {
         self.login.redirect_port
     }
 
+    pub fn is_implicit(&self) -> bool {
+        self.login.grant == Grant::Implicit
+    }
+
     /// The browser's URL once `bound` is the port that is listening.
     pub fn authorize_url(&self, bound: u16) -> Result<String, String> {
         oauth::authorize_url(
@@ -296,9 +308,9 @@ pub async fn prepare_code(
         .await
         .map_err(|error| error.to_string())?;
     let Some(login) = prepared.oauth.clone() else {
-        return Err("OAuth 2.0: this is not an authorization-code sign-in".into());
+        return Err("OAuth 2.0: this is not an authorization-code or implicit sign-in".into());
     };
-    if login.grant != Grant::AuthorizationCode {
+    if !login.grant.uses_browser() {
         return Err("OAuth 2.0: this grant does not open a browser".into());
     }
     if login.authorization_url.trim().is_empty() {
@@ -307,7 +319,7 @@ pub async fn prepare_code(
     if login.client_id.is_empty() {
         return Err("OAuth 2.0: there is no client id".into());
     }
-    if login.token_url.trim().is_empty() {
+    if login.grant == Grant::AuthorizationCode && login.token_url.trim().is_empty() {
         return Err("OAuth 2.0: there is no token URL".into());
     }
     // Reject a URL the browser cannot open before anything listens.
@@ -318,6 +330,12 @@ pub async fn prepare_code(
         verifier: oauth::code_verifier(&random_bytes()?),
         state: oauth::code_verifier(&random_bytes()?),
     })
+}
+
+/// Keeps a token returned directly from the browser (Implicit grant) under the
+/// grant's key, as a send would.
+pub async fn keep_token(sender: &Sender, grant: &CodeGrant, token: Token) {
+    sender.tokens.keep(sender, &grant.login.key(), token, now()).await;
 }
 
 /// Exchange `code` from the callback on `bound` and keep the token under

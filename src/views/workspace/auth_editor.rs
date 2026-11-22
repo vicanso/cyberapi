@@ -17,13 +17,15 @@ use cyberapi_core::ItemId;
 use cyberapi_core::auth::{Auth, AuthKind, KeyPlace};
 use cyberapi_core::aws_sigv4::AwsSigV4;
 use cyberapi_core::inherit::AuthSource;
+use cyberapi_core::jwt_bearer::{JwtAlgorithm, JwtBearer};
 use cyberapi_core::model::{HttpMethod, HttpRequest};
 use cyberapi_core::oauth::{ClientAuth, Grant, OAuth2};
 use cyberapi_core::template::Answers;
 use cyberapi_core::template_hints::Hint;
 use futures::future::FutureExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
+use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, NumberInput};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::{
@@ -41,7 +43,12 @@ use std::time::Duration;
 type Choices = Entity<SelectState<Vec<Choice>>>;
 
 const PLACES: [KeyPlace; 2] = [KeyPlace::Header, KeyPlace::Query];
-const GRANTS: [Grant; 3] = [Grant::ClientCredentials, Grant::Password, Grant::AuthorizationCode];
+const GRANTS: [Grant; 4] = [
+    Grant::ClientCredentials,
+    Grant::Password,
+    Grant::AuthorizationCode,
+    Grant::Implicit,
+];
 /// How long the desktop waits for the browser to come back to the loopback.
 const AUTHORIZE_WAIT: Duration = Duration::from_secs(180);
 const CLIENT_AUTHS: [ClientAuth; 2] = [ClientAuth::Header, ClientAuth::Body];
@@ -64,12 +71,15 @@ const AWS_SECRET_KEY: usize = 12;
 const AWS_SESSION_TOKEN: usize = 13;
 const AWS_REGION: usize = 14;
 const AWS_SERVICE: usize = 15;
+const JWT_SECRET: usize = 16;
+const JWT_PREFIX: usize = 17;
+const JWT_QUERY_PARAM: usize = 18;
 
 /// The fields whose values are secrets, shown as dots till shown.
 fn secret(field: usize) -> bool {
     matches!(
         field,
-        PASSWORD | TOKEN | KEY_VALUE | CLIENT_SECRET | AWS_SECRET_KEY | AWS_SESSION_TOKEN
+        PASSWORD | TOKEN | KEY_VALUE | CLIENT_SECRET | AWS_SECRET_KEY | AWS_SESSION_TOKEN | JWT_SECRET
     )
 }
 
@@ -86,10 +96,11 @@ pub enum AuthFor {
 
 /// The project has nothing to inherit: its "none" is kept as inheriting,
 /// which is the same and leaves it nothing to keep.
-const PROJECT_KINDS: [AuthKind; 7] = [
+const PROJECT_KINDS: [AuthKind; 8] = [
     AuthKind::None,
     AuthKind::Basic,
     AuthKind::Bearer,
+    AuthKind::JwtBearer,
     AuthKind::ApiKey,
     AuthKind::Digest,
     AuthKind::OAuth2,
@@ -106,9 +117,16 @@ pub struct AuthEditor {
     /// C4: OAuth's grant, and where its client signs in.
     grant: Choices,
     client_auth: Choices,
+    /// R6: JWT Bearer algorithm, placement, base64 toggle, and multi-line editors.
+    jwt_algorithm: Choices,
+    jwt_place: Choices,
+    jwt_secret_base64: bool,
+    jwt_private_key: Entity<EditorState>,
+    jwt_payload: Entity<EditorState>,
+    jwt_header: Entity<EditorState>,
     /// Basic's user and password, the token, the key's value, OAuth's
-    /// token URL, client, scope and authorization URL, and AWS SigV4's fields: templates.
-    templated: [Entity<InputState>; 16],
+    /// fields, AWS SigV4's fields, and JWT Bearer's single-line fields: templates.
+    templated: [Entity<InputState>; 19],
     /// The loopback port. Empty is any free port. Not a template.
     redirect_port: Entity<InputState>,
     key_name: Entity<InputState>,
@@ -131,6 +149,7 @@ fn kind_label(kind: AuthKind) -> String {
         AuthKind::None => t!("editor.auth_none"),
         AuthKind::Basic => t!("editor.auth_basic"),
         AuthKind::Bearer => t!("editor.auth_bearer"),
+        AuthKind::JwtBearer => t!("editor.auth_jwt_bearer"),
         AuthKind::ApiKey => t!("editor.auth_api_key"),
         AuthKind::Digest => t!("editor.auth_digest"),
         AuthKind::OAuth2 => t!("editor.auth_oauth2"),
@@ -144,6 +163,7 @@ fn grant_label(grant: Grant) -> String {
         Grant::ClientCredentials => t!("editor.auth_grant_client"),
         Grant::Password => t!("editor.auth_grant_password"),
         Grant::AuthorizationCode => t!("editor.auth_grant_code"),
+        Grant::Implicit => t!("editor.auth_grant_implicit"),
     }
     .to_string()
 }
@@ -256,6 +276,7 @@ impl AuthEditor {
         let (mut username, mut password, mut token, mut name, mut value, mut place_now) = Default::default();
         let mut oauth = OAuth2::default();
         let mut aws = AwsSigV4::default();
+        let mut jwt = JwtBearer::default();
         match &auth {
             Auth::Basic {
                 username: user,
@@ -266,6 +287,7 @@ impl AuthEditor {
                 password: secret,
             } => (username, password) = (user.clone(), secret.clone()),
             Auth::Bearer { token: own } => token = own.clone(),
+            Auth::JwtBearer(own) => jwt = own.as_ref().clone(),
             Auth::ApiKey {
                 name: own,
                 value: key,
@@ -307,6 +329,23 @@ impl AuthEditor {
             window,
             cx,
         );
+        let jwt_algorithm = listed(
+            JwtAlgorithm::ALL.iter().map(|alg| alg.as_str().to_string()).collect(),
+            JwtAlgorithm::ALL
+                .iter()
+                .position(|alg| *alg == jwt.algorithm)
+                .unwrap_or(0),
+            window,
+            cx,
+        );
+        let jwt_place_index = PLACES.iter().position(|place| *place == jwt.place).unwrap_or(0);
+        let jwt_place = listed(PLACES.map(place_label).to_vec(), jwt_place_index, window, cx);
+        let jwt_secret_base64 = jwt.secret_base64;
+        let (jwt_sym_secret, jwt_pem_secret) = if jwt.algorithm.is_symmetric() {
+            (jwt.secret, String::new())
+        } else {
+            (String::new(), jwt.secret)
+        };
         let field = |text: String, label: String, masked: bool, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
                 InputState::new(window, cx)
@@ -315,6 +354,42 @@ impl AuthEditor {
                     .default_value(text)
             })
         };
+        let jwt_private_key = cx.new(|cx| {
+            let mut editor = EditorState::new(window, cx)
+                .line_number(false)
+                .soft_wrap(true)
+                .searchable(false)
+                .placeholder(t!("editor.auth_jwt_private_key_placeholder").to_string())
+                .default_value(jwt_pem_secret);
+            template_hints::complete_in(&mut editor, &hints);
+            crate::views::fix_editor_search(cx);
+            editor
+        });
+        let jwt_payload = cx.new(|cx| {
+            let mut editor = EditorState::new(window, cx)
+                .language("json")
+                .line_number(false)
+                .soft_wrap(true)
+                .searchable(false)
+                .tab_size(crate::views::json_tab())
+                .default_value(jwt.payload);
+            template_hints::complete_in(&mut editor, &hints);
+            crate::views::fix_editor_search(cx);
+            editor
+        });
+        let jwt_header = cx.new(|cx| {
+            let mut editor = EditorState::new(window, cx)
+                .language("json")
+                .line_number(false)
+                .soft_wrap(true)
+                .searchable(false)
+                .tab_size(crate::views::json_tab())
+                .placeholder(r#"{"kid": ""}"#)
+                .default_value(jwt.header);
+            template_hints::complete_in(&mut editor, &hints);
+            crate::views::fix_editor_search(cx);
+            editor
+        });
         let templated = [
             field(username, t!("editor.user").to_string(), false, window, cx),
             field(password, t!("editor.password").to_string(), true, window, cx),
@@ -398,6 +473,27 @@ impl AuthEditor {
                 window,
                 cx,
             ),
+            field(
+                jwt_sym_secret,
+                t!("editor.auth_jwt_secret").to_string(),
+                true,
+                window,
+                cx,
+            ),
+            field(
+                jwt.prefix,
+                t!("editor.auth_jwt_prefix_placeholder").to_string(),
+                false,
+                window,
+                cx,
+            ),
+            field(
+                jwt.query_param,
+                t!("editor.auth_jwt_query_param_placeholder").to_string(),
+                false,
+                window,
+                cx,
+            ),
         ];
         let redirect_port = field(
             match oauth.redirect_port {
@@ -445,6 +541,31 @@ impl AuthEditor {
                     this.write(cx);
                 }
             }),
+            cx.subscribe(&jwt_algorithm, |this, _, event: &SelectEvent<Vec<Choice>>, cx| {
+                if let SelectEvent::Confirm(Some(_)) = event {
+                    this.write(cx);
+                }
+            }),
+            cx.subscribe(&jwt_place, |this, _, event: &SelectEvent<Vec<Choice>>, cx| {
+                if let SelectEvent::Confirm(Some(_)) = event {
+                    this.write(cx);
+                }
+            }),
+            cx.subscribe(&jwt_private_key, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.write(cx);
+                }
+            }),
+            cx.subscribe(&jwt_payload, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.write(cx);
+                }
+            }),
+            cx.subscribe(&jwt_header, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.write(cx);
+                }
+            }),
         ];
         for input in &templated {
             subscriptions.push(cx.subscribe(input, |this, input, event: &InputEvent, cx| match event {
@@ -464,6 +585,12 @@ impl AuthEditor {
             place,
             grant,
             client_auth,
+            jwt_algorithm,
+            jwt_place,
+            jwt_secret_base64,
+            jwt_private_key,
+            jwt_payload,
+            jwt_header,
             templated,
             redirect_port,
             key_name,
@@ -502,6 +629,24 @@ impl AuthEditor {
             AuthKind::Bearer => Auth::Bearer {
                 token: text(&self.templated[TOKEN]),
             },
+            AuthKind::JwtBearer => {
+                let algorithm = self.jwt_algorithm_now(cx);
+                let secret = if algorithm.is_symmetric() {
+                    text(&self.templated[JWT_SECRET])
+                } else {
+                    self.jwt_private_key.read(cx).value().to_string()
+                };
+                Auth::from(JwtBearer {
+                    algorithm,
+                    secret,
+                    secret_base64: algorithm.is_symmetric() && self.jwt_secret_base64,
+                    payload: self.jwt_payload.read(cx).value().to_string(),
+                    header: self.jwt_header.read(cx).value().to_string(),
+                    place: PLACES[self.jwt_place.read(cx).selected_value().copied().unwrap_or(0).min(1)],
+                    prefix: text(&self.templated[JWT_PREFIX]),
+                    query_param: text(&self.templated[JWT_QUERY_PARAM]),
+                })
+            }
             AuthKind::Digest => Auth::Digest {
                 username: text(&self.templated[USERNAME]),
                 password: text(&self.templated[PASSWORD]),
@@ -514,26 +659,35 @@ impl AuthEditor {
             AuthKind::OAuth2 => {
                 let grant = self.grant_now(cx);
                 let password = grant == Grant::Password;
-                let code = grant == Grant::AuthorizationCode;
-                // The user's only for the grant that sends them, and the
-                // browser's URL and port only for the one that opens one.
+                let browser = grant.uses_browser();
+                let implicit = grant == Grant::Implicit;
+                // The user's only for the grant that sends them, browser URL/port for
+                // browser grants, and token endpoint / secret only when exchanged.
                 let user = |field: usize| match password {
                     true => text(&self.templated[field]),
                     false => String::new(),
                 };
                 Auth::from(OAuth2 {
                     grant,
-                    token_url: text(&self.templated[TOKEN_URL]),
-                    authorization_url: match code {
+                    token_url: if implicit {
+                        String::new()
+                    } else {
+                        text(&self.templated[TOKEN_URL])
+                    },
+                    authorization_url: match browser {
                         true => text(&self.templated[AUTHORIZATION_URL]),
                         false => String::new(),
                     },
-                    redirect_port: match code {
+                    redirect_port: match browser {
                         true => self.port_now(cx),
                         false => 0,
                     },
                     client_id: text(&self.templated[CLIENT_ID]),
-                    client_secret: text(&self.templated[CLIENT_SECRET]),
+                    client_secret: if implicit {
+                        String::new()
+                    } else {
+                        text(&self.templated[CLIENT_SECRET])
+                    },
                     username: user(USERNAME),
                     password: user(PASSWORD),
                     scope: text(&self.templated[SCOPE]),
@@ -555,6 +709,11 @@ impl AuthEditor {
     fn grant_now(&self, cx: &App) -> Grant {
         let index = self.grant.read(cx).selected_value().copied().unwrap_or(0);
         GRANTS[index.min(GRANTS.len() - 1)]
+    }
+
+    fn jwt_algorithm_now(&self, cx: &App) -> JwtAlgorithm {
+        let index = self.jwt_algorithm.read(cx).selected_value().copied().unwrap_or(0);
+        JwtAlgorithm::ALL[index.min(JwtAlgorithm::ALL.len() - 1)]
     }
 
     /// Empty is any free port. A value that is not a port is none.
@@ -617,7 +776,7 @@ impl AuthEditor {
                 }
             };
             let listening = match this.update(cx, |_, cx| {
-                crate::this_build::listen_oauth(grant.port(), grant.state.clone(), cx)
+                crate::this_build::listen_oauth(grant.port(), grant.state.clone(), grant.is_implicit(), cx)
             }) {
                 Ok(task) => task,
                 Err(_) => return,
@@ -639,13 +798,13 @@ impl AuthEditor {
                 }
             };
             cx.update(|cx| cx.open_url(&url));
-            let code = match futures::future::select(
-                listened.code().boxed_local(),
+            let callback = match futures::future::select(
+                listened.finish().boxed_local(),
                 cx.background_executor().timer(AUTHORIZE_WAIT).boxed_local(),
             )
             .await
             {
-                futures::future::Either::Left((code, _)) => code,
+                futures::future::Either::Left((callback, _)) => callback,
                 futures::future::Either::Right((_, waiting)) => {
                     drop(waiting);
                     let text = t!("editor.auth_authorize_timeout").to_string();
@@ -653,19 +812,27 @@ impl AuthEditor {
                     return;
                 }
             };
-            let code = match code {
-                Ok(code) => code,
+            let callback = match callback {
+                Ok(callback) => callback,
                 Err(error) => {
                     settle(&this, cx, window, AuthNote::Failed(error.clone()), Some(error), false);
                     return;
                 }
             };
-            let exchanged = cx
-                .background_spawn(
-                    async move { cyberapi_service::exchange_code(&exchanging, &grant, bound, &code).await },
-                )
+            let authorized = cx
+                .background_spawn(async move {
+                    match callback {
+                        crate::this_build::OauthCallback::Code(code) => {
+                            cyberapi_service::exchange_code(&exchanging, &grant, bound, &code).await
+                        }
+                        crate::this_build::OauthCallback::Token(token) => {
+                            cyberapi_service::keep_token(&exchanging, &grant, token).await;
+                            Ok(())
+                        }
+                    }
+                })
                 .await;
-            match exchanged {
+            match authorized {
                 Ok(()) => {
                     let text = t!("editor.auth_authorized").to_string();
                     settle(&this, cx, window, AuthNote::Done, Some(text), true);
@@ -811,6 +978,27 @@ fn row(label: String, control: impl IntoElement) -> AnyElement {
         .into_any_element()
 }
 
+/// Top-aligned row for multi-line editor controls.
+fn top_row(label: String, control: impl IntoElement) -> AnyElement {
+    h_flex()
+        .w_full()
+        .gap_3()
+        .items_start()
+        .child(div().w(rems(7.)).pt_1().flex_none().text_sm().child(label))
+        .child(div().flex_1().min_w_0().child(control))
+        .into_any_element()
+}
+
+fn editor_box(editor: &Entity<EditorState>, height: gpui_kit::Rems, cx: &App) -> AnyElement {
+    div()
+        .h(height)
+        .border_1()
+        .border_color(cx.theme().border)
+        .rounded_md()
+        .child(Editor::new(editor).h_full().bordered(false))
+        .into_any_element()
+}
+
 impl Render for AuthEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let request = match &self.owner {
@@ -846,6 +1034,7 @@ impl Render for AuthEditor {
             AuthKind::Basic => t!("editor.auth_basic_hint"),
             AuthKind::Digest => t!("editor.auth_digest_hint"),
             AuthKind::Bearer => t!("editor.auth_bearer_hint"),
+            AuthKind::JwtBearer => t!("editor.auth_jwt_bearer_hint"),
             AuthKind::ApiKey if grpc => t!("editor.auth_api_key_grpc_hint"),
             AuthKind::ApiKey => t!("editor.auth_api_key_hint"),
             AuthKind::OAuth2 => t!("editor.auth_oauth2_hint"),
@@ -868,6 +1057,60 @@ impl Render for AuthEditor {
                 t!("editor.auth_token").to_string(),
                 self.templated_field(TOKEN, cx),
             )),
+            AuthKind::JwtBearer => {
+                let alg = self.jwt_algorithm_now(cx);
+                rows.push(row(
+                    t!("editor.auth_jwt_algorithm").to_string(),
+                    narrow(Select::new(&self.jwt_algorithm)),
+                ));
+                if alg.is_symmetric() {
+                    rows.push(row(
+                        t!("editor.auth_jwt_secret").to_string(),
+                        self.templated_field(JWT_SECRET, cx),
+                    ));
+                    rows.push(row(
+                        String::new(),
+                        Checkbox::new("jwt-secret-base64")
+                            .checked(self.jwt_secret_base64)
+                            .label(t!("editor.auth_jwt_base64").to_string())
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.jwt_secret_base64 = *checked;
+                                this.write(cx);
+                            })),
+                    ));
+                } else {
+                    rows.push(top_row(
+                        t!("editor.auth_jwt_private_key").to_string(),
+                        editor_box(&self.jwt_private_key, rems(6.), cx),
+                    ));
+                }
+                rows.push(top_row(
+                    t!("editor.auth_jwt_payload").to_string(),
+                    editor_box(&self.jwt_payload, rems(7.), cx),
+                ));
+                rows.push(top_row(
+                    t!("editor.auth_jwt_header").to_string(),
+                    editor_box(&self.jwt_header, rems(4.5), cx),
+                ));
+                let jwt_place = PLACES[self.jwt_place.read(cx).selected_value().copied().unwrap_or(0).min(1)];
+                if !grpc {
+                    rows.push(row(
+                        t!("editor.auth_place").to_string(),
+                        narrow(Select::new(&self.jwt_place)),
+                    ));
+                }
+                if grpc || jwt_place == KeyPlace::Header {
+                    rows.push(row(
+                        t!("editor.auth_jwt_prefix").to_string(),
+                        self.templated_field(JWT_PREFIX, cx),
+                    ));
+                } else {
+                    rows.push(row(
+                        t!("editor.auth_jwt_query_param").to_string(),
+                        self.templated_field(JWT_QUERY_PARAM, cx),
+                    ));
+                }
+            }
             AuthKind::ApiKey => {
                 rows.push(row(
                     t!("editor.auth_key_name").to_string(),
@@ -889,7 +1132,8 @@ impl Render for AuthEditor {
                 let grant_list = div().w(rems(14.)).child(Select::new(&self.grant).small());
                 rows.push(row(t!("editor.auth_grant").to_string(), grant_list));
                 let grant = self.grant_now(cx);
-                if grant == Grant::AuthorizationCode {
+                let implicit = grant == Grant::Implicit;
+                if grant.uses_browser() {
                     rows.push(row(
                         t!("editor.auth_authorization_url").to_string(),
                         self.templated_field(AUTHORIZATION_URL, cx),
@@ -922,11 +1166,16 @@ impl Render for AuthEditor {
                         };
                         rows.push(div().text_xs().text_color(color).child(note.text()).into_any_element());
                     }
+                    let browser_hint = if implicit {
+                        t!("editor.auth_implicit_hint")
+                    } else {
+                        t!("editor.auth_code_hint")
+                    };
                     rows.push(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(t!("editor.auth_code_hint").to_string())
+                            .child(browser_hint.to_string())
                             .into_any_element(),
                     );
                     if !crate::this_build::opens_oauth_browser() {
@@ -939,18 +1188,22 @@ impl Render for AuthEditor {
                         );
                     }
                 }
-                rows.push(row(
-                    t!("editor.auth_token_url").to_string(),
-                    self.templated_field(TOKEN_URL, cx),
-                ));
+                if !implicit {
+                    rows.push(row(
+                        t!("editor.auth_token_url").to_string(),
+                        self.templated_field(TOKEN_URL, cx),
+                    ));
+                }
                 rows.push(row(
                     t!("editor.auth_client_id").to_string(),
                     self.templated_field(CLIENT_ID, cx),
                 ));
-                rows.push(row(
-                    t!("editor.auth_client_secret").to_string(),
-                    self.templated_field(CLIENT_SECRET, cx),
-                ));
+                if !implicit {
+                    rows.push(row(
+                        t!("editor.auth_client_secret").to_string(),
+                        self.templated_field(CLIENT_SECRET, cx),
+                    ));
+                }
                 if grant == Grant::Password {
                     rows.push(row(t!("editor.user").to_string(), self.templated_field(USERNAME, cx)));
                     rows.push(row(
@@ -970,10 +1223,12 @@ impl Render for AuthEditor {
                     t!("editor.auth_resource").to_string(),
                     self.templated_field(RESOURCE, cx),
                 ));
-                rows.push(row(
-                    t!("editor.auth_client_auth").to_string(),
-                    narrow(Select::new(&self.client_auth)),
-                ));
+                if !implicit {
+                    rows.push(row(
+                        t!("editor.auth_client_auth").to_string(),
+                        narrow(Select::new(&self.client_auth)),
+                    ));
+                }
             }
             AuthKind::AwsSigV4 => {
                 rows.push(row(

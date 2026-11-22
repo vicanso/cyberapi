@@ -20,7 +20,7 @@
 | `.http` | VS Code REST Client 和 JetBrains HTTP Client（*0.4.1*）。`###` 分隔请求。`@名称 = 值` 成为各环境共用的变量。`http-client.env.json` 或 `rest-client.environmentVariables` 成为命名环境。`{{$uuid}}`、`{{$timestamp}}`、`{{$randomInt 1 10}}`、`{{$processEnv NAME}}` 等换成本应用的模板函数。`# @prompt` 在发送时询问。响应处理脚本不导入。私有文件 `http-client.private.env.json` 的值以明文导入，不要放进团队共用的项目。 |
 | cURL | 粘贴一条命令即成为一个接口。 |
 
-对得上的认证会一起进来：Basic、Bearer、API Key、Digest、OAuth 2.0 的客户端凭据、密码和授权码（*0.3.1*），以及 AWS SigV4（Postman、Insomnia、Bruno）。没有对应种类的按继承处理。
+对得上的认证会一起进来：Basic、Bearer、JWT Bearer、API Key、Digest、OAuth 2.0 的客户端凭据、密码、授权码（*0.3.1*）和隐式授权，以及 AWS SigV4（Postman、Insomnia、Bruno）。没有对应种类的按继承处理。
 
 项目已经有认证时，保留项目的。同名环境（不分大小写）只补上还没有的变量。二进制 / 文件请求体（Postman `mode: file`、Insomnia、HAR、Bruno、OpenAPI 以及 cURL 的 `-T` / `--data-binary @`）导入为二进制请求体。
 

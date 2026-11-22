@@ -54,7 +54,7 @@ pub use mock::MockServer;
 #[cfg(not(target_family = "wasm"))]
 pub use native::NativeEngine;
 #[cfg(not(target_family = "wasm"))]
-pub use oauth_callback::CallbackListener;
+pub use oauth_callback::{CallbackKind, CallbackListener, CallbackOutcome};
 pub use policy::TargetPolicy;
 
 use cyberapi_core::response::HttpStats;

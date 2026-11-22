@@ -508,23 +508,45 @@ fn scheme(auth: &Auth) -> Option<(String, Value)> {
         Auth::Inherit | Auth::None | Auth::AwsSigV4(_) => return None,
         Auth::Basic { .. } => ("basicAuth".into(), json!({"type": "http", "scheme": "basic"})),
         Auth::Bearer { .. } => ("bearerAuth".into(), json!({"type": "http", "scheme": "bearer"})),
+        Auth::JwtBearer(jwt) => match jwt.place {
+            KeyPlace::Header => (
+                "bearerAuth".into(),
+                json!({"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}),
+            ),
+            KeyPlace::Query => {
+                let param = jwt.effective_query_param();
+                let safe: String = param
+                    .chars()
+                    .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                    .collect();
+                (
+                    format!("jwt_query_{safe}"),
+                    json!({"type": "apiKey", "in": "query", "name": param}),
+                )
+            }
+        },
         Auth::Digest { .. } => ("digestAuth".into(), json!({"type": "http", "scheme": "digest"})),
-        // C4: the flow, where its token is had and the scopes it asks.
+        // C4 / R6: the flow, where its token is had and the scopes it asks.
         Auth::OAuth2(oauth) => {
             let flow = match oauth.grant {
                 Grant::ClientCredentials => "clientCredentials",
                 Grant::Password => "password",
                 Grant::AuthorizationCode => "authorizationCode",
+                Grant::Implicit => "implicit",
             };
             let scopes: Map<String, Value> = oauth
                 .scope
                 .split_whitespace()
                 .map(|scope| (scope.to_string(), json!("")))
                 .collect();
-            let mut body = json!({"tokenUrl": oauth.token_url.trim(), "scopes": scopes});
-            if oauth.grant == Grant::AuthorizationCode {
-                body["authorizationUrl"] = json!(oauth.authorization_url.trim());
+            let mut body = Map::new();
+            if oauth.grant != Grant::Implicit {
+                body.insert("tokenUrl".into(), json!(oauth.token_url.trim()));
             }
+            if oauth.grant.uses_browser() {
+                body.insert("authorizationUrl".into(), json!(oauth.authorization_url.trim()));
+            }
+            body.insert("scopes".into(), Value::Object(scopes));
             ("oauth2".into(), json!({"type": "oauth2", "flows": {flow: body}}))
         }
         Auth::ApiKey { name, place, .. } => {

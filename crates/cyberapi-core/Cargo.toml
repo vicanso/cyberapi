@@ -17,6 +17,7 @@ imagesize = { workspace = true }
 hmac = { workspace = true }
 jsonpath-rust = { workspace = true }
 jsonschema = { workspace = true }
+jsonwebtoken = { workspace = true }
 md-5 = { workspace = true }
 mime_guess = { workspace = true }
 percent-encoding = { workspace = true }
@@ -36,6 +37,11 @@ url = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+# jsonwebtoken 10's rust_crypto backend pulls in getrandom 0.2 (via rand 0.8 / rsa / p256);
+# enable its `js` feature so signing randomness works on wasm32.
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
 [build-dependencies]
 jiff = { workspace = true }

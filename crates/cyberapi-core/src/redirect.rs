@@ -63,9 +63,10 @@ pub fn next(request: &PreparedRequest, status: u16, headers: &[(String, String)]
     }
     if origin(&from) != origin(&to) {
         drop_headers(&mut next, &ORIGIN_HEADERS);
-        // A Digest or OAuth login, like the Authorization it would make.
+        // A Digest, OAuth or JWT Bearer credential stays on its original origin.
         next.digest = None;
         next.oauth = None;
+        next.jwt_bearer = false;
     }
     next.url = to.to_string();
     Some(next)
@@ -109,6 +110,7 @@ mod tests {
             }),
             oauth: None,
             aws_sigv4: None,
+            jwt_bearer: false,
             tls: Default::default(),
         }
     }

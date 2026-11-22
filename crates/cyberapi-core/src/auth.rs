@@ -9,6 +9,7 @@
 
 use crate::aws_sigv4::{AwsSigV4, AwsSigV4Login};
 use crate::digest::DigestLogin;
+use crate::jwt_bearer::{JwtBearer, JwtBearerLogin};
 use crate::model::KvParam;
 use crate::oauth::{OAuth2, OAuthLogin};
 use base64::Engine as _;
@@ -34,6 +35,9 @@ pub enum Auth {
         #[serde(default)]
         token: String,
     },
+    /// R6: a JSON Web Token (`crate::jwt_bearer`), signed right before sending.
+    #[serde(rename = "jwtBearer")]
+    JwtBearer(Box<JwtBearer>),
     /// C2: a user and a password, answering the server's challenge
     /// (`crate::digest`).
     Digest {
@@ -74,6 +78,12 @@ impl From<AwsSigV4> for Auth {
     }
 }
 
+impl From<JwtBearer> for Auth {
+    fn from(jwt: JwtBearer) -> Self {
+        Self::JwtBearer(Box::new(jwt))
+    }
+}
+
 /// Where an API key goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,11 +102,12 @@ pub enum Signed {
 
 impl Auth {
     /// The kinds, in the order the editor offers them.
-    pub const KINDS: [AuthKind; 8] = [
+    pub const KINDS: [AuthKind; 9] = [
         AuthKind::Inherit,
         AuthKind::None,
         AuthKind::Basic,
         AuthKind::Bearer,
+        AuthKind::JwtBearer,
         AuthKind::ApiKey,
         AuthKind::Digest,
         AuthKind::OAuth2,
@@ -113,6 +124,7 @@ impl Auth {
             Self::None => AuthKind::None,
             Self::Basic { .. } => AuthKind::Basic,
             Self::Bearer { .. } => AuthKind::Bearer,
+            Self::JwtBearer(_) => AuthKind::JwtBearer,
             Self::ApiKey { .. } => AuthKind::ApiKey,
             Self::Digest { .. } => AuthKind::Digest,
             Self::OAuth2(_) => AuthKind::OAuth2,
@@ -126,6 +138,7 @@ impl Auth {
             self,
             Self::Basic { .. }
                 | Self::Bearer { .. }
+                | Self::JwtBearer(_)
                 | Self::ApiKey { .. }
                 | Self::Digest { .. }
                 | Self::OAuth2(_)
@@ -142,8 +155,13 @@ impl Auth {
                 !username.trim().is_empty() || !password.trim().is_empty()
             }
             Self::Bearer { token } => !token.trim().is_empty(),
+            Self::JwtBearer(jwt) => jwt.has_credentials(),
             Self::ApiKey { name, value, .. } => !name.trim().is_empty() && !value.trim().is_empty(),
-            Self::OAuth2(oauth) => !oauth.token_url.trim().is_empty() || !oauth.client_id.trim().is_empty(),
+            Self::OAuth2(oauth) => {
+                !oauth.token_url.trim().is_empty()
+                    || !oauth.authorization_url.trim().is_empty()
+                    || !oauth.client_id.trim().is_empty()
+            }
             Self::AwsSigV4(aws) => aws.has_credentials(),
         }
     }
@@ -162,11 +180,12 @@ impl Auth {
 
     /// The texts that are templates: Basic's and Digest's user and
     /// password, the token, the key's value, OAuth's (`OAuth2::templates`),
-    /// AWS SigV4's (`AwsSigV4::templates`).
+    /// JWT Bearer's (`JwtBearer::templates`), AWS SigV4's (`AwsSigV4::templates`).
     pub fn templates(&self) -> Vec<&str> {
         match self {
             Self::Basic { username, password } | Self::Digest { username, password } => vec![username, password],
             Self::Bearer { token } => vec![token],
+            Self::JwtBearer(jwt) => jwt.templates(),
             Self::ApiKey { value, .. } => vec![value],
             Self::OAuth2(oauth) => oauth.templates(),
             Self::AwsSigV4(aws) => aws.templates(),
@@ -175,14 +194,15 @@ impl Auth {
     }
 
     /// The name of the header it sends, if it sends one — Digest's goes
-    /// once the server asks for it, OAuth's once there is a token, AWS SigV4's
-    /// once the body is finalized. A call with no query (gRPC: `query` false)
-    /// sends its key as a header too.
+    /// once the server asks for it, OAuth's once there is a token, JWT Bearer's
+    /// and AWS SigV4's right before sending. A call with no query (`query` false)
+    /// sends its key or JWT as a header too.
     pub fn header_name(&self, query: bool) -> Option<&str> {
         match self {
             Self::Basic { .. } | Self::Bearer { .. } | Self::Digest { .. } | Self::OAuth2(_) | Self::AwsSigV4(_) => {
                 Some("Authorization")
             }
+            Self::JwtBearer(jwt) if jwt.place == KeyPlace::Header || !query => Some("Authorization"),
             Self::ApiKey { name, place, .. } if *place == KeyPlace::Header || !query => {
                 Some(name.trim()).filter(|name| !name.is_empty())
             }
@@ -204,17 +224,26 @@ impl Auth {
                 let name = name.trim();
                 on(query_list, &|key| key == name).then(|| (false, name.to_string()))
             }
+            Self::JwtBearer(jwt) if query => {
+                let name = jwt.effective_query_param();
+                on(query_list, &|key| key == name).then(|| (false, name.to_string()))
+            }
             _ => None,
         }
     }
 
     /// What it adds to a request, its templates rendered by `render`: a
     /// header, a query parameter, or nothing (inheriting, none, a key with
-    /// no name, Digest until the server asks, OAuth until the service has a
-    /// token). A call with no query takes its key as a header.
+    /// no name, Digest until the server asks, OAuth/JWT/SigV4 until signed).
+    /// A call with no query takes its key as a header.
     pub fn sign<E>(&self, query: bool, render: impl Fn(&str) -> Result<String, E>) -> Result<Option<Signed>, E> {
         Ok(match self {
-            Self::Inherit | Self::None | Self::Digest { .. } | Self::OAuth2(_) | Self::AwsSigV4(_) => None,
+            Self::Inherit
+            | Self::None
+            | Self::Digest { .. }
+            | Self::OAuth2(_)
+            | Self::JwtBearer(_)
+            | Self::AwsSigV4(_) => None,
             Self::Basic { username, password } => {
                 let pair = format!("{}:{}", render(username)?, render(password)?);
                 Some(Signed::Header {
@@ -269,6 +298,14 @@ impl Auth {
             _ => None,
         })
     }
+
+    /// R6: JWT Bearer parameters, rendered by `render`.
+    pub fn jwt_bearer_login<E>(&self, render: impl Fn(&str) -> Result<String, E>) -> Result<Option<JwtBearerLogin>, E> {
+        Ok(match self {
+            Self::JwtBearer(jwt) => Some(jwt.login(render)?),
+            _ => None,
+        })
+    }
 }
 
 /// An [`Auth`]'s kind, without its values: what the editor's list picks.
@@ -278,6 +315,7 @@ pub enum AuthKind {
     None,
     Basic,
     Bearer,
+    JwtBearer,
     ApiKey,
     Digest,
     OAuth2,

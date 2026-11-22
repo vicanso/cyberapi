@@ -189,6 +189,66 @@ fn auth(value: &Value, target: &str, lost: &mut Vec<Lost>) -> Option<Auth> {
             password: field("password"),
         },
         "bearer" => Auth::Bearer { token: field("token") },
+        "jwt" => {
+            use crate::jwt_bearer::{JwtAlgorithm, JwtBearer};
+            let raw_alg = field("algorithm");
+            let algorithm = if raw_alg.trim().is_empty() {
+                JwtAlgorithm::HS256
+            } else if let Some(alg) = JwtAlgorithm::parse(&raw_alg) {
+                alg
+            } else {
+                lost::push_auth(lost, target, &format!("jwt ({})", raw_alg.trim()));
+                return None;
+            };
+            let payload = {
+                let p = field("payload");
+                if p.trim().is_empty() { "{}".into() } else { p }
+            };
+            let place_str = {
+                let a = field("addTokenTo");
+                if !a.is_empty() {
+                    a
+                } else {
+                    let b = field("addTo");
+                    if !b.is_empty() { b } else { field("placement") }
+                }
+            };
+            let place = if matches!(place_str.trim(), "query" | "queryParam" | "queryParams") {
+                KeyPlace::Query
+            } else {
+                KeyPlace::Header
+            };
+            let prefix = value
+                .get("headerPrefix")
+                .or_else(|| value.get("prefix"))
+                .and_then(Value::as_str)
+                .map(variables)
+                .unwrap_or_else(|| "Bearer".into());
+            let secret_base64 = value
+                .get("isSecretBase64Encoded")
+                .or_else(|| value.get("secretBase64"))
+                .and_then(Value::as_bool)
+                .unwrap_or_else(|| field("isSecretBase64Encoded").eq_ignore_ascii_case("true"));
+            let query_param = {
+                let q = field("queryParamKey");
+                if !q.trim().is_empty() {
+                    q
+                } else {
+                    let q2 = field("queryParam");
+                    if q2.trim().is_empty() { "token".into() } else { q2 }
+                }
+            };
+            Auth::from(JwtBearer {
+                algorithm,
+                secret: field("secret"),
+                secret_base64,
+                payload,
+                header: field("header"),
+                place,
+                prefix,
+                query_param,
+            })
+        }
         "apikey" => Auth::ApiKey {
             name: field("key"),
             value: field("value"),
@@ -205,6 +265,7 @@ fn auth(value: &Value, target: &str, lost: &mut Vec<Lost>) -> Option<Auth> {
                 "client_credentials" => Grant::ClientCredentials,
                 "password" => Grant::Password,
                 "authorization_code" => Grant::AuthorizationCode,
+                "implicit" => Grant::Implicit,
                 _ => {
                     let kind = if grant_type.trim().is_empty() {
                         "oauth2".to_string()
@@ -498,7 +559,7 @@ mod tests {
                  "url": "https://a.test/{% uuid 'v4' %}",
                  "headers": [{"name": "X-A", "value": "{% now 'iso-8601' %}"}],
                  "body": {"mimeType": "image/png", "fileName": "/tmp/a.bin"},
-                 "authentication": {"type": "oauth2", "grantType": "implicit"},
+                 "authentication": {"type": "oauth2", "grantType": "device_code"},
                  "preRequestScript": "console.log('req');",
                  "afterResponseScript": "insomnia.test('ok', () => {});"}
             ]
@@ -552,7 +613,7 @@ mod tests {
                 Lost {
                     target: "Auth / Upload".into(),
                     kind: LostKind::Auth {
-                        kind: "oauth2 (implicit)".into(),
+                        kind: "oauth2 (device_code)".into(),
                     },
                 },
                 Lost {
@@ -608,6 +669,56 @@ mod tests {
                     source: "console.log('logged in');".into(),
                 },
             }]
+        );
+    }
+
+    #[test]
+    fn jwt_and_implicit_oauth_import() {
+        use crate::jwt_bearer::{JwtAlgorithm, JwtBearer};
+        let doc = r#"{
+            "_type": "export",
+            "__export_format": 4,
+            "resources": [
+                {"_id": "wrk_1", "_type": "workspace", "name": "Shop"},
+                {"_id": "req_jwt", "_type": "request", "parentId": "wrk_1", "name": "JwtApi", "method": "GET",
+                 "url": "https://a.test/jwt",
+                 "authentication": {"type": "jwt", "algorithm": "HS384", "secret": "{{ _.jwtKey }}", "secretBase64": true,
+                    "payload": "{\"sub\":\"u1\"}", "header": "{\"kid\":\"1\"}", "addTokenTo": "query", "queryParamKey": "auth", "headerPrefix": ""}},
+                {"_id": "req_imp", "_type": "request", "parentId": "wrk_1", "name": "ImpApi", "method": "GET",
+                 "url": "https://a.test/imp",
+                 "authentication": {"type": "oauth2", "grantType": "implicit", "authorizationUrl": "https://id.test/auth", "clientId": "spa", "scope": "read"}}
+            ]
+        }"#;
+        let bundle = super::super::parse(doc).expect("parsed");
+        assert!(bundle.lost.is_empty(), "{:?}", bundle.lost);
+        let ImportItem::Api { request: jwt_req, .. } = &bundle.items[0] else {
+            panic!("jwt api");
+        };
+        assert_eq!(
+            jwt_req.auth,
+            Auth::from(JwtBearer {
+                algorithm: JwtAlgorithm::HS384,
+                secret: "{{jwtKey}}".into(),
+                secret_base64: true,
+                payload: r#"{"sub":"u1"}"#.into(),
+                header: r#"{"kid":"1"}"#.into(),
+                place: KeyPlace::Query,
+                prefix: String::new(),
+                query_param: "auth".into(),
+            })
+        );
+        let ImportItem::Api { request: imp_req, .. } = &bundle.items[1] else {
+            panic!("imp api");
+        };
+        assert_eq!(
+            imp_req.auth,
+            Auth::from(OAuth2 {
+                grant: Grant::Implicit,
+                authorization_url: "https://id.test/auth".into(),
+                client_id: "spa".into(),
+                scope: "read".into(),
+                ..Default::default()
+            })
         );
     }
 }

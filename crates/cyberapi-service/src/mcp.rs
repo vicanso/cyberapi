@@ -431,6 +431,18 @@ fn auth_json(auth: &Auth) -> Json {
             json!({ "type": "basic", "username": username, "password": masked("password", password) })
         }
         Auth::Bearer { token } => json!({ "type": "bearer", "token": masked("token", token) }),
+        Auth::JwtBearer(jwt) => json!({
+            "type": "jwtBearer",
+            "algorithm": jwt.algorithm.as_str(),
+            "secret": masked("secret", &jwt.secret),
+            "secretBase64": jwt.secret_base64,
+            "place": match jwt.place {
+                KeyPlace::Header => "header",
+                KeyPlace::Query => "query",
+            },
+            "prefix": jwt.prefix,
+            "queryParam": jwt.effective_query_param(),
+        }),
         Auth::Digest { username, password } => {
             json!({ "type": "digest", "username": username, "password": masked("password", password) })
         }
@@ -443,13 +455,14 @@ fn auth_json(auth: &Auth) -> Json {
             },
             "value": masked("token", value),
         }),
-        // C4: where its token is had, the secrets masked.
+        // C4 / R6: where its token is had, the secrets masked.
         Auth::OAuth2(oauth) => json!({
             "type": "oauth2",
             "grant": match oauth.grant {
                 Grant::ClientCredentials => "client_credentials",
                 Grant::Password => "password",
                 Grant::AuthorizationCode => "authorization_code",
+                Grant::Implicit => "implicit",
             },
             "tokenUrl": oauth.token_url,
             "authorizationUrl": oauth.authorization_url,
