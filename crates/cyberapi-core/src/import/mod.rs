@@ -42,6 +42,7 @@ mod opencollection;
 mod own;
 mod postman;
 mod script;
+mod thunder;
 
 pub use lost::{Lost, LostGroup, LostKind, ScriptPhase, group as group_lost};
 pub use own::{api_config, export, parse_own, tree_data};
@@ -200,6 +201,8 @@ pub enum Format {
     Har,
     Hoppscotch,
     HoppscotchEnvironment,
+    ThunderClient,
+    ThunderClientEnvironment,
     Bruno,
     OpenCollection,
     /// B8: a `.http` file.
@@ -248,6 +251,8 @@ pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportE
         serde_json::Value::Object(map) if map.contains_key("resources") => Format::Insomnia,
         serde_json::Value::Object(map) if map.get("log").is_some_and(|log| log.get("entries").is_some()) => Format::Har,
         json if opencollection::is_opencollection(json) => Format::OpenCollection,
+        json if thunder::is_collection(json) => Format::ThunderClient,
+        json if thunder::is_environment(json) => Format::ThunderClientEnvironment,
         json if hoppscotch::is_collection(json) => Format::Hoppscotch,
         json if hoppscotch::is_environment(json) => Format::HoppscotchEnvironment,
         json if http_file::is_environment(json) => Format::HttpEnvironment,
@@ -349,6 +354,8 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
         (Format::Har, Some(json)) => har::parse(&json),
         (Format::Hoppscotch, Some(json)) => hoppscotch::parse(&json),
         (Format::HoppscotchEnvironment, Some(json)) => hoppscotch::parse_environment(&json),
+        (Format::ThunderClient, Some(json)) => thunder::parse(&json),
+        (Format::ThunderClientEnvironment, Some(json)) => thunder::parse_environment(&json),
         (Format::OpenCollection, Some(json)) => opencollection::parse(&json),
         (_, Some(json)) => own::parse_value(&json),
         (_, None) => ImportBundle::default(),
@@ -373,6 +380,7 @@ fn json_name(format: Format, json: &serde_json::Value) -> Option<String> {
         Format::Postman => text(json.pointer("/info/name")),
         Format::OpenCollection if json.get("opencollection").is_some() => text(json.pointer("/info/name")),
         Format::Hoppscotch => hoppscotch::name(json).map(str::trim),
+        Format::ThunderClient => thunder::name(json).map(str::trim),
         Format::Swagger | Format::OpenApi => text(json.pointer("/info/title")),
         Format::Insomnia => json
             .get("resources")
@@ -384,6 +392,7 @@ fn json_name(format: Format, json: &serde_json::Value) -> Option<String> {
         | Format::PostmanEnvironment
         | Format::Har
         | Format::HoppscotchEnvironment
+        | Format::ThunderClientEnvironment
         | Format::Bruno
         | Format::OpenCollection
         | Format::Http
@@ -873,6 +882,14 @@ mod tests {
         assert_eq!(
             format(r#"{"name": "dev", "variables": [{"key": "a", "value": "1"}]}"#),
             Ok(Format::HoppscotchEnvironment)
+        );
+        assert_eq!(
+            format(r#"{"clientName": "Thunder Client", "collectionName": "a", "folders": [], "requests": []}"#),
+            Ok(Format::ThunderClient)
+        );
+        assert_eq!(
+            format(r#"{"clientName": "Thunder Client", "environmentName": "dev", "data": []}"#),
+            Ok(Format::ThunderClientEnvironment)
         );
         assert_eq!(format("meta {\n  name: a\n}\nget {\n  url: /a\n}\n"), Ok(Format::Bruno));
         // B8.

@@ -52,7 +52,7 @@ A version in italics is in nightly builds until that release.
 - Fetch the endpoint's schema and the editor completes fields, arguments and enum values. Browse the schema and click a field to put it in the query.
 - A subscription sent over HTTP shows results as they arrive when the server answers with an event stream (GraphQL Yoga, graphql-sse).
 - An address of `ws://` or `wss://` subscribes with graphql-transport-ws. **Subscribe** opens it. Each `next` or `error` shows as it comes, and the conversation is kept in the history when it ends. Desktop only, as WebSocket is. An HTTP subscription is unchanged.
-- GraphQL requests from Postman, Insomnia, Hoppscotch and Bruno stay GraphQL.
+- GraphQL requests from Postman, Insomnia, Hoppscotch, Thunder Client and Bruno stay GraphQL.
 
 ## gRPC
 
@@ -111,7 +111,7 @@ Saved from each response and sent with the requests they match, across every pro
 
 Paste a cURL command to make an API, or copy any request as cURL, HTTPie, JavaScript `fetch`, Node axios, Python `requests`, PHP Guzzle, Go `net/http`, Rust reqwest, Java or C# `HttpClient`, or Swift `URLSession`.
 
-Import Postman, Insomnia, Hoppscotch, Bruno, Swagger 2 / OpenAPI 3, HAR, `.http` files and cURL. Common Postman, Bruno and Insomnia test / post-response scripts convert statically to native assertions and extractions (unconverted statements are appended to the API description). Importing again updates matching APIs by default and keeps the values you typed, and an import report lists any unconverted scripts, unrecognized templates, or unsupported auth and bodies that could not be imported as-is. A project or folder can remember the address it came from and sync later.
+Import Postman, Insomnia, Hoppscotch, Thunder Client, Bruno, Swagger 2 / OpenAPI 3, HAR, `.http` files and cURL. Common Postman, Bruno and Insomnia test / post-response scripts convert statically to native assertions and extractions (unconverted statements are appended to the API description). Importing again updates matching APIs by default and keeps the values you typed, and an import report lists any unconverted scripts, unrecognized templates, or unsupported auth and bodies that could not be imported as-is. A project or folder can remember the address it came from and sync later.
 
 [Import and export](./IMPORT.md) — formats, what an update keeps, export. [Sync from a source](./SOURCE.md) — a bound document, including a scheduled sync that follows the document and leaves your values and secrets.
 
