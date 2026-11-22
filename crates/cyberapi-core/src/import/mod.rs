@@ -29,6 +29,7 @@
 //! so importing a file twice clashed, and retried APIs left their folders
 //! pointing at the old ids (#7). A store gives every item a new id.
 
+mod apidog;
 mod bruno;
 mod curl;
 mod har;
@@ -205,6 +206,7 @@ pub enum Format {
     ThunderClient,
     ThunderClientEnvironment,
     Yaak,
+    Apidog,
     Bruno,
     OpenCollection,
     /// B8: a `.http` file.
@@ -251,6 +253,7 @@ pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportE
             Format::PostmanEnvironment
         }
         json if yaak::is_yaak(json) => Format::Yaak,
+        json if apidog::is_apidog(json) => Format::Apidog,
         serde_json::Value::Object(map) if map.get("resources").is_some_and(serde_json::Value::is_array) => {
             Format::Insomnia
         }
@@ -362,6 +365,7 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
         (Format::ThunderClient, Some(json)) => thunder::parse(&json),
         (Format::ThunderClientEnvironment, Some(json)) => thunder::parse_environment(&json),
         (Format::Yaak, Some(json)) => yaak::parse(&json),
+        (Format::Apidog, Some(json)) => apidog::parse(&json),
         (Format::OpenCollection, Some(json)) => opencollection::parse(&json),
         (_, Some(json)) => own::parse_value(&json),
         (_, None) => ImportBundle::default(),
@@ -388,6 +392,7 @@ fn json_name(format: Format, json: &serde_json::Value) -> Option<String> {
         Format::Hoppscotch => hoppscotch::name(json).map(str::trim),
         Format::ThunderClient => thunder::name(json).map(str::trim),
         Format::Yaak => yaak::name(json).map(str::trim),
+        Format::Apidog => apidog::name(json).map(str::trim),
         Format::Swagger | Format::OpenApi => text(json.pointer("/info/title")),
         Format::Insomnia => json
             .get("resources")
@@ -901,6 +906,14 @@ mod tests {
         assert_eq!(
             format(r#"{"yaakVersion": "2025.4.0", "yaakSchema": 4, "resources": {"workspaces": []}}"#),
             Ok(Format::Yaak)
+        );
+        assert_eq!(
+            format(r#"{"apidogProject": "1.0.0", "apiCollection": []}"#),
+            Ok(Format::Apidog)
+        );
+        assert_eq!(
+            format(r#"{"apifoxProject": "1.0.0", "apiCollection": []}"#),
+            Ok(Format::Apidog)
         );
         assert_eq!(format("meta {\n  name: a\n}\nget {\n  url: /a\n}\n"), Ok(Format::Bruno));
         // B8.

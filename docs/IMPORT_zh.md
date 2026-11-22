@@ -16,19 +16,20 @@
 | Hoppscotch | 单个集合、“全部导出”，或环境。 |
 | Thunder Client | 集合（目录、`baseUrl`、认证、表单/GraphQL/二进制请求体、声明式测试与 `set-env-var` 提取）或环境导出。脚本与不支持的规则记入导入报告。 |
 | Yaak | 导出 JSON（工作区、目录、HTTP / GraphQL / WebSocket / gRPC 请求、共享与命名环境、认证）。常见的 `${[ var ]}`、`${[ uuid.v4() ]}`、`${[ timestamp.unix() ]}` 与 `${[ timestamp.iso8601() ]}` 自动转换；其余 `${[ … ]}` 标签及不支持的认证与请求体记入导入报告。 |
+| Apidog | 项目导出 JSON（`apidogProject` / `apifoxProject`：目录、环境与 Base URL、参数说明及 Schema 元信息、请求与响应 Schema、响应示例、认证、声明式后置断言/提取，以及常见 `customScript` 脚本静态转换）。未转换的脚本或规则记入导入报告。 |
 | Bruno | `.bru` 请求或环境，或 OpenCollection 的 YAML 导出。`{{process.env.NAME}}` 变成 `{{env(NAME)}}`。常见的 `tests`、`script:post-response`、`vars:post-response` 和 `assert` 块转为断言和提取。 |
 | Swagger 2 / OpenAPI 3 | JSON 或 YAML。安全方案成为项目认证，值由你填。操作自己的方案写在那个接口上。第一个 2xx 的 JSON 响应 Schema 成为一条来自导入的 Schema 检查。 |
 | HAR | 浏览器开发者工具里的接口调用。页面加载的图片、脚本和样式不算。每个主机一个目录。 |
 | `.http` | VS Code REST Client 和 JetBrains HTTP Client（*0.4.1*）。`###` 分隔请求。`@名称 = 值` 成为各环境共用的变量。`http-client.env.json` 或 `rest-client.environmentVariables` 成为命名环境。`{{$uuid}}`、`{{$timestamp}}`、`{{$randomInt 1 10}}`、`{{$processEnv NAME}}` 等换成本应用的模板函数。`# @prompt` 在发送时询问。响应处理脚本不导入。私有文件 `http-client.private.env.json` 的值以明文导入，不要放进团队共用的项目。 |
 | cURL | 粘贴一条命令即成为一个接口。 |
 
-对得上的认证会一起进来：Basic、Bearer、JWT Bearer、API Key、Digest、OAuth 2.0 的客户端凭据、密码、授权码（*0.3.1*）和隐式授权，以及 AWS SigV4（Postman、Insomnia、Bruno、Thunder Client、Yaak）。没有对应种类的按继承处理。
+对得上的认证会一起进来：Basic、Bearer、JWT Bearer、API Key、Digest、OAuth 2.0 的客户端凭据、密码、授权码（*0.3.1*）和隐式授权，以及 AWS SigV4（Postman、Insomnia、Bruno、Thunder Client、Yaak、Apidog）。没有对应种类的按继承处理。
 
-项目已经有认证时，保留项目的。同名环境（不分大小写）只补上还没有的变量。二进制 / 文件请求体（Postman `mode: file`、Insomnia、HAR、Bruno、Thunder Client、Yaak、OpenAPI 以及 cURL 的 `-T` / `--data-binary @`）导入为二进制请求体。
+项目已经有认证时，保留项目的。同名环境（不分大小写）只补上还没有的变量。二进制 / 文件请求体（Postman `mode: file`、Insomnia、HAR、Bruno、Thunder Client、Yaak、Apidog、OpenAPI 以及 cURL 的 `-T` / `--data-binary @`）导入为二进制请求体。
 
 只有一行地址的文本不当作 `.http` 文件，用“获取”。
 
-Postman、Bruno（`.bru` 与 OpenCollection）和 Insomnia 里常见的测试与后置脚本（状态码、响应头、JSONPath、响应体文本与耗时检查，以及从响应 JSON、请求头、状态或正文提取变量）会不执行 JS 地按模式转为原生断言与提取；转不了的语句（含前置脚本）会以代码块追加到接口说明，并在下方列出。
+Postman、Bruno（`.bru` 与 OpenCollection）、Insomnia 和 Apidog `customScript` 里常见的测试与后置脚本（状态码、响应头、JSONPath、响应体文本与耗时检查，以及从响应 JSON、请求头、状态或正文提取变量）会不执行 JS 地按模式转为原生断言与提取；转不了的语句（含前置脚本）会以代码块追加到接口说明，并在下方列出。
 
 导入或从来源同步完成后，如果有没能原样带进来或转不了的内容（未转换的脚本、不认识的模板表达式、不支持的认证类型或请求体），会弹出**导入报告**按位置列出（脚本可展开并复制原文）；全部原样导入时则不显示。
 

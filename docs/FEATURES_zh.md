@@ -34,8 +34,8 @@
 
 - Query、请求头，以及 JSON、表单、multipart、二进制 / 文件、XML、纯文本请求体。写在地址栏里的查询参数默认移到 Query 表；也可在设置的“编辑器”里开启**在 URL 中直接编辑 Query 参数**，将查询参数直接留在地址栏中编辑、不再使用独立的 Query 表格（底层保存格式一致，两种模式互通）。任何键值列表都能切换成文本批量编辑。在参数行按 ⌘/Ctrl-/ 可快速切换启用状态（文本批量编辑和请求体中则切换行注释）。在地址栏、参数值或请求体中悬停 `{{...}}` 变量可快速预览当前环境下的解析值与来源层级（秘密变量保持遮罩）。
 - 地址里有 `:param` 或 `{param}` 时，Query 上方出现路径参数。发送和生成代码时替换进 URL，并与 OpenAPI 的 `in: path` 参数和 Postman 的 URL 变量一起导入、导出。
-- 路径参数、Query、请求头、表单请求体和目录变量的每一行都可以写说明（*0.4.1*）。切换文本批量编辑时保留。OpenAPI、Postman、Insomnia 会带进来，Postman、OpenAPI 和 MCP 会带出去。后来再次导入、或从来源同步时，空的说明怎么处理见[导入](./IMPORT_zh.md)和[从来源同步](./SOURCE_zh.md)。
-- OpenAPI 和 Swagger 会留下路径参数、Query 和请求头的类型、是否必填、format 和枚举（*0.4.1*）。“说明”和在线接口文档只读显示，参数行左侧的 `*` 显示并可切换是否必填。空着表示没有记录过，不是非必填。后来再次导入或从来源同步时这四项怎么处理，见[导入](./IMPORT_zh.md)和[从来源同步](./SOURCE_zh.md)。
+- 路径参数、Query、请求头、表单请求体和目录变量的每一行都可以写说明（*0.4.1*）。切换文本批量编辑时保留。OpenAPI、Postman、Apidog、Insomnia 会带进来，Postman、OpenAPI 和 MCP 会带出去。后来再次导入、或从来源同步时，空的说明怎么处理见[导入](./IMPORT_zh.md)和[从来源同步](./SOURCE_zh.md)。
+- OpenAPI、Swagger 和 Apidog 会留下路径参数、Query 和请求头的类型、是否必填、format 和枚举（*0.4.1*）。“说明”和在线接口文档只读显示，参数行左侧的 `*` 显示并可切换是否必填。空着表示没有记录过，不是非必填。后来再次导入或从来源同步时这四项怎么处理，见[导入](./IMPORT_zh.md)和[从来源同步](./SOURCE_zh.md)。
 - 认证可以写在接口上，也可以继承所在目录或项目：Basic、Bearer、JWT Bearer（发送前在模板求值后现签，支持 HS256/384/512、RS256/384/512、PS256/384/512、ES256/384 和 EdDSA，JSON Header/Payload 支持模板函数与秘密变量，可放请求头并自定义前缀或放进 Query）、放在请求头或查询参数里的 API Key、Digest、OAuth 2.0（客户端凭据或密码）以及 AWS SigV4（每次发送前在模板和请求体定下后现签，支持可选 Session Token 和 S3 `X-Amz-Content-Sha256`）。值可以用模板函数。服务器要求时可以一并发送 audience 和 resource。令牌像 Cookie 一样存在你这里，不进项目、不同步、不进备份；过期或接口回答 401 时重新申请，有刷新令牌时先用它。客户端用 Basic 认证头，或放在请求体里。
 - 桌面版的 OAuth 2.0 还可以是授权码 + PKCE（*0.3.1*）或隐式授权（Implicit，`response_type=token`，从回调的 `#fragment` 读取 `access_token`）。**授权**打开系统浏览器，在 `127.0.0.1` 上接收回调，端口默认随机，也可以指定。网页版可以保存这套设置，并说明这一步只在桌面版进行。运行、命令行和 AI 助手不会打开浏览器，没有令牌时说明先在桌面版授权。
 - 目录可以设置请求头，目录里的接口都会带上。
@@ -52,7 +52,7 @@
 - 获取接口的 Schema 后，编辑查询时会补全字段、参数和枚举值。可以浏览 Schema，点击字段即写进查询。
 - 通过 HTTP 发送的订阅，若服务器以事件流返回（GraphQL Yoga、graphql-sse），结果会边收边显示。
 - 地址写成 `ws://` 或 `wss://` 时改用 graphql-transport-ws。**订阅**打开连接，每条 `next` 或 `error` 边到边显示，结束时整段记进历史。和 WebSocket 一样只在桌面版可用。经 HTTP 的订阅不变。
-- Postman、Insomnia、Hoppscotch、Thunder Client、Yaak、Bruno 里的 GraphQL 请求导入后仍是 GraphQL。
+- Postman、Insomnia、Hoppscotch、Thunder Client、Yaak、Apidog、Bruno 里的 GraphQL 请求导入后仍是 GraphQL。
 
 ## gRPC
 
@@ -111,7 +111,7 @@
 
 粘贴 cURL 即新建接口。任何请求都能复制为 cURL、HTTPie、JavaScript `fetch`、Node axios、Python `requests`、PHP Guzzle、Go `net/http`、Rust reqwest、Java 或 C# `HttpClient`、Swift `URLSession`。
 
-可导入 Postman、Insomnia、Hoppscotch、Thunder Client、Yaak、Bruno、Swagger 2 / OpenAPI 3、HAR、`.http` 文件和 cURL。Postman、Bruno 和 Insomnia 里常见的测试与后置脚本会按模式转为原生断言与提取（转不了的语句追加到接口说明）。重新导入时默认更新已有的接口，并保留你填写的值；如果有未转换的脚本、不认识的模板或不支持的认证与请求体没能原样带进来，导入后会给出导入报告。项目或目录可以记住来源地址，以后再同步。
+可导入 Postman、Insomnia、Hoppscotch、Thunder Client、Yaak、Apidog、Bruno、Swagger 2 / OpenAPI 3、HAR、`.http` 文件和 cURL。Postman、Bruno、Insomnia 和 Apidog 里常见的测试与后置脚本会按模式转为原生断言与提取（转不了的语句追加到接口说明）。重新导入时默认更新已有的接口，并保留你填写的值；如果有未转换的脚本、不认识的模板或不支持的认证与请求体没能原样带进来，导入后会给出导入报告。项目或目录可以记住来源地址，以后再同步。
 
 [导入与导出](./IMPORT_zh.md)：格式、更新时保留什么、导出。[从来源同步](./SOURCE_zh.md)：绑定的文档，包括定时同步——跟文档走，参数值和密钥留下。
 
