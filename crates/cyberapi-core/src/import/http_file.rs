@@ -29,6 +29,7 @@
 //! environments. A private file's values are no more secret here than the
 //! public one's: the two look alike.
 
+use super::lost::{self, Lost, ScriptPhase};
 use super::{ImportBundle, ImportEnvironment, ImportItem, api, content_type_of, guess_content_type, kv};
 use crate::graphql::GraphQlBody;
 use crate::model::{ContentType, HttpMethod, KvParam};
@@ -354,10 +355,16 @@ fn after_body(line: &str) -> bool {
 }
 
 /// A block's request, and the file variables before it.
-fn request(title: &str, lines: &[&str], environment: &mut Vec<(String, String)>) -> Option<ImportItem> {
+fn request(
+    title: &str,
+    lines: &[&str],
+    environment: &mut Vec<(String, String)>,
+    lost: &mut Vec<Lost>,
+) -> Option<ImportItem> {
     let mut name = title.to_string();
     let mut notes: Vec<&str> = Vec::new();
     let mut prompts: Vec<(String, String)> = Vec::new();
+    let mut scripts: Vec<(ScriptPhase, String)> = Vec::new();
     let mut no_redirect = false;
     let mut at = 0;
     while let Some(line) = lines.get(at) {
@@ -403,6 +410,7 @@ fn request(title: &str, lines: &[&str], environment: &mut Vec<(String, String)>)
             continue;
         }
         if let Some(next) = after_script(lines, at) {
+            scripts.push((ScriptPhase::PreRequest, lines[at..next].join("\n")));
             at = next;
             continue;
         }
@@ -440,12 +448,40 @@ fn request(title: &str, lines: &[&str], environment: &mut Vec<(String, String)>)
         headers.push(kv(key.trim(), &rewrite(value.trim(), &prompts), true));
         at += 1;
     }
-    let body_lines: Vec<&str> = lines[at.min(lines.len())..]
+    let body_start = at.min(lines.len());
+    let body_lines: Vec<&str> = lines[body_start..]
         .iter()
         .take_while(|line| !after_body(line))
         .copied()
         .collect();
+    let mut after_at = body_start + body_lines.len();
+    while let Some(line) = lines.get(after_at) {
+        let trimmed = line.trim_start();
+        if let Some(after_gt) = trimmed.strip_prefix('>')
+            && !after_gt.starts_with('>')
+        {
+            let rest = after_gt.trim_start();
+            if rest.starts_with("{%") {
+                if rest.contains("%}") {
+                    scripts.push((ScriptPhase::PostResponse, trimmed.to_string()));
+                    after_at += 1;
+                } else {
+                    let end = lines[after_at + 1..]
+                        .iter()
+                        .position(|l| l.contains("%}"))
+                        .map_or(lines.len(), |pos| after_at + 1 + pos + 1);
+                    scripts.push((ScriptPhase::PostResponse, lines[after_at..end].join("\n")));
+                    after_at = end;
+                }
+                continue;
+            } else if !rest.is_empty() {
+                scripts.push((ScriptPhase::PostResponse, trimmed.to_string()));
+            }
+        }
+        after_at += 1;
+    }
     let body = rewrite(body_lines.join("\n").trim_matches(['\n', '\r']).trim_end(), &prompts);
+    let raw_body_trimmed = body.trim().to_string();
 
     let method = line.method.to_ascii_uppercase();
     let graphql_header = headers.iter().position(|header| {
@@ -525,6 +561,17 @@ fn request(title: &str, lines: &[&str], environment: &mut Vec<(String, String)>)
         (built.content_type, built.body) = (guess_content_type(&body), body);
     }
     built.headers = headers;
+    for (phase, source) in scripts {
+        lost::push_script(lost, &name, phase, &source);
+    }
+    if built.method != HttpMethod::WebSocket
+        && built.content_type != ContentType::GraphQl
+        && built.content_type != ContentType::Multipart
+        && !raw_body_trimmed.contains('\n')
+        && (raw_body_trimmed.starts_with("< ") || raw_body_trimmed.starts_with("<@"))
+    {
+        lost::push_body(lost, &name, &raw_body_trimmed);
+    }
     Some(ImportItem::Api {
         name,
         request: Box::new(built),
@@ -533,13 +580,15 @@ fn request(title: &str, lines: &[&str], environment: &mut Vec<(String, String)>)
 
 pub(super) fn parse(text: &str) -> ImportBundle {
     let mut environment = Vec::new();
+    let mut lost = Vec::new();
     let items = blocks(text)
         .into_iter()
-        .filter_map(|(title, lines)| request(title, &lines, &mut environment))
+        .filter_map(|(title, lines)| request(title, &lines, &mut environment, &mut lost))
         .collect();
     ImportBundle {
         items,
         environment,
+        lost,
         ..Default::default()
     }
 }
@@ -927,5 +976,61 @@ DELETE https://shop.test/orders/1
         for not in [r#"{"id": "a", "name": "b"}"#, "{}", r#"{"a": {"b": [1]}}"#, "[]"] {
             assert!(!is_environment(&serde_json::from_str(not).expect("JSON")), "{not}");
         }
+    }
+
+    #[test]
+    fn scripts_and_file_bodies_are_reported() {
+        use super::super::{LostKind, ScriptPhase};
+        let text = r#"### Sign in
+< {%
+    request.variables.set("id", "7");
+%}
+POST https://shop.test/login
+
+< ./payload.bin
+
+> {%
+    client.global.set("token", response.body.token);
+%}
+
+### External handler
+GET https://shop.test/items
+
+> ./check.js
+>> items.json
+"#;
+        let bundle = super::super::parse(text).expect("parsed");
+        assert_eq!(
+            bundle.lost,
+            vec![
+                Lost {
+                    target: "Sign in".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PreRequest,
+                        source: "< {%\n    request.variables.set(\"id\", \"7\");\n%}".into(),
+                    },
+                },
+                Lost {
+                    target: "Sign in".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PostResponse,
+                        source: "> {%\n    client.global.set(\"token\", response.body.token);\n%}".into(),
+                    },
+                },
+                Lost {
+                    target: "Sign in".into(),
+                    kind: LostKind::Body {
+                        kind: "< ./payload.bin".into(),
+                    },
+                },
+                Lost {
+                    target: "External handler".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PostResponse,
+                        source: "> ./check.js".into(),
+                    },
+                },
+            ]
+        );
     }
 }

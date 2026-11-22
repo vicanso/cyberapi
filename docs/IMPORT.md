@@ -26,6 +26,8 @@ If the project already signs in, that auth is kept. A named environment that is 
 
 A line that is only an address is not a `.http` file. Fetch it instead.
 
+After importing or syncing from a source, if anything could not be imported as-is (unimported scripts, unrecognized template expressions, unsupported authentication kinds or unsupported request bodies), an **Import report** lists those items by location (scripts expand inline and can be copied); nothing is shown when everything came through cleanly.
+
 ## Where a request matches
 
 Importing into a project counts the APIs already there. Two requests match when the method is the same and the path is the same.

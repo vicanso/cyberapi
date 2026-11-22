@@ -35,12 +35,14 @@ mod har;
 mod hoppscotch;
 mod http_file;
 mod insomnia;
+mod lost;
 pub mod merge;
 mod openapi;
 mod opencollection;
 mod own;
 mod postman;
 
+pub use lost::{Lost, LostGroup, LostKind, ScriptPhase, group as group_lost};
 pub use own::{api_config, export, parse_own, tree_data};
 
 use crate::ItemId;
@@ -90,6 +92,10 @@ pub struct ImportBundle {
     /// to keep it as its own source.
     #[serde(skip)]
     pub folder_source: Option<String>,
+    /// M1: scripts, unrecognized template expressions, unsupported auth kinds
+    /// and unsupported request bodies that could not be imported as-is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lost: Vec<Lost>,
 }
 
 /// A named environment an import brings (B4), with its variables, name and
@@ -330,7 +336,7 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     let text = without_bom(text);
     let (format, json) = detect(text)?;
     let name = json.as_ref().and_then(|json| json_name(format, json));
-    let bundle = match (format, json) {
+    let mut bundle = match (format, json) {
         (Format::Curl, _) => curl::parse(text)?,
         (Format::Bruno, _) => bruno::parse(text),
         (Format::Http, _) => http_file::parse(text),
@@ -348,6 +354,9 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     };
     if bundle.is_empty() {
         return EmptySnafu.fail();
+    }
+    if format != Format::CyberApi {
+        lost::scan_templates(&mut bundle);
     }
     Ok(ImportBundle { name, ..bundle })
 }
@@ -402,7 +411,9 @@ pub fn curl_command(text: &str) -> Option<ImportBundle> {
     if !command {
         return None;
     }
-    curl::parse(text).ok()
+    let mut bundle = curl::parse(text).ok()?;
+    lost::scan_templates(&mut bundle);
+    Some(bundle)
 }
 
 /// A request's URL with its query moved to the query list, as every importer

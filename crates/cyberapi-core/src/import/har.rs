@@ -10,6 +10,7 @@
 //! HTTP/2's pseudo headers, `Host`, `Content-Length`, `Connection` — are
 //! left to the engine; the rest, cookies too, are kept as sent.
 
+use super::lost::{self, Lost};
 use super::{ImportBundle, ImportItem, api, content_type_of, guess_content_type, kv};
 use crate::model::{ContentType, KvParam};
 use serde_json::Value;
@@ -43,8 +44,8 @@ fn pairs(value: Option<&Value>) -> Vec<KvParam> {
         .unwrap_or_default()
 }
 
-/// An entry's request as an API, and its host; `None` when it is not one.
-fn entry(entry: &Value) -> Option<(String, ImportItem)> {
+/// An entry's request as an API, its host, and any unimported binary body; `None` when it is not one.
+fn entry(entry: &Value) -> Option<(String, ImportItem, Option<String>)> {
     if PAGE_PARTS.contains(&text(entry, "_resourceType")) {
         return None;
     }
@@ -71,6 +72,7 @@ fn entry(entry: &Value) -> Option<(String, ImportItem)> {
         }
         true
     });
+    let mut lost_body: Option<String> = None;
     if let Some(data) = request.get("postData") {
         let mime = text(data, "mimeType");
         if let Some(known) = content_type_of(mime) {
@@ -102,7 +104,17 @@ fn entry(entry: &Value) -> Option<(String, ImportItem)> {
                 built.body = serde_json::to_string(&fields).unwrap_or_default();
             }
             _ => {
-                built.body = text(data, "text").to_string();
+                let encoding = text(data, "encoding");
+                let raw_text = text(data, "text");
+                let params_empty = params.is_none_or(Vec::is_empty);
+                if encoding == "base64" || (!mime.is_empty() && raw_text.is_empty() && params_empty) {
+                    lost_body = Some(if mime.is_empty() {
+                        format!("binary ({encoding})")
+                    } else {
+                        mime.to_string()
+                    });
+                }
+                built.body = raw_text.to_string();
                 if content_type_of(mime).is_none() && !built.body.is_empty() {
                     built.content_type = guess_content_type(&built.body);
                 }
@@ -120,7 +132,13 @@ fn entry(entry: &Value) -> Option<(String, ImportItem)> {
             name,
             request: Box::new(built),
         },
+        lost_body,
     ))
+}
+
+struct HostEntries {
+    host: String,
+    items: Vec<(ImportItem, Option<String>)>,
 }
 
 pub(super) fn parse(json: &Value) -> ImportBundle {
@@ -130,8 +148,8 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
         .map(Vec::as_slice)
         .unwrap_or_default();
     let mut seen: Vec<(String, String)> = Vec::new();
-    let mut hosts: Vec<(String, Vec<ImportItem>)> = Vec::new();
-    for (host, item) in entries.iter().filter_map(entry) {
+    let mut hosts: Vec<HostEntries> = Vec::new();
+    for (host, item, lost_body) in entries.iter().filter_map(entry) {
         let ImportItem::Api { request, .. } = &item else {
             continue;
         };
@@ -143,25 +161,57 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
             continue;
         }
         seen.push(key);
-        match hosts.iter_mut().find(|(known, _)| *known == host) {
-            Some((_, items)) => items.push(item),
-            None => hosts.push((host, vec![item])),
+        match hosts.iter_mut().find(|known| known.host == host) {
+            Some(known) => known.items.push((item, lost_body)),
+            None => hosts.push(HostEntries {
+                host,
+                items: vec![(item, lost_body)],
+            }),
         }
     }
+    let mut lost: Vec<Lost> = Vec::new();
     let items = if hosts.len() == 1 {
-        hosts.into_iter().flat_map(|(_, items)| items).collect()
+        hosts
+            .into_iter()
+            .flat_map(|bucket| bucket.items)
+            .map(|(item, body)| {
+                if let Some(kind) = body
+                    && let ImportItem::Api { name, .. } = &item
+                {
+                    lost::push_body(&mut lost, name, &kind);
+                }
+                item
+            })
+            .collect()
     } else {
         hosts
             .into_iter()
-            .map(|(host, children)| ImportItem::Folder {
-                name: host,
-                children,
-                settings: Default::default(),
+            .map(|bucket| {
+                let host = bucket.host;
+                let children = bucket
+                    .items
+                    .into_iter()
+                    .map(|(item, body)| {
+                        if let Some(kind) = body
+                            && let ImportItem::Api { name, .. } = &item
+                        {
+                            let target = lost::join_path(&host, name);
+                            lost::push_body(&mut lost, &target, &kind);
+                        }
+                        item
+                    })
+                    .collect();
+                ImportItem::Folder {
+                    name: host,
+                    children,
+                    settings: Default::default(),
+                }
             })
             .collect()
     };
     ImportBundle {
         items,
+        lost,
         ..Default::default()
     }
 }
@@ -266,6 +316,35 @@ mod tests {
             request(&a[1]).content_type,
             ContentType::Json,
             "a type this app has no name for is guessed from the body"
+        );
+    }
+
+    #[test]
+    fn binary_and_base64_bodies_are_reported() {
+        use super::super::LostKind;
+        let json = r#"{"log": {"version": "1.2", "entries": [
+            {"request": {"method": "POST", "url": "https://a.test/bin", "headers": [],
+                "postData": {"mimeType": "application/octet-stream", "encoding": "base64", "text": "AQID"}}},
+            {"request": {"method": "POST", "url": "https://b.test/empty", "headers": [],
+                "postData": {"mimeType": "application/pdf"}}}
+        ]}}"#;
+        let bundle = super::super::parse(json).expect("parsed");
+        assert_eq!(
+            bundle.lost,
+            vec![
+                Lost {
+                    target: "a.test / /bin".into(),
+                    kind: LostKind::Body {
+                        kind: "application/octet-stream".into(),
+                    },
+                },
+                Lost {
+                    target: "b.test / /empty".into(),
+                    kind: LostKind::Body {
+                        kind: "application/pdf".into(),
+                    },
+                },
+            ]
         );
     }
 }

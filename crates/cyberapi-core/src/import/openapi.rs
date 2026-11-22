@@ -21,6 +21,7 @@
 //! (OpenAPI 3.0's `nullable` and boolean exclusive bounds put its way).
 //! One too big to keep with every API is left out.
 
+use super::lost::{self, Lost};
 use super::{ImportBundle, ImportItem, kv};
 use crate::auth::{Auth, KeyPlace};
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam};
@@ -479,6 +480,66 @@ fn oauth(scheme: &Value, scopes: &Value) -> Option<Auth> {
     }))
 }
 
+/// Describes an unsupported `security` requirement when [`security`] returns `None`.
+fn unsupported_security_kind(json: &Value, requirements: &Value) -> Option<String> {
+    let requirements = requirements.as_array()?;
+    if requirements.is_empty() {
+        return None;
+    }
+    let schemes = json
+        .pointer("/components/securitySchemes")
+        .or_else(|| json.get("securityDefinitions"));
+    let mut kinds = Vec::new();
+    for requirement in requirements.iter().filter_map(Value::as_object) {
+        for name in requirement.keys() {
+            let label = match schemes.and_then(|s| s.get(name)).map(|s| resolve(json, s)) {
+                Some(scheme) => match text(scheme, "type") {
+                    "apiKey" => {
+                        let place = text(scheme, "in");
+                        if place.is_empty() {
+                            "apiKey".to_string()
+                        } else {
+                            format!("apiKey ({place})")
+                        }
+                    }
+                    "http" => {
+                        let s = text(scheme, "scheme");
+                        if s.is_empty() {
+                            "http".to_string()
+                        } else {
+                            format!("http ({s})")
+                        }
+                    }
+                    "oauth2" => {
+                        if let Some(flows) = scheme.get("flows").and_then(Value::as_object) {
+                            let names: Vec<&str> = flows.keys().map(String::as_str).collect();
+                            if names.is_empty() {
+                                "oauth2".to_string()
+                            } else {
+                                format!("oauth2 ({})", names.join(", "))
+                            }
+                        } else {
+                            let flow = text(scheme, "flow");
+                            if flow.is_empty() {
+                                "oauth2".to_string()
+                            } else {
+                                format!("oauth2 ({flow})")
+                            }
+                        }
+                    }
+                    "" => name.clone(),
+                    other => other.to_string(),
+                },
+                None => name.clone(),
+            };
+            if !label.is_empty() && !kinds.contains(&label) {
+                kinds.push(label);
+            }
+        }
+    }
+    (!kinds.is_empty()).then(|| kinds.join(" / "))
+}
+
 /// F9: whether a multipart schema property is a binary file upload (OpenAPI
 /// 3.0's `format: binary`, 3.1's `contentMediaType`, or an array of files).
 fn is_binary_property(root: &Value, property: &Value) -> bool {
@@ -491,17 +552,32 @@ fn is_binary_property(root: &Value, property: &Value) -> bool {
                 .is_some_and(|items| is_binary_property(root, items)))
 }
 
+struct OperationContext<'a> {
+    json: &'a Value,
+    prefix: &'a str,
+    root_auth: Option<&'a Auth>,
+    lost: &'a mut Vec<Lost>,
+}
+
 fn operation(
-    json: &Value,
-    prefix: &str,
+    ctx: &mut OperationContext<'_>,
     path: &str,
     method: &str,
     op: &Value,
     shared: &[Value],
 ) -> (String, ImportItem) {
+    let json = ctx.json;
     // A summary that is several lines keeps the first as the name. The rest
     // join the description, unless that text is already there.
     let (name, extra) = api_title(text(op, "summary"), text(op, "operationId"), method, path);
+    let tag = op
+        .get("tags")
+        .and_then(Value::as_array)
+        .and_then(|tags| tags.first())
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let target = lost::join_path(&tag, &name);
     let mut description = text(op, "description").trim().to_string();
     if !extra.is_empty() && !description.contains(extra.as_str()) {
         description = if description.is_empty() {
@@ -512,7 +588,7 @@ fn operation(
     }
     let mut request = HttpRequest {
         method: HttpMethod::parse_lenient(method),
-        uri: format!("{prefix}{path}"),
+        uri: format!("{}{path}", ctx.prefix),
         // F3.
         description,
         ..Default::default()
@@ -643,6 +719,8 @@ fn operation(
                 ContentType::Form
             };
             request.body = serde_json::to_string(&fields).unwrap_or_default();
+        } else if let Some((kind, _)) = content.iter().next() {
+            lost::push_body(ctx.lost, &target, kind);
         }
     }
     // A6: what its answer is to look like.
@@ -650,21 +728,20 @@ fn operation(
         request.assertions = vec![crate::assertions::Assertion::imported_schema(&schema)];
     }
     // B4: an operation's own security, where it is not the document's.
-    if let Some(own) = op.get("security").and_then(|requirements| security(json, requirements))
-        && json
-            .get("security")
-            .and_then(|requirements| security(json, requirements))
-            != Some(own.clone())
-    {
-        request.auth = own;
+    if let Some(requirements) = op.get("security") {
+        match security(json, requirements) {
+            Some(own) => {
+                if ctx.root_auth != Some(&own) {
+                    request.auth = own;
+                }
+            }
+            None => {
+                if let Some(kind) = unsupported_security_kind(json, requirements) {
+                    lost::push_auth(ctx.lost, &target, &kind);
+                }
+            }
+        }
     }
-    let tag = op
-        .get("tags")
-        .and_then(Value::as_array)
-        .and_then(|tags| tags.first())
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
     (
         tag,
         ImportItem::Api {
@@ -675,6 +752,16 @@ fn operation(
 }
 
 pub(super) fn parse(json: &Value) -> ImportBundle {
+    let mut lost = Vec::new();
+    let root_auth = json
+        .get("security")
+        .and_then(|requirements| security(json, requirements));
+    if root_auth.is_none()
+        && let Some(requirements) = json.get("security")
+        && let Some(kind) = unsupported_security_kind(json, requirements)
+    {
+        lost::push_auth(&mut lost, "", &kind);
+    }
     let server = server(json);
     let prefix = server
         .as_ref()
@@ -682,6 +769,12 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
         .unwrap_or_default();
     let mut untagged: Vec<ImportItem> = Vec::new();
     let mut folders: Vec<(String, Vec<ImportItem>)> = Vec::new();
+    let mut ctx = OperationContext {
+        json,
+        prefix: &prefix,
+        root_auth: root_auth.as_ref(),
+        lost: &mut lost,
+    };
     for (path, item) in json.get("paths").and_then(Value::as_object).into_iter().flatten() {
         let shared: Vec<Value> = item
             .get("parameters")
@@ -690,7 +783,7 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
             .unwrap_or_default();
         for method in METHODS {
             let Some(op) = item.get(method) else { continue };
-            let (tag, api) = operation(json, &prefix, path, method, op, &shared);
+            let (tag, api) = operation(&mut ctx, path, method, op, &shared);
             if tag.is_empty() {
                 untagged.push(api);
             } else if let Some((_, children)) = folders.iter_mut().find(|(name, _)| *name == tag) {
@@ -712,10 +805,8 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
     ImportBundle {
         items,
         environment: server.into_iter().collect(),
-        auth: json
-            .get("security")
-            .and_then(|requirements| security(json, requirements))
-            .unwrap_or_default(),
+        auth: root_auth.unwrap_or_default(),
+        lost,
         ..Default::default()
     }
 }
@@ -1163,5 +1254,54 @@ mod tests {
         assert!(request.description.contains("未登录时先取营业厅"));
         assert!(request.description.contains("再校验短信"));
         assert!(request.description.contains("已有说明"));
+    }
+
+    #[test]
+    fn unsupported_security_and_request_body_are_reported() {
+        use super::super::LostKind;
+        let doc = r#"{
+            "openapi": "3.0.3",
+            "components": {
+                "securitySchemes": {
+                    "oidc": {"type": "openIdConnect", "openIdConnectUrl": "https://id.test/.well-known"},
+                    "cookieKey": {"type": "apiKey", "in": "cookie", "name": "sid"}
+                }
+            },
+            "security": [{"oidc": []}],
+            "paths": {
+                "/upload": {
+                    "post": {
+                        "tags": ["Files"],
+                        "summary": "Upload binary",
+                        "security": [{"cookieKey": []}],
+                        "requestBody": {"content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}}
+                    }
+                }
+            }
+        }"#;
+        let bundle = super::super::parse(doc).expect("parsed");
+        assert_eq!(
+            bundle.lost,
+            vec![
+                Lost {
+                    target: String::new(),
+                    kind: LostKind::Auth {
+                        kind: "openIdConnect".into(),
+                    },
+                },
+                Lost {
+                    target: "Files / Upload binary".into(),
+                    kind: LostKind::Body {
+                        kind: "application/octet-stream".into(),
+                    },
+                },
+                Lost {
+                    target: "Files / Upload binary".into(),
+                    kind: LostKind::Auth {
+                        kind: "apiKey (cookie)".into(),
+                    },
+                },
+            ]
+        );
     }
 }

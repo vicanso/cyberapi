@@ -17,7 +17,7 @@ use super::copy::{self, Pushed};
 use super::{Load, ServerState, ServerStatus, run_store};
 use crate::drafts_local::{self, Draft};
 use crate::{i18n, local_items, pins_local};
-use cyberapi_core::import::{self, ImportBundle};
+use cyberapi_core::import::{self, ImportBundle, Lost};
 use cyberapi_core::model::{Collection, Folder, ImportSource, ProjectSettings, VariableCategory};
 use cyberapi_core::prefs::{WorkspacePrefs, clamp_source_sync_minutes};
 use cyberapi_core::sync::{self, CopyBinding, Moment, ProjectChanges, ProjectOp, Step};
@@ -75,6 +75,9 @@ pub enum DashboardEvent {
     /// One of this machine's projects is the server's now, and this its
     /// copy (G1).
     Uploaded(Collection),
+    /// M1: fetching and merging a bound source from the home page finished
+    /// with items that could not be imported as-is.
+    ImportReport(Arc<Vec<Lost>>),
 }
 
 /// The desktop's server, signed in, as the list needs it.
@@ -669,17 +672,23 @@ impl DashboardState {
                                 Err(why) => Err(t!("import.fetch_failed", why = why).to_string()),
                             };
                             let mut refreshed = made.clone();
+                            let mut lost = Vec::new();
                             match parsed {
-                                Ok(bundle) => {
+                                Ok(mut bundle) => {
+                                    let bundle_lost = std::mem::take(&mut bundle.lost);
                                     let srv = desktop.server.clone();
                                     let id = made.id.clone();
-                                    if let Ok(updated) = cx
+                                    let (merged_ok, updated) = cx
                                         .background_spawn(async move {
-                                            let _ = merge_bundle_into_storage(&srv, &id, bundle).await;
-                                            srv.collections().get(id).await
+                                            let merged_ok = merge_bundle_into_storage(&srv, &id, bundle).await.is_ok();
+                                            let updated = srv.collections().get(id).await.ok();
+                                            (merged_ok, updated)
                                         })
-                                        .await
-                                    {
+                                        .await;
+                                    if merged_ok {
+                                        lost = bundle_lost;
+                                    }
+                                    if let Some(updated) = updated {
                                         refreshed = updated;
                                     }
                                 }
@@ -689,6 +698,9 @@ impl DashboardState {
                             }
                             let _ = this.update(cx, |this, cx| {
                                 this.pull(desktop, vec![refreshed.clone()], Some((refreshed, None)), cx);
+                                if !lost.is_empty() {
+                                    cx.emit(DashboardEvent::ImportReport(Arc::new(lost)));
+                                }
                             });
                         })
                         .detach();
@@ -747,18 +759,23 @@ impl DashboardState {
                             }
                             Err(why) => Err(t!("import.fetch_failed", why = why).to_string()),
                         };
-                        let count = match parsed {
-                            Ok(bundle) => {
+                        let (count, lost) = match parsed {
+                            Ok(mut bundle) => {
+                                let bundle_lost = std::mem::take(&mut bundle.lost);
                                 let id = collection.id.clone();
-                                cx.background_spawn(
-                                    async move { merge_bundle_into_storage(&storage, &id, bundle).await },
-                                )
-                                .await
-                                .ok()
+                                match cx
+                                    .background_spawn(
+                                        async move { merge_bundle_into_storage(&storage, &id, bundle).await },
+                                    )
+                                    .await
+                                {
+                                    Ok(count) => (Some(count), bundle_lost),
+                                    Err(_) => (None, Vec::new()),
+                                }
                             }
                             Err(why) => {
                                 let _ = this.update(cx, |_, cx| cx.emit(DashboardEvent::SourceFailed(why)));
-                                None
+                                (None, Vec::new())
                             }
                         };
                         let _ = this.update(cx, |this, cx| {
@@ -768,6 +785,9 @@ impl DashboardState {
                                     .insert(collection.id.clone(), count);
                             }
                             cx.emit(DashboardEvent::Created(collection, None));
+                            if !lost.is_empty() {
+                                cx.emit(DashboardEvent::ImportReport(Arc::new(lost)));
+                            }
                             cx.notify();
                         });
                     })
@@ -906,7 +926,8 @@ impl DashboardState {
                 Err(why) => Err(t!("import.fetch_failed", why = why).to_string()),
             };
             match parsed {
-                Ok(bundle) => {
+                Ok(mut bundle) => {
+                    let lost = std::mem::take(&mut bundle.lost);
                     let target = id.clone();
                     let merged = cx
                         .background_spawn(async move { merge_bundle_into_storage(&storage, &target, bundle).await })
@@ -916,6 +937,9 @@ impl DashboardState {
                             this.api_counts.get_or_insert_with(BTreeMap::new).insert(id, count);
                             if let Some((desktop, binding)) = copy {
                                 this.mark_unsynced(desktop, binding, cx);
+                            }
+                            if !lost.is_empty() {
+                                cx.emit(DashboardEvent::ImportReport(Arc::new(lost)));
                             }
                             cx.notify();
                         }
@@ -2365,5 +2389,63 @@ mod tests {
             .settings
             .public_docs;
         assert!(!on_server);
+    }
+
+    /// M1: creating a project from a bound source URL on the home page emits
+    /// `DashboardEvent::ImportReport` when the fetched document loses items.
+    #[gpui_kit::test]
+    async fn create_with_source_emits_import_report_when_items_are_lost(cx: &mut TestAppContext) {
+        let spec = r#"{
+            "openapi": "3.0.3",
+            "components": {"securitySchemes": {"oidc": {"type": "openIdConnect"}}},
+            "security": [{"oidc": []}],
+            "paths": {
+                "/upload": {
+                    "post": {
+                        "summary": "Upload",
+                        "requestBody": {"content": {"application/octet-stream": {"schema": {"type": "string"}}}}
+                    }
+                }
+            }
+        }"#;
+        let storage = MemoryStore::new().storage();
+        let engine: Arc<dyn cyberapi_http::HttpEngine> = Arc::new(SpecEngine(spec.into()));
+        cx.update(|cx| super::super::AppStore::for_test(storage.clone(), engine, cx));
+
+        let state = cx.new(|cx| DashboardState::new(storage, None, None, cx));
+        cx.run_until_parked();
+
+        let reports: Rc<RefCell<Vec<Vec<Lost>>>> = Rc::default();
+        let seen = reports.clone();
+        cx.update(|cx| {
+            cx.subscribe(&state, move |_, event, _| {
+                if let DashboardEvent::ImportReport(lost) = event {
+                    seen.borrow_mut().push((**lost).clone());
+                }
+            })
+            .detach();
+        });
+
+        state.update(cx, |state, cx| {
+            state.create_with_source(
+                NewCollection {
+                    name: "Upload".into(),
+                    ..Default::default()
+                },
+                None,
+                Some(ProjectSourceEdit {
+                    url: Some("https://api.example.com/openapi.json".into()),
+                    auto_sync: false,
+                    interval_minutes: 15,
+                    public_docs: None,
+                }),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let reports = reports.borrow();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].len(), 2);
     }
 }

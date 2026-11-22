@@ -7,6 +7,7 @@
 //! `Set-Cookie` (#14); `--data-raw`, `--data-binary` and `--data-urlencode`
 //! are bodies; `-F` makes a multipart body; `-G` puts the data in the query.
 
+use super::lost;
 use super::{ImportBundle, ImportError, ImportItem, NoUrlSnafu, content_type_of, guess_content_type, kv, split_url};
 use crate::auth::Auth;
 use crate::model::{ContentType, HttpMethod, HttpRequest, KvParam};
@@ -100,6 +101,7 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
     let mut headers: Vec<KvParam> = Vec::new();
     let mut data: Vec<String> = Vec::new();
     let mut form: Vec<KvParam> = Vec::new();
+    let mut lost_bodies: Vec<String> = Vec::new();
     let mut auth = Auth::Inherit;
     let mut head = false;
     let mut get = false;
@@ -121,7 +123,15 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
                     headers.push(kv(name.trim(), header_value.trim(), true));
                 }
             }
-            "-d" | "--data" | "--data-ascii" | "--data-raw" | "--data-binary" => data.extend(value()),
+            "-d" | "--data" | "--data-ascii" | "--data-binary" => {
+                if let Some(val) = value() {
+                    if let Some(path) = val.strip_prefix('@').map(str::trim).filter(|path| !path.is_empty()) {
+                        lost_bodies.push(format!("file ({path})"));
+                    }
+                    data.push(val);
+                }
+            }
+            "--data-raw" => data.extend(value()),
             "--data-urlencode" => {
                 if let Some(pair) = value() {
                     data.push(match pair.split_once('=') {
@@ -168,9 +178,17 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
             "--url" => url = value(),
             "-I" | "--head" => head = true,
             "-G" | "--get" => get = true,
+            "-T" | "--upload-file" => {
+                if let Some(path) = value() {
+                    let path = path.trim();
+                    if !path.is_empty() {
+                        lost_bodies.push(format!("--upload-file {path}"));
+                    }
+                }
+            }
             // Flags with a value this does not use.
             "-o" | "--output" | "-m" | "--max-time" | "--connect-timeout" | "-x" | "--proxy" | "-w" | "--write-out"
-            | "--cacert" | "--cert" | "--key" | "-c" | "--cookie-jar" | "-T" | "--upload-file" => {
+            | "--cacert" | "--cert" | "--key" | "-c" | "--cookie-jar" => {
                 let _ = value();
             }
             other if !other.starts_with('-') && url.is_none() => url = Some(other.to_string()),
@@ -229,6 +247,10 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
         .filter(|segment| !segment.is_empty() && !segment.contains(':'))
         .unwrap_or(&uri)
         .to_string();
+    let mut lost = Vec::new();
+    for kind in lost_bodies {
+        lost::push_body(&mut lost, &name, &kind);
+    }
     Ok(ImportBundle {
         items: vec![ImportItem::Api {
             name,
@@ -243,6 +265,7 @@ pub(super) fn parse(text: &str) -> Result<ImportBundle, ImportError> {
                 ..Default::default()
             }),
         }],
+        lost,
         ..Default::default()
     })
 }
@@ -331,5 +354,33 @@ mod tests {
         );
         assert_eq!(request("curl -I https://a.test").method, HttpMethod::Head);
         assert_eq!(parse("curl -X GET"), Err(ImportError::NoUrl));
+    }
+
+    #[test]
+    fn file_upload_and_binary_file_flags_are_reported() {
+        use super::super::{Lost, LostKind};
+        let upload = super::super::parse("curl -T /tmp/blob.bin https://a.test/upload").expect("parsed");
+        assert_eq!(
+            upload.lost,
+            vec![Lost {
+                target: "upload".into(),
+                kind: LostKind::Body {
+                    kind: "--upload-file /tmp/blob.bin".into(),
+                },
+            }]
+        );
+        let binary = super::super::parse("curl --data-binary @payload.bin https://a.test/bin").expect("parsed");
+        assert_eq!(
+            binary.lost,
+            vec![Lost {
+                target: "bin".into(),
+                kind: LostKind::Body {
+                    kind: "file (payload.bin)".into(),
+                },
+            }]
+        );
+        // `--data-raw` takes `@` literally, not as a file reference.
+        let raw = super::super::parse("curl --data-raw '@literal' https://a.test/raw").expect("parsed");
+        assert!(raw.lost.is_empty());
     }
 }

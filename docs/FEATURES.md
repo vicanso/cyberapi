@@ -110,7 +110,7 @@ Saved from each response and sent with the requests they match, across every pro
 
 Paste a cURL command to make an API, or copy any request as cURL, HTTPie, JavaScript `fetch`, Node axios, Python `requests`, PHP Guzzle, Go `net/http`, Rust reqwest, Java or C# `HttpClient`, or Swift `URLSession`.
 
-Import Postman, Insomnia, Hoppscotch, Bruno, Swagger 2 / OpenAPI 3, HAR, `.http` files and cURL. Importing again updates matching APIs by default and keeps the values you typed. A project or folder can remember the address it came from and sync later.
+Import Postman, Insomnia, Hoppscotch, Bruno, Swagger 2 / OpenAPI 3, HAR, `.http` files and cURL. Importing again updates matching APIs by default and keeps the values you typed, and an import report lists any scripts, unrecognized templates, or unsupported auth and bodies that could not be imported as-is. A project or folder can remember the address it came from and sync later.
 
 [Import and export](./IMPORT.md) — formats, what an update keeps, export. [Sync from a source](./SOURCE.md) — a bound document, including a scheduled sync that follows the document and leaves your values and secrets.
 

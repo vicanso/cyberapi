@@ -148,6 +148,14 @@ impl DashboardView {
                         cx,
                     );
                 }
+                DashboardEvent::ImportReport(lost) => {
+                    if !lost.is_empty() {
+                        let lost = lost.clone();
+                        window.defer(cx, move |window, cx| {
+                            super::workspace::open_import_report_dialog(lost, window, cx);
+                        });
+                    }
+                }
                 DashboardEvent::Synced(collection) => {
                     window.push_notification(
                         Notification::success(t!("sync.synced_project", name = collection.name).to_string()),

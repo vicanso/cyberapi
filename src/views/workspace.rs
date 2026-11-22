@@ -11,6 +11,7 @@ mod docs_editor;
 mod event_stream;
 mod find_replace_dialog;
 mod import_dialog;
+mod import_report_dialog;
 mod load_dialog;
 mod mock_dialog;
 mod move_dialog;
@@ -271,6 +272,7 @@ fn new_item(
 }
 
 pub use import_dialog::{open_import_dialog, open_import_project_dialog};
+pub use import_report_dialog::open_import_report_dialog;
 pub use palette::{
     OpenPalette, ROOT_CONTEXT, bind_keys as bind_palette_keys, bind_mac_page_keys as bind_palette_mac_page_keys,
     open_palette,
@@ -507,11 +509,22 @@ impl WorkspaceView {
                 cx.notify();
             }),
             cx.subscribe_in(&state, window, |this, this_state, event, window, cx| match event {
-                WorkspaceEvent::Imported { apis, folders, again } => {
+                WorkspaceEvent::Imported {
+                    apis,
+                    folders,
+                    again,
+                    lost,
+                } => {
                     window.push_notification(
                         Notification::success(i18n::imported_notice(*apis, *folders, *again)),
                         cx,
                     );
+                    if !lost.is_empty() {
+                        let lost = lost.clone();
+                        window.defer(cx, move |window, cx| {
+                            open_import_report_dialog(lost, window, cx);
+                        });
+                    }
                 }
                 WorkspaceEvent::Failed(error) => {
                     window.push_notification(Notification::error(i18n::store_error(error)), cx);

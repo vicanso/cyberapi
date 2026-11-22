@@ -114,10 +114,11 @@ struct MergeInto {
 
 /// F10.2 before importing: what the text is and what it holds, or why it
 /// is nothing to import (`None` for no text); and, going into a project,
-/// how many of its APIs the project has already (B3) and which ones (#84).
-fn describe(text: &str, into: Option<&MergeInto>) -> (Option<Found>, usize, Vec<String>) {
+/// how many of its APIs the project has already (B3), which ones (#84), and
+/// how many items could not be imported as-is (M1).
+fn describe(text: &str, into: Option<&MergeInto>) -> (Option<Found>, usize, Vec<String>, usize) {
     if text.trim().is_empty() {
-        return (None, 0, Vec::new());
+        return (None, 0, Vec::new(), 0);
     }
     let format = match import::detect(text) {
         Ok((format, _)) => format_name(format),
@@ -128,13 +129,16 @@ fn describe(text: &str, into: Option<&MergeInto>) -> (Option<Found>, usize, Vec<
                 )),
                 0,
                 Vec::new(),
+                0,
             );
         }
     };
     let mut known = 0;
     let mut matched_uris = Vec::new();
+    let mut lost = 0;
     let found = match import::parse(text) {
         Ok(bundle) => {
+            lost = bundle.lost.len();
             if let Some(into) = into {
                 let imported_vars = bundle.all_environment();
                 known = import::merge::merge_with_vars(
@@ -181,7 +185,7 @@ fn describe(text: &str, into: Option<&MergeInto>) -> (Option<Found>, usize, Vec<
         }
         Err(failure) => Err(t!("import.unreadable", why = crate::i18n::import_error(&failure)).to_string()),
     };
-    (Some(found), known, matched_uris)
+    (Some(found), known, matched_uris, lost)
 }
 
 pub fn open_import_dialog(
@@ -250,6 +254,7 @@ struct ImportView {
     into: Option<Arc<MergeInto>>,
     known: usize,
     matched_uris: Vec<String>,
+    lost: usize,
     update: bool,
     fetching: Option<Task<()>>,
     /// B7: the address the text was fetched from, and whether the project
@@ -296,6 +301,7 @@ impl ImportView {
             into,
             known: 0,
             matched_uris: Vec::new(),
+            lost: 0,
             update: true,
             fetching: None,
             fetched_from: None,
@@ -351,6 +357,7 @@ impl ImportView {
             self.found = None;
             self.known = 0;
             self.matched_uris.clear();
+            self.lost = 0;
             self.address = None;
             self.describing = Task::ready(());
             cx.notify();
@@ -362,6 +369,7 @@ impl ImportView {
             self.found = Some(Ok(t!("import.fetch_hint").to_string()));
             self.known = 0;
             self.matched_uris.clear();
+            self.lost = 0;
             self.describing = Task::ready(());
             cx.notify();
             return;
@@ -369,11 +377,12 @@ impl ImportView {
         let into = self.into.clone();
         let found = cx.background_spawn(async move { describe(&text, into.as_deref()) });
         self.describing = cx.spawn(async move |this, cx| {
-            let (found, known, matched_uris) = found.await;
+            let (found, known, matched_uris, lost) = found.await;
             let _ = this.update(cx, |this, cx| {
                 this.found = found;
                 this.known = known;
                 this.matched_uris = matched_uris;
+                this.lost = lost;
                 cx.notify();
             });
         });
@@ -497,7 +506,7 @@ impl ImportView {
 impl Render for ImportView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let danger = cx.theme().danger;
+        let (danger, warning) = (cx.theme().danger, cx.theme().warning);
         let held = self.held.as_ref().map(|text| {
             t!(
                 "import.held",
@@ -537,6 +546,17 @@ impl Render for ImportView {
                                 Some(Ok(found)) => this.child(div().text_color(muted).child(found.clone())),
                                 Some(Err(why)) => this.child(div().text_color(danger).child(why.clone())),
                                 None => this,
+                            })
+                            .when(self.lost > 0, |this| {
+                                this.child(
+                                    div().text_color(warning).child(
+                                        t!(
+                                            "import.lost_preview",
+                                            items = crate::i18n::counted("import.report_item", self.lost)
+                                        )
+                                        .to_string(),
+                                    ),
+                                )
                             }),
                     )
                     .child(

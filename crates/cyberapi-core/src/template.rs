@@ -308,7 +308,7 @@ pub fn parse(text: &str) -> Vec<Expr> {
     found
 }
 
-fn parse_inner(whole: &str, inner: &str) -> Option<Expr> {
+pub(crate) fn parse_inner(whole: &str, inner: &str) -> Option<Expr> {
     let Some(open) = inner.find('(') else {
         return parse_dollar_var(whole, inner.trim());
     };
@@ -319,6 +319,48 @@ fn parse_inner(whole: &str, inner: &str) -> Option<Expr> {
         chain: names.split('.').map(str::to_string).collect(),
         params: split_params(&inner[open + 1..close]),
     })
+}
+
+/// Whether `trimmed` (inside `{{...}}`) is a supported `$...` dynamic variable.
+pub(crate) fn is_known_dollar_var(trimmed: &str) -> bool {
+    parse_dollar_var("", trimmed).is_some()
+}
+
+/// Whether `name` is a built-in template function or alias handled by [`evaluate`].
+pub(crate) fn is_known_function(name: &str) -> bool {
+    matches!(
+        name,
+        "readTextFile"
+            | "rtf"
+            | "readFile"
+            | "rf"
+            | "base64"
+            | "b64"
+            | "md5"
+            | "sha256"
+            | "sha1"
+            | "sha512"
+            | "base64Decode"
+            | "b64d"
+            | "urlDecode"
+            | "hmacSha1"
+            | "hmacSha512"
+            | "openFile"
+            | "of"
+            | "prompt"
+            | "env"
+            | "timestamp"
+            | "ts"
+            | "uuid"
+            | "random"
+            | "randomString"
+            | "now"
+            | "hmacSha256"
+            | "urlEncode"
+            | "get"
+            | "g"
+            | "value"
+    )
 }
 
 /// Postman / HTTP client built-in dynamic variables (`{{$guid}}`,
@@ -1166,5 +1208,47 @@ mod tests {
         let rendered = render("sid={{SAMPLE_B64}}; Path=/", &inp, &Files).expect("render");
         assert!(rendered.starts_with("sid=") && rendered.ends_with("; Path=/"));
         assert!(!rendered.contains("{{SAMPLE_B64}}"));
+    }
+
+    #[test]
+    fn known_dollar_vars_and_functions_match_evaluator() {
+        for var in [
+            "$guid",
+            "$uuid",
+            "$randomUUID",
+            "$random.uuid",
+            "$timestamp",
+            "$isoTimestamp",
+            "$randomInt",
+            "$randomAlphaNumeric",
+            "$randomString",
+        ] {
+            assert!(is_known_dollar_var(var), "{var}");
+        }
+        assert!(!is_known_dollar_var("$randomEmail"));
+        assert!(!is_known_dollar_var("$unknown"));
+
+        for func in [
+            "uuid",
+            "b64",
+            "base64",
+            "rf",
+            "readFile",
+            "rtf",
+            "readTextFile",
+            "g",
+            "get",
+            "env",
+            "prompt",
+            "hmacSha256",
+            "value",
+            "ts",
+            "timestamp",
+            "now",
+        ] {
+            assert!(is_known_function(func), "{func}");
+        }
+        assert!(!is_known_function("faker"));
+        assert!(!is_known_function("unknownFn"));
     }
 }

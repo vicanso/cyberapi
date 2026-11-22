@@ -617,11 +617,20 @@ impl Render for SourceView {
             })
             .when_some(self.fetched.as_ref(), |this, fetched| {
                 let breaking = breaking_lines(fetched);
+                let lost = fetched.bundle.lost.len();
                 this.child(
                     v_flex()
                         .gap_1()
                         .text_sm()
                         .children(told(fetched).into_iter().map(|line| div().child(line)))
+                        .when(lost > 0, |col| {
+                            col.child(
+                                div().text_xs().text_color(warning).child(
+                                    t!("import.lost_preview", items = i18n::counted("import.report_item", lost))
+                                        .to_string(),
+                                ),
+                            )
+                        })
                         .when(!breaking.is_empty(), |col| {
                             col.child(
                                 v_flex()

@@ -9,6 +9,7 @@
 //! are the variables every environment shares, and each sub-environment is
 //! a named environment.
 
+use super::lost::{self, Lost, ScriptPhase};
 use super::{ImportBundle, ImportEnvironment, ImportItem, api, content_type_of, guess_content_type, kv};
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
@@ -64,12 +65,29 @@ fn pairs(value: Option<&Value>) -> Vec<KvParam> {
         .unwrap_or_default()
 }
 
-fn request(resource: &Value) -> ImportItem {
+fn collect_scripts(resource: &Value, target: &str, lost: &mut Vec<Lost>) {
+    lost::push_script(
+        lost,
+        target,
+        ScriptPhase::PreRequest,
+        text(resource, "preRequestScript"),
+    );
+    lost::push_script(
+        lost,
+        target,
+        ScriptPhase::PostResponse,
+        text(resource, "afterResponseScript"),
+    );
+}
+
+fn request(resource: &Value, prefix: &str, lost: &mut Vec<Lost>) -> ImportItem {
     let (name, mut built) = api(
         text(resource, "name"),
         text(resource, "method"),
         &variables(text(resource, "url")),
     );
+    let target = lost::join_path(prefix, &name);
+    collect_scripts(resource, &target, lost);
     built.query.extend(pairs(resource.get("parameters")));
     built.headers = pairs(resource.get("headers"));
     built.headers.retain(|header| {
@@ -95,6 +113,15 @@ fn request(resource: &Value) -> ImportItem {
                 built.body = GraphQlBody::read(&variables(text(body, "text"))).to_body();
             }
             _ => {
+                let file_name = text(body, "fileName").trim();
+                if !file_name.is_empty() {
+                    let kind = if mime.is_empty() {
+                        "file".to_string()
+                    } else {
+                        format!("file ({mime})")
+                    };
+                    lost::push_body(lost, &target, &kind);
+                }
                 built.body = variables(text(body, "text"));
                 if mime.is_empty() && !built.body.is_empty() {
                     built.content_type = guess_content_type(&built.body);
@@ -102,7 +129,10 @@ fn request(resource: &Value) -> ImportItem {
             }
         }
     }
-    if let Some(own) = resource.get("authentication").and_then(auth) {
+    if let Some(own) = resource
+        .get("authentication")
+        .and_then(|value| auth(value, &target, lost))
+    {
         built.auth = own;
     }
     // F3.
@@ -117,12 +147,13 @@ fn request(resource: &Value) -> ImportItem {
 /// none (`{}`) or a kind this app has no counterpart of (OAuth asked in a
 /// browser, AWS…),
 /// which then inherits. One switched off signs in with nothing.
-fn auth(value: &Value) -> Option<Auth> {
+fn auth(value: &Value, target: &str, lost: &mut Vec<Lost>) -> Option<Auth> {
     let field = |key: &str| variables(text(value, key));
     if value.get("disabled").and_then(Value::as_bool) == Some(true) {
         return Some(Auth::None);
     }
-    Some(match text(value, "type") {
+    let kind = text(value, "type");
+    Some(match kind {
         "none" => Auth::None,
         "basic" => Auth::Basic {
             username: field("username"),
@@ -143,31 +174,43 @@ fn auth(value: &Value) -> Option<Auth> {
             },
         },
         // C4: the grants asked without a browser.
-        "oauth2" => Auth::from(OAuth2 {
-            grant: match text(value, "grantType") {
+        "oauth2" => {
+            let grant_type = text(value, "grantType");
+            let grant = match grant_type {
                 "client_credentials" => Grant::ClientCredentials,
                 "password" => Grant::Password,
                 "authorization_code" => Grant::AuthorizationCode,
-                _ => return None,
-            },
-            token_url: field("accessTokenUrl"),
-            authorization_url: {
-                let url = field("authorizationUrl");
-                if url.is_empty() { field("authUrl") } else { url }
-            },
-            redirect_port: crate::oauth::redirect_port_of(&field("redirectUri")),
-            client_id: field("clientId"),
-            client_secret: field("clientSecret"),
-            username: field("username"),
-            password: field("password"),
-            scope: field("scope"),
-            audience: field("audience"),
-            resource: field("resource"),
-            client_auth: match value.get("credentialsInBody").and_then(Value::as_bool) {
-                Some(true) => ClientAuth::Body,
-                _ => ClientAuth::Header,
-            },
-        }),
+                _ => {
+                    let kind = if grant_type.trim().is_empty() {
+                        "oauth2".to_string()
+                    } else {
+                        format!("oauth2 ({})", grant_type.trim())
+                    };
+                    lost::push_auth(lost, target, &kind);
+                    return None;
+                }
+            };
+            Auth::from(OAuth2 {
+                grant,
+                token_url: field("accessTokenUrl"),
+                authorization_url: {
+                    let url = field("authorizationUrl");
+                    if url.is_empty() { field("authUrl") } else { url }
+                },
+                redirect_port: crate::oauth::redirect_port_of(&field("redirectUri")),
+                client_id: field("clientId"),
+                client_secret: field("clientSecret"),
+                username: field("username"),
+                password: field("password"),
+                scope: field("scope"),
+                audience: field("audience"),
+                resource: field("resource"),
+                client_auth: match value.get("credentialsInBody").and_then(Value::as_bool) {
+                    Some(true) => ClientAuth::Body,
+                    _ => ClientAuth::Header,
+                },
+            })
+        }
         "aws" => Auth::from(crate::aws_sigv4::AwsSigV4 {
             access_key: field("accessKeyId"),
             secret_key: field("secretAccessKey"),
@@ -175,7 +218,10 @@ fn auth(value: &Value) -> Option<Auth> {
             region: field("region"),
             service: field("service"),
         }),
-        _ => return None,
+        _ => {
+            lost::push_auth(lost, target, kind);
+            return None;
+        }
     })
 }
 
@@ -198,23 +244,32 @@ fn data(resource: &Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-fn children(resources: &[Value], parent: &str) -> Vec<ImportItem> {
+fn children(resources: &[Value], parent: &str, prefix: &str, lost: &mut Vec<Lost>) -> Vec<ImportItem> {
     resources
         .iter()
         .filter(|resource| text(resource, "parentId") == parent)
         .filter_map(|resource| match text(resource, "_type") {
-            "request" => Some(request(resource)),
-            "request_group" => Some(ImportItem::Folder {
-                name: text(resource, "name").to_string(),
-                children: children(resources, text(resource, "_id")),
-                settings: FolderSettings {
-                    auth: resource.get("authentication").and_then(auth).unwrap_or_default(),
-                    headers: Vec::new(),
-                    description: text(resource, "description").trim().to_string(),
-                    variables: Vec::new(),
-                    ..Default::default()
-                },
-            }),
+            "request" => Some(request(resource, prefix, lost)),
+            "request_group" => {
+                let name = text(resource, "name").to_string();
+                let target = lost::join_path(prefix, &name);
+                collect_scripts(resource, &target, lost);
+                let folder_auth = resource
+                    .get("authentication")
+                    .and_then(|value| auth(value, &target, lost))
+                    .unwrap_or_default();
+                Some(ImportItem::Folder {
+                    name,
+                    children: children(resources, text(resource, "_id"), &target, lost),
+                    settings: FolderSettings {
+                        auth: folder_auth,
+                        headers: Vec::new(),
+                        description: text(resource, "description").trim().to_string(),
+                        variables: Vec::new(),
+                        ..Default::default()
+                    },
+                })
+            }
             _ => None,
         })
         .collect()
@@ -226,6 +281,13 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let mut lost = Vec::new();
+    for resource in resources
+        .iter()
+        .filter(|resource| text(resource, "_type") == "workspace")
+    {
+        collect_scripts(resource, "", &mut lost);
+    }
     // Whatever hangs on a workspace (or on nothing this file has) is on top.
     let ids: Vec<&str> = resources
         .iter()
@@ -242,7 +304,10 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
             tops.push(parent);
         }
     }
-    let items = tops.into_iter().flat_map(|top| children(&resources, top)).collect();
+    let items = tops
+        .into_iter()
+        .flat_map(|top| children(&resources, top, "", &mut lost))
+        .collect();
     // A sub-environment hangs on another environment; the base one on the
     // workspace.
     let environments: Vec<&Value> = resources
@@ -253,7 +318,7 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
     let (subs, bases): (Vec<&Value>, Vec<&Value>) = environments
         .into_iter()
         .partition(|resource| ids.contains(&text(resource, "parentId")));
-    ImportBundle {
+    let mut bundle = ImportBundle {
         items,
         environment: bases.into_iter().flat_map(data).collect(),
         environments: subs
@@ -264,8 +329,11 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
             })
             .filter(|environment| !environment.name.is_empty())
             .collect(),
+        lost,
         ..Default::default()
-    }
+    };
+    lost::scan_insomnia_tags(&mut bundle);
+    bundle
 }
 
 #[cfg(test)]
@@ -390,5 +458,83 @@ mod tests {
             }
         );
         assert_eq!(auth(&bundle.items[2]), Auth::None, "switched off");
+    }
+
+    #[test]
+    fn nunjucks_tags_scripts_auth_and_file_body_are_reported() {
+        use super::super::{LostKind, ScriptPhase};
+        let doc = r#"{
+            "_type": "export",
+            "__export_format": 4,
+            "resources": [
+                {"_id": "wrk_1", "_type": "workspace", "name": "Shop", "preRequestScript": "insomnia.variables.set('x', '1');"},
+                {"_id": "fld_1", "_type": "request_group", "parentId": "wrk_1", "name": "Auth", "afterResponseScript": "console.log('folder');"},
+                {"_id": "req_1", "_type": "request", "parentId": "fld_1", "name": "Upload", "method": "POST",
+                 "url": "https://a.test/{% uuid 'v4' %}",
+                 "headers": [{"name": "X-A", "value": "{% now 'iso-8601' %}"}],
+                 "body": {"mimeType": "application/octet-stream", "fileName": "/tmp/a.bin"},
+                 "authentication": {"type": "oauth2", "grantType": "implicit"},
+                 "preRequestScript": "console.log('req');",
+                 "afterResponseScript": "insomnia.test('ok', () => {});"}
+            ]
+        }"#;
+        let bundle = super::super::parse(doc).expect("parsed");
+        assert_eq!(
+            bundle.lost,
+            vec![
+                Lost {
+                    target: String::new(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PreRequest,
+                        source: "insomnia.variables.set('x', '1');".into(),
+                    },
+                },
+                Lost {
+                    target: "Auth".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PostResponse,
+                        source: "console.log('folder');".into(),
+                    },
+                },
+                Lost {
+                    target: "Auth / Upload".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PreRequest,
+                        source: "console.log('req');".into(),
+                    },
+                },
+                Lost {
+                    target: "Auth / Upload".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PostResponse,
+                        source: "insomnia.test('ok', () => {});".into(),
+                    },
+                },
+                Lost {
+                    target: "Auth / Upload".into(),
+                    kind: LostKind::Body {
+                        kind: "file (application/octet-stream)".into(),
+                    },
+                },
+                Lost {
+                    target: "Auth / Upload".into(),
+                    kind: LostKind::Auth {
+                        kind: "oauth2 (implicit)".into(),
+                    },
+                },
+                Lost {
+                    target: "Auth / Upload".into(),
+                    kind: LostKind::Template {
+                        expr: "{% uuid 'v4' %}".into(),
+                    },
+                },
+                Lost {
+                    target: "Auth / Upload".into(),
+                    kind: LostKind::Template {
+                        expr: "{% now 'iso-8601' %}".into(),
+                    },
+                },
+            ]
+        );
     }
 }

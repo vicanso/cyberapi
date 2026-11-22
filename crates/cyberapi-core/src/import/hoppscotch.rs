@@ -10,6 +10,7 @@
 //! has no counterpart of (OAuth, AWS…) inherits. A collection's own
 //! variables are the variables every environment shares.
 
+use super::lost::{self, Lost, ScriptPhase};
 use super::{ImportBundle, ImportEnvironment, ImportItem, api, content_type_of, guess_content_type, kv};
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
@@ -136,14 +137,20 @@ fn raw_pairs(text: &str) -> Vec<KvParam> {
         .collect()
 }
 
+fn collect_scripts(value: &Value, target: &str, lost: &mut Vec<Lost>) {
+    lost::push_script(lost, target, ScriptPhase::PreRequest, text(value, "preRequestScript"));
+    lost::push_script(lost, target, ScriptPhase::Test, text(value, "testScript"));
+}
+
 /// An `auth` object as this app's; `None` for a kind it has no counterpart
 /// of, which then inherits.
-fn auth(value: &Value) -> Option<Auth> {
+fn auth(value: &Value, target: &str, lost: &mut Vec<Lost>) -> Option<Auth> {
     let field = |key: &str| variables(text(value, key));
     if value.get("authActive").and_then(Value::as_bool) == Some(false) {
         return Some(Auth::None);
     }
-    Some(match text(value, "authType") {
+    let kind = text(value, "authType");
+    Some(match kind {
         "inherit" => Auth::Inherit,
         "none" => Auth::None,
         "basic" => Auth::Basic {
@@ -169,11 +176,20 @@ fn auth(value: &Value) -> Option<Auth> {
         "oauth-2" => {
             let info = value.get("grantTypeInfo").unwrap_or(&Value::Null);
             let field = |key: &str| variables(text(info, key));
-            let grant = match text(info, "grantType") {
+            let grant_type = text(info, "grantType");
+            let grant = match grant_type {
                 "CLIENT_CREDENTIALS" => Grant::ClientCredentials,
                 "PASSWORD" => Grant::Password,
                 "AUTHORIZATION_CODE" => Grant::AuthorizationCode,
-                _ => return None,
+                _ => {
+                    let kind = if grant_type.trim().is_empty() {
+                        "oauth-2".to_string()
+                    } else {
+                        format!("oauth-2 ({})", grant_type.trim())
+                    };
+                    lost::push_auth(lost, target, &kind);
+                    return None;
+                }
             };
             // Client credentials name the token endpoint `authEndpoint`
             // when they have no `tokenEndpoint`. The authorization code's
@@ -205,14 +221,19 @@ fn auth(value: &Value) -> Option<Auth> {
                 },
             })
         }
-        _ => return None,
+        _ => {
+            lost::push_auth(lost, target, kind);
+            return None;
+        }
     })
 }
 
-fn request(value: &Value) -> ImportItem {
+fn request(value: &Value, prefix: &str, lost: &mut Vec<Lost>) -> ImportItem {
     // GraphQL's requests have a `url` and a `query`, REST's an `endpoint`.
     if value.get("endpoint").is_none() && value.get("query").is_some_and(Value::is_string) {
         let (name, mut built) = api(text(value, "name"), "POST", &variables(text(value, "url")));
+        let target = lost::join_path(prefix, &name);
+        collect_scripts(value, &target, lost);
         built.headers = pairs(value.get("headers"));
         built.content_type = ContentType::GraphQl;
         built.body = GraphQlBody {
@@ -221,7 +242,7 @@ fn request(value: &Value) -> ImportItem {
             operation_name: String::new(),
         }
         .to_body();
-        if let Some(own) = value.get("auth").and_then(auth) {
+        if let Some(own) = value.get("auth").and_then(|value| auth(value, &target, lost)) {
             built.auth = own;
         }
         return ImportItem::Api {
@@ -234,6 +255,8 @@ fn request(value: &Value) -> ImportItem {
         text(value, "method"),
         &variables(text(value, "endpoint")),
     );
+    let target = lost::join_path(prefix, &name);
+    collect_scripts(value, &target, lost);
     built.query.extend(pairs(value.get("params")));
     built.headers = pairs(value.get("headers"));
     if let Some(body) = value.get("body") {
@@ -281,13 +304,13 @@ fn request(value: &Value) -> ImportItem {
                     }
                 }
             }
-            _ => {}
+            (mime, Some(_)) => lost::push_body(lost, &target, mime),
         }
     }
     if !built.method.has_body() && built.method != HttpMethod::Get {
         built.content_type = ContentType::default();
     }
-    if let Some(own) = value.get("auth").and_then(auth) {
+    if let Some(own) = value.get("auth").and_then(|value| auth(value, &target, lost)) {
         built.auth = own;
     }
     ImportItem::Api {
@@ -297,17 +320,23 @@ fn request(value: &Value) -> ImportItem {
 }
 
 /// A collection or folder as a folder.
-fn folder(value: &Value) -> ImportItem {
+fn folder(value: &Value, prefix: &str, lost: &mut Vec<Lost>) -> ImportItem {
+    let name = text(value, "name").trim().to_string();
+    let target = lost::join_path(prefix, &name);
+    collect_scripts(value, &target, lost);
     ImportItem::Folder {
-        name: text(value, "name").trim().to_string(),
-        children: children(value),
-        settings: settings(value),
+        name,
+        settings: settings(value, &target, lost),
+        children: children(value, &target, lost),
     }
 }
 
-fn settings(value: &Value) -> FolderSettings {
+fn settings(value: &Value, target: &str, lost: &mut Vec<Lost>) -> FolderSettings {
     FolderSettings {
-        auth: value.get("auth").and_then(auth).unwrap_or_default(),
+        auth: value
+            .get("auth")
+            .and_then(|value| auth(value, target, lost))
+            .unwrap_or_default(),
         headers: pairs(value.get("headers")),
         // F3.
         description: text(value, "description").trim().to_string(),
@@ -318,7 +347,7 @@ fn settings(value: &Value) -> FolderSettings {
 
 /// A collection's or a folder's folders, then its requests, as Hoppscotch
 /// lists them.
-fn children(value: &Value) -> Vec<ImportItem> {
+fn children(value: &Value, prefix: &str, lost: &mut Vec<Lost>) -> Vec<ImportItem> {
     let list = |key: &str| {
         value
             .get(key)
@@ -326,11 +355,12 @@ fn children(value: &Value) -> Vec<ImportItem> {
             .map(Vec::as_slice)
             .unwrap_or_default()
     };
-    list("folders")
+    let mut items: Vec<ImportItem> = list("folders")
         .iter()
-        .map(folder)
-        .chain(list("requests").iter().map(request))
-        .collect()
+        .map(|value| folder(value, prefix, lost))
+        .collect();
+    items.extend(list("requests").iter().map(|value| request(value, prefix, lost)));
+    items
 }
 
 /// A collection's variables: what it starts with, which is what an export
@@ -357,18 +387,21 @@ fn collection_variables(value: &Value) -> Vec<(String, String)> {
 }
 
 pub(super) fn parse(json: &Value) -> ImportBundle {
+    let mut lost = Vec::new();
     match json {
         // "Export all": each collection a folder.
         Value::Array(collections) if collections.len() > 1 => ImportBundle {
-            items: collections.iter().map(folder).collect(),
+            items: collections.iter().map(|c| folder(c, "", &mut lost)).collect(),
             environment: collections.iter().flat_map(collection_variables).collect(),
+            lost,
             ..Default::default()
         },
         Value::Array(collections) => collections.first().map(parse).unwrap_or_default(),
         // One: its contents, signing in and sending headers as the project.
         collection => {
-            let own = settings(collection);
-            let mut items = children(collection);
+            collect_scripts(collection, "", &mut lost);
+            let own = settings(collection, "", &mut lost);
+            let mut items = children(collection, "", &mut lost);
             // The project has no headers of its own to put them in: a
             // collection that sends some keeps them on a folder.
             if !own.headers.is_empty() {
@@ -386,6 +419,7 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
                 items,
                 environment: collection_variables(collection),
                 auth: own.auth,
+                lost,
                 ..Default::default()
             }
         }
@@ -600,6 +634,58 @@ mod tests {
                 ImportEnvironment {
                     name: "prod".into(),
                     variables: vec![],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn scripts_and_unsupported_auth_or_body_are_reported() {
+        use super::super::{LostKind, ScriptPhase};
+        let doc = r#"{
+            "v": 12,
+            "name": "Shop",
+            "folders": [],
+            "requests": [{
+                "v": "17",
+                "name": "Upload",
+                "method": "POST",
+                "endpoint": "<<host>>/up",
+                "preRequestScript": "pw.env.set('a', '1')",
+                "testScript": "pw.test('ok', () => {})",
+                "auth": {"authType": "oauth-2", "authActive": true, "grantTypeInfo": {"grantType": "IMPLICIT"}},
+                "body": {"contentType": "application/octet-stream", "body": {"file": "a.bin"}}
+            }]
+        }"#;
+        let bundle = super::super::parse(doc).expect("parsed");
+        assert_eq!(
+            bundle.lost,
+            vec![
+                Lost {
+                    target: "Upload".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PreRequest,
+                        source: "pw.env.set('a', '1')".into(),
+                    },
+                },
+                Lost {
+                    target: "Upload".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::Test,
+                        source: "pw.test('ok', () => {})".into(),
+                    },
+                },
+                Lost {
+                    target: "Upload".into(),
+                    kind: LostKind::Body {
+                        kind: "application/octet-stream".into(),
+                    },
+                },
+                Lost {
+                    target: "Upload".into(),
+                    kind: LostKind::Auth {
+                        kind: "oauth-2 (IMPLICIT)".into(),
+                    },
                 },
             ]
         );

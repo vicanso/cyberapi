@@ -10,6 +10,7 @@
 //! has no counterpart of (OAuth, AWS, Hawk…) inherits. A Postman
 //! environment file is a named environment.
 
+use super::lost::{self, Lost, ScriptPhase};
 use super::{ImportBundle, ImportEnvironment, ImportItem, api, content_type_of, guess_content_type, kv};
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
@@ -51,10 +52,35 @@ fn as_text(value: Option<&Value>) -> String {
     }
 }
 
+fn collect_events(value: &Value, target: &str, lost: &mut Vec<Lost>) {
+    let Some(events) = value.get("event").and_then(Value::as_array) else {
+        return;
+    };
+    for event in events {
+        if event.get("disabled").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let phase = match text(event, "listen") {
+            "prerequest" => ScriptPhase::PreRequest,
+            "test" => ScriptPhase::Test,
+            _ => ScriptPhase::Other,
+        };
+        let Some(script) = event.get("script") else {
+            continue;
+        };
+        let source = match script.get("exec") {
+            Some(Value::Array(lines)) => lines.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n"),
+            Some(Value::String(text)) => text.clone(),
+            _ => String::new(),
+        };
+        lost::push_script(lost, target, phase, &source);
+    }
+}
+
 /// B4: an `auth` object as this app's; `None` for a kind it has no
 /// counterpart of, which then inherits. v2.1 lists the fields
 /// (`[{key, value}]`), v2.0 names them (`{username: …}`).
-fn auth(value: &Value) -> Option<Auth> {
+fn auth(value: &Value, target: &str, lost: &mut Vec<Lost>) -> Option<Auth> {
     let kind = text(value, "type");
     let fields = value.get(kind);
     let field = |key: &str| match fields {
@@ -112,35 +138,47 @@ fn auth(value: &Value) -> Option<Auth> {
         },
         // C4: the grants asked without a browser, and the authorization
         // code with PKCE (the desktop opens the browser).
-        "oauth2" => Auth::from(OAuth2 {
-            grant: match field("grant_type").as_str() {
+        "oauth2" => {
+            let grant_type = field("grant_type");
+            let grant = match grant_type.as_str() {
                 "client_credentials" => Grant::ClientCredentials,
                 "password_credentials" => Grant::Password,
                 "authorization_code" | "authorization_code_with_pkce" => Grant::AuthorizationCode,
-                _ => return None,
-            },
-            token_url: field("accessTokenUrl"),
-            authorization_url: field("authUrl"),
-            redirect_port: ["redirect_uri", "redirectUri", "callback"]
-                .into_iter()
-                .map(field)
-                .find_map(|uri| {
-                    let port = crate::oauth::redirect_port_of(&uri);
-                    (port != 0).then_some(port)
-                })
-                .unwrap_or(0),
-            client_id: field("clientId"),
-            client_secret: field("clientSecret"),
-            username: field("username"),
-            password: field("password"),
-            scope: field("scope"),
-            audience: token_param("audience"),
-            resource: token_param("resource"),
-            client_auth: match field("client_authentication").as_str() {
-                "body" => ClientAuth::Body,
-                _ => ClientAuth::Header,
-            },
-        }),
+                _ => {
+                    let kind = if grant_type.trim().is_empty() {
+                        "oauth2".to_string()
+                    } else {
+                        format!("oauth2 ({})", grant_type.trim())
+                    };
+                    lost::push_auth(lost, target, &kind);
+                    return None;
+                }
+            };
+            Auth::from(OAuth2 {
+                grant,
+                token_url: field("accessTokenUrl"),
+                authorization_url: field("authUrl"),
+                redirect_port: ["redirect_uri", "redirectUri", "callback"]
+                    .into_iter()
+                    .map(field)
+                    .find_map(|uri| {
+                        let port = crate::oauth::redirect_port_of(&uri);
+                        (port != 0).then_some(port)
+                    })
+                    .unwrap_or(0),
+                client_id: field("clientId"),
+                client_secret: field("clientSecret"),
+                username: field("username"),
+                password: field("password"),
+                scope: field("scope"),
+                audience: token_param("audience"),
+                resource: token_param("resource"),
+                client_auth: match field("client_authentication").as_str() {
+                    "body" => ClientAuth::Body,
+                    _ => ClientAuth::Header,
+                },
+            })
+        }
         "awsv4" => Auth::from(crate::aws_sigv4::AwsSigV4 {
             access_key: field("accessKey"),
             secret_key: field("secretKey"),
@@ -148,23 +186,32 @@ fn auth(value: &Value) -> Option<Auth> {
             region: field("region"),
             service: field("service"),
         }),
-        _ => return None,
+        _ => {
+            lost::push_auth(lost, target, kind);
+            return None;
+        }
     })
 }
 
-fn item(value: &Value) -> Option<ImportItem> {
+fn item(value: &Value, prefix: &str, lost: &mut Vec<Lost>) -> Option<ImportItem> {
     let name = text(value, "name");
     let Some(request) = value.get("request") else {
+        let target = lost::join_path(prefix, name);
+        collect_events(value, &target, lost);
+        let folder_auth = value
+            .get("auth")
+            .and_then(|value| auth(value, &target, lost))
+            .unwrap_or_default();
         let children = value
             .get("item")
             .and_then(Value::as_array)
-            .map(|items| items.iter().filter_map(item).collect())
+            .map(|items| items.iter().filter_map(|child| item(child, &target, lost)).collect())
             .unwrap_or_default();
         return Some(ImportItem::Folder {
             name: name.to_string(),
             children,
             settings: FolderSettings {
-                auth: value.get("auth").and_then(auth).unwrap_or_default(),
+                auth: folder_auth,
                 headers: Vec::new(),
                 description: description(value.get("description")),
                 // D5.
@@ -176,6 +223,8 @@ fn item(value: &Value) -> Option<ImportItem> {
     // A request may be just its URL.
     if let Some(url) = request.as_str() {
         let (name, request) = api(name, "GET", url);
+        let target = lost::join_path(prefix, &name);
+        collect_events(value, &target, lost);
         return Some(ImportItem::Api {
             name,
             request: Box::new(request),
@@ -187,6 +236,8 @@ fn item(value: &Value) -> Option<ImportItem> {
         None => String::new(),
     };
     let (name, mut built) = api(name, text(request, "method"), &url);
+    let target = lost::join_path(prefix, &name);
+    collect_events(value, &target, lost);
     // The query list, where the URL object has one, says which are off.
     let listed = pairs(request.get("url").and_then(|url| url.get("query")), "key");
     if !listed.is_empty() {
@@ -258,10 +309,11 @@ fn item(value: &Value) -> Option<ImportItem> {
                     .unwrap_or_default();
                 built.body = serde_json::to_string(&fields).unwrap_or_default();
             }
-            _ => {}
+            "" | "none" => {}
+            other => lost::push_body(lost, &target, other),
         }
     }
-    if let Some(own) = request.get("auth").and_then(auth) {
+    if let Some(own) = request.get("auth").and_then(|value| auth(value, &target, lost)) {
         built.auth = own;
     }
     // D5 & F12: the item's own variables, and any URL path variables (`url.variable`).
@@ -317,12 +369,19 @@ fn example(response: &Value) -> Option<Example> {
 }
 
 pub(super) fn parse(json: &Value) -> ImportBundle {
+    let mut lost = Vec::new();
+    collect_events(json, "", &mut lost);
+    let root_auth = json
+        .get("auth")
+        .and_then(|value| auth(value, "", &mut lost))
+        .unwrap_or_default();
+    let items = json
+        .get("item")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(|child| item(child, "", &mut lost)).collect())
+        .unwrap_or_default();
     ImportBundle {
-        items: json
-            .get("item")
-            .and_then(Value::as_array)
-            .map(|items| items.iter().filter_map(item).collect())
-            .unwrap_or_default(),
+        items,
         environment: json
             .get("variable")
             .and_then(Value::as_array)
@@ -333,7 +392,8 @@ pub(super) fn parse(json: &Value) -> ImportBundle {
                     .collect()
             })
             .unwrap_or_default(),
-        auth: json.get("auth").and_then(auth).unwrap_or_default(),
+        auth: root_auth,
+        lost,
         ..Default::default()
     }
 }
@@ -529,5 +589,73 @@ mod tests {
             }]
         );
         assert!(bundle.items.is_empty() && bundle.name.is_none());
+    }
+
+    #[test]
+    fn scripts_unsupported_auth_and_file_body_are_reported() {
+        use super::super::{LostKind, ScriptPhase};
+        let doc = r#"{
+            "info": {"name": "Shop"},
+            "event": [
+                {"listen": "prerequest", "script": {"exec": ["console.log('root')"]}},
+                {"listen": "test", "script": {"exec": ["", "   "]}, "disabled": false},
+                {"listen": "test", "disabled": true, "script": {"exec": ["disabled()"]}}
+            ],
+            "item": [{
+                "name": "Auth",
+                "event": [{"listen": "prerequest", "script": {"exec": ["folderPre()"]}}],
+                "item": [{
+                    "name": "Upload",
+                    "event": [{"listen": "test", "script": {"exec": ["pm.test('ok', () => {});"]}}],
+                    "request": {
+                        "method": "POST",
+                        "url": "{{host}}/upload/{{$randomEmail}}",
+                        "auth": {"type": "hawk"},
+                        "body": {"mode": "file", "file": {"src": "/tmp/a.bin"}}
+                    }
+                }]
+            }]
+        }"#;
+        let bundle = super::super::parse(doc).expect("parsed");
+        assert_eq!(
+            bundle.lost,
+            vec![
+                Lost {
+                    target: String::new(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PreRequest,
+                        source: "console.log('root')".into(),
+                    },
+                },
+                Lost {
+                    target: "Auth".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PreRequest,
+                        source: "folderPre()".into(),
+                    },
+                },
+                Lost {
+                    target: "Auth / Upload".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::Test,
+                        source: "pm.test('ok', () => {});".into(),
+                    },
+                },
+                Lost {
+                    target: "Auth / Upload".into(),
+                    kind: LostKind::Body { kind: "file".into() },
+                },
+                Lost {
+                    target: "Auth / Upload".into(),
+                    kind: LostKind::Auth { kind: "hawk".into() },
+                },
+                Lost {
+                    target: "Auth / Upload".into(),
+                    kind: LostKind::Template {
+                        expr: "{{$randomEmail}}".into(),
+                    },
+                },
+            ]
+        );
     }
 }

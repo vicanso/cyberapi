@@ -14,6 +14,7 @@
 //! `vars:pre-request` are the request's own variables (D5); scripts, tests,
 //! `vars:post-response` and the docs stay behind.
 
+use super::lost::{self, Lost, ScriptPhase};
 use super::{ImportBundle, ImportItem, api, content_type_of, kv};
 use crate::auth::{Auth, KeyPlace};
 use crate::graphql::GraphQlBody;
@@ -176,7 +177,7 @@ pub(super) fn fill_path(url: &str, params: &[KvParam]) -> String {
     out
 }
 
-fn auth(mode: &str, find: &dyn Fn(&str) -> Vec<KvParam>) -> Auth {
+fn auth(mode: &str, find: &dyn Fn(&str) -> Vec<KvParam>, target: &str, lost: &mut Vec<Lost>) -> Auth {
     let fields = |name: &str| {
         let fields = find(name);
         move |key: &str| {
@@ -188,6 +189,7 @@ fn auth(mode: &str, find: &dyn Fn(&str) -> Vec<KvParam>) -> Auth {
         }
     };
     match mode {
+        "inherit" | "" => Auth::Inherit,
         "none" => Auth::None,
         "basic" => {
             let field = fields("auth:basic");
@@ -222,11 +224,20 @@ fn auth(mode: &str, find: &dyn Fn(&str) -> Vec<KvParam>) -> Auth {
         // in the body unless told otherwise.
         "oauth2" => {
             let field = fields("auth:oauth2");
-            let grant = match field("grant_type").as_str() {
+            let grant_type = field("grant_type");
+            let grant = match grant_type.as_str() {
                 "client_credentials" => Grant::ClientCredentials,
                 "password" => Grant::Password,
                 "authorization_code" => Grant::AuthorizationCode,
-                _ => return Auth::Inherit,
+                _ => {
+                    let kind = if grant_type.trim().is_empty() {
+                        "oauth2".to_string()
+                    } else {
+                        format!("oauth2 ({})", grant_type.trim())
+                    };
+                    lost::push_auth(lost, target, &kind);
+                    return Auth::Inherit;
+                }
             };
             let authorization_url = {
                 let url = field("authorization_url");
@@ -260,8 +271,10 @@ fn auth(mode: &str, find: &dyn Fn(&str) -> Vec<KvParam>) -> Auth {
                 service: field("service"),
             })
         }
-        // `inherit`, and what this app has no counterpart of.
-        _ => Auth::Inherit,
+        other => {
+            lost::push_auth(lost, target, other);
+            Auth::Inherit
+        }
     }
 }
 
@@ -329,6 +342,7 @@ pub(super) fn parse(text: &str) -> ImportBundle {
             .unwrap_or_default()
             .to_string(),
     };
+    let mut lost = Vec::new();
     let text_block = |name: &str| find(name).map(text_of).unwrap_or_default();
     match mode.as_str() {
         "json" => (built.content_type, built.body) = (ContentType::Json, text_block("body:json")),
@@ -365,14 +379,27 @@ pub(super) fn parse(text: &str) -> ImportBundle {
             }
             .to_body();
         }
-        _ => {}
+        "" | "none" => {}
+        other => lost::push_body(&mut lost, &name, other),
     }
-    built.auth = auth(&field(&own, "auth"), &dict);
+    built.auth = auth(&field(&own, "auth"), &dict, &name, &mut lost);
+    for (block_name, phase) in [
+        ("script:pre-request", ScriptPhase::PreRequest),
+        ("script:post-response", ScriptPhase::PostResponse),
+        ("tests", ScriptPhase::Test),
+        ("vars:post-response", ScriptPhase::PostResponse),
+        ("assert", ScriptPhase::Test),
+    ] {
+        if let Some(block) = find(block_name) {
+            lost::push_script(&mut lost, &name, phase, &text_of(block));
+        }
+    }
     ImportBundle {
         items: vec![ImportItem::Api {
             name,
             request: Box::new(built),
         }],
+        lost,
         ..Default::default()
     }
 }
@@ -555,6 +582,90 @@ body:form-urlencoded {
         assert_eq!(
             fill_path("/a/:id/:idx?x=:id", &[kv("id", "7", true)]),
             "/a/7/:idx?x=:id"
+        );
+    }
+
+    #[test]
+    fn scripts_assertions_and_unsupported_auth_or_body_are_reported() {
+        use super::super::{LostKind, ScriptPhase};
+        let bru = r#"meta {
+  name: Upload
+}
+
+post {
+  url: https://a.test/upload
+  body: file
+  auth: wsse
+}
+
+script:pre-request {
+  bru.setVar("a", 1);
+}
+
+script:post-response {
+  console.log(res.status);
+}
+
+tests {
+  test("ok", () => {});
+}
+
+vars:post-response {
+  token: res.body.token
+}
+
+assert {
+  res.status: eq 200
+}
+"#;
+        let bundle = super::super::parse(bru).expect("parsed");
+        assert_eq!(
+            bundle.lost,
+            vec![
+                Lost {
+                    target: "Upload".into(),
+                    kind: LostKind::Body { kind: "file".into() },
+                },
+                Lost {
+                    target: "Upload".into(),
+                    kind: LostKind::Auth { kind: "wsse".into() },
+                },
+                Lost {
+                    target: "Upload".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PreRequest,
+                        source: "bru.setVar(\"a\", 1);".into(),
+                    },
+                },
+                Lost {
+                    target: "Upload".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PostResponse,
+                        source: "console.log(res.status);".into(),
+                    },
+                },
+                Lost {
+                    target: "Upload".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::Test,
+                        source: "test(\"ok\", () => {});".into(),
+                    },
+                },
+                Lost {
+                    target: "Upload".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::PostResponse,
+                        source: "token: res.body.token".into(),
+                    },
+                },
+                Lost {
+                    target: "Upload".into(),
+                    kind: LostKind::Script {
+                        phase: ScriptPhase::Test,
+                        source: "res.status: eq 200".into(),
+                    },
+                },
+            ]
         );
     }
 }

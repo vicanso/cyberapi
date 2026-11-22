@@ -26,7 +26,7 @@ use cyberapi_core::code::CodeTarget;
 use cyberapi_core::environments;
 use cyberapi_core::export::ExportFormat;
 use cyberapi_core::graphql_schema::Schema;
-use cyberapi_core::import::{ImportBundle, ImportEnvironment, ImportItem};
+use cyberapi_core::import::{ImportBundle, ImportEnvironment, ImportItem, Lost};
 use cyberapi_core::inherit::{self, Inherited};
 use cyberapi_core::model::{
     ApiSetting, Collection, Environment, Folder, FolderSettings, HttpMethod, HttpRequest, ImportSource,
@@ -93,11 +93,13 @@ pub enum WorkspaceEvent {
     Failed(StoreError),
     /// An import was written: how many APIs and folders. Imported again
     /// (B3), also how many APIs the project had were updated, and how many
-    /// were left as they were.
+    /// were left as they were. `lost` lists anything that could not be
+    /// imported as-is (M1).
     Imported {
         apis: usize,
         folders: usize,
         again: Option<(usize, usize)>,
+        lost: Arc<Vec<Lost>>,
     },
     /// F3.9 / #69: an API as code, for the clipboard: what it is written
     /// as, and the code.
@@ -3058,6 +3060,7 @@ impl WorkspaceState {
         }
         let source = source_of(bundle.source, &parent);
         self.import_settings(bundle.auth, bundle.environments, source, cx);
+        let lost = Arc::new(bundle.lost);
         let call = self
             .sender
             .storage
@@ -3094,6 +3097,7 @@ impl WorkspaceState {
                     apis,
                     folders,
                     again: None,
+                    lost,
                 });
                 cx.notify();
             }
@@ -3168,6 +3172,7 @@ impl WorkspaceState {
         if let (Some(folder), Some(url)) = (&parent, bundle.folder_source.clone()) {
             self.set_folder_source(folder.clone(), Some(url), cx);
         }
+        let lost = Arc::new(bundle.lost);
         let source = source_of(bundle.source, &parent);
         self.import_settings(bundle.auth, bundle.environments, source, cx);
         let (apis, folders) = merge.added();
@@ -3183,7 +3188,12 @@ impl WorkspaceState {
         self.add_environment(environment, cx);
         let calls = merge.updates.len() + merge.additions.len() + merge.renames.len();
         if calls == 0 {
-            cx.emit(WorkspaceEvent::Imported { apis, folders, again });
+            cx.emit(WorkspaceEvent::Imported {
+                apis,
+                folders,
+                again,
+                lost,
+            });
             return;
         }
         let tree = self.sender.storage.tree();
@@ -3197,6 +3207,7 @@ impl WorkspaceState {
         };
         for (id, request) in merge.updates {
             let done = said();
+            let lost = lost.clone();
             let call = tree.save_request(collection.clone(), id.clone(), request);
             run_serial(cx, &self.gate, call, move |this, result, cx| {
                 match result {
@@ -3211,13 +3222,19 @@ impl WorkspaceState {
                     Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
                 }
                 if done {
-                    cx.emit(WorkspaceEvent::Imported { apis, folders, again });
+                    cx.emit(WorkspaceEvent::Imported {
+                        apis,
+                        folders,
+                        again,
+                        lost,
+                    });
                 }
                 cx.notify();
             });
         }
         for (id, name) in merge.renames {
             let done = said();
+            let lost = lost.clone();
             let call = tree.rename(collection.clone(), id.clone(), name.clone());
             run_serial(cx, &self.gate, call, move |this, result, cx| {
                 match result {
@@ -3231,13 +3248,19 @@ impl WorkspaceState {
                     Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
                 }
                 if done {
-                    cx.emit(WorkspaceEvent::Imported { apis, folders, again });
+                    cx.emit(WorkspaceEvent::Imported {
+                        apis,
+                        folders,
+                        again,
+                        lost,
+                    });
                 }
                 cx.notify();
             });
         }
         for (place, items) in merge.additions {
             let done = said();
+            let lost = lost.clone();
             let call = tree.import(collection.clone(), place.clone(), items);
             run_serial(cx, &self.gate, call, move |this, result, cx| {
                 match result {
@@ -3255,7 +3278,12 @@ impl WorkspaceState {
                     Err(error) => cx.emit(WorkspaceEvent::Failed(error)),
                 }
                 if done {
-                    cx.emit(WorkspaceEvent::Imported { apis, folders, again });
+                    cx.emit(WorkspaceEvent::Imported {
+                        apis,
+                        folders,
+                        again,
+                        lost,
+                    });
                 }
                 cx.notify();
             });
@@ -5302,6 +5330,58 @@ mod tests {
         let kept = storage.tree().load(collection.id.clone()).await.expect("the tree");
         let orders_folder = kept.folders.iter().find(|f| f.id == orders).expect("orders");
         assert_eq!(orders_folder.settings.source, None);
+    }
+
+    /// M1: importing, re-importing (including a zero-change merge), and manual
+    /// source sync emit `WorkspaceEvent::Imported` with the bundle's `lost` list.
+    #[gpui_kit::test]
+    async fn import_events_carry_lost_items(cx: &mut TestAppContext) {
+        use cyberapi_core::import::LostKind;
+
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        let state = open(&storage, collection, cx);
+
+        let seen: std::rc::Rc<std::cell::RefCell<Vec<Vec<Lost>>>> = std::rc::Rc::default();
+        let seen_ref = seen.clone();
+        cx.update(|cx| {
+            cx.subscribe(&state, move |_, event, _| {
+                if let WorkspaceEvent::Imported { lost, .. } = event {
+                    seen_ref.borrow_mut().push((**lost).clone());
+                }
+            })
+            .detach();
+        });
+
+        let clean = cyberapi_core::import::parse(
+            r#"{"info": {"name": "Shop"}, "item": [{"name": "ping", "request": {"method": "GET", "url": "https://a.test/ping"}}]}"#,
+        )
+        .expect("clean");
+        state.update(cx, |state, cx| state.import(None, clean.clone(), cx));
+        cx.run_until_parked();
+
+        let with_lost = cyberapi_core::import::parse(
+            r#"{"info": {"name": "Shop"}, "item": [
+                {"name": "ping", "event": [{"listen": "test", "script": {"exec": ["pm.test('ok', () => {});"]}}],
+                 "request": {"method": "GET", "url": "https://a.test/ping?x={{$randomEmail}}"}}
+            ]}"#,
+        )
+        .expect("with lost");
+        state.update(cx, |state, cx| state.import_again(None, with_lost.clone(), false, cx));
+        cx.run_until_parked();
+
+        state.update(cx, |state, cx| {
+            state.sync_from_source("https://a.test/col.json".into(), with_lost, cx);
+        });
+        cx.run_until_parked();
+
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 3);
+        assert!(seen[0].is_empty());
+        assert_eq!(seen[1].len(), 2);
+        assert!(matches!(&seen[1][0].kind, LostKind::Script { .. }));
+        assert!(matches!(&seen[1][1].kind, LostKind::Template { expr } if expr == "{{$randomEmail}}"));
+        assert_eq!(seen[2], seen[1]);
     }
 
     /// B10: bound sources are only polled when opted in on this device, stay
