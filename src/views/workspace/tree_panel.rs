@@ -953,6 +953,8 @@ fn export_menu(
                     ExportFormat::CyberApi => t!("export.as_cyberapi"),
                     ExportFormat::Postman => t!("export.as_postman"),
                     ExportFormat::OpenApi => t!("export.as_openapi"),
+                    ExportFormat::Har => t!("export.as_har"),
+                    ExportFormat::Http => t!("export.as_http"),
                     ExportFormat::Html => t!("export.as_html"),
                 };
                 menu.item(

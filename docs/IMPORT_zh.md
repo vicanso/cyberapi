@@ -69,12 +69,11 @@ Postman、Bruno（`.bru` 与 OpenCollection）、Insomnia 和 Apidog `customScri
 
 接口、目录或项目可以导出为本应用自己的文件。
 
-目录和项目还可以导出为 Postman 集合（v2.1）、OpenAPI 3（YAML）或单文件离线 HTML 文档（`.html`）：
+目录和项目还可以导出为 Postman 集合（v2.1）、OpenAPI 3（YAML）、HAR 1.2（`.har`）、HTTP 文件（`.http`）或单文件离线 HTML 文档（`.html`）：
 
-- 地址前面的变量成为 `servers`。
-- 请求体写成示例，并带上从示例推断出的 schema。
-- 认证只写种类，不写值。OAuth 2.0 写授权方式、令牌地址和范围。授权码另写授权地址和本机回调（*0.3.1*）。
-- gRPC 调用不写进 OpenAPI 文档。
+- OpenAPI：地址前面的变量成为 `servers`；请求体写成示例并带上从示例推断出的 schema；认证只写种类不写值（OAuth 2.0 写授权方式、令牌地址和范围，授权码另写授权地址和本机回调，*0.3.1*）；gRPC 和 WebSocket 调用不写进 OpenAPI 文档。
+- HAR 1.2（`.har`）：尝试用当前环境的非秘密变量展开地址前缀，合并全局请求头、目录请求头和静态认证（Basic、Bearer、API Key），有示例时附带第一条响应，不导出秘密变量值，跳过 gRPC 和 WebSocket 调用。
+- HTTP 文件（`.http`）：将共用的非秘密变量写为顶部的 `@name = value`，合并全局请求头、目录请求头和静态认证，保留接口说明、`# @no-redirect`、HTTP/2、GraphQL 和 WebSocket 请求，跳过 gRPC 调用；绝不写出秘密变量的值。
 
 ## 复制为代码
 

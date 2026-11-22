@@ -69,12 +69,11 @@ Choose this when the file should not touch APIs the project already has. Matchin
 
 Export an API, a folder or a project as CyberAPI's own file.
 
-A folder or a project can also be a Postman collection (v2.1), OpenAPI 3 YAML, or a standalone HTML documentation file (`.html`):
+A folder or a project can also be a Postman collection (v2.1), OpenAPI 3 YAML, a HAR 1.2 archive (`.har`), an HTTP file (`.http`), or a standalone HTML documentation file (`.html`):
 
-- The variable in front of the address becomes `servers`.
-- Bodies are examples, with a schema read off them.
-- Auth is the kind only. Values are not written. OAuth 2.0 writes the flow, the token URL and the scopes. Authorization code also writes the authorization URL and the loopback callback (*0.3.1*).
-- gRPC calls are not in the OpenAPI document.
+- OpenAPI: the variable in front of the address becomes `servers`; bodies are examples with a schema read off them; auth is the kind only (values are not written; OAuth 2.0 writes the flow, the token URL and the scopes; authorization code also writes the authorization URL and the loopback callback, *0.3.1*); gRPC and WebSocket calls are left out.
+- HAR 1.2 (`.har`): resolves active non-secret environment prefixes on addresses, merges global and folder headers with static auth (`Basic`, `Bearer`, `API Key`), writes the first example as a response when present, keeps secret values empty, and leaves out gRPC and WebSocket calls.
+- HTTP file (`.http`): writes shared and active non-secret variables as `@name = value`, merges global and folder headers with static auth, preserves descriptions, `# @no-redirect`, HTTP/2, GraphQL and WebSocket requests, and leaves out gRPC calls. Secret variable values are never written.
 
 ## Copy as code
 

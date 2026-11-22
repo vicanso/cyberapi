@@ -4482,6 +4482,56 @@ impl WorkspaceState {
                     cyberapi_core::export::openapi(&self.data, folder, &name, &pairs(effective.iter().collect())),
                 )
             }
+            ExportFormat::Har => {
+                let effective_env: Vec<Variable> = self
+                    .in_environment(&self.environment)
+                    .into_iter()
+                    .filter(|variable| variable.enabled && !self.is_secret(&variable.id))
+                    .collect();
+                let effective_headers: Vec<Variable> = self
+                    .global_headers()
+                    .into_iter()
+                    .filter(|variable| variable.enabled && !self.is_secret(&variable.id))
+                    .collect();
+                (
+                    format!("{name}.har"),
+                    cyberapi_core::export::har(
+                        &self.data,
+                        folder,
+                        &pairs(effective_env.iter().collect()),
+                        &pairs(effective_headers.iter().collect()),
+                    ),
+                )
+            }
+            ExportFormat::Http => {
+                let mut vars: Vec<Variable> = self
+                    .in_environment(&self.environment)
+                    .into_iter()
+                    .filter(|variable| variable.enabled && !self.is_secret(&variable.id))
+                    .collect();
+                for custom in self.in_environment(&self.custom) {
+                    if custom.enabled
+                        && !self.is_secret(&custom.id)
+                        && !vars.iter().any(|existing| existing.name == custom.name)
+                    {
+                        vars.push(custom);
+                    }
+                }
+                let effective_headers: Vec<Variable> = self
+                    .global_headers()
+                    .into_iter()
+                    .filter(|variable| variable.enabled && !self.is_secret(&variable.id))
+                    .collect();
+                (
+                    format!("{name}.http"),
+                    cyberapi_core::export::http_file(
+                        &self.data,
+                        folder,
+                        &pairs(vars.iter().collect()),
+                        &pairs(effective_headers.iter().collect()),
+                    ),
+                )
+            }
             ExportFormat::Html => {
                 // F17: standalone single-file HTML docs; secrets stay empty/masked.
                 let variables: Vec<Variable> = self
@@ -8539,6 +8589,91 @@ mod tests {
         // And from the store: a reopening finds nothing either.
         let again = open(&storage, collection, cx);
         assert!(row_names(&again, cx).is_empty());
+    }
+
+    #[gpui_kit::test]
+    async fn har_and_http_export_skip_secrets_and_use_expected_filenames(cx: &mut TestAppContext) {
+        let storage = MemoryStore::new().storage();
+        let collection = project(&storage).await;
+        storage
+            .variables()
+            .create(NewVariable {
+                collection: collection.id.clone(),
+                category: VariableCategory::Environment,
+                name: "HOST".into(),
+                value: "https://api.example.test".into(),
+                enabled: true,
+                environment: None,
+            })
+            .await
+            .expect("host var");
+        let secret_var = storage
+            .variables()
+            .create(NewVariable {
+                collection: collection.id.clone(),
+                category: VariableCategory::Environment,
+                name: "SECRET_KEY".into(),
+                value: "top-secret-value".into(),
+                enabled: true,
+                environment: None,
+            })
+            .await
+            .expect("secret var");
+        storage
+            .variables()
+            .create(NewVariable {
+                collection: collection.id.clone(),
+                category: VariableCategory::Custom,
+                name: "PAGE_SIZE".into(),
+                value: "25".into(),
+                enabled: true,
+                environment: None,
+            })
+            .await
+            .expect("custom var");
+        storage
+            .variables()
+            .create(NewVariable {
+                collection: collection.id.clone(),
+                category: VariableCategory::GlobalRequestHeader,
+                name: "X-Client".into(),
+                value: "cyber".into(),
+                enabled: true,
+                environment: None,
+            })
+            .await
+            .expect("global header");
+
+        let state = open(&storage, collection.clone(), cx);
+        state.update(cx, |state, cx| {
+            state.set_secret(&secret_var, true, cx);
+            state.create_api(None, "health".into(), cx);
+        });
+        cx.run_until_parked();
+        let api = editor(&state, cx);
+        api.update(cx, |api, cx| api.set_uri("{{HOST}}/health".into(), cx));
+        cx.executor().advance_clock(SAVE_DELAY);
+        cx.run_until_parked();
+
+        let ((har_name, har_text), (http_name, http_text)) = state.read_with(cx, |state, _| {
+            (
+                state.export(None, ExportFormat::Har),
+                state.export(None, ExportFormat::Http),
+            )
+        });
+
+        assert_eq!(har_name, format!("{}.har", collection.name));
+        assert!(har_text.contains("https://api.example.test/health"));
+        assert!(har_text.contains("X-Client"));
+        assert!(!har_text.contains("top-secret-value"));
+
+        assert_eq!(http_name, format!("{}.http", collection.name));
+        assert!(http_text.contains("@HOST = https://api.example.test"));
+        assert!(http_text.contains("@PAGE_SIZE = 25"));
+        assert!(!http_text.contains("@SECRET_KEY"));
+        assert!(!http_text.contains("top-secret-value"));
+        assert!(http_text.contains("GET {{HOST}}/health"));
+        assert!(http_text.contains("X-Client: cyber"));
     }
 
     /// Server-sync §3–4: a server project in a page.

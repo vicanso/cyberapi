@@ -782,6 +782,8 @@ copied = "The export is on the clipboard."
 as_cyberapi = "CyberAPI (all of it comes back on import)"
 as_postman = "Postman Collection v2.1"
 as_openapi = "OpenAPI 3 (YAML)"
+as_har = "HAR 1.2 (.har)"
+as_http = "HTTP File (.http)"
 as_html = "HTML Documentation (.html)"
 
 [backup]
