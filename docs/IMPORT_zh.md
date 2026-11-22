@@ -15,15 +15,16 @@
 | Insomnia | 请求、目录认证、子环境。常见的 `afterResponseScript` 断言和变量提取也会转换。 |
 | Hoppscotch | 单个集合、“全部导出”，或环境。 |
 | Thunder Client | 集合（目录、`baseUrl`、认证、表单/GraphQL/二进制请求体、声明式测试与 `set-env-var` 提取）或环境导出。脚本与不支持的规则记入导入报告。 |
+| Yaak | 导出 JSON（工作区、目录、HTTP / GraphQL / WebSocket / gRPC 请求、共享与命名环境、认证）。常见的 `${[ var ]}`、`${[ uuid.v4() ]}`、`${[ timestamp.unix() ]}` 与 `${[ timestamp.iso8601() ]}` 自动转换；其余 `${[ … ]}` 标签及不支持的认证与请求体记入导入报告。 |
 | Bruno | `.bru` 请求或环境，或 OpenCollection 的 YAML 导出。`{{process.env.NAME}}` 变成 `{{env(NAME)}}`。常见的 `tests`、`script:post-response`、`vars:post-response` 和 `assert` 块转为断言和提取。 |
 | Swagger 2 / OpenAPI 3 | JSON 或 YAML。安全方案成为项目认证，值由你填。操作自己的方案写在那个接口上。第一个 2xx 的 JSON 响应 Schema 成为一条来自导入的 Schema 检查。 |
 | HAR | 浏览器开发者工具里的接口调用。页面加载的图片、脚本和样式不算。每个主机一个目录。 |
 | `.http` | VS Code REST Client 和 JetBrains HTTP Client（*0.4.1*）。`###` 分隔请求。`@名称 = 值` 成为各环境共用的变量。`http-client.env.json` 或 `rest-client.environmentVariables` 成为命名环境。`{{$uuid}}`、`{{$timestamp}}`、`{{$randomInt 1 10}}`、`{{$processEnv NAME}}` 等换成本应用的模板函数。`# @prompt` 在发送时询问。响应处理脚本不导入。私有文件 `http-client.private.env.json` 的值以明文导入，不要放进团队共用的项目。 |
 | cURL | 粘贴一条命令即成为一个接口。 |
 
-对得上的认证会一起进来：Basic、Bearer、JWT Bearer、API Key、Digest、OAuth 2.0 的客户端凭据、密码、授权码（*0.3.1*）和隐式授权，以及 AWS SigV4（Postman、Insomnia、Bruno、Thunder Client）。没有对应种类的按继承处理。
+对得上的认证会一起进来：Basic、Bearer、JWT Bearer、API Key、Digest、OAuth 2.0 的客户端凭据、密码、授权码（*0.3.1*）和隐式授权，以及 AWS SigV4（Postman、Insomnia、Bruno、Thunder Client、Yaak）。没有对应种类的按继承处理。
 
-项目已经有认证时，保留项目的。同名环境（不分大小写）只补上还没有的变量。二进制 / 文件请求体（Postman `mode: file`、Insomnia、HAR、Bruno、Thunder Client、OpenAPI 以及 cURL 的 `-T` / `--data-binary @`）导入为二进制请求体。
+项目已经有认证时，保留项目的。同名环境（不分大小写）只补上还没有的变量。二进制 / 文件请求体（Postman `mode: file`、Insomnia、HAR、Bruno、Thunder Client、Yaak、OpenAPI 以及 cURL 的 `-T` / `--data-binary @`）导入为二进制请求体。
 
 只有一行地址的文本不当作 `.http` 文件，用“获取”。
 

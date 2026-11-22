@@ -15,15 +15,16 @@ Paste, pick a file, or fetch an address (the web version fetches through its ser
 | Insomnia | Requests, folder auth, sub-environments. Common `afterResponseScript` assertions and variable sets convert. |
 | Hoppscotch | One collection, an "export all", or an environment. |
 | Thunder Client | A collection (folders, `baseUrl`, auth, form/GraphQL/binary bodies, declarative tests and `set-env-var` extractions) or environment files. Unsupported rules and scripts go to the import report. |
+| Yaak | Export JSON (workspaces, folders, HTTP / GraphQL / WebSocket / gRPC requests, shared and named environments, auth). Simple `${[ var ]}`, `${[ uuid.v4() ]}`, `${[ timestamp.unix() ]}` and `${[ timestamp.iso8601() ]}` expressions convert automatically; unrecognized `${[ … ]}` tags and unsupported auth/bodies go to the import report. |
 | Bruno | A `.bru` request or environment, or an OpenCollection YAML export. `{{process.env.NAME}}` becomes `{{env(NAME)}}`. Common `tests`, `script:post-response`, `vars:post-response` and `assert` blocks convert to assertions and extractions. |
 | Swagger 2 / OpenAPI 3 | JSON or YAML. Security schemes become the project's auth, values left for you. An operation's own scheme is written on that API. The first 2xx JSON response schema becomes an imported schema check. |
 | HAR | Calls from a browser's developer tools. Images, scripts and styles a page loads are left out. One folder per host. |
 | `.http` | VS Code REST Client and JetBrains HTTP Client (*0.4.1*). Requests parted by `###`. `@name = value` is a variable every environment shares. `http-client.env.json` or `rest-client.environmentVariables` become named environments. `{{$uuid}}`, `{{$timestamp}}`, `{{$randomInt 1 10}}`, `{{$processEnv NAME}}` and the like become this app's template functions. `# @prompt` asks as the request is sent. Response-handler scripts are left behind. `http-client.private.env.json` comes in as plain text, so keep it out of a project the team shares. |
 | cURL | A pasted command becomes an API. |
 
-Auth that has a matching kind comes along: Basic, Bearer, JWT Bearer, an API key, Digest, OAuth 2.0 (client credentials, password, authorization code (*0.3.1*), and implicit), and AWS SigV4 (Postman, Insomnia, Bruno, Thunder Client). A kind the app does not have is left as "inherit".
+Auth that has a matching kind comes along: Basic, Bearer, JWT Bearer, an API key, Digest, OAuth 2.0 (client credentials, password, authorization code (*0.3.1*), and implicit), and AWS SigV4 (Postman, Insomnia, Bruno, Thunder Client, Yaak). A kind the app does not have is left as "inherit".
 
-If the project already signs in, that auth is kept. A named environment that is already there (names compared without case) only gains variables it did not have. Binary / file bodies (`mode: file` in Postman, Insomnia, HAR, Bruno, Thunder Client, OpenAPI, and `-T` / `--data-binary @` in cURL) import as binary bodies.
+If the project already signs in, that auth is kept. A named environment that is already there (names compared without case) only gains variables it did not have. Binary / file bodies (`mode: file` in Postman, Insomnia, HAR, Bruno, Thunder Client, Yaak, OpenAPI, and `-T` / `--data-binary @` in cURL) import as binary bodies.
 
 A line that is only an address is not a `.http` file. Fetch it instead.
 

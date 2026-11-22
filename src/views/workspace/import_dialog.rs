@@ -95,6 +95,7 @@ fn format_name(format: Format) -> &'static str {
         Format::HoppscotchEnvironment => "Hoppscotch environment",
         Format::ThunderClient => "Thunder Client",
         Format::ThunderClientEnvironment => "Thunder Client environment",
+        Format::Yaak => "Yaak",
         Format::Bruno => "Bruno",
         Format::OpenCollection => "OpenCollection",
         Format::Http => ".http",

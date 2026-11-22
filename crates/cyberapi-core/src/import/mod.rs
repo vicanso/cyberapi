@@ -43,6 +43,7 @@ mod own;
 mod postman;
 mod script;
 mod thunder;
+mod yaak;
 
 pub use lost::{Lost, LostGroup, LostKind, ScriptPhase, group as group_lost};
 pub use own::{api_config, export, parse_own, tree_data};
@@ -203,6 +204,7 @@ pub enum Format {
     HoppscotchEnvironment,
     ThunderClient,
     ThunderClientEnvironment,
+    Yaak,
     Bruno,
     OpenCollection,
     /// B8: a `.http` file.
@@ -248,7 +250,10 @@ pub fn detect(text: &str) -> Result<(Format, Option<serde_json::Value>), ImportE
         {
             Format::PostmanEnvironment
         }
-        serde_json::Value::Object(map) if map.contains_key("resources") => Format::Insomnia,
+        json if yaak::is_yaak(json) => Format::Yaak,
+        serde_json::Value::Object(map) if map.get("resources").is_some_and(serde_json::Value::is_array) => {
+            Format::Insomnia
+        }
         serde_json::Value::Object(map) if map.get("log").is_some_and(|log| log.get("entries").is_some()) => Format::Har,
         json if opencollection::is_opencollection(json) => Format::OpenCollection,
         json if thunder::is_collection(json) => Format::ThunderClient,
@@ -356,6 +361,7 @@ pub fn parse(text: &str) -> Result<ImportBundle, ImportError> {
         (Format::HoppscotchEnvironment, Some(json)) => hoppscotch::parse_environment(&json),
         (Format::ThunderClient, Some(json)) => thunder::parse(&json),
         (Format::ThunderClientEnvironment, Some(json)) => thunder::parse_environment(&json),
+        (Format::Yaak, Some(json)) => yaak::parse(&json),
         (Format::OpenCollection, Some(json)) => opencollection::parse(&json),
         (_, Some(json)) => own::parse_value(&json),
         (_, None) => ImportBundle::default(),
@@ -381,6 +387,7 @@ fn json_name(format: Format, json: &serde_json::Value) -> Option<String> {
         Format::OpenCollection if json.get("opencollection").is_some() => text(json.pointer("/info/name")),
         Format::Hoppscotch => hoppscotch::name(json).map(str::trim),
         Format::ThunderClient => thunder::name(json).map(str::trim),
+        Format::Yaak => yaak::name(json).map(str::trim),
         Format::Swagger | Format::OpenApi => text(json.pointer("/info/title")),
         Format::Insomnia => json
             .get("resources")
@@ -890,6 +897,10 @@ mod tests {
         assert_eq!(
             format(r#"{"clientName": "Thunder Client", "environmentName": "dev", "data": []}"#),
             Ok(Format::ThunderClientEnvironment)
+        );
+        assert_eq!(
+            format(r#"{"yaakVersion": "2025.4.0", "yaakSchema": 4, "resources": {"workspaces": []}}"#),
+            Ok(Format::Yaak)
         );
         assert_eq!(format("meta {\n  name: a\n}\nget {\n  url: /a\n}\n"), Ok(Format::Bruno));
         // B8.

@@ -133,6 +133,11 @@ pub(super) fn scan_insomnia_tags(bundle: &mut ImportBundle) {
     scan_bundle(bundle, scan_insomnia_text);
 }
 
+/// Scans `bundle` for unconverted Yaak `${[ ... ]}` template expressions, deduplicated per target.
+pub(super) fn scan_yaak_tags(bundle: &mut ImportBundle) {
+    scan_bundle(bundle, scan_yaak_text);
+}
+
 type TextScanner = fn(&str, &str, &mut HashSet<String>, &mut Vec<Lost>);
 
 fn existing_templates_for(lost: &[Lost], target: &str) -> HashSet<String> {
@@ -266,6 +271,27 @@ fn scan_insomnia_text(target: &str, text: &str, seen: &mut HashSet<String>, out:
         };
         let inner = &after[..end];
         let whole = &rest[start..start + 2 + end + 2];
+        if !inner.contains('\n') && !inner.trim().is_empty() && seen.insert(whole.to_string()) {
+            out.push(Lost {
+                target: target.to_string(),
+                kind: LostKind::Template {
+                    expr: whole.to_string(),
+                },
+            });
+        }
+        rest = &after[end + 2..];
+    }
+}
+
+fn scan_yaak_text(target: &str, text: &str, seen: &mut HashSet<String>, out: &mut Vec<Lost>) {
+    let mut rest = text;
+    while let Some(start) = rest.find("${[") {
+        let after = &rest[start + 3..];
+        let Some(end) = after.find("]}") else {
+            break;
+        };
+        let inner = &after[..end];
+        let whole = &rest[start..start + 3 + end + 2];
         if !inner.contains('\n') && !inner.trim().is_empty() && seen.insert(whole.to_string()) {
             out.push(Lost {
                 target: target.to_string(),
