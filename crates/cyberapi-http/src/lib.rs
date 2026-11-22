@@ -43,6 +43,8 @@ mod policy;
 mod proxy;
 #[cfg(not(target_family = "wasm"))]
 mod socket;
+#[cfg(not(target_family = "wasm"))]
+mod system_proxy;
 
 pub use cyberapi_core::response::Exchange;
 pub use cyberapi_core::send::PreparedRequest;

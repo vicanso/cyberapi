@@ -18,7 +18,8 @@ use std::net::IpAddr;
 #[serde(rename_all = "camelCase")]
 pub enum ProxyMode {
     /// `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`, as curl
-    /// reads them; none set is none.
+    /// reads them; when unset, falls back to the OS proxy / PAC on macOS
+    /// and Windows if enabled.
     #[default]
     Environment,
     /// The address and the list kept in the settings.
@@ -31,8 +32,16 @@ impl ProxyMode {
     pub const ALL: [Self; 3] = [Self::Environment, Self::Manual, Self::Off];
 }
 
-/// The settings' proxy (F14).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+/// The settings' proxy (F14 / R2).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ProxyPrefs {
     pub mode: ProxyMode,
@@ -43,6 +52,29 @@ pub struct ProxyPrefs {
     /// `.example.com`, `*.example.com`, an address, `*` for every one;
     /// separated by commas or spaces.
     pub bypass: String,
+    /// R2: when `mode == ProxyMode::Environment` and no proxy environment
+    /// variable matches, consult the OS system proxy / PAC (macOS / Windows).
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub system: bool,
+}
+
+impl Default for ProxyPrefs {
+    fn default() -> Self {
+        Self {
+            mode: ProxyMode::Environment,
+            url: String::new(),
+            bypass: String::new(),
+            system: true,
+        }
+    }
+}
+
+/// R2: how a request should route based on settings and environment variables.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProxyDecision {
+    Direct,
+    Use(Proxy),
+    System,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +175,50 @@ pub fn bypassed(host: &str, list: &str) -> bool {
             })
 }
 
+/// R2: decides the proxy policy for `url` using manual settings first, then
+/// environment variables (`NO_PROXY`, `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`),
+/// and finally `ProxyDecision::System` when `prefs.system` is enabled.
+pub fn decide(
+    prefs: &ProxyPrefs,
+    url: &url::Url,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<ProxyDecision, String> {
+    let host = url.host_str().unwrap_or_default();
+    match prefs.mode {
+        ProxyMode::Off => Ok(ProxyDecision::Direct),
+        ProxyMode::Manual if prefs.url.trim().is_empty() || bypassed(host, &prefs.bypass) => Ok(ProxyDecision::Direct),
+        ProxyMode::Manual => Proxy::parse(&prefs.url).map(ProxyDecision::Use),
+        ProxyMode::Environment => {
+            if bypassed(host, "") {
+                return Ok(ProxyDecision::Direct);
+            }
+            let read = |names: &[&str]| {
+                names
+                    .iter()
+                    .filter_map(|name| env(name))
+                    .find(|value| !value.trim().is_empty())
+            };
+            let bypass = read(&["no_proxy", "NO_PROXY"]).unwrap_or_default();
+            if !bypass.is_empty() && bypassed(host, &bypass) {
+                return Ok(ProxyDecision::Direct);
+            }
+            let names: &[&str] = if matches!(url.scheme(), "https" | "wss") {
+                &["https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]
+            } else {
+                &["http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"]
+            };
+            if let Some(proxy) = read(names) {
+                return Proxy::parse(&proxy).map(ProxyDecision::Use);
+            }
+            if prefs.system {
+                Ok(ProxyDecision::System)
+            } else {
+                Ok(ProxyDecision::Direct)
+            }
+        }
+    }
+}
+
 /// The proxy a request to `url` goes through, if any. `env` reads an
 /// environment variable (the engine's; a test's map).
 pub fn choose(
@@ -150,33 +226,113 @@ pub fn choose(
     url: &url::Url,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<Option<Proxy>, String> {
-    let host = url.host_str().unwrap_or_default();
-    match prefs.mode {
-        ProxyMode::Off => Ok(None),
-        ProxyMode::Manual if prefs.url.trim().is_empty() || bypassed(host, &prefs.bypass) => Ok(None),
-        ProxyMode::Manual => Proxy::parse(&prefs.url).map(Some),
-        ProxyMode::Environment => {
-            let read = |names: &[&str]| {
-                names
-                    .iter()
-                    .filter_map(|name| env(name))
-                    .find(|value| !value.trim().is_empty())
-            };
-            let names: &[&str] = if url.scheme() == "https" {
-                &["https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]
-            } else {
-                &["http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"]
-            };
-            let Some(proxy) = read(names) else {
-                return Ok(None);
-            };
-            let bypass = read(&["no_proxy", "NO_PROXY"]).unwrap_or_default();
-            if bypassed(host, &bypass) {
-                return Ok(None);
+    match decide(prefs, url, env)? {
+        ProxyDecision::Use(proxy) => Ok(Some(proxy)),
+        ProxyDecision::Direct | ProxyDecision::System => Ok(None),
+    }
+}
+
+/// R2: parses a semicolon-separated PAC `FindProxyForURL` result string
+/// (`DIRECT`, `PROXY host:port`, `HTTP host:port`, `SOCKS host:port`,
+/// `SOCKS5 host:port`), returning `None` on the first `DIRECT` directive or
+/// `Some(Proxy)` on the first valid proxy entry.
+pub fn parse_pac_result(list: &str) -> Option<Proxy> {
+    for raw_entry in list.split(';') {
+        let entry = raw_entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let mut parts = entry.split_whitespace();
+        let Some(kind) = parts.next() else {
+            continue;
+        };
+        let rest = parts.collect::<Vec<_>>().join(" ");
+        let upper = kind.to_ascii_uppercase();
+        if upper == "DIRECT" {
+            return None;
+        }
+        let target = rest.trim();
+        if target.is_empty() {
+            continue;
+        }
+        let candidate = match upper.as_str() {
+            "PROXY" | "HTTP" => target.to_string(),
+            "SOCKS" | "SOCKS5" => {
+                if target.contains("://") {
+                    target.to_string()
+                } else {
+                    format!("socks5h://{target}")
+                }
             }
-            Proxy::parse(&proxy).map(Some)
+            _ => continue,
+        };
+        if let Ok(proxy) = Proxy::parse(&candidate) {
+            return Some(proxy);
         }
     }
+    None
+}
+
+/// R2: parses a WinHTTP proxy list (`http=h:p;https=h:p`, `socks=h:p`, or bare
+/// `h:p` / `http://h:p`), selecting the best match for `scheme`.
+pub fn parse_winhttp_proxy_list(proxy_list: &str, scheme: &str) -> Option<Proxy> {
+    let mut http_proxy: Option<Proxy> = None;
+    let mut https_proxy: Option<Proxy> = None;
+    let mut socks_proxy: Option<Proxy> = None;
+    let mut fallback: Option<Proxy> = None;
+
+    for raw_token in proxy_list.split([';', ' ', '\t', '\r', '\n']) {
+        let token = raw_token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if let Some((key, val)) = token.split_once('=') {
+            let key = key.trim().to_ascii_lowercase();
+            let val = val.trim();
+            if val.is_empty() {
+                continue;
+            }
+            match key.as_str() {
+                "http" if http_proxy.is_none() => {
+                    http_proxy = Proxy::parse(val).ok();
+                }
+                "https" if https_proxy.is_none() => {
+                    https_proxy = Proxy::parse(val).ok();
+                }
+                "socks" | "socks5" if socks_proxy.is_none() => {
+                    let wrapped = if val.contains("://") {
+                        val.to_string()
+                    } else {
+                        format!("socks5h://{val}")
+                    };
+                    socks_proxy = Proxy::parse(&wrapped).ok();
+                }
+                _ => {}
+            }
+        } else if fallback.is_none() {
+            fallback = Proxy::parse(token).ok();
+        }
+    }
+
+    let is_https = matches!(scheme.to_ascii_lowercase().as_str(), "https" | "wss");
+    if is_https {
+        https_proxy.or(http_proxy).or(socks_proxy).or(fallback)
+    } else {
+        http_proxy.or(https_proxy).or(socks_proxy).or(fallback)
+    }
+}
+
+/// R2: checks Windows WinHTTP semicolon-separated bypass lists including `<local>`.
+pub fn bypassed_windows(host: &str, bypass: &str) -> bool {
+    let bare = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    let has_local = bypass
+        .split([';', ',', ' ', '\t', '\r', '\n'])
+        .any(|entry| entry.trim().eq_ignore_ascii_case("<local>"));
+    if has_local && !bare.contains('.') {
+        return true;
+    }
+    let normalized = bypass.replace(';', ",");
+    bypassed(host, &normalized)
 }
 
 #[cfg(test)]
@@ -275,6 +431,7 @@ mod tests {
             mode: ProxyMode::Manual,
             url: "http://p.test:8080".into(),
             bypass: "intra.test".into(),
+            ..Default::default()
         };
         let env = |_: &str| Some("http://env.proxy:1".to_string());
         let host = |prefs: &ProxyPrefs, to: &str| choose(prefs, &url(to), env).expect("read").map(|proxy| proxy.host);
@@ -294,7 +451,106 @@ mod tests {
             mode: ProxyMode::Manual,
             url: "ftp://p.test".into(),
             bypass: String::new(),
+            ..Default::default()
         };
         assert!(choose(&broken, &url("https://a.test/"), env).is_err());
+    }
+
+    #[test]
+    fn decide_precedence_and_defaults_work() {
+        // Omitting `system` in serialized JSON defaults it to `true`.
+        let legacy: ProxyPrefs = serde_json::from_str(r#"{"mode":"environment"}"#).expect("legacy prefs");
+        assert!(legacy.system);
+
+        let no_env = |_: &str| None;
+        assert_eq!(
+            decide(&ProxyPrefs::default(), &url("https://api.test/"), no_env),
+            Ok(ProxyDecision::System)
+        );
+        assert_eq!(
+            decide(&ProxyPrefs::default(), &url("http://127.0.0.1:8080/"), no_env),
+            Ok(ProxyDecision::Direct)
+        );
+        let no_proxy_env = |name: &str| (name == "NO_PROXY").then(|| "internal.test".to_string());
+        assert_eq!(
+            decide(&ProxyPrefs::default(), &url("https://internal.test/"), no_proxy_env),
+            Ok(ProxyDecision::Direct)
+        );
+
+        let sys_off = ProxyPrefs {
+            system: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            decide(&sys_off, &url("https://api.test/"), no_env),
+            Ok(ProxyDecision::Direct)
+        );
+        let manual = ProxyPrefs {
+            mode: ProxyMode::Manual,
+            url: "http://manual.proxy:8888".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            decide(&manual, &url("https://api.test/"), |_| Some(
+                "http://env.proxy:1".into()
+            )),
+            Ok(ProxyDecision::Use(Proxy {
+                kind: ProxyKind::Http,
+                host: "manual.proxy".into(),
+                port: 8888,
+                auth: None,
+            }))
+        );
+    }
+
+    #[test]
+    fn pac_and_winhttp_parsers_handle_rules_and_bypass() {
+        assert_eq!(parse_pac_result("DIRECT"), None);
+        assert_eq!(parse_pac_result("DIRECT; PROXY p.test:8080"), None);
+        assert_eq!(
+            parse_pac_result("HTTPS unsupported; PROXY p.test:8080; DIRECT"),
+            Some(Proxy {
+                kind: ProxyKind::Http,
+                host: "p.test".into(),
+                port: 8080,
+                auth: None,
+            })
+        );
+        assert_eq!(
+            parse_pac_result("SOCKS5 10.0.0.2:1080"),
+            Some(Proxy {
+                kind: ProxyKind::Socks5 { remote_dns: true },
+                host: "10.0.0.2".into(),
+                port: 1080,
+                auth: None,
+            })
+        );
+
+        assert_eq!(
+            parse_winhttp_proxy_list("http=127.0.0.1:8080;https=127.0.0.1:8443", "https")
+                .expect("https")
+                .port,
+            8443
+        );
+        assert_eq!(
+            parse_winhttp_proxy_list("http=127.0.0.1:8080;https=127.0.0.1:8443", "http")
+                .expect("http")
+                .port,
+            8080
+        );
+        assert_eq!(
+            parse_winhttp_proxy_list("socks=10.0.0.3:1080", "https")
+                .expect("socks")
+                .kind,
+            ProxyKind::Socks5 { remote_dns: true }
+        );
+        assert_eq!(
+            parse_winhttp_proxy_list("10.0.0.4:3128", "http").expect("bare").port,
+            3128
+        );
+
+        assert!(bypassed_windows("intranet", "<local>;*.corp"));
+        assert!(bypassed_windows("api.corp", "<local>;*.corp"));
+        assert!(!bypassed_windows("example.com", "<local>;*.corp"));
     }
 }

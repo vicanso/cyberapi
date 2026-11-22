@@ -2163,6 +2163,7 @@ dependencies = [
  "base64 0.23.1",
  "brotli-decompressor",
  "bytes",
+ "core-foundation-sys",
  "cyberapi-core",
  "flate2",
  "futures",
@@ -2185,6 +2186,7 @@ dependencies = [
  "tracing",
  "url",
  "webpki-roots",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

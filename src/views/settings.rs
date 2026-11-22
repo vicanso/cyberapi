@@ -209,6 +209,7 @@ enum Number {
 /// A proxy mode's name, as the list offers it.
 fn proxy_mode_label(mode: ProxyMode) -> String {
     match mode {
+        ProxyMode::Environment if this_build::system_proxy() => t!("settings.proxy_auto"),
         ProxyMode::Environment => t!("settings.proxy_environment"),
         ProxyMode::Manual => t!("settings.proxy_manual"),
         ProxyMode::Off => t!("settings.proxy_off"),
@@ -609,6 +610,19 @@ impl SettingsView {
             Select::new(&self.proxy_mode).small(),
             cx,
         )];
+        if proxy.mode == ProxyMode::Environment && this_build::system_proxy() {
+            rows.push(setting_row(
+                t!("settings.proxy_system").to_string(),
+                Some(t!("settings.proxy_system_desc").to_string()),
+                Switch::new("settings-proxy-system")
+                    .checked(proxy.system)
+                    .on_click(|checked, _, cx| {
+                        let on = *checked;
+                        set_proxy(cx, |proxy| proxy.system = on);
+                    }),
+                cx,
+            ));
+        }
         if proxy.mode == ProxyMode::Manual {
             rows.push(setting_row(
                 t!("settings.proxy_url").to_string(),

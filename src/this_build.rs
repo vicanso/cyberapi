@@ -410,6 +410,17 @@ pub fn proxies() -> bool {
     false
 }
 
+/// R2: whether the desktop platform supports reading OS system proxy & PAC
+/// settings (macOS and Windows).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn system_proxy() -> bool {
+    true
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn system_proxy() -> bool {
+    false
+}
+
 /// Whether the app sizes its own window (F14.2); a page's is the tab's.
 #[cfg(not(target_family = "wasm"))]
 pub fn sizes_window() -> bool {

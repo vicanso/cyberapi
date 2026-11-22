@@ -848,6 +848,7 @@ fn through(url: &str, proxy: &str) -> PreparedRequest {
             mode: cyberapi_core::proxy::ProxyMode::Manual,
             url: proxy.into(),
             bypass: String::new(),
+            ..Default::default()
         },
         ..Default::default()
     }

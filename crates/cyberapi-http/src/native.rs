@@ -299,9 +299,9 @@ pub(crate) fn timed_out(phase: &str, seconds: u32) -> SendError {
 
 /// How an answer's body is read: at most `limit` bytes of it, and an event
 /// stream as it comes when someone watches.
-struct Reading {
-    limit: usize,
-    watch: Option<Watch>,
+pub(crate) struct Reading {
+    pub(crate) limit: usize,
+    pub(crate) watch: Option<Watch>,
 }
 
 /// What only the desktop's engine does.
@@ -310,7 +310,7 @@ pub(crate) struct Desktop {
     pub certificates: bool,
 }
 
-async fn exchange(
+pub(crate) async fn exchange(
     request: PreparedRequest,
     policy: TargetPolicy,
     desktop: Desktop,
@@ -375,7 +375,15 @@ pub(crate) async fn dial(
     let connect_limit = seconds(timeouts.connect);
     let proxy_failed = |message: String| SendError::Proxy { message };
     let via = if desktop.proxies {
-        cyberapi_core::proxy::choose(&request.proxy, url, |name| std::env::var(name).ok()).map_err(proxy_failed)?
+        match cyberapi_core::proxy::decide(&request.proxy, url, |name| std::env::var(name).ok())
+            .map_err(proxy_failed)?
+        {
+            cyberapi_core::proxy::ProxyDecision::Direct => None,
+            cyberapi_core::proxy::ProxyDecision::Use(proxy) => Some(proxy),
+            cyberapi_core::proxy::ProxyDecision::System => {
+                crate::system_proxy::resolve(url, desktop).await.map_err(proxy_failed)?
+            }
+        }
     } else {
         None
     };
