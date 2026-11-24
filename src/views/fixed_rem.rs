@@ -21,17 +21,6 @@ pub fn fixed_rem(rem: Pixels, child: impl IntoElement) -> FixedRem {
     }
 }
 
-// Desktop builds on `gpui-fast` (>= 0.1.16), which implements `IntoElement`
-// for every `Element`; the browser build stays on `gpui-pre` and needs this.
-#[cfg(target_family = "wasm")]
-impl IntoElement for FixedRem {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl Element for FixedRem {
     type RequestLayoutState = ();
     type PrepaintState = ();
