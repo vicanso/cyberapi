@@ -2660,8 +2660,8 @@ mod tests {
         let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
         validation.validate_exp = false;
         validation.required_spec_claims.clear();
-        let decoded = decode::<serde_json::Value>(token, &DecodingKey::from_secret(b"super-secret"), &validation)
-            .expect("valid jwt");
+        let dec_key = DecodingKey::from_secret(b"super-secret").expect("secret key");
+        let decoded = decode::<serde_json::Value>(token, &dec_key, &validation).expect("valid jwt");
         assert_eq!(decoded.header.kid.as_deref(), Some("k1"));
         assert_eq!(decoded.claims["sub"], serde_json::json!("alice"));
         assert_eq!(decoded.claims["iat"], serde_json::json!(7));
@@ -2696,9 +2696,8 @@ mod tests {
             .query_pairs()
             .find(|(k, _)| k == "access_token")
             .expect("query jwt");
-        let decoded_q =
-            decode::<serde_json::Value>(q_tok.as_ref(), &DecodingKey::from_secret(b"super-secret"), &validation)
-                .expect("valid query jwt");
+        let dec_key = DecodingKey::from_secret(b"super-secret").expect("secret key");
+        let decoded_q = decode::<serde_json::Value>(q_tok.as_ref(), &dec_key, &validation).expect("valid query jwt");
         assert_eq!(decoded_q.claims["scope"], serde_json::json!("read"));
 
         // Explicit Authorization header on the request wins (#3) without failing on missing secret.

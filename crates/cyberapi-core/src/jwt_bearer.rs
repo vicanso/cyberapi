@@ -243,9 +243,10 @@ fn build_encoding_key(login: &JwtBearerLogin) -> Result<EncodingKey, String> {
             if login.secret_base64 {
                 let bytes = decode_base64(login.secret.trim())
                     .ok_or_else(|| "JWT Bearer: secret is not valid Base64".to_string())?;
-                Ok(EncodingKey::from_secret(&bytes))
+                EncodingKey::from_secret(&bytes).map_err(|error| format!("JWT Bearer: invalid secret: {error}"))
             } else {
-                Ok(EncodingKey::from_secret(login.secret.as_bytes()))
+                EncodingKey::from_secret(login.secret.as_bytes())
+                    .map_err(|error| format!("JWT Bearer: invalid secret: {error}"))
             }
         }
         JwtAlgorithm::RS256
@@ -370,7 +371,11 @@ MCowBQYDK2VwAyEAjEkPk860W+IPIawKrdm87SFkYtrUiwL+seJc9XY0eWY=\n\
                 ..Default::default()
             };
             let token = sign(&login).expect("signed");
-            let (header, claims) = verify_with(&token, alg, &DecodingKey::from_secret(b"top-secret"));
+            let (header, claims) = verify_with(
+                &token,
+                alg,
+                &DecodingKey::from_secret(b"top-secret").expect("secret key"),
+            );
             assert_eq!(header["alg"], json!(alg.as_str()));
             assert_eq!(header["kid"], json!("k-1"));
             assert_eq!(header["typ"], json!("at+jwt"));
@@ -387,7 +392,11 @@ MCowBQYDK2VwAyEAjEkPk860W+IPIawKrdm87SFkYtrUiwL+seJc9XY0eWY=\n\
             ..Default::default()
         };
         let token = sign(&login).expect("signed base64");
-        let (header, claims) = verify_with(&token, JwtAlgorithm::HS256, &DecodingKey::from_secret(raw_secret));
+        let (header, claims) = verify_with(
+            &token,
+            JwtAlgorithm::HS256,
+            &DecodingKey::from_secret(raw_secret).expect("secret key"),
+        );
         assert_eq!(header["typ"], json!("JWT"));
         assert_eq!(claims, json!({}));
     }
