@@ -6670,7 +6670,7 @@ mod tests {
             Box::pin(async move {
                 let at = inner.config(collection.clone()).await?;
                 let raced = races
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| left.checked_sub(1))
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |left| left.checked_sub(1))
                     .is_ok();
                 if raced {
                     inner.create_folder(collection, None, "theirs".into()).await?;

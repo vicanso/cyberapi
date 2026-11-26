@@ -298,7 +298,10 @@ impl Transport for RouterTransport {
                 request = request.header(MODEL_HEADER, model.to_string());
             }
             let request = request.body(Body::from(body)).map_err(|e| e.to_string())?;
-            let response = router.oneshot(request).await.map_err(|e| e.to_string())?;
+            let response = match router.oneshot(request).await {
+                Ok(response) => response,
+                Err(never) => match never {},
+            };
             let status = response.status().as_u16();
             let body = response
                 .into_body()
