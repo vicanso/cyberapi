@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.7.0](https://github.com/vicanso/cyberapi/compare/v0.6.3..v0.7.0) - 2026-11-26
+
+### ⛰️  Features
+
+- *(C4)* Add AWS SigV4 authentication (MODEL 25) - ([9acfae3](https://github.com/vicanso/cyberapi/commit/9acfae3e28f0085602a98c7a195804f259a1e51b))
+- *(F17)* Responsive HTML docs and single-file HTML export - ([0d0f4d3](https://github.com/vicanso/cyberapi/commit/0d0f4d345132f92fd1232c2102573d715cb4283f))
+- *(F18)* Encrypt local sensitive values with per-machine master key - ([ea4fb7c](https://github.com/vicanso/cyberapi/commit/ea4fb7ce5f21b6282165f985b58ea5a1690f83e5))
+- *(M1)* Add import report for unimported scripts, templates, auth, and bodies - ([c80e343](https://github.com/vicanso/cyberapi/commit/c80e343beb28eccd5d74f7b0bdda42378fcd43a7))
+- *(M2)* Apply extractions to manual sends and show missing-extraction prompt - ([219a5c3](https://github.com/vicanso/cyberapi/commit/219a5c351863ac6ee8c0246882467cb957eb5aa3))
+- *(M3)* Convert common Postman, Bruno, and Insomnia scripts to assertions and extractions - ([5f9c52c](https://github.com/vicanso/cyberapi/commit/5f9c52ccd4af56320213b56246d222ce644de5d2))
+- *(R1)* Add binary/file request body across core, UI, importers, and code export - ([02f80b7](https://github.com/vicanso/cyberapi/commit/02f80b7bf37105da4f9fb795553c5f98d41a88e1))
+- *(R11)* Add HAR and .http project and folder export - ([43cb8e3](https://github.com/vicanso/cyberapi/commit/43cb8e3b3f51f0b517e9df3b6ee7ce0acb14742f))
+- *(R12)* Add Apidog project importer - ([2efa905](https://github.com/vicanso/cyberapi/commit/2efa905a177ccaf210167f918f8a366ac25089f4))
+- *(R12)* Add Yaak export importer - ([2a63ad8](https://github.com/vicanso/cyberapi/commit/2a63ad877e122d85a32457b19cb2c0772fc11dc4))
+- *(R12)* Add Thunder Client collection and environment importer - ([adf2f3d](https://github.com/vicanso/cyberapi/commit/adf2f3dd64a78ea14b26ed3c5b9432f79fb34aec))
+- *(R2)* Read system proxy and PAC on desktop - ([d09d64d](https://github.com/vicanso/cyberapi/commit/d09d64df33eb36f8359a2b0cecb1df313413836e))
+- *(R3)* Add Postman Faker dynamic variables and Chinese data generators - ([b293f0d](https://github.com/vicanso/cyberapi/commit/b293f0d62c3d2b1cb9a77fd0a5c92c4b269e73bb))
+- *(R6)* Add JWT Bearer auth and OAuth 2.0 Implicit grant (MODEL 26) - ([3cc9b7b](https://github.com/vicanso/cyberapi/commit/3cc9b7bd4b5c8be0692cb286d772f56e0683828e))
+- *(UI-8)* Toggle KvEditor row enabled state with Ctrl+/ (Cmd+/) - ([518846f](https://github.com/vicanso/cyberapi/commit/518846f1b056ac10346be7dbaa29c3dbfe81db1a))
+- *(UI-9)* Preview resolved variable values and source layers in request editor - ([79723c2](https://github.com/vicanso/cyberapi/commit/79723c2e0c241db9298b3d67a202764ae639a509))
+- Reorder tabs by stable top-5 frecency and align tab bar with zedis - ([d762d1a](https://github.com/vicanso/cyberapi/commit/d762d1adfb084799aaec5d551d3bb0122a49b89f))
+- Add UI and editor font selection in desktop settings ([#97](https://github.com/vicanso/cyberapi/issues/97)) - ([2433410](https://github.com/vicanso/cyberapi/commit/2433410d1c1aabb9eb48c5adb3665e2052d1f70a))
+
+### 🐛 Bug Fixes
+
+- *(ui)* Resolve round 1 desktop UI/UX inspection issues - ([6c74a68](https://github.com/vicanso/cyberapi/commit/6c74a68b26e203703319e0091e91969734ef1056))
+- *(web)* Use llvm-ar on macOS web-bundle and resolve QA issues - ([b0d1183](https://github.com/vicanso/cyberapi/commit/b0d11837253ece52abdbfb696296b69a1dafb48a))
+
+### 📚 Documentation
+
+- Update demo - ([ba8b1a0](https://github.com/vicanso/cyberapi/commit/ba8b1a0aa5b9e632a50854bc97e95d2b140818d6))
+- Add migration batch to issue-plan - ([1778577](https://github.com/vicanso/cyberapi/commit/1778577633a71985538db943b10bf466da826717))
+- Add C4 and F18 to issue-plan - ([61813e8](https://github.com/vicanso/cyberapi/commit/61813e8e6b284dcacb222f171adc29a03b2a73da))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(MAINT-1)* Upgrade jsonwebtoken to 10.4.0 and bump crypto-bigint/ctutils - ([d0c3bf0](https://github.com/vicanso/cyberapi/commit/d0c3bf057c3d4b940114975af0c6c3a23ec1b329))
+- Upgrade Rust toolchain to 1.100.0 - ([319edfe](https://github.com/vicanso/cyberapi/commit/319edfece3331259822a6ae3a73de362a110ef63))
+- Update workspace dependencies (jsonwebtoken 12, jsonschema 0.63, zip 9.8, etc.) - ([e8ecba0](https://github.com/vicanso/cyberapi/commit/e8ecba0a27ed4be11e31a968291f090e34c13fcc))
+- Upgrade gpui-kit to 0.11.0 - ([f0b172a](https://github.com/vicanso/cyberapi/commit/f0b172a26c0dc6bbe8708d3d2b4cbb4680657b2d))
+- Ignore .agents, gate PREFS_COUNT_SCOPE, and create logs dir before init - ([faf76f6](https://github.com/vicanso/cyberapi/commit/faf76f6b78417f2a0cc8bef1236cc9c716e25f8c))
+
 ## [0.6.3](https://github.com/vicanso/cyberapi/compare/v0.6.2..v0.6.3) - 2026-11-18
 
 ### 🐛 Bug Fixes
