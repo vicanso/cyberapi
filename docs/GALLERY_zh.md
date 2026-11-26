@@ -12,7 +12,7 @@
 
 ## 发送、事件流、从来源同步
 
-https://github.com/user-attachments/assets/47018134-b823-40e1-93f5-a2047711a9c2
+https://github.com/user-attachments/assets/297d1175-ae28-4d9b-a581-5bfd0e90b917
 
 发送创建订单，读到 201。事件边到边出现。停止会结束这条流，已经收到的留下。按项目的 OpenAPI 文档同步后，树里多了 Get a product，原先填好的查询参数值还在。
 

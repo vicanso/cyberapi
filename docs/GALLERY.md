@@ -12,7 +12,7 @@ A GET, the query value, two checks that passed, and the JSON body.
 
 ## Sending, events, and sync
 
-https://github.com/user-attachments/assets/47018134-b823-40e1-93f5-a2047711a9c2
+https://github.com/user-attachments/assets/297d1175-ae28-4d9b-a581-5bfd0e90b917
 
 Send Create order and read the 201. Events show up as they arrive. Stop ends the stream and keeps what already came. Sync from the project's OpenAPI document adds Get a product, and the query value that was already filled in stays.
 
