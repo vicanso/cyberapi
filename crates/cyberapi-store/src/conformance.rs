@@ -2792,7 +2792,7 @@ async fn outlines_omit_bodies_and_merges_keep_the_rest(storage: &Storage) {
     );
 
     let created = ApiSetting {
-        id: ItemId::new("outline-merge-extra"),
+        id: ItemId::new(format!("{}-extra", collection.id)),
         collection: collection.id.clone(),
         name: "extra".into(),
         request: HttpRequest {

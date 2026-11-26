@@ -149,6 +149,7 @@ pub fn start_mock(
 }
 
 /// C4 / R6: what the desktop loopback callback delivers.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OauthCallback {
     Code(String),

@@ -40,7 +40,7 @@ use snafu::Snafu;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tracing::warn;
+use tracing::{debug, warn};
 use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Why nothing was sent.
@@ -375,10 +375,14 @@ pub(crate) async fn kept(sender: &Sender, response: HttpResponse) -> HttpRespons
             ..response
         },
         // The answer still shows, with an id and a time of its own so the
-        // next is not taken for it; it is only not kept (an API only in a
-        // page's draft is unknown to the server).
+        // next is not taken for it; it is only not kept (scratch requests
+        // and APIs only in a page's draft are unknown to the store).
         Err(error) => {
-            warn!(%error, "the response could not be kept");
+            if matches!(error, StoreError::NotFound { .. }) {
+                debug!(%error, "the response was not kept");
+            } else {
+                warn!(%error, "the response could not be kept");
+            }
             HttpResponse {
                 id: unkept_id(),
                 created_at: now(),

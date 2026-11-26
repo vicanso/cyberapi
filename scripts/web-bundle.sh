@@ -49,11 +49,43 @@ echo "icons: $(ls cyberapi-web/www/assets/icons | wc -l | tr -d ' ') from $kit_d
 
 # The editors' monospace font, shared with the desktop build, which embeds it,
 # and the page's UI font. Both live under resources/fonts so a clean of
-# www/fonts does not drop them.
+# www/fonts does not drop them; `IBMPlexSans-OFL.txt` is tracked as `OFL.txt`
+# under www/fonts.
 cp resources/fonts/JetBrainsMono-Regular.ttf resources/fonts/JetBrainsMono-Bold.ttf \
   resources/fonts/JetBrainsMono-OFL.txt \
-  resources/fonts/IBMPlexSans.ttf resources/fonts/IBMPlexSans-OFL.txt \
-  cyberapi-web/www/fonts/
+  resources/fonts/IBMPlexSans.ttf cyberapi-web/www/fonts/
+cp resources/fonts/IBMPlexSans-OFL.txt cyberapi-web/www/fonts/OFL.txt
+
+# On macOS, Apple's `/usr/bin/ar` invokes `ranlib`, which rejects `wasm32.o`
+# (from `psm`, pulled in via `jsonpath-rust` -> `pest` -> `stacker`) and writes
+# an empty archive, failing the wasm link (`rust_psm_stack_pointer`). Use
+# `llvm-ar` when building on Darwin unless the caller already set one.
+if [ "$(uname -s)" = Darwin ] && [ -z "${AR_wasm32_unknown_unknown:-}" ]; then
+  llvm_ar=""
+  if command -v llvm-ar >/dev/null 2>&1; then
+    llvm_ar=$(command -v llvm-ar)
+  else
+    web_sysroot=$(cd cyberapi-web && rustc --print sysroot)
+    web_host=$(cd cyberapi-web && rustc -vV | awk '/^host:/{print $2}')
+    root_sysroot=$(rustc --print sysroot)
+    root_host=$(rustc -vV | awk '/^host:/{print $2}')
+    for candidate in \
+      /opt/homebrew/opt/llvm/bin/llvm-ar \
+      /usr/local/opt/llvm/bin/llvm-ar \
+      "$web_sysroot/lib/rustlib/$web_host/bin/llvm-ar" \
+      "$root_sysroot/lib/rustlib/$root_host/bin/llvm-ar"; do
+      if [ -x "$candidate" ]; then
+        llvm_ar=$candidate
+        break
+      fi
+    done
+  fi
+  if [ -z "$llvm_ar" ]; then
+    echo "llvm-ar is required on macOS to archive wasm32 objects (Apple /usr/bin/ar drops psm's wasm32.o): brew install llvm or rustup component add llvm-tools" >&2
+    exit 1
+  fi
+  export AR_wasm32_unknown_unknown="$llvm_ar"
+fi
 
 profile=web
 if [ "$mode" = release ]; then
