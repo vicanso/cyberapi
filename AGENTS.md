@@ -4,6 +4,25 @@ CyberAPI 的 GPUI 重写版：跨平台 HTTP API 客户端（类似 Postman / In
 
 面向用户的文档有中英两份，内容逐节对应：`README.md` / `README_zh.md`（几条功能亮点、安装、网页版概要、开发；首页要短，细节不往这里加），`docs/FEATURES.md` / `docs/FEATURES_zh.md`（功能一览，短条目；新增或改变用户看得到的功能时先改这里），较复杂的三块单独成页、从功能说明链出去：`docs/CHECKS.md` / `docs/CHECKS_zh.md`（说明、断言、JSON Schema、示例对照、运行、命令行、压测），`docs/IMPORT.md` / `docs/IMPORT_zh.md`（导入格式、重新导入时保留什么、导出、复制为代码），`docs/SOURCE.md` / `docs/SOURCE_zh.md`（绑定来源的同步、定时同步、字段说明的只读拉取）。`docs/INSTALL.md` / `docs/INSTALL_zh.md`（各平台的安装包、校验、nightly、自动更新、从 Tauri 版迁移、数据目录），`docs/DEPLOY.md` / `docs/DEPLOY_zh.md`（网页版部署：Compose、systemd、反向代理与子路径、选项、可发往的地址、账号与邀请、桌面登录、升级、备份）。改动 bridge 的选项、默认值、限制，或安装包的种类时，两种语言都要改。部署说明跟随 `main`：正式版还没有的选项和行为标注它从哪个版本开始（*x.y.z*，在那之前只在 nightly 里），示例里的版本号由 `scripts/bump-version.sh` 随升版本一起改（#54）。
 
+## 文档与规则索引
+
+> 说明：因 `AGENTS.md` 正文超过规则单文件 `24 KB` 截断上限，高频工程红线、UI/UX 准则与巡检规范已提炼至 `.agents/rules/`（`trigger: always_on`，自动全量加载）；本文其余章节作为完整架构与功能细节备忘按需查阅。
+
+- **项目作用域规则（`.agents/rules/`，自动加载）**：
+  - `.agents/rules/ui-ux.md`：GPUI / gpui-kit 0.11 约束、视觉对齐与分层、UX 核心原则、文案与配套 HTML 规范
+  - `.agents/rules/ui-inspection.md`：UI 与用户体验巡检规范（环境隔离、真窗口截图覆盖矩阵、五维核查清单、问题分级闭环）
+  - `.agents/rules/architecture-and-storage.md`：五层依赖边界、文件/函数复杂度门禁、并发/同步/发送不变量、数据库兼容与安全边界
+  - `.agents/rules/web-wasm-and-gates.md`：Desktop / Web-Wasm 双端边界、Bridge 协议同步、锁文件/补丁纪律与强制验证门禁
+- **项目专属技能（`.agents/skills/`）**：
+  - `.agents/skills/cyberapi-ui-inspection/SKILL.md`：UI/UX 巡检实操手册（隔离种子库、本地 Mock 服务、`set-prefs` 切状态与多窗口 Retina 截图）
+  - `.agents/skills/cyberapi-release-qa/SKILL.md`：发布前全量 QA（静态门禁、`cyberapi-cli` E2E、macOS 桌面实测截图、bridge + web 冒烟）
+- **核心架构与规划文档（`docs/`，按需查阅）**：
+  - `docs/ui-inspection-log.md`：UI/UX 巡检问题台账与已确认设计取舍（Accepted Trade-offs）
+  - `docs/architecture.md`：Crate 划分、Store trait、Turso / SQLx 与 View 分层设计
+  - `docs/gpui-refactor-feature-analysis.md`：功能范围与 `F<模块>.<序号>` 编号索引
+  - `docs/issue-plan.md`：Issue #55 起的批次清单与完成记录
+  - `docs/server-sync.md`：服务器项目工作副本、仅本地条目、同步冲突与桌面登录设计
+
 ## Project Memory (`~/.gemini/projects/cyberapi-gpui/memory/`)
 
 - `MEMORY.md` — 历史决策与踩坑记录索引：

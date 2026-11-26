@@ -29,7 +29,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -460,6 +460,12 @@ impl TreePanel {
         let muted = cx.theme().muted_foreground;
         let state = self.state.downgrade();
         let editable = self.state.read(cx).editable();
+        let has_open_folder = self
+            .state
+            .read(cx)
+            .rows()
+            .iter()
+            .any(|row| row.kind == ItemKind::Folder && row.open);
         // `muted` and `border` are the same tone in the dark theme.
         let border = cx.theme().foreground.opacity(0.12);
         // Aligns with the open-APIs tab bar (36 px) when shown, or with the
@@ -521,6 +527,7 @@ impl TreePanel {
                 Button::new("tree-collapse")
                     .ghost()
                     .small()
+                    .disabled(!has_open_folder)
                     // Drawing in, as collapsing does; up-and-down reads as
                     // a picker.
                     .icon(Icons::ChevronsDownUp)

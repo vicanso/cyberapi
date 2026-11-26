@@ -2262,10 +2262,11 @@ impl RequestEditor {
         TabBar::new("request-tabs")
             .underline()
             .small()
+            .menu(true)
             .px_2()
             .selected_index(tabs.iter().position(|t| *t == tab).unwrap_or(0))
             .children(labels.into_iter().map(|label| Tab::new().label(label)))
-            .suffix(presets)
+            .suffix(div().flex_none().pl_1().child(presets))
             .on_click(move |index, _, cx| {
                 if let Some(tab) = owned.get(*index) {
                     let _ = workspace.update(cx, |workspace, cx| workspace.set_tab(&api, *tab, cx));

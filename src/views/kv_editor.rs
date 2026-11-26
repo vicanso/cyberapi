@@ -764,6 +764,7 @@ impl Render for KvEditor {
                                 .w(relative(0.28))
                                 .min_w_0()
                                 .flex_none()
+                                .overflow_hidden()
                                 .child(
                                     div()
                                         .flex_1()
@@ -827,6 +828,7 @@ impl Render for KvEditor {
                                 .id(("kv-value-cell", index))
                                 .flex_1()
                                 .min_w_0()
+                                .overflow_hidden()
                                 .relative()
                                 .when_some(value_tip, |cell, tip| {
                                     cell.tooltip(move |window, cx| {
@@ -848,13 +850,22 @@ impl Render for KvEditor {
                                     ))
                                 })
                         })
-                        .child(
+                        .child({
+                            let desc = row.description.read(cx).value().to_string();
                             cell()
+                                .id(("kv-desc-cell", index))
                                 .w(relative(0.28))
                                 .min_w_0()
                                 .flex_none()
-                                .child(Input::new(&row.description).small().appearance(false)),
-                        ),
+                                .overflow_hidden()
+                                .pr_1()
+                                .when(!desc.trim().is_empty(), |cell| {
+                                    cell.tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(desc.clone()).build(window, cx)
+                                    })
+                                })
+                                .child(Input::new(&row.description).small().appearance(false))
+                        }),
                 )
                 .child(
                     actions()

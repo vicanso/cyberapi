@@ -447,13 +447,16 @@ impl Render for PaletteView {
             .child(
                 div()
                     .id("palette-items")
-                    .max_h(px(420.))
+                    .max_h(px(384.))
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .child(v_flex().gap_0p5().children(rows)),
             )
             .child(
                 h_flex()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
                     .text_xs()
                     .text_color(muted)
                     .child(div().flex_1().child(SharedString::from(t!("palette.keys").to_string())))

@@ -724,6 +724,8 @@ impl ResponsePanel {
                 };
                 h_flex()
                     .gap_2()
+                    .min_w_0()
+                    .overflow_hidden()
                     .items_center()
                     .when_some(live.filter(|(status, ..)| *status > 0), |this, (status, ..)| {
                         this.child(pill(
@@ -732,7 +734,7 @@ impl ResponsePanel {
                         ))
                     })
                     .child(Spinner::new().small())
-                    .child(div().text_sm().text_color(muted).child(text))
+                    .child(div().min_w_0().truncate().text_sm().text_color(muted).child(text))
                     .into_any_element()
             }
             (None, Some(response)) => {
@@ -766,6 +768,7 @@ impl ResponsePanel {
                     let (workspace, api) = (self.workspace.downgrade(), self.api.clone());
                     div()
                         .id("response-assertions")
+                        .flex_none()
                         .cursor_pointer()
                         .on_click(move |_, _, cx| {
                             let _ = workspace.update(cx, |workspace, cx| {
@@ -778,12 +781,31 @@ impl ResponsePanel {
                         ))
                 });
                 h_flex()
-                    .gap_3()
+                    .gap_2()
+                    .min_w_0()
+                    .overflow_hidden()
                     .items_center()
                     .text_sm()
                     .child(status)
-                    .child(div().text_color(muted).child(format_duration(response.latency)))
-                    .children(size.map(|size| div().text_color(muted).child(size)))
+                    .child(
+                        div()
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .text_color(muted)
+                            .child(format_duration(response.latency)),
+                    )
+                    .children(size.map(|size| {
+                        let tip = size.clone();
+                        div()
+                            .id("response-size")
+                            .min_w_0()
+                            .truncate()
+                            .text_color(muted)
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                            })
+                            .child(size)
+                    }))
                     .children(checked)
                     .into_any_element()
             }
@@ -795,72 +817,79 @@ impl ResponsePanel {
             && self.response_view(cx) != JsonView::Raw;
         let searchable = self.searchable_editor(cx).is_some();
         h_flex()
-            .gap_2()
+            .gap_1()
             .px_3()
             .h(px(44.))
             .items_center()
+            .overflow_hidden()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(div().flex_1().min_w_0().child(status))
+            .child(div().flex_1().w(px(0.)).min_w_0().overflow_hidden().child(status))
             // #63: finding text in the shown editor, and narrowing a JSON
             // body in Pretty and Tree. Here, not by the view switch: the
             // tab bar has no room left.
-            .when(searchable, |this| {
-                this.child(
-                    Button::new("response-search")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Search)
-                        .selected(self.searching)
-                        .tooltip_with_action(
-                            t!("response.search").to_string(),
-                            &gpui_kit::component::input::Search,
-                            Some("Input"),
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_search(window, cx))),
-                )
-            })
-            .when(filterable, |this| {
-                this.child(
-                    Button::new("response-filter")
-                        .ghost()
-                        .small()
-                        .icon(gpui_kit::assets::IconName::Funnel)
-                        .selected(self.filtering)
-                        .tooltip(t!("response.filter").to_string())
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_filter(window, cx))),
-                )
-            })
-            .child({
-                let button = Button::new("response-curl")
-                    .ghost()
-                    .small()
-                    .icon(gpui_kit::assets::IconName::Terminal);
-                // A gRPC call is a grpcurl command; any other request is
-                // offered in every client's code (#69).
-                if self.api.read(cx).request().method == HttpMethod::Grpc {
-                    button
-                        .tooltip(t!("response.copy_grpcurl").to_string())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.api.update(cx, |api, cx| api.copy_code(CodeTarget::Curl, cx))
-                        }))
-                        .into_any_element()
-                } else {
-                    let api = self.api.downgrade();
-                    button
-                        .tooltip(t!("response.copy_as").to_string())
-                        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| code_menu(menu, &api))
-                        .into_any_element()
-                }
-            })
             .child(
-                Button::new("response-history")
-                    .ghost()
-                    .small()
-                    .icon(gpui_kit::assets::IconName::Clock)
-                    .tooltip(t!("response.history").to_string())
-                    .disabled(api.responses().is_empty())
-                    .dropdown_menu_with_anchor(Anchor::TopRight, history_menu),
+                h_flex()
+                    .flex_none()
+                    .gap_0p5()
+                    .items_center()
+                    .when(searchable, |this| {
+                        this.child(
+                            Button::new("response-search")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Search)
+                                .selected(self.searching)
+                                .tooltip_with_action(
+                                    t!("response.search").to_string(),
+                                    &gpui_kit::component::input::Search,
+                                    Some("Input"),
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| this.toggle_search(window, cx))),
+                        )
+                    })
+                    .when(filterable, |this| {
+                        this.child(
+                            Button::new("response-filter")
+                                .ghost()
+                                .small()
+                                .icon(gpui_kit::assets::IconName::Funnel)
+                                .selected(self.filtering)
+                                .tooltip(t!("response.filter").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| this.toggle_filter(window, cx))),
+                        )
+                    })
+                    .child({
+                        let button = Button::new("response-curl")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Terminal);
+                        // A gRPC call is a grpcurl command; any other request is
+                        // offered in every client's code (#69).
+                        if self.api.read(cx).request().method == HttpMethod::Grpc {
+                            button
+                                .tooltip(t!("response.copy_grpcurl").to_string())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.api.update(cx, |api, cx| api.copy_code(CodeTarget::Curl, cx))
+                                }))
+                                .into_any_element()
+                        } else {
+                            let api = self.api.downgrade();
+                            button
+                                .tooltip(t!("response.copy_as").to_string())
+                                .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| code_menu(menu, &api))
+                                .into_any_element()
+                        }
+                    })
+                    .child(
+                        Button::new("response-history")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Clock)
+                            .tooltip(t!("response.history").to_string())
+                            .disabled(api.responses().is_empty())
+                            .dropdown_menu_with_anchor(Anchor::TopRight, history_menu),
+                    ),
             )
             .into_any_element()
     }
@@ -905,6 +934,7 @@ impl ResponsePanel {
         TabBar::new("response-tabs")
             .underline()
             .small()
+            .menu(true)
             .px_2()
             .selected_index(tabs.iter().position(|tab| *tab == shown).unwrap_or(0))
             .children(tabs.iter().map(|tab| Tab::new().label(label(tab))))
@@ -916,6 +946,8 @@ impl ResponsePanel {
                 let raw = self.stream_raw.as_ref() == Some(&response.id);
                 bar.suffix(
                     h_flex()
+                        .flex_none()
+                        .pl_1()
                         .gap_0p5()
                         .items_center()
                         // An event stream as events, or as it came.
@@ -1008,6 +1040,8 @@ impl ResponsePanel {
             .when(pictured, |bar| {
                 bar.suffix(
                     h_flex()
+                        .flex_none()
+                        .pl_1()
                         .gap_0p5()
                         .items_center()
                         .child(image_view_switch(
@@ -1048,6 +1082,8 @@ impl ResponsePanel {
                     .is_some_and(|sent| sent.headers.iter().any(SentHeader::secret));
                 bar.suffix(
                     h_flex()
+                        .flex_none()
+                        .pl_1()
                         .gap_0p5()
                         .items_center()
                         .when(secrets, |this| {
@@ -2424,9 +2460,11 @@ fn save_button(cx: &mut Context<ResponsePanel>) -> Button {
 /// A status in its colour.
 fn pill(text: String, color: Hsla) -> AnyElement {
     h_flex()
+        .flex_none()
         .h(px(22.))
         .px_2()
         .items_center()
+        .whitespace_nowrap()
         .rounded_full()
         .bg(color.opacity(0.16))
         .font_semibold()
@@ -2509,6 +2547,20 @@ impl Render for ResponsePanel {
             None => {
                 // The shortcut as this platform writes it: ⌘↵, Ctrl+Enter.
                 let shortcut = Kbd::binding_for_action(&SendAction, Some(KEY_CONTEXT), window);
+                let is_ws = self.api.read(cx).request().method == HttpMethod::WebSocket;
+                let (icon, description, action_label) = if is_ws {
+                    (
+                        gpui_kit::assets::IconName::Plug,
+                        t!("response.ws_empty_description"),
+                        t!("editor.ws_connect"),
+                    )
+                } else {
+                    (
+                        gpui_kit::assets::IconName::Send,
+                        t!("response.empty_description"),
+                        t!("editor.send"),
+                    )
+                };
                 let muted = cx.theme().muted_foreground;
                 v_flex()
                     .flex_1()
@@ -2521,12 +2573,10 @@ impl Render for ResponsePanel {
                                     .media(
                                         EmptyMedia::new()
                                             .with_variant(EmptyMediaVariant::Icon)
-                                            .child(Icon::new(gpui_kit::assets::IconName::Send)),
+                                            .child(Icon::new(icon)),
                                     )
                                     .title(EmptyTitle::new().child(t!("response.empty_title").to_string()))
-                                    .description(
-                                        EmptyDescription::new().child(t!("response.empty_description").to_string()),
-                                    ),
+                                    .description(EmptyDescription::new().child(description.to_string())),
                             )
                             .when_some(shortcut, |empty, shortcut| {
                                 empty.content(
@@ -2537,7 +2587,7 @@ impl Render for ResponsePanel {
                                             .text_sm()
                                             .text_color(muted)
                                             .child(shortcut)
-                                            .child(t!("editor.send").to_string()),
+                                            .child(action_label.to_string()),
                                     ),
                                 )
                             }),

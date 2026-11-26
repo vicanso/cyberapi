@@ -71,6 +71,7 @@ gpui_kit::actions!(
     cyberapi,
     [
         OpenAbout,
+        OpenSettings,
         Quit,
         Hide,
         HideOthers,
@@ -453,6 +454,7 @@ fn install_mac_menus(cx: &mut App) {
     }
 
     cx.on_action(|_: &OpenAbout, cx| on_window(cx, views::open_about_dialog));
+    cx.on_action(|_: &OpenSettings, cx| on_window(cx, views::open_settings));
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
@@ -463,6 +465,7 @@ fn install_mac_menus(cx: &mut App) {
     // As the close button does (F1.4).
     cx.on_action(|_: &CloseWindow, cx| cx.hide());
     cx.bind_keys([
+        KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-h", Hide, None),
         KeyBinding::new("alt-cmd-h", HideOthers, None),
@@ -473,6 +476,8 @@ fn install_mac_menus(cx: &mut App) {
     cx.set_menus([
         Menu::new(BUNDLE_NAME).items([
             MenuItem::action(format!("About {BUNDLE_NAME}"), OpenAbout),
+            MenuItem::separator(),
+            MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),
             MenuItem::action(format!("Hide {BUNDLE_NAME}"), Hide),
             MenuItem::action("Hide Others", HideOthers),

@@ -350,7 +350,9 @@ impl CyberApi {
             // row and, when pinned, the open tab; not repeated here.
             Route::Workspace(_) => h_flex()
                 .flex_1()
+                .flex_basis(px(0.))
                 .min_w_0()
+                .overflow_hidden()
                 .items_center()
                 .gap_1()
                 .child(crate::views::stop_titlebar_drag(
@@ -691,19 +693,21 @@ impl Render for CyberApi {
             .bg(theme.background)
             .text_color(theme.foreground)
             .child(
-                TitleBar::new().child(
+                TitleBar::new().w_full().overflow_hidden().child(
                     h_flex()
                         .flex_1()
+                        .flex_basis(px(0.))
                         .min_w_0()
+                        .overflow_hidden()
                         .items_center()
-                        // No width of its own, only the share it grows to:
-                        // the kit's bar will not shrink below what its row
-                        // needs, so a row of many pins needing their whole
-                        // width pushed the menu out of the window.
+                        // Explicit 0px flex-basis (not flex_1()'s 0% + w(px(0.))):
+                        // Taffy treats 0% as indefinite during MinContent sizing
+                        // of the kit's bar and ignores w(px(0.)), so many pins
+                        // would otherwise push the menu out of the window.
                         .child(
                             h_flex()
                                 .flex_1()
-                                .w(px(0.))
+                                .flex_basis(px(0.))
                                 .min_w_0()
                                 .overflow_hidden()
                                 .child(self.render_title(cx)),

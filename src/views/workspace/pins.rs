@@ -178,6 +178,7 @@ impl Render for PinsBar {
         let row = h_flex()
             .id("pins")
             .flex_1()
+            .flex_basis(px(0.))
             .min_w_0()
             .gap_1()
             .items_center()
@@ -186,7 +187,9 @@ impl Render for PinsBar {
             .children(tags.collect::<Vec<_>>());
         h_flex()
             .flex_1()
+            .flex_basis(px(0.))
             .min_w_0()
+            .overflow_hidden()
             .items_center()
             .when(any, |bar| {
                 bar.child(div().flex_none().mx_2().w(px(1.)).h(px(16.)).bg(theme.border))
