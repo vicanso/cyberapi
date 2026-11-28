@@ -6,7 +6,7 @@
 use crate::states::{ApiEvent, ApiState};
 use crate::views::name_dialog::ok_button;
 use cyberapi_core::assertions::Subject;
-use cyberapi_core::model::{ContentType, HttpRequest, KvParam};
+use cyberapi_core::model::{ContentType, Example, HttpRequest, KvParam};
 use cyberapi_core::response::{StatusLevel, format_size, status_level};
 use cyberapi_core::schema_docs::{self, SchemaField};
 use cyberapi_core::send::{self, form_fields};
@@ -17,11 +17,14 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    Window, div, px, relative,
 };
 use rust_i18n::t;
 
@@ -42,14 +45,57 @@ fn shown_file(kv: &KvParam) -> KvParam {
     }
 }
 
+fn example_shown(body: &str) -> &str {
+    &body[..body.floor_char_boundary(SHOWN)]
+}
+
+fn example_language(example: &Example) -> &'static str {
+    let content_type = example.content_type().map(str::to_ascii_lowercase).unwrap_or_default();
+    if content_type.contains("json") {
+        "json"
+    } else if content_type.contains("html") || content_type.contains("xml") {
+        "html"
+    } else if example.body.len() <= SHOWN
+        && matches!(example.body.trim_start().as_bytes().first(), Some(b'{' | b'['))
+        && serde_json::from_str::<serde_json::Value>(&example.body).is_ok()
+    {
+        "json"
+    } else {
+        "text"
+    }
+}
+
+fn example_height(shown: &str, mono_font_size: Pixels) -> Pixels {
+    let mut lines: usize = 0;
+    for line in shown.lines() {
+        lines += line.len().div_ceil(72).max(1);
+        if lines >= 20 {
+            break;
+        }
+    }
+    px((lines.max(1) as f32 * (f32::from(mono_font_size) * 1.5) + 20.).clamp(60., 260.))
+}
+
+fn copy_example(body: String, window: &mut Window, cx: &mut App) {
+    cx.write_to_clipboard(ClipboardItem::new_string(body));
+    window.push_notification(Notification::success(t!("common.copied").to_string()), cx);
+}
+
+struct OpenExample {
+    index: usize,
+    editor: Entity<EditorState>,
+    body: String,
+    language: &'static str,
+}
+
 pub struct DocsEditor {
     api: Entity<ApiState>,
     description: Entity<EditorState>,
     /// F16: whether the description is shown as an editor (`true`) or as
     /// rendered Markdown (`false`) when non-empty.
     editing_description: bool,
-    /// The example opened to read, by its place.
-    open: Option<usize>,
+    /// The example opened to read, with its read-only code editor.
+    open: Option<OpenExample>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -72,15 +118,14 @@ impl DocsEditor {
             editor
         });
         let mut subscriptions = vec![
-            cx.observe(&api, |_, _, cx| cx.notify()),
+            cx.observe_in(&api, window, |this, _, window, cx| {
+                this.sync_open_example(window, cx);
+                cx.notify();
+            }),
             cx.subscribe_in(&api, window, |this, api, event: &ApiEvent, window, cx| {
                 if matches!(event, ApiEvent::RequestReplaced) {
-                    let request = api.read(cx).request();
-                    let text = request.description.clone();
-                    let examples_len = request.examples.len();
-                    if this.open.is_some_and(|open| open >= examples_len) {
-                        this.open = None;
-                    }
+                    let text = api.read(cx).request().description.clone();
+                    this.sync_open_example(window, cx);
                     if this.description.read(cx).value().as_ref() != text {
                         this.description
                             .update(cx, |editor, cx| editor.set_value(text.clone(), window, cx));
@@ -110,6 +155,77 @@ impl DocsEditor {
             editing_description,
             open: None,
             _subscriptions: subscriptions,
+        }
+    }
+
+    fn build_example_editor(
+        shown: &str,
+        language: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<EditorState> {
+        cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language(language)
+                .line_number(false)
+                .tab_size(crate::views::json_tab())
+                .soft_wrap(true)
+                .searchable(false)
+                .default_value(shown.to_string())
+        })
+    }
+
+    fn toggle_example(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open.as_ref().is_some_and(|open| open.index == at) {
+            self.open = None;
+            cx.notify();
+            return;
+        }
+        let Some(example) = self.api.read(cx).request().examples.get(at).cloned() else {
+            return;
+        };
+        let shown = example_shown(&example.body);
+        let language = example_language(&example);
+        let editor = Self::build_example_editor(shown, language, window, cx);
+        self.open = Some(OpenExample {
+            index: at,
+            editor,
+            body: shown.to_string(),
+            language,
+        });
+        cx.notify();
+    }
+
+    fn sync_open_example(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.open.as_ref().map(|open| open.index) else {
+            return;
+        };
+        let Some(example) = self.api.read(cx).request().examples.get(index).cloned() else {
+            self.open = None;
+            return;
+        };
+        let shown = example_shown(&example.body);
+        let language = example_language(&example);
+        let needs_rebuild = self.open.as_ref().is_some_and(|open| open.language != language);
+        if needs_rebuild {
+            let editor = Self::build_example_editor(shown, language, window, cx);
+            if let Some(open) = &mut self.open {
+                open.editor = editor;
+                open.language = language;
+                open.body = shown.to_string();
+            }
+            return;
+        }
+        let editor = self
+            .open
+            .as_ref()
+            .filter(|open| open.body != shown)
+            .map(|open| open.editor.clone());
+        if let Some(editor) = editor {
+            editor.update(cx, |editor, cx| editor.set_value(shown.to_string(), window, cx));
+            if let Some(open) = &mut self.open {
+                open.body = shown.to_string();
+            }
         }
     }
 
@@ -782,52 +898,61 @@ impl DocsEditor {
             })
             .into_any_element()
     }
-}
 
-impl Render for DocsEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_example_row(&self, at: usize, example: &Example, editable: bool, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (border, muted, mono) = (theme.border, theme.muted_foreground, theme.mono_font_family.clone());
-        let editable = self.editable(cx);
-        let matched = self.matched_source(cx);
-        let inputs = self.render_inputs(matched.as_ref(), editable, cx);
-        let outputs = self.render_outputs(matched.as_ref(), editable, cx);
-        let examples = self.api.read(cx).request().examples.clone();
-        let rows: Vec<AnyElement> = examples
-            .iter()
-            .enumerate()
-            .map(|(at, example)| {
-                let theme = cx.theme();
-                let color = match status_level(example.status) {
-                    StatusLevel::Success => theme.success,
-                    StatusLevel::Redirect => theme.info,
-                    StatusLevel::ClientError => theme.warning,
-                    StatusLevel::ServerError => theme.danger,
-                };
-                let opened = self.open == Some(at);
-                let note = [
-                    example.content_type().map(str::to_string),
-                    Some(format_size(example.body.len() as u64)),
-                ]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" · ");
-                let shown = &example.body[..example.body.floor_char_boundary(SHOWN)];
-                v_flex()
-                    .border_t_1()
-                    .border_color(border)
-                    .py_1()
+        let (border, muted, mono_size) = (theme.border, theme.muted_foreground, theme.mono_font_size);
+        let color = match status_level(example.status) {
+            StatusLevel::Success => theme.success,
+            StatusLevel::Redirect => theme.info,
+            StatusLevel::ClientError => theme.warning,
+            StatusLevel::ServerError => theme.danger,
+        };
+        let note = [
+            example.content_type().map(str::to_string),
+            Some(format_size(example.body.len() as u64)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+        let shown = example_shown(&example.body);
+        let clipped = example.body.len() > SHOWN;
+        let full_body = example.body.clone();
+        let body_empty = full_body.is_empty();
+        let open_editor = self
+            .open
+            .as_ref()
+            .filter(|open| open.index == at)
+            .map(|open| open.editor.clone());
+        let clipped_note = clipped.then(|| {
+            div()
+                .mt_1()
+                .text_xs()
+                .text_color(muted)
+                .child(t!("docs.example_clipped", size = format_size(shown.len() as u64)).to_string())
+        });
+        let height = example_height(shown, mono_size);
+
+        v_flex()
+            .border_t_1()
+            .border_color(border)
+            .py_1()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
                     .child(
                         h_flex()
                             .id(("example", at))
+                            .flex_1()
+                            .flex_basis(px(0.))
+                            .min_w_0()
+                            .overflow_hidden()
                             .gap_3()
                             .items_center()
                             .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.open = if this.open == Some(at) { None } else { Some(at) };
-                                cx.notify();
-                            }))
+                            .on_click(cx.listener(move |this, _, window, cx| this.toggle_example(at, window, cx)))
                             .child(
                                 div()
                                     .w(px(36.))
@@ -837,7 +962,30 @@ impl Render for DocsEditor {
                                     .child(example.status.to_string()),
                             )
                             .child(div().flex_1().min_w_0().truncate().child(example.name.clone()))
-                            .child(div().text_xs().text_color(muted).child(note))
+                            .child(
+                                div()
+                                    .max_w(relative(0.55))
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(note),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .flex_none()
+                            .items_center()
+                            .child(
+                                Button::new(("example-copy", at))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Copy)
+                                    .tooltip(SharedString::from(t!("common.copy").to_string()))
+                                    .disabled(body_empty)
+                                    .on_click(move |_, window, cx| copy_example(full_body.clone(), window, cx)),
+                            )
                             .when(editable, |this| {
                                 this.child(
                                     Button::new(("example-remove", at))
@@ -851,26 +999,62 @@ impl Render for DocsEditor {
                                         })),
                                 )
                             }),
-                    )
-                    .when(opened, |this| {
-                        this.child(
-                            div()
-                                .id(("example-body", at))
-                                .mt_1()
-                                .max_h(px(260.))
-                                .overflow_y_scrollbar()
-                                .p_2()
-                                .rounded_md()
-                                .bg(cx.theme().muted)
-                                .text_xs()
-                                .font_family(mono.clone())
-                                .child(shown.to_string()),
-                        )
-                    })
-                    .into_any_element()
+                    ),
+            )
+            .when_some(open_editor, |this, editor| {
+                this.children(clipped_note).child(
+                    div()
+                        .id(("example-body", at))
+                        .mt_1()
+                        .h(height)
+                        .border_1()
+                        .border_color(border)
+                        .rounded_md()
+                        .overflow_hidden()
+                        .child(Editor::new(&editor).w_full().h_full().readonly(true).bordered(false)),
+                )
             })
+            .into_any_element()
+    }
+
+    fn render_examples(&self, editable: bool, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (border, muted) = (theme.border, theme.muted_foreground);
+        let examples = self.api.read(cx).request().examples.clone();
+        let rows: Vec<AnyElement> = examples
+            .iter()
+            .enumerate()
+            .map(|(at, example)| self.render_example_row(at, example, editable, cx))
             .collect();
         let empty = rows.is_empty();
+        v_flex()
+            .pt_2()
+            .gap_1p5()
+            .child(div().text_sm().font_semibold().child(t!("docs.examples").to_string()))
+            .when(empty, |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(t!("docs.no_examples").to_string()),
+                )
+            })
+            .when(!empty, |this| {
+                this.child(v_flex().border_b_1().border_color(border).children(rows))
+            })
+            .into_any_element()
+    }
+}
+
+impl Render for DocsEditor {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (border, muted) = (theme.border, theme.muted_foreground);
+        let editable = self.editable(cx);
+        let matched = self.matched_source(cx);
+        let inputs = self.render_inputs(matched.as_ref(), editable, cx);
+        let outputs = self.render_outputs(matched.as_ref(), editable, cx);
+        let examples = self.render_examples(editable, cx);
         let desc_text = self.description.read(cx).value().to_string();
         let has_desc = !desc_text.trim().is_empty();
         let show_markdown = has_desc && (!self.editing_description || !editable);
@@ -937,23 +1121,212 @@ impl Render for DocsEditor {
             })
             .child(inputs)
             .child(outputs)
-            .child(
-                div()
-                    .pt_2()
-                    .text_sm()
-                    .font_semibold()
-                    .child(t!("docs.examples").to_string()),
-            )
-            .when(empty, |this| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(muted)
-                        .child(t!("docs.no_examples").to_string()),
-                )
+            .child(examples)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Extras;
+    use crate::states::{AppStore, WorkspaceState};
+    use cyberapi_core::model::HttpMethod;
+    use cyberapi_core::prefs::{AppPrefs, SendPrefs, Timeouts};
+    use cyberapi_core::template::NoFiles;
+    use cyberapi_http::{HttpEngine, PreparedRequest, SendFuture};
+    use cyberapi_service::Sender;
+    use cyberapi_store::{MemoryStore, NewCollection};
+    use gpui_kit::component::Root;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AnyWindowHandle, TestAppContext, size};
+    use std::sync::Arc;
+
+    struct NoEngine;
+
+    impl HttpEngine for NoEngine {
+        fn send(&self, _: PreparedRequest) -> SendFuture {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    fn example_with(content_type: Option<&str>, body: &str) -> Example {
+        Example {
+            name: "sample".into(),
+            status: 200,
+            headers: content_type
+                .map(|ct| vec![("Content-Type".into(), ct.into())])
+                .unwrap_or_default(),
+            body: body.into(),
+        }
+    }
+
+    fn setup_docs_editor(
+        request: HttpRequest,
+        cx: &mut TestAppContext,
+    ) -> (Entity<ApiState>, Entity<DocsEditor>, AnyWindowHandle) {
+        cx.update(gpui_kit::init);
+        let store = MemoryStore::new();
+        let storage = store.storage();
+        cx.update(|cx| {
+            AppStore::init(
+                storage.clone(),
+                Arc::new(NoEngine),
+                AppPrefs::default(),
+                Extras::default(),
+                cx,
+            );
+        });
+        let collection = pollster::block_on(storage.collections().create(NewCollection {
+            name: "p".into(),
+            ..Default::default()
+        }))
+        .expect("create collection");
+        let inserted = pollster::block_on(storage.tree().create_api(collection.id.clone(), None, "orders".into()))
+            .expect("create api");
+        let api_id = inserted.item.id;
+        pollster::block_on(
+            storage
+                .tree()
+                .save_request(collection.id.clone(), api_id.clone(), request),
+        )
+        .expect("save request");
+        let sender = Sender {
+            storage,
+            engine: Arc::new(NoEngine),
+            files: Arc::new(NoFiles("no files in tests")),
+            env: Arc::new(cyberapi_core::template::NoEnv("no environment in tests")),
+            user_agent: "CyberAPI/test".into(),
+            timeouts: Timeouts::default(),
+            sending: SendPrefs::default(),
+            inherited: Default::default(),
+            environment: None,
+            tokens: Default::default(),
+            secrets: Default::default(),
+            runtime: Vec::new(),
+        };
+        let workspace = cx.new(|cx| WorkspaceState::new(sender, collection, cx));
+        cx.run_until_parked();
+        workspace.update(cx, |ws, cx| ws.select(&api_id, cx));
+        cx.run_until_parked();
+        let api = workspace.read_with(cx, |ws, _| ws.api().expect("selected api").clone());
+        let mut docs = None;
+        let window: AnyWindowHandle = cx
+            .open_window(size(px(800.), px(600.)), |window, cx| {
+                let view = cx.new(|cx| DocsEditor::new(api.clone(), window, cx));
+                docs = Some(view.clone());
+                Root::new(view, window, cx)
             })
-            .when(!empty, |this| {
-                this.child(v_flex().border_b_1().border_color(border).children(rows))
-            })
+            .into();
+        cx.run_until_parked();
+        (api, docs.expect("docs editor"), window)
+    }
+
+    #[test]
+    fn example_language_detects_json_html_and_plain() {
+        assert_eq!(
+            example_language(&example_with(Some("application/json; charset=utf-8"), "{}")),
+            "json"
+        );
+        assert_eq!(example_language(&example_with(Some("text/html"), "<p>hi</p>")), "html");
+        assert_eq!(example_language(&example_with(Some("application/xml"), "<a/>")), "html");
+        assert_eq!(example_language(&example_with(None, "{\"ok\":true}")), "json");
+        assert_eq!(example_language(&example_with(None, " [1, 2]")), "json");
+
+        let oversized_json = format!("{{\"data\":\"{}\"}}", "x".repeat(SHOWN + 10));
+        assert_eq!(
+            example_language(&example_with(Some("application/json"), &oversized_json)),
+            "json"
+        );
+        assert_eq!(example_language(&example_with(None, &oversized_json)), "text");
+        assert_eq!(example_language(&example_with(None, "pong")), "text");
+    }
+
+    #[test]
+    fn example_height_scales_and_clamps() {
+        let size = px(13.);
+        assert_eq!(example_height("", size), px(60.));
+
+        let five_lines = "a\nb\nc\nd\ne";
+        let mid = example_height(five_lines, size);
+        assert!(mid > px(60.) && mid < px(260.));
+
+        let wrapped = "a".repeat(200);
+        assert!(example_height(&wrapped, size) > px(60.));
+
+        let fifty_lines = "line\n".repeat(50);
+        assert_eq!(example_height(&fifty_lines, size), px(260.));
+    }
+
+    #[gpui_kit::test]
+    async fn docs_editor_opens_syncs_and_copies_full_example(cx: &mut TestAppContext) {
+        let json_body = "{\n    \"ok\": true\n}".to_string();
+        let large_body = "x".repeat(SHOWN + 500);
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            uri: "https://example.test/orders".into(),
+            examples: vec![
+                Example {
+                    name: "ok".into(),
+                    status: 200,
+                    headers: vec![("content-type".into(), "application/json".into())],
+                    body: json_body.clone(),
+                },
+                Example {
+                    name: "large".into(),
+                    status: 200,
+                    headers: vec![("content-type".into(), "text/plain".into())],
+                    body: large_body.clone(),
+                },
+            ],
+            ..Default::default()
+        };
+        let (api, docs, window) = setup_docs_editor(request, cx);
+
+        cx.update_window(window, |_, window, cx| {
+            docs.update(cx, |docs, cx| docs.toggle_example(0, window, cx));
+            window.render_frame(cx);
+            let open = docs.read(cx).open.as_ref().expect("first example opened");
+            assert_eq!(open.index, 0);
+            assert_eq!(open.language, "json");
+            assert_eq!(open.editor.read(cx).value().as_ref(), json_body);
+        })
+        .expect("open json example");
+
+        cx.update_window(window, |_, window, cx| {
+            docs.update(cx, |docs, cx| docs.toggle_example(1, window, cx));
+            window.render_frame(cx);
+            let open = docs.read(cx).open.as_ref().expect("large example opened");
+            assert_eq!(open.index, 1);
+            assert_eq!(open.language, "text");
+            assert_eq!(open.editor.read(cx).value().len(), SHOWN);
+
+            copy_example(large_body.clone(), window, cx);
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some(large_body.clone()),
+            );
+
+            docs.update(cx, |docs, cx| docs.toggle_example(1, window, cx));
+            assert!(docs.read(cx).open.is_none());
+
+            docs.update(cx, |docs, cx| docs.toggle_example(1, window, cx));
+            assert!(docs.read(cx).open.is_some());
+        })
+        .expect("open and copy large example");
+
+        api.update(cx, |api, cx| api.remove_example(1, cx));
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(docs.read(cx).open.is_none());
+
+            docs.update(cx, |docs, cx| docs.toggle_example(0, window, cx));
+            window.render_frame(cx);
+            assert_eq!(docs.read(cx).open.as_ref().map(|open| open.index), Some(0));
+
+            docs.update(cx, |docs, cx| docs.toggle_example(0, window, cx));
+            assert!(docs.read(cx).open.is_none());
+        })
+        .expect("sync clears removed example");
     }
 }
